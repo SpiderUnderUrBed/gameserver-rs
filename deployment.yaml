@@ -1,0 +1,112 @@
+# RBAC Permissions
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pod-reader
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pod-reader
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch", "update", "delete", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pod-reader-binding
+subjects:
+- kind: ServiceAccount
+  name: pod-reader
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+# Storage Configuration
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-path
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: rust-app-pv
+spec:
+  capacity:
+    storage: 5Gi
+  volumeMode: Filesystem
+  storageClassName: local-path
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: /mnt/data/gameserver-rs
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rust-app-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: local-path
+---
+# Application Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rust-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rust-app
+  template:
+    metadata:
+      labels:
+        app: rust-app
+    spec:
+      serviceAccountName: pod-reader
+      containers:
+        - name: rust-app
+          image: rust-k8s:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: source-code
+              mountPath: /usr/src/app
+            - name: docker-socket
+              mountPath: /var/run/docker.sock
+      volumes:
+        - name: source-code
+          persistentVolumeClaim:
+            claimName: rust-app-pvc
+        - name: docker-socket
+          hostPath:
+            path: /var/run/docker.sock
+            type: Socket
+---
+# Service Exposure
+apiVersion: v1
+kind: Service
+metadata:
+  name: rust-service
+spec:
+  selector:
+    app: rust-app
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
+  type: NodePort
