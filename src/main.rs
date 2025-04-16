@@ -12,8 +12,9 @@ use walkdir::WalkDir;
 use axum::{
     extract::{Path as RoutingPath, Query},
     response::IntoResponse,
-    routing::{get, get_service},
+    routing::{get, get_service, post},
     Router,
+    Json
 };
 
 use bollard::image::PushImageOptions;
@@ -61,7 +62,8 @@ use bytes::Bytes as BytesRaw;
 use axum::body::Bytes;
 use http_body::Frame; 
 
-use serde::Serialize;
+use serde_json::json;
+use serde::{Serialize, Deserialize};
 
 const ENABLE_TAG_AND_PUSH: bool = true; // Set to false to disable tag & push
 
@@ -327,7 +329,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // println!("Sent a message through the channel");
 
-    let app = Router::new().fallback_service(routes_static());
+    let app = Router::new()
+        .route("/message", get(get_message))
+        .route("/api/send", post(receive_message))
+        .fallback_service(routes_static());
 
     let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
     let listener = TcpListener::bind(addr).await.unwrap();
@@ -336,6 +341,31 @@ async fn main() -> Result<(), Box<dyn Error>> {
     axum::serve(listener, app).await.unwrap();
 
     Ok(())
+}
+
+
+#[derive(Deserialize)]
+struct IncomingMessage {
+    message: String,
+}
+
+#[derive(Serialize)]
+struct ResponseMessage {
+    response: String,
+}
+
+async fn get_message() -> Json<serde_json::Value> {
+    Json(json!({
+        "message": "Hello from Axum!"
+    }))
+}
+
+
+async fn receive_message(Json(payload): Json<IncomingMessage>) -> Json<ResponseMessage> {
+    println!("Got message: {}", payload.message);
+    Json(ResponseMessage {
+        response: format!("You sent: {}", payload.message),
+    })
 }
 
 fn routes_static() -> Router {
