@@ -11,8 +11,11 @@ metadata:
   name: pod-reader
 rules:
 - apiGroups: [""]
-  resources: ["pods"]
-  verbs: ["get", "list", "watch", "update", "delete", "patch"]
+  resources: ["pods", "services"]
+  verbs: ["get", "list", "watch", "update", "delete", "patch", "create"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "create", "update", "delete", "patch", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -47,7 +50,7 @@ spec:
   accessModes:
     - ReadWriteOnce
   hostPath:
-    path: /mnt/data/gameserver-rs
+    path: /home/spiderunderurbed/projects/gameserver-rs
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -79,8 +82,8 @@ spec:
       serviceAccountName: pod-reader
       containers:
         - name: rust-app
-          image: rust-k8s:latest
-          imagePullPolicy: Never
+          image: localhost:5000/rust-k8s:latest
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
           volumeMounts:

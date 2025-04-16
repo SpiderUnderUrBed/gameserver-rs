@@ -1,3 +1,5 @@
+#eval $(minikube docker-env)
+#docker build . -t rust-k8s
 #POD_NAME="rust-app-6b6c6bb656-44gf9" && \
 tar --exclude='./target' --exclude='.git' --exclude='*.gitignore' -czf app.tar.gz . && \
 kubectl cp app.tar.gz default/$POD_NAME:/usr/src/app && \
