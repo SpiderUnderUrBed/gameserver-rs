@@ -50,7 +50,6 @@
     <script>
         async function fetchMessage() {
             try {
-                // Make a request to the Axum backend
                 const response = await fetch('http://127.0.0.1:8080/message');
                 
                 if (response.ok) {
@@ -70,7 +69,6 @@
 
             if (message) {
                 try {
-                    // Send the message to the Axum server using a POST request
                     const response = await fetch('http://127.0.0.1:8080/api/send', {
                         method: 'POST',
                         headers: {
