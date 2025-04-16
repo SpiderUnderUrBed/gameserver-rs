@@ -13,10 +13,19 @@ spec:
         app: gameserver
     spec:
       containers:
-      - name: gameserver
-        image: yourusername/gameserver:latest
-        ports:
-        - containerPort: 8080
+        - name: gameserver
+          image: localhost:5000/gameserver:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: docker-socket
+              mountPath: /var/run/docker.sock
+      volumes:
+        - name: docker-socket
+          hostPath:
+            path: /var/run/docker.sock
+            type: Socket
 ---
 apiVersion: v1
 kind: Service
@@ -26,7 +35,7 @@ spec:
   selector:
     app: gameserver
   ports:
-  - protocol: TCP
-    port: 80
-    targetPort: 8080
+    - protocol: TCP
+      port: 8080
+      targetPort: 8080
   type: ClusterIP
