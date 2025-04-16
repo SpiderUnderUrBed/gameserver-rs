@@ -2,10 +2,10 @@
 
 pkgs.mkShell {
   buildInputs = with pkgs; [
-    rustc
-    cargo
+    # rustc
+    # cargo
    # rust-analyzer
-    rust-src
+    # rust-src
     openssl
     pkg-config
   ];
@@ -14,5 +14,5 @@ pkgs.mkShell {
   OPENSSL_INCLUDE_DIR = "${pkgs.openssl.dev}/include";
   PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
 
-  TMPDIR = "${builtins.getEnv "HOME"}/tmp";
+ # TMPDIR = "${builtins.getEnv "HOME"}/tmp";
 }
