@@ -28,6 +28,12 @@
             margin-top: 20px;
             font-size: 18px;
         }
+        input {
+            padding: 8px;
+            margin-top: 10px;
+            width: 300px;
+            font-size: 16px;
+        }
     </style>
 </head>
 <body>
@@ -36,6 +42,10 @@
     <button onclick="fetchMessage()">Get Message</button>
 
     <div id="message"></div>
+
+    <h2>Send a Message to the Server:</h2>
+    <input type="text" id="userMessage" placeholder="Type your message here" />
+    <button onclick="sendMessage()">Send Message</button>
 
     <script>
         async function fetchMessage() {
@@ -52,6 +62,35 @@
             } catch (error) {
                 document.getElementById('message').innerText = 'Error connecting to the server.';
                 console.error('Error fetching message:', error);
+            }
+        }
+
+        async function sendMessage() {
+            const message = document.getElementById('userMessage').value;
+
+            if (message) {
+                try {
+                    // Send the message to the Axum server using a POST request
+                    const response = await fetch('http://127.0.0.1:8080/api/send', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ message: message })
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        document.getElementById('message').innerText = `Server Response: ${data.response}`;
+                    } else {
+                        document.getElementById('message').innerText = 'Failed to send message to the server.';
+                    }
+                } catch (error) {
+                    document.getElementById('message').innerText = 'Error sending message to the server.';
+                    console.error('Error sending message:', error);
+                }
+            } else {
+                document.getElementById('message').innerText = 'Please enter a message to send.';
             }
         }
     </script>
