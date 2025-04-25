@@ -80,6 +80,12 @@ spec:
         app: rust-app
     spec:
       serviceAccountName: pod-reader
+      # dnsPolicy: "ClusterFirstWithHostNet"
+      # dnsConfig:
+      #   nameservers:
+        #  - 10.43.0.10
+        #  - 1.1.1.1
+        #  - 8.8.8.8
       containers:
         - name: rust-app
           image: localhost:5000/rust-k8s:latest

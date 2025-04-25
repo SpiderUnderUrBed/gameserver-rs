@@ -8,29 +8,36 @@ use kube::{Api, Client};
 use kube::api::PostParams;
 
 use kube::Error::Api as ErrorApi;
-
+//
 pub async fn create_k8s_deployment(client: &Client) -> Result<(), Box<dyn Error>> {
     //println!("pre");
+    println!("A");
     let deployment_yaml = fs::read_to_string("/usr/src/app/src/gameserver/deployment.yaml")?;
     //println!("post");
     // let deployment_yaml = fs::read_to_string("/home/spiderunderurbed/projects/gameserver-rs/src/gameserver/deployment.yaml")?;
-
+    println!("B");
     for doc in deployment_yaml.split("---") {
+        println!("C");
         let trimmed = doc.trim();
         if trimmed.is_empty() {
             continue;
         }
 
         if let Ok(deployment) = serde_yaml::from_str::<Deployment>(trimmed) {
+            println!("D");
             let api: Api<Deployment> = Api::namespaced(client.clone(), "default");
             match api.create(&PostParams::default(), &deployment).await {
-                Ok(_) => println!("Deployment created successfully!"),
+                Ok(_) => {
+                    println!("E");
+                    println!("Deployment created successfully!")
+                },
                 Err(ErrorApi(err)) if err.code == 409 => {
                     println!("Deployment already exists, skipping...");
                 }
                 Err(e) => return Err(Box::new(e)),
             }
         } else if let Ok(service) = serde_yaml::from_str::<Service>(trimmed) {
+            println!("F");
             let api: Api<Service> = Api::namespaced(client.clone(), "default");
             match api.create(&PostParams::default(), &service).await {
                 Ok(_) => println!("Service created successfully!"),

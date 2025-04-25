@@ -18,3 +18,4 @@ EXPOSE 8080
 
 # Start with cargo-watch for hot-reloading
 CMD ["cargo", "run"]
+# -x watch
