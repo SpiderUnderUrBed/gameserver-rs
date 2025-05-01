@@ -544,6 +544,7 @@ dependencies = [
  "httpc-test",
  "k8s-openapi",
  "kube",
+ "mime_guess",
  "serde",
  "serde_json",
  "serde_yaml",

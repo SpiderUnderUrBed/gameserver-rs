@@ -12,6 +12,8 @@ spec:
       labels:
         app: gameserver
     spec:
+      nodeSelector:
+        kubernetes.io/hostname: raspberrypi
       containers:
         - name: gameserver
           image: localhost:5000/gameserver:latest
@@ -24,7 +26,7 @@ spec:
       volumes:
         - name: docker-socket
           hostPath:
-            path: /var/run/docker.sock
+            path: /var/run/docker.sock 
             type: Socket
 ---
 apiVersion: v1

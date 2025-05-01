@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <title>Axum Message Request</title>
+    <meta name="site-url" content="{{SITE_URL}}">
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -48,10 +49,11 @@
     <button onclick="sendMessage()">Send Message</button>
 
     <script>
+        const basePath = document.querySelector('meta[name="site-url"]').content.replace(/\/$/, '');
+
         async function fetchMessage() {
             try {
-                const response = await fetch('http://127.0.0.1:8080/message');
-                
+                const response = await fetch(`${basePath}/message`);
                 if (response.ok) {
                     const data = await response.json();
                     document.getElementById('message').innerText = data.message;
@@ -69,7 +71,7 @@
 
             if (message) {
                 try {
-                    const response = await fetch('http://127.0.0.1:8080/api/send', {
+                    const response = await fetch(`${basePath}/api/send`, {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',

@@ -1,42 +1,32 @@
-FROM rust:slim AS builder
+
+FROM rust:alpine AS builder
 
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    pkg-config \
-    libssl-dev \
-    ca-certificates \
-    curl \
-    build-essential \
-    musl-tools \
-    && rm -rf /var/lib/apt/lists/*
 
-
-ENV OPENSSL_DIR="/usr"
-ENV OPENSSL_INCLUDE_DIR="/usr/include"
-ENV OPENSSL_LIB_DIR="/usr/lib/x86_64-linux-gnu"
-
-
-RUN rustup target add x86_64-unknown-linux-musl
+RUN apk add --no-cache \
+    build-base \
+    openssl-dev \
+    pkgconfig \
+    perl
 
 WORKDIR /usr/src/app
 
 
-COPY src/gameserver/ .
+COPY src/gameserver/Cargo.toml src/gameserver/Cargo.lock ./
+COPY src/gameserver/src ./src/
 
 
-RUN cargo build --release --target=x86_64-unknown-linux-musl
+
+RUN cargo build --release
 
 
-FROM debian:bookworm-slim
+FROM alpine:latest
 
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache ca-certificates
 
 
-COPY --from=builder /usr/src/app/target/x86_64-unknown-linux-musl/release/myapp /usr/local/bin/myapp
+
+COPY --from=builder /usr/src/app/target/release/myapp /usr/local/bin/myapp
 
 ENTRYPOINT ["/usr/local/bin/myapp"]

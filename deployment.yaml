@@ -30,13 +30,13 @@ roleRef:
   name: pod-reader
   apiGroup: rbac.authorization.k8s.io
 ---
-# Storage Configuration
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: local-path
-provisioner: kubernetes.io/no-provisioner
-volumeBindingMode: WaitForFirstConsumer
+# # Storage Configuration
+# apiVersion: storage.k8s.io/v1
+# kind: StorageClass
+# metadata:
+#   name: local-path
+# provisioner: kubernetes.io/no-provisioner
+# volumeBindingMode: WaitForFirstConsumer
 ---
 apiVersion: v1
 kind: PersistentVolume
@@ -79,6 +79,8 @@ spec:
       labels:
         app: rust-app
     spec:
+      nodeSelector:
+        kubernetes.io/hostname: raspberrypi 
       serviceAccountName: pod-reader
       # dnsPolicy: "ClusterFirstWithHostNet"
       # dnsConfig:
@@ -92,6 +94,9 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
+          env:  
+            - name: SITE_URL 
+              value: "/gameserver-rs"  
           volumeMounts:
             - name: source-code
               mountPath: /usr/src/app
@@ -119,3 +124,21 @@ spec:
       port: 80
       targetPort: 8080
   type: NodePort
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: rust-route
+  namespace: default
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: (Host(`192.168.68.77`) && PathPrefix(`/gameserver-rs`)) || (Host(`192.168.1.22`) && PathPrefix(`/gameserver-rs`))
+      kind: Rule
+      middlewares:
+        - name: general-middleware
+      services:
+        - name: rust-service
+          port: 80
+---

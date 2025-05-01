@@ -30,7 +30,8 @@ impl std::error::Error for DockerBuildError {}
 
 
 pub async fn build_docker_image() -> Result<(), Box<dyn Error>> {
-    let docker = Docker::connect_with_local_defaults()?;
+    //    let docker = Docker::connect_with_local_defaults()?;
+    let docker = Docker::connect_with_unix("/var/run/docker.sock", 120, bollard::API_DEFAULT_VERSION)?;
     let context_path = Path::new(".");
     // 1. Create in-memory tar archive with strict filtering
     let mut archive = Vec::new();
@@ -127,6 +128,7 @@ pub async fn build_docker_image() -> Result<(), Box<dyn Error>> {
     // 3. Configure build options
     let options = BuildImageOptions {
         dockerfile: "src/gameserver/Dockerfile",
+        //t: "localhost:5000/gameserver:latest"
         t: "gameserver:latest",
         rm: true,
         forcerm: true,
@@ -162,14 +164,18 @@ pub async fn build_docker_image() -> Result<(), Box<dyn Error>> {
         docker.tag_image(
             "gameserver:latest",
             Some(TagImageOptions {
-                repo: "localhost:5000/gameserver".to_string(),
+                //repo: "gameserver".to_string(),
+                // repo: "localhost:5000/gameserver".to_string(),
+                repo: "192.168.68.77:5000/gameserver".to_string(),
                 tag: "latest".to_string(),
             }),
         ).await?;
 
         // Now push the tagged image
         docker.push_image(
-            "localhost:5000/gameserver",
+            //"gameserver",
+            //  "localhost:5000/gameserver",
+            "192.168.68.77:5000/gameserver",
             None::<PushImageOptions<String>>,
             None::<DockerCredentials>,
         )

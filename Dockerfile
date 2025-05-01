@@ -17,5 +17,5 @@ VOLUME ["/usr/src/app"]
 EXPOSE 8080
 
 # Start with cargo-watch for hot-reloading
-CMD ["cargo", "run"]
+CMD ["cargo", "run", "-x", "watch"]
 # -x watch
