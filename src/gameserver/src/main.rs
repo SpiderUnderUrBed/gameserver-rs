@@ -1,6 +1,7 @@
 use tokio::net::TcpListener;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+//
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind("0.0.0.0:8080").await?;
@@ -20,12 +21,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         break;
                     }
                     Ok(n) => {
-                        let received = String::from_utf8_lossy(&buffer[..n]);
+                        let received = String::from_utf8_lossy(&buffer[..n]).trim().to_string();
                         println!("Received from {}: {}", addr, received);
 
-                        if let Err(e) = socket.write_all(b"Hello from server!\n").await {
-                            eprintln!("Failed to write to socket: {:?}", e);
-                            break;
+                        if received == "get_message" {
+                            if let Err(e) = socket.write_all(b"Here is your message!\n").await {
+                                eprintln!("Failed to write to socket: {:?}", e);
+                                break;
+                            }
+                        } else {
+                            // Optional: handle unrecognized messages
+                            if let Err(e) = socket.write_all(b"Unrecognized command\n").await {
+                                eprintln!("Failed to write to socket: {:?}", e);
+                                break;
+                            }
                         }
                     }
                     Err(e) => {

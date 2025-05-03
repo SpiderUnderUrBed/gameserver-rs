@@ -29,10 +29,10 @@ impl std::error::Error for DockerBuildError {}
 
 
 
-pub async fn build_docker_image() -> Result<(), Box<dyn Error>> {
+pub async fn build_docker_image() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     //    let docker = Docker::connect_with_local_defaults()?;
     let docker = Docker::connect_with_unix("/var/run/docker.sock", 120, bollard::API_DEFAULT_VERSION)?;
-    let context_path = Path::new(".");
+    let context_path = Path::new("src/gameserver");
     // 1. Create in-memory tar archive with strict filtering
     let mut archive = Vec::new();
     {
@@ -127,7 +127,7 @@ pub async fn build_docker_image() -> Result<(), Box<dyn Error>> {
 
     // 3. Configure build options
     let options = BuildImageOptions {
-        dockerfile: "src/gameserver/Dockerfile",
+        dockerfile: "Dockerfile",
         //t: "localhost:5000/gameserver:latest"
         t: "gameserver:latest",
         rm: true,

@@ -1,4 +1,3 @@
-# RBAC Permissions
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -11,11 +10,14 @@ metadata:
   name: pod-reader
 rules:
 - apiGroups: [""]
-  resources: ["pods", "services"]
+  resources: ["pods", "services", "persistentvolumes", "persistentvolumeclaims"]
   verbs: ["get", "list", "watch", "update", "delete", "patch", "create"]
 - apiGroups: ["apps"]
   resources: ["deployments"]
   verbs: ["get", "list", "create", "update", "delete", "patch", "watch"]
+- apiGroups: ["storage.k8s.io"]
+  resources: ["storageclasses"]
+  verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

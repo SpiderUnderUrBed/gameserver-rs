@@ -1,32 +1,14 @@
-
-FROM rust:alpine AS builder
-
-
-
-RUN apk add --no-cache \
-    build-base \
-    openssl-dev \
-    pkgconfig \
-    perl
+FROM rust:latest
 
 WORKDIR /usr/src/app
 
+RUN cargo install cargo-watch
 
-COPY src/gameserver/Cargo.toml src/gameserver/Cargo.lock ./
-COPY src/gameserver/src ./src/
+COPY . .
 
+VOLUME ["/usr/src/app"]
 
+EXPOSE 8080
 
-RUN cargo build --release
-
-
-FROM alpine:latest
-
-
-RUN apk add --no-cache ca-certificates
-
-
-
-COPY --from=builder /usr/src/app/target/release/myapp /usr/local/bin/myapp
-
-ENTRYPOINT ["/usr/local/bin/myapp"]
+CMD ["cargo", "watch", "-x", "run"]
+#CMD ["sleep", "infinity"]

@@ -39,7 +39,7 @@ use kube::Client;
 mod kubernetes;
 mod docker;
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct MessagePayload {
     message: String,
 }
@@ -54,82 +54,88 @@ struct ResponseMessage {
     response: String,
 }
 
-static ENABLE_INITIAL_CONNECTION: bool = true;
-static FORCE_REBUILD: bool = false;
+// static ENABLE_INITIAL_CONNECTION: bool = true;
+// static FORCE_REBUILD: bool = false;
 
-static BUILD_DOCKER_IMAGE: bool = true;
-static BUILD_DEPLOYMENT: bool = true;
+// static BUILD_DOCKER_IMAGE: bool = true;
+// static BUILD_DEPLOYMENT: bool = true;
 
-async fn connect_to_server(mut rx: Receiver<Vec<u8>>) -> Result<(), Box<dyn Error>> {
+pub async fn connect_to_server(rx: Arc<Mutex<Receiver<Vec<u8>>>>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     loop {
-        let connection_result = timeout(Duration::from_secs(20), TcpStream::connect("gameserver-service:8080")).await;
+        let connection_result = attempt_connection().await;
 
         match connection_result {
-            Ok(Ok(mut stream)) => {
+            Ok(mut stream) => {
                 println!("Successfully connected to server!");
+                handle_stream(rx.clone(), &mut stream).await?;
+            }
+            Err(e) => {
+                eprintln!("Failed to connect: {}. Retrying in 2 seconds...", e);
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+    }
+}
 
-                loop {
-                    match rx.recv().await {
-                        Some(data) => {
-                            if let Err(e) = stream.write_all(&data).await {
-                                eprintln!("Failed to send data: {}", e);
-                                break;
-                            }
-                        }
-                        None => {
-                            println!("Channel closed. Reconnecting...");
-                            break;
-                        }
-                    }
+async fn attempt_connection() -> Result<TcpStream, Box<dyn std::error::Error + Send + Sync>> {
+    let connection_result = timeout(Duration::from_secs(20), TcpStream::connect("gameserver-service:8080")).await;
+
+    match connection_result {
+        Ok(Ok(stream)) => Ok(stream),
+        Ok(Err(e)) => Err(Box::new(e)),
+        Err(_) => Err(Box::new(std::io::Error::new(std::io::ErrorKind::TimedOut, "Connection attempt timed out"))),
+    }
+}
+
+async fn handle_stream(rx: Arc<Mutex<Receiver<Vec<u8>>>>, stream: &mut TcpStream) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    loop {
+        let maybe_data = {
+            let mut locked = rx.lock().await;
+            locked.recv().await
+        };
+
+        match maybe_data {
+            Some(data) => {
+                if let Err(e) = stream.write_all(&data).await {
+                    eprintln!("Failed to send data: {}", e);
+                    break Ok(());
                 }
             }
-            Ok(Err(e)) => {
-                println!("Failed to connect: {}. Retrying in 2 seconds...", e);
-                sleep(Duration::from_secs(2)).await;
-            }
-            Err(_) => {
-                println!("Connection attempt timed out. Retrying in 2 seconds...");
-                sleep(Duration::from_secs(2)).await;
+            None => {
+                println!("Channel closed. Reconnecting...");
+                break Ok(());
             }
         }
     }
 }
 
-async fn try_connect_to_server() -> Result<(), Box<dyn Error>> {
+async fn try_connect_to_server() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("Entering the connection attempt loop...");
     for _ in 0..1 {
-        if connect_to_server_inner().await.is_ok() {
-            return Ok(());
+        match attempt_connection().await {
+            Ok(mut stream) => {
+                println!("Successfully connected to server!");
+                let rx = Arc::new(Mutex::new(tokio::sync::mpsc::channel(32).1));  // example receiver
+                return handle_stream(rx, &mut stream).await;
+            }
+            Err(_) => {
+                println!("Retrying connection...");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
         }
-        println!("Retrying connection...");
-        tokio::time::sleep(Duration::from_secs(2)).await;
     }
     Err(Box::new(std::io::Error::new(std::io::ErrorKind::TimedOut, "Failed to connect")))
-}
-
-async fn connect_to_server_inner() -> Result<(), Box<dyn Error>> {
-    let client = Client::try_default().await?;
-    let pods = kube::Api::<k8s_openapi::api::core::v1::Pod>::all(client.clone());
-    let lp = kube::api::ListParams::default();
-    let pod_list = pods.list(&lp).await?;
-
-    for pod in pod_list.items {
-        if let Some(name) = pod.metadata.name {
-            println!("Pod: {}", name);
-        }
-    }
-
-    Ok(())
 }
 
 #[derive(Clone)]
 struct AppState {
     tx: Arc<Mutex<Sender<Vec<u8>>>>,
+    rx: Arc<Mutex<Receiver<Vec<u8>>>>,
     base_path: String,
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("Redo");
     let base_path = std::env::var("SITE_URL")
         .map(|s| {
@@ -149,8 +155,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     const ENABLE_INITIAL_CONNECTION: bool = true;
     const FORCE_REBUILD: bool = false;
-    const BUILD_DOCKER_IMAGE: bool = false;
-    const BUILD_DEPLOYMENT: bool = false;
+    const BUILD_DOCKER_IMAGE: bool = true;
+    const BUILD_DEPLOYMENT: bool = true;
 
     let initial_connection_result = if ENABLE_INITIAL_CONNECTION {
         println!("Trying initial connection...");
@@ -166,9 +172,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         if let Err(e) = initial_connection_result {
             eprintln!("Initial connection failed: {}, proceeding to build Docker image and deploy", e);
         }
-        //
-        //
-        //
         println!("Building!");
         if BUILD_DOCKER_IMAGE {
             docker::build_docker_image().await?;
@@ -178,15 +181,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    let (tx_raw, rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::channel(32);
+    // Create the channel and wrap sender and receiver in Arc<Mutex<...>>
+    let (tx_raw, rx_raw): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::channel(32);
     let tx = Arc::new(Mutex::new(tx_raw));
+    let rx = Arc::new(Mutex::new(rx_raw));
 
-    tokio::spawn(async move {
-        if let Err(e) = connect_to_server(rx).await {
-            eprintln!("Connection task failed: {}", e);
-        }
-    });
+    // Spawn connection handler using Arc<Mutex<Receiver<_>>>
+    {
+        let rx = Arc::clone(&rx);
+        tokio::spawn(async move {
+            if let Err(e) = connect_to_server(rx).await {
+                eprintln!("Connection task failed: {}", e);
+            }
+        });
+    }
 
+    // Send a test message
     let payload = MessagePayload {
         message: "hello world!".to_string(),
     };
@@ -194,8 +204,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     tx.lock().await.send(json_bytes).await?;
     println!("Sent JSON message through the channel");
 
+    // Build app state and router
     let state = AppState {
-        tx: tx.clone(),
+        tx: Arc::clone(&tx),
+        rx: Arc::clone(&rx),
         base_path: base_path.clone(),
     };
 
@@ -204,13 +216,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .allow_methods([Method::GET, Method::POST])
         .allow_headers(Any);
 
-        let app = Router::new()
-                .route("/message", get(get_message))
-                .route("/api/send", post(receive_message))
-                // here we pass in our Arc<AppState> so it builds the service:
-                .fallback_service(routes_static(Arc::new(state.clone().into())))
-                .layer(cors)
-                .with_state(state.clone());
+    let app = Router::new()
+        .route("/message", get(get_message))
+        .route("/api/send", post(receive_message))
+        .fallback_service(routes_static(Arc::new(state.clone().into())))
+        .layer(cors)
+        .with_state(state.clone());
 
     let app = if !base_path.is_empty() {
         Router::new().nest(&base_path, app)
@@ -316,39 +327,49 @@ fn routes_static(state: Arc<AppState>) -> Router {
 }
 
 
+async fn get_message(State(state): State<AppState>) -> Json<MessagePayload> {
+    // Create a request message
+    let request = MessagePayload {
+        message: "get_message".to_string(),
+    };
 
-async fn get_message() -> Json<MessagePayload> {
-    let addr = "gameserver-service:8080";
+    // Serialize the message to JSON bytes
+    let json_bytes = match serde_json::to_vec(&request) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("Serialization error: {}", e);
+            return Json(MessagePayload {
+                message: "Serialization failed".to_string(),
+            });
+        }
+    };
 
-    match TcpStream::connect(addr).await {
-        Ok(mut stream) => {
-            if let Err(e) = stream.write_all(b"get_message\n").await {
-                eprintln!("Failed to write to TCP server: {}", e);
-                return Json(MessagePayload {
-                    message: "Failed to write to TCP server".into(),
-                });
-            }
+    // Send the request
+    if let Err(e) = state.tx.lock().await.send(json_bytes).await {
+        eprintln!("Failed to send message through channel: {}", e);
+        return Json(MessagePayload {
+            message: "Failed to send request".to_string(),
+        });
+    }
 
-            let mut buffer = [0u8; 1024];
-            match stream.read(&mut buffer).await {
-                Ok(n) => {
-                    let response = String::from_utf8_lossy(&buffer[..n]).to_string();
-                    Json(MessagePayload { message: response })
-                }
+    // Receive the response
+    match state.rx.lock().await.recv().await {
+        Some(response_bytes) => {
+            match serde_json::from_slice::<MessagePayload>(&response_bytes) {
+                Ok(msg) => Json(msg),
                 Err(e) => {
-                    eprintln!("Failed to read from TCP server: {}", e);
+                    eprintln!("Deserialization error: {}", e);
                     Json(MessagePayload {
-                        message: "Failed to read from TCP server".into(),
+                        message: "Deserialization failed".to_string(),
                     })
                 }
             }
         }
-        Err(e) => {
-            eprintln!("Failed to connect to TCP server: {}", e);
+        None => {
+            eprintln!("No response received");
             Json(MessagePayload {
-                message: "Failed to connect to TCP server".into(),
+                message: "No response received".to_string(),
             })
         }
     }
 }
-
