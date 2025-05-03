@@ -47,9 +47,14 @@
     <h2>Send a Message to the Server:</h2>
     <input type="text" id="userMessage" placeholder="Type your message here" />
     <button onclick="sendMessage()">Send Message</button>
+    <button onclick="mainPage()">Go to main page</button>
 
     <script>
         const basePath = document.querySelector('meta[name="site-url"]').content.replace(/\/$/, '');
+
+        function mainPage(){
+            window.location.href = "./main.html";
+        }
 
         async function fetchMessage() {
             try {

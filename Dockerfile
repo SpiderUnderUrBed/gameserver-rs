@@ -16,8 +16,8 @@ VOLUME ["/usr/src/app"]
 # Expose the port the app runs on
 EXPOSE 8080
 
-# Start with cargo-watch for hot-reloading
-CMD ["cargo", "watch", "-x", "run"]
+# Start with cargo-watch for hot-reloading, ignoring the src/html directory
+CMD ["cargo", "watch", "--ignore", "src/html/*", "-x", "run"]
 # -x watch
 # cargo run .
 # cargo watch -x run
