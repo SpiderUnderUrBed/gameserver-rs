@@ -46,14 +46,14 @@
 
     <h2>Send a Message to the Server:</h2>
     <input type="text" id="userMessage" placeholder="Type your message here" />
-    <button onclick="sendMessage()">Send Message</button>
+    <button onclick="sendUserMessage()">Send Message</button>
     <button onclick="mainPage()">Go to main page</button>
 
     <script>
         const basePath = document.querySelector('meta[name="site-url"]').content.replace(/\/$/, '');
 
         function mainPage(){
-            window.location.href = "./main.html";
+            window.location.href = `${basePath}/main.html`;
         }
 
         async function fetchMessage() {
@@ -71,7 +71,35 @@
             }
         }
 
-        async function sendMessage() {
+        // async function sendMessage() {
+        //     const message = "";
+
+        //     if (message) {
+        //         try {
+        //             const response = await fetch(`${basePath}/api/send`, {
+        //                 method: 'POST',
+        //                 headers: {
+        //                     'Content-Type': 'application/json',
+        //                 },
+        //                 body: JSON.stringify({ message: message })
+        //             });
+
+        //             if (response.ok) {
+        //                 const data = await response.json();
+        //                 document.getElementById('message').innerText = `Server Response: ${data.response}`;
+        //             } else {
+        //                 document.getElementById('message').innerText = 'Failed to send message to the server.';
+        //             }
+        //         } catch (error) {
+        //             document.getElementById('message').innerText = 'Error sending message to the server.';
+        //             console.error('Error sending message:', error);
+        //         }
+        //     } else {
+        //         document.getElementById('message').innerText = 'Please enter a message to send.';
+        //     }
+        // }
+        
+        async function sendUserMessage() {
             const message = document.getElementById('userMessage').value;
 
             if (message) {

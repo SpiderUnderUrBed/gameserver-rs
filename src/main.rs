@@ -1,43 +1,41 @@
-use axum::{
-    routing::{get, post},
-    Router,
-    response::{Html, IntoResponse, Json},
-    http::{Method, StatusCode, Response},
-    extract::State,
-};
-use axum::extract::Request;
-use axum::routing::get_service;
-// use axum::body::BoxBody;
-use axum::body::{Bytes};
-use axum::body::Body;
-use http_body_util::BodyExt;
-// use std::convert::Infallible;
-// use http_body_util::combinators::BoxBody as HttpBoxBody;
-
-// type BoxBody = HttpBoxBody<Bytes, Infallible>;
-
 use std::{
-    boxed, error::Error, fs, net::SocketAddr, path::Path, sync::Arc
+    error::Error,
+    fs,
+    net::SocketAddr,
+    path::Path,
+    sync::Arc,
 };
+
+use axum::{
+    body::{Body, Bytes},
+    extract::{Request, State, ws::{WebSocketUpgrade, WebSocket, Message, Utf8Bytes}},
+    http::{Method, Response, StatusCode},
+    response::{Html, IntoResponse, Json},
+    routing::{get, post, get_service},
+    Router,
+};
+
+use futures_util::{sink::SinkExt, stream::StreamExt};
+use http_body_util::BodyExt;
+use kube::Client;
+use mime_guess::from_path;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tokio::{
     fs as tokio_fs,
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    time::{sleep, Duration, timeout},
-    sync::{mpsc::{self, Sender, Receiver}, Mutex},
+    sync::{mpsc::{self, Receiver, Sender}, Mutex},
+    time::{sleep, timeout, Duration},
 };
+// use tokio_tungstenite::{accept_async, tungstenite::protocol::Message};
 use tower_http::{
+    cors::{Any, CorsLayer},
     services::ServeDir,
-    cors::{CorsLayer, Any},
 };
-use mime_guess::from_path;
-use serde::{Serialize, Deserialize};
-use serde_json::json;
-use kube::Client;
 
-
-mod kubernetes;
 mod docker;
+mod kubernetes;
 
 #[derive(Serialize, Deserialize)]
 struct MessagePayload {
@@ -52,6 +50,11 @@ struct IncomingMessage {
 #[derive(Serialize)]
 struct ResponseMessage {
     response: String,
+}
+
+#[derive(Serialize)]
+struct List {
+    list: Vec<String>,
 }
 
 // static ENABLE_INITIAL_CONNECTION: bool = true;
@@ -132,11 +135,14 @@ struct AppState {
     tx: Arc<Mutex<Sender<Vec<u8>>>>,
     rx: Arc<Mutex<Receiver<Vec<u8>>>>,
     base_path: String,
+    client: Client
 }
+
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("Redo");
+
     let base_path = std::env::var("SITE_URL")
         .map(|s| {
             let mut s = s.trim().to_string();
@@ -166,6 +172,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok(())
     };
 
+    let client = kube::Client::try_default().await?;
     if initial_connection_result.is_ok() && !FORCE_REBUILD {
         println!("Initial connection succeeded.");
     } else {
@@ -177,16 +184,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             docker::build_docker_image().await?;
         }
         if BUILD_DEPLOYMENT {
-            kubernetes::create_k8s_deployment(&kube::Client::try_default().await?).await?;
+            kubernetes::create_k8s_deployment(&client).await?;
         }
     }
 
-    // Create the channel and wrap sender and receiver in Arc<Mutex<...>>
-    let (tx_raw, rx_raw): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::channel(32);
+    let (tx_raw, rx_raw): (mpsc::Sender<Vec<u8>>, mpsc::Receiver<Vec<u8>>) = mpsc::channel(32);
     let tx = Arc::new(Mutex::new(tx_raw));
     let rx = Arc::new(Mutex::new(rx_raw));
 
-    // Spawn connection handler using Arc<Mutex<Receiver<_>>>
     {
         let rx = Arc::clone(&rx);
         tokio::spawn(async move {
@@ -196,7 +201,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         });
     }
 
-    // Send a test message
     let payload = MessagePayload {
         message: "hello world!".to_string(),
     };
@@ -204,11 +208,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tx.lock().await.send(json_bytes).await?;
     println!("Sent JSON message through the channel");
 
-    // Build app state and router
     let state = AppState {
         tx: Arc::clone(&tx),
         rx: Arc::clone(&rx),
         base_path: base_path.clone(),
+        client,
     };
 
     let cors = CorsLayer::new()
@@ -219,6 +223,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let app = Router::new()
         .route("/message", get(get_message))
         .route("/api/send", post(receive_message))
+        .route("/api/general", post(process_general))
+        .route("/api/nodes", get(get_nodes))
+        .route("/ws", get(ws_handler))
         .fallback_service(routes_static(Arc::new(state.clone().into())))
         .layer(cors)
         .with_state(state.clone());
@@ -230,13 +237,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
 
     let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
-    let listener = TcpListener::bind(addr).await.unwrap();
+    let listener = TcpListener::bind(addr).await?;
     println!("Listening on http://{}", addr);
 
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(listener, app).await?;
 
     Ok(())
 }
+
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_socket(socket, state))
+}
+
+
+async fn handle_socket(mut socket: WebSocket, state: AppState) {
+    println!("WebSocket connected");
+    
+    if let Err(err) = socket.send(Message::Text(Utf8Bytes::from("Test"))).await {
+        eprintln!("Failed to send message: {}", err);
+    }
+
+    while let Some(Ok(msg)) = socket.recv().await {
+        if let Message::Text(text) = msg {
+            println!("Got: {:?}", text);
+
+            // You can now use `state.tx` or `state.client` here as needed
+            if socket.send(Message::Text(text)).await.is_err() {
+                break;
+            }
+        }
+    }
+
+    println!("WebSocket disconnected");
+}
+
 //
 
 // async fn index(State(state): State<AppState>) -> Html<String> {
@@ -245,6 +282,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 //     Html(replaced)
 // }
 
+pub async fn get_nodes(State(state): State<AppState>) -> impl IntoResponse {
+    println!("Sorting nodes");
+    match kubernetes::list_node_names(state.client).await {
+        Ok(nodes) => {
+            println!("{}", nodes.join(" "));
+            Json(List { list: nodes })
+        }, 
+        Err(err) => {
+            eprintln!("Error listing nodes: {}", err);
+            Json(List { list: vec![] })
+        },
+    }
+}
+//
+//
+async fn process_general(
+    State(state): State<AppState>,
+    Json(payload): Json<IncomingMessage>,
+){
+    println!("{}", payload.message);
+    match payload.message.as_str() {
+        "create_server" => {
+            let json_payload = MessagePayload {
+                message: payload.message.clone(),
+            };
+            let json_bytes = serde_json::to_vec(&json_payload).unwrap();
+        
+            if let Err(e) = state.tx.lock().await.send(json_bytes).await {
+                eprintln!("Failed to send message to TCP stream: {}", e);
+            }
+        },
+        _ => {}
+    }
+}
+//
 async fn receive_message(
     State(state): State<AppState>,
     Json(payload): Json<IncomingMessage>,

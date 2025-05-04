@@ -14,7 +14,7 @@ tokio-util = { version = "0.7", features = ["codec"] }
 bollard = { version = "0.19.0-rc1" }
 http-body-util = "0.1.3"
 anyhow = "1.0.97"
-axum = "0.8.3"
+axum = { version = "0.8", features = ["ws"] }
 httpc-test = { version = "0.1.10", features = ["colored", "colored_json"] }
 serde = { version = "1.0.219", features = ["serde_derive"] }
 serde_json = "1.0.140"

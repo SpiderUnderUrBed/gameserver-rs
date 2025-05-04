@@ -29,6 +29,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 eprintln!("Failed to write to socket: {:?}", e);
                                 break;
                             }
+                        } else if received == "create_server" {
+                            
                         } else {
                             // Optional: handle unrecognized messages
                             if let Err(e) = socket.write_all(b"Unrecognized command\n").await {

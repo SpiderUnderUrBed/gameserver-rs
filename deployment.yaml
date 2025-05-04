@@ -10,8 +10,22 @@ metadata:
   name: pod-reader
 rules:
 - apiGroups: [""]
-  resources: ["pods", "services", "persistentvolumes", "persistentvolumeclaims"]
-  verbs: ["get", "list", "watch", "update", "delete", "patch", "create"]
+  resources:
+    - "pods"
+    - "services"
+    - "persistentvolumes"
+    - "persistentvolumeclaims"
+    - "nodes"                    
+    - "pods/binding"               
+    - "pods/eviction"             
+  verbs:
+    - "get"
+    - "list"
+    - "watch"
+    - "update"
+    - "delete"
+    - "patch"
+    - "create"
 - apiGroups: ["apps"]
   resources: ["deployments"]
   verbs: ["get", "list", "create", "update", "delete", "patch", "watch"]
@@ -96,6 +110,7 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
+            - containerPort: 8081
           env:  
             - name: SITE_URL 
               value: "/gameserver-rs"  
@@ -122,10 +137,12 @@ spec:
   selector:
     app: rust-app
   ports:
-    - protocol: TCP
-      port: 80
-      targetPort: 8080
-  type: NodePort
+  - name: http
+    port: 80
+    targetPort: 8080
+  - name: ws
+    port: 81
+    targetPort: 8081
 ---
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
