@@ -42,6 +42,20 @@ struct MessagePayload {
     message: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct ConsoleMessage {
+    data: String,
+    #[serde(rename = "type")]
+    r#type: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct InnerData {
+    data: String,
+    r#type: String,
+}
+
+
 #[derive(Deserialize)]
 struct IncomingMessage {
     message: String,
@@ -63,14 +77,14 @@ struct List {
 // static BUILD_DOCKER_IMAGE: bool = true;
 // static BUILD_DEPLOYMENT: bool = true;
 
-pub async fn connect_to_server(rx: Arc<Mutex<Receiver<Vec<u8>>>>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub async fn connect_to_server(rx: Arc<Mutex<Receiver<Vec<u8>>>>, ws_tx: mpsc::Sender<String>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     loop {
         let connection_result = attempt_connection().await;
 
         match connection_result {
             Ok(mut stream) => {
                 println!("Successfully connected to server!");
-                handle_stream(rx.clone(), &mut stream).await?;
+                handle_stream(rx.clone(), &mut stream, ws_tx.clone()).await?;
             }
             Err(e) => {
                 eprintln!("Failed to connect: {}. Retrying in 2 seconds...", e);
@@ -90,36 +104,93 @@ async fn attempt_connection() -> Result<TcpStream, Box<dyn std::error::Error + S
     }
 }
 
-async fn handle_stream(rx: Arc<Mutex<Receiver<Vec<u8>>>>, stream: &mut TcpStream) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    loop {
-        let maybe_data = {
-            let mut locked = rx.lock().await;
-            locked.recv().await
-        };
+async fn handle_stream(
+    rx: Arc<Mutex<Receiver<Vec<u8>>>>,
+    stream: &mut TcpStream,
+    ws_tx: mpsc::Sender<String>, // new argument
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (mut reader, mut writer) = stream.split();
+    let mut buf = vec![0u8; 1024];
 
-        match maybe_data {
-            Some(data) => {
-                if let Err(e) = stream.write_all(&data).await {
-                    eprintln!("Failed to send data: {}", e);
-                    break Ok(());
+    loop {
+        tokio::select! {
+            // Reading from the server
+            result = reader.read(&mut buf) => {
+                match result {
+                    Ok(0) => {
+                        println!("Server closed the connection.");
+                        break Ok(());
+                    }
+                    Ok(n) => {
+                        let received_data = &buf[..n];
+                        if let Ok(text) = String::from_utf8(received_data.to_vec()) {
+                            println!("{}", text);
+                            match serde_json::from_str::<ConsoleMessage>(&text) {
+                                Ok(console_msg) => {
+                                    //ws_tx.send(console_msg.data);
+                                    // Try to manually handle the nested JSON string in `data`
+                                    if let Ok(inner_data) = serde_json::from_str::<InnerData>(&console_msg.data) {
+                                        println!("Inner data parsed: {:?}", inner_data);
+                                        if let Err(e) = ws_tx.send(serde_json::to_string(&inner_data.data)?).await {
+                                            eprintln!("Failed to send WebSocket message: {}", e);
+                                        }
+                                    } else {
+                                        println!("Data is not a valid JSON string, raw data: {}", console_msg.data);
+                                        if console_msg.r#type == "stdout" {
+                                            // Forward to websocket
+                                            if let Err(e) = ws_tx.send(console_msg.data).await {
+                                                eprintln!("Failed to send WebSocket message: {}", e);
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("Failed to parse ConsoleMessage: {}", e);
+                                }
+                            }
+                        } else {
+                            println!("Received non-UTF8 data from server: {:?}", received_data);
+                        }
+                    }                    
+                    Err(e) => {
+                        eprintln!("Error reading from server: {}", e);
+                        break Err(Box::new(e));
+                    }
                 }
             }
-            None => {
-                println!("Channel closed. Reconnecting...");
-                break Ok(());
+
+            // Sending data to the server
+            maybe_data = async {
+                let mut locked = rx.lock().await;
+                locked.recv().await
+            } => {
+                match maybe_data {
+                    Some(data) => {
+                        if let Err(e) = writer.write_all(&data).await {
+                            eprintln!("Failed to send data: {}", e);
+                            break Ok(());
+                        }
+                    }
+                    None => {
+                        println!("Channel closed. Reconnecting...");
+                        break Ok(());
+                    }
+                }
             }
         }
     }
 }
 
-async fn try_connect_to_server() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn try_connect_to_server(ws_tx: mpsc::Sender<String>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("Entering the connection attempt loop...");
     for _ in 0..1 {
         match attempt_connection().await {
             Ok(mut stream) => {
                 println!("Successfully connected to server!");
                 let rx = Arc::new(Mutex::new(tokio::sync::mpsc::channel(32).1));  // example receiver
-                return handle_stream(rx, &mut stream).await;
+                // let (ws_tx, mut ws_rx) = mpsc::channel::<String>(32);
+                return Ok(handle_stream(rx.clone(), &mut stream, ws_tx).await?);
+
             }
             Err(_) => {
                 println!("Retrying connection...");
@@ -135,9 +206,10 @@ struct AppState {
     tx: Arc<Mutex<Sender<Vec<u8>>>>,
     rx: Arc<Mutex<Receiver<Vec<u8>>>>,
     base_path: String,
-    client: Client
+    client: Client,
+    ws_tx: Arc<Mutex<Sender<String>>>,  // Added ws_tx to state
+    ws_rx: Arc<Mutex<mpsc::Receiver<String>>>
 }
-
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -164,9 +236,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     const BUILD_DOCKER_IMAGE: bool = true;
     const BUILD_DEPLOYMENT: bool = true;
 
+    let (ws_tx, ws_rx) = mpsc::channel::<String>(32); // Create both sender and receiver
     let initial_connection_result = if ENABLE_INITIAL_CONNECTION {
         println!("Trying initial connection...");
-        try_connect_to_server().await
+        try_connect_to_server(ws_tx.clone()).await
     } else {
         println!("Initial connection disabled.");
         Ok(())
@@ -194,8 +267,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     {
         let rx = Arc::clone(&rx);
+        let ws_tx_clone = ws_tx.clone();
         tokio::spawn(async move {
-            if let Err(e) = connect_to_server(rx).await {
+            if let Err(e) = connect_to_server(rx, ws_tx_clone).await {
                 eprintln!("Connection task failed: {}", e);
             }
         });
@@ -208,13 +282,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tx.lock().await.send(json_bytes).await?;
     println!("Sent JSON message through the channel");
 
+    // Initialize AppState with both ws_tx and ws_rx
     let state = AppState {
         tx: Arc::clone(&tx),
         rx: Arc::clone(&rx),
         base_path: base_path.clone(),
         client,
+        ws_tx: Arc::new(Mutex::new(ws_tx)),  // Store ws_tx in state
+        ws_rx: Arc::new(Mutex::new(ws_rx)),  // Store ws_rx in state
     };
-
+    
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods([Method::GET, Method::POST])
@@ -252,27 +329,43 @@ async fn ws_handler(
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
-
-async fn handle_socket(mut socket: WebSocket, state: AppState) {
+async fn handle_socket(socket: WebSocket, state: AppState) {
     println!("WebSocket connected");
+    let (mut sender, mut receiver) = socket.split();
+
+    // Create a task to listen for messages from the `ws_rx` channel and send them to the WebSocket
+    let ws_rx = state.ws_rx.clone();  // Clone receiver for use in task
+
+    tokio::spawn(async move {
+        while let Some(message) = ws_rx.lock().await.recv().await {
+            let message_str = message.as_str(); // Convert String to &str
+            println!("A: {}", message_str);
+            if let Err(e) = sender.send(Message::Text(message_str.into())).await {  // Send as Utf8Bytes
+                eprintln!("Error sending WebSocket message: {}", e);
+            }
+        }
+    });
     
-    if let Err(err) = socket.send(Message::Text(Utf8Bytes::from("Test"))).await {
-        eprintln!("Failed to send message: {}", err);
-    }
-
-    while let Some(Ok(msg)) = socket.recv().await {
+    // Handle incoming messages from the WebSocket client
+    while let Some(Ok(msg)) = receiver.next().await {
         if let Message::Text(text) = msg {
-            println!("Got: {:?}", text);
+            println!("Got from client: {:?}", text);
 
-            // You can now use `state.tx` or `state.client` here as needed
-            if socket.send(Message::Text(text)).await.is_err() {
-                break;
+            // Send the message to the TCP server
+            let json_payload = MessagePayload {
+                message: text.clone().to_string(),
+            };
+            if let Ok(json_bytes) = serde_json::to_vec(&json_payload) {
+                if let Err(e) = state.tx.lock().await.send(json_bytes).await {
+                    eprintln!("Failed to send message to TCP stream: {}", e);
+                }
             }
         }
     }
 
     println!("WebSocket disconnected");
 }
+
 
 //
 

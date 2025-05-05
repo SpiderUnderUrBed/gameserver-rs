@@ -15,7 +15,7 @@ body {
 }
 .console {
     width: 100vw;
-    height: 20vh;
+    height: 60vh;
     display: flex;
     flex-direction: column;
     background-color: #111111;
