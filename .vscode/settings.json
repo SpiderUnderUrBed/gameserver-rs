@@ -1,3 +1,6 @@
 {
-    "nixEnvSelector.nixFile": "${workspaceFolder}/shell.nix"
+    "nixEnvSelector.nixFile": "${workspaceFolder}/shell.nix",
+    "rust-analyzer.diagnostics.disabled": [
+        "unresolved-proc-macro"
+    ]
 }

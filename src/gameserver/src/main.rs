@@ -6,6 +6,8 @@ use tokio::sync::mpsc;
 use std::process::{Command, Stdio};
 use serde_json::{Value, json};
 
+const SERVER_DIR: &str = "server";
+
 struct Minecraft;
 
 trait Provider {
@@ -18,12 +20,14 @@ trait Provider {
 
 impl Provider for Minecraft {
     fn pre_hook(&self) -> Option<Command> {
+        // These are system-level package installations
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg("apt-get update && apt-get install -y libssl-dev pkg-config wget");
         Some(cmd)
     }
 
     fn install(&self) -> Option<Command> {
+        // System-level Java installation
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg(
             "apt-get install -y openjdk-17-jre-headless && \
@@ -40,11 +44,12 @@ impl Provider for Minecraft {
 
     fn post_hook(&self) -> Option<Command> {
         let mut cmd = Command::new("sh");
-        cmd.arg("-c").arg(
-            "mkdir -p server && \
-             wget -O server/server.jar https://piston-data.mojang.com/v1/objects/84194a2f286ef7c14ed7ce0090dba59902951553/server.jar && \
-             echo 'eula=true' > server/eula.txt",
-        );
+        cmd.arg("-c").arg(&format!(
+            "mkdir -p {SERVER_DIR} && \
+             cd {SERVER_DIR} && \
+             wget -O server.jar https://piston-data.mojang.com/v1/objects/84194a2f286ef7c14ed7ce0090dba59902951553/server.jar && \
+             echo 'eula=true' > eula.txt"
+        ));
         Some(cmd)
     }
 
@@ -55,10 +60,12 @@ impl Provider for Minecraft {
             .arg("-jar")
             .arg("server.jar")
             .arg("nogui")
-            .current_dir("server");
+            .current_dir(SERVER_DIR);
         Some(cmd)
     }
 }
+
+// ... rest of your existing code remains the same ...
 
 async fn run_command_live_output(
     cmd: Command,
@@ -184,19 +191,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let _ = cmd_tx.send("Here is your message!".to_string()).await;
                         } else if message["message"] == "create_server" {
                             if let Some(cmd) = provider.pre_hook() {
-                                if run_command_live_output(cmd, "Pre-hook".to_string(), Some(cmd_tx.clone())).await.is_err() {
+                                if run_command_live_output(cmd, "Pre-hook".to_string(), None).await.is_err() {
                                     break;
                                 }
                             }
 
                             if let Some(cmd) = provider.install() {
-                                if run_command_live_output(cmd, "Install".to_string(), Some(cmd_tx.clone())).await.is_err() {
+                                if run_command_live_output(cmd, "Install".to_string(), None).await.is_err() {
                                     break;
                                 }
                             }
 
                             if let Some(cmd) = provider.post_hook() {
-                                if run_command_live_output(cmd, "Post-hook".to_string(), Some(cmd_tx.clone())).await.is_err() {
+                                if run_command_live_output(cmd, "Post-hook".to_string(), None).await.is_err() {
                                     break;
                                 }
                             }
