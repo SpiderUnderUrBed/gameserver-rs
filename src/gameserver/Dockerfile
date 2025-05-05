@@ -10,5 +10,5 @@ VOLUME ["/usr/src/app"]
 
 EXPOSE 8080
 
-CMD ["cargo", "watch", "-x", "run"]
+CMD ["cargo", "watch", "--ignore", "server/*", "-x", "run"]
 #CMD ["sleep", "infinity"]

@@ -2,3 +2,4 @@
 ./src/gameserver/target
 /src/gameserver/target
 app.tar.gz
+/src/gameserver/server

@@ -337,7 +337,7 @@ async fn receive_message(
     })
 }
 
-
+//
 async fn serve_html_with_replacement(
     file: &str,
     state: &AppState,
@@ -423,7 +423,7 @@ async fn get_message(State(state): State<AppState>) -> Json<MessagePayload> {
             message: "Failed to send request".to_string(),
         });
     }
-
+//
     // Receive the response
     match state.rx.lock().await.recv().await {
         Some(response_bytes) => {
