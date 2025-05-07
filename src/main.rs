@@ -75,7 +75,7 @@ struct AppState {
     ws_tx: Arc<Mutex<Sender<String>>>,
     ws_rx: Arc<Mutex<Receiver<String>>>,
 }
-
+//
 async fn attempt_connection() -> Result<TcpStream, Box<dyn Error + Send + Sync>> {
     timeout(CONNECTION_TIMEOUT, TcpStream::connect("gameserver-service:8080"))
         .await?
@@ -108,6 +108,7 @@ async fn handle_server_data(
     Ok(())
 }
 
+// 2. TCP writer: flush immediately after each write
 async fn handle_stream(
     rx: Arc<Mutex<Receiver<Vec<u8>>>>,
     stream: &mut TcpStream,
@@ -117,34 +118,42 @@ async fn handle_stream(
     let mut buf = vec![0u8; 1024];
 
     loop {
+        // Acquire the lock *before* the select so the guard lives long enough:
+        let mut rx_guard = rx.lock().await;
+
         tokio::select! {
-            // Reading from the server
+            // (a) Read from server
             result = reader.read(&mut buf) => {
                 match result {
                     Ok(0) => {
                         println!("Server closed the connection.");
-                        break Ok(());
+                        return Ok(());
                     }
                     Ok(n) => handle_server_data(&buf[..n], &ws_tx).await?,
                     Err(e) => return Err(e.into()),
                 }
             }
 
-            // Sending data to the server
-            maybe_data = async {
-                rx.lock().await.recv().await
-            } => {
+            // (b) Send data to server
+            maybe_data = rx_guard.recv() => {
                 if let Some(data) = maybe_data {
-                    writer.write_all(&data).await?;
+                    writer.write_all(&data).await?;  // write (with '\n' already appended)
+                    writer.write_all(b"\n").await?;
+                    writer.flush().await?;           // ensure immediate send
                 } else {
                     println!("Channel closed. Reconnecting...");
-                    break Ok(());
+                    return Ok(());
                 }
             }
         }
+
+        // `rx_guard` is dropped here, at the end of the loop iteration,
+        // and will be re-acquired at the top of the next iteration.
     }
 }
-
+//
+//
+//
 async fn connect_to_server(
     rx: Arc<Mutex<Receiver<Vec<u8>>>>,
     ws_tx: Sender<String>,
@@ -281,26 +290,27 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
+// 1. WebSocket → TCP bridge: append `\n` when sending
 async fn handle_socket(socket: WebSocket, state: AppState) {
     println!("WebSocket connected");
     let (mut sender, mut receiver) = socket.split();
 
-    // Task to forward messages from ws_rx to WebSocket
+    // Task: forward messages from TCP → WebSocket (unchanged)
     let ws_rx = state.ws_rx.clone();
     tokio::spawn(async move {
         while let Some(message) = ws_rx.lock().await.recv().await {
-            if let Err(e) = sender.send(Message::Text(message.into())).await {
-                eprintln!("Error sending WebSocket message: {}", e);
+            if sender.send(Message::Text(message.into())).await.is_err() {
                 break;
             }
         }
     });
 
-    // Handle incoming WebSocket messages
+    // Task: handle incoming WS messages → send to TCP
     while let Some(Ok(Message::Text(text))) = receiver.next().await {
         println!("Got from client: {}", text);
         let json_payload = MessagePayload { message: text.to_string() };
-        if let Ok(json_bytes) = serde_json::to_vec(&json_payload) {
+        if let Ok(mut json_bytes) = serde_json::to_vec(&json_payload) {
+            json_bytes.push(b'\n'); // ← add newline delimiter
             if let Err(e) = state.tx.lock().await.send(json_bytes).await {
                 eprintln!("Failed to send message to TCP stream: {}", e);
             }
