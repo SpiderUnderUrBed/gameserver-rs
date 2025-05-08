@@ -287,7 +287,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             .nest(&base_path, inner_app)
             .layer(cors)
     };
-
+//
     // Start server
     let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
     println!("Listening on http://{}", addr);
@@ -347,7 +347,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
     println!("WebSocket disconnected");
 }
-
+//
+//
 
 // Modified API handlers
 async fn process_general(
@@ -401,6 +402,7 @@ async fn get_nodes(State(state): State<AppState>) -> impl IntoResponse {
         },
     }
 }
+//
 
 async fn receive_message(
     State(state): State<AppState>,
@@ -485,14 +487,14 @@ fn routes_static(state: Arc<AppState>) -> Router {
         }
     })
 }
-
+//
 
 async fn get_message(State(state): State<AppState>) -> Result<Json<MessagePayload>, (StatusCode, String)> {
     let request = MessagePayload {
         r#type: "request".to_string(),
         message: "get_message".to_string(),
     };
-
+//
     // Serialize and send the request
     match serde_json::to_vec(&request) {
         Ok(mut json_bytes) => {
