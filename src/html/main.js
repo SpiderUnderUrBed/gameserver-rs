@@ -5,21 +5,27 @@ const basePath = document.querySelector('meta[name="site-url"]').content.replace
 const consoleInput = document.querySelector(".console-input");
 const historyContainer = document.querySelector(".console-history");
 
-async function addResult(inputAsString, output, addInput, addOutput){
-    const outputAsString = output instanceof Array ? `[${output.join(",")}]`: output.toString();
+async function addResult(inputAsString, output, addInput, addOutput) {
+    const outputAsString = output instanceof Array ? `[${output.join(",")}]` : output.toString();
     console.log(inputAsString, outputAsString);
+
+    const isAtBottom = historyContainer.scrollHeight - historyContainer.scrollTop <= historyContainer.clientHeight + 5;
 
     if (addInput) {
         const inputLogElement = document.createElement("div");
         inputLogElement.classList.add("console-input-log");
         inputLogElement.textContent = `> ${inputAsString}`;
-        historyContainer.append(inputLogElement)
+        historyContainer.append(inputLogElement);
     }
-    if (addOutput){
+    if (addOutput) {
         const outputLogElement = document.createElement("div");
         outputLogElement.classList.add("console-output-log");
         outputLogElement.textContent = outputAsString;
         historyContainer.append(outputLogElement);
+    }
+
+    if (isAtBottom) {
+        historyContainer.scrollTop = historyContainer.scrollHeight;
     }
 }
 
@@ -28,30 +34,35 @@ async function websocket() {
 
     ws.addEventListener("open", () => {
         console.log("We are connected");
-
-        ws.send("Hey, how is it going?");
     });
 
     ws.addEventListener("message", e => {
-        console.log(e.data);
-        addResult("", e.data, false, true);
+        try {
+            const data = JSON.parse(e.data);
+            addResult("", data.message, false, true);
+        } catch {
+            addResult("", e.data, false, true);
+        }
     });
 }
 websocket()
 
 consoleInput.addEventListener("keyup", e => {
     const code = consoleInput.value.trim();
-    if (code.length === 0){
-        return;
-    }
-    if (e.key === "Enter"){
-        try {
-            addResult(code, "test", true, true);
-            //addResult(code, eval(code));
-        } catch (err) {
-            addResult(code, err, true, true);
-        }
+    if (code.length === 0) return;
+    
+    if (e.key === "Enter") {
+        const ws = new WebSocket(`${basePath}/ws`);
+        
+        ws.onopen = () => {
+            ws.send(JSON.stringify({
+                type: "console",
+                message: code
+            }));
+            ws.close();
+        };
 
+        addResult(code, "", true, false);
         consoleInput.value = "";
         historyContainer.scrollTop = historyContainer.scrollHeight;
     }
@@ -73,12 +84,6 @@ async function fetchNodes() {
                 button.onclick = () => alert(`Node clicked: ${node}`);
                 nodes_div.appendChild(button);
             });
-
-            // Log all node buttons
-            console.log("All nodes:");
-            document.querySelectorAll(".nodes button").forEach((btn, index) => {
-                console.log(`Node ${index + 1}:`, btn.textContent);
-            });
         } else {
             document.getElementById('message').innerText = 'Failed to get nodes from the server.';
         }
@@ -90,7 +95,39 @@ async function fetchNodes() {
 fetchNodes()
 
 async function createDefaultServer() {
-    const message = "create_server";
+    try {
+        const response = await fetch(`${basePath}/api/general`, {  // Changed from /api/send to /api/general
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ 
+                message: "create_server",
+                type: "command"  // Make sure this matches your backend
+            })
+        });
+
+        if (response.ok) {
+            const data = await response.json();
+            document.getElementById('message').innerText = `Server Response: ${data.response}`;
+        } else {
+            const error = await response.json();
+            document.getElementById('message').innerText = `Failed: ${error}`;
+        }
+    } catch (error) {
+        document.getElementById('message').innerText = `Error: ${error.message}`;
+        console.error('Error:', error);
+    }
+}
+
+async function sendMessage() {
+    const messageInput = document.getElementById('userMessage');
+    const message = messageInput.value.trim();
+    
+    if (!message) {
+        document.getElementById('message').innerText = 'Please enter a message';
+        return;
+    }
 
     try {
         const response = await fetch(`${basePath}/api/send`, {
@@ -98,18 +135,20 @@ async function createDefaultServer() {
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ message })
+            body: JSON.stringify({
+                message: message,
+                type: "message"  // Consistent type
+            })
         });
 
+        const result = await response.json();
         if (response.ok) {
-            const data = await response.json();
-            document.getElementById('message').innerText = `Server Response: ${data.response}`;
+            document.getElementById('message').innerText = result.response;
         } else {
-            document.getElementById('message').innerText = 'Failed to send message to the server.';
+            document.getElementById('message').innerText = `Error: ${result}`;
         }
     } catch (error) {
-        document.getElementById('message').innerText = 'Error sending message to the server.';
-        console.error('Error sending message:', error);
+        document.getElementById('message').innerText = `Network error: ${error.message}`;
     }
 }
 
@@ -129,32 +168,4 @@ for (let i = 1; i <= 5; i++) {
 
     div.appendChild(btn);
     container.appendChild(div);
-}
-
-async function sendMessage() {
-    const message = document.getElementById('userMessage').value;
-
-    if (message) {
-        try {
-            const response = await fetch(`${basePath}/api/send`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ message })
-            });
-
-            if (response.ok) {
-                const data = await response.json();
-                document.getElementById('message').innerText = `Server Response: ${data.response}`;
-            } else {
-                document.getElementById('message').innerText = 'Failed to send message to the server.';
-            }
-        } catch (error) {
-            document.getElementById('message').innerText = 'Error sending message to the server.';
-            console.error('Error sending message:', error);
-        }
-    } else {
-        document.getElementById('message').innerText = 'Please enter a message to send.';
-    }
 }

@@ -34,6 +34,7 @@ const CHANNEL_BUFFER_SIZE: usize = 32;
 // Message structures
 #[derive(Debug, Serialize, Deserialize)]
 struct MessagePayload {
+    r#type: String,
     message: String,
 }
 
@@ -54,6 +55,8 @@ struct InnerData {
 #[derive(Debug, Deserialize)]
 struct IncomingMessage {
     message: String,
+    #[serde(rename = "type")]
+    message_type: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -107,8 +110,6 @@ async fn handle_server_data(
     }
     Ok(())
 }
-
-// 2. TCP writer: flush immediately after each write
 async fn handle_stream(
     rx: Arc<Mutex<Receiver<Vec<u8>>>>,
     stream: &mut TcpStream,
@@ -118,39 +119,48 @@ async fn handle_stream(
     let mut buf = vec![0u8; 1024];
 
     loop {
-        // Acquire the lock *before* the select so the guard lives long enough:
         let mut rx_guard = rx.lock().await;
 
         tokio::select! {
-            // (a) Read from server
             result = reader.read(&mut buf) => {
                 match result {
                     Ok(0) => {
                         println!("Server closed the connection.");
                         return Ok(());
                     }
-                    Ok(n) => handle_server_data(&buf[..n], &ws_tx).await?,
+                    Ok(n) => {
+                        if let Err(e) = handle_server_data(&buf[..n], &ws_tx).await {
+                            eprintln!("Error handling server data: {}", e);
+                            return Err(e);
+                        }
+                    }
                     Err(e) => return Err(e.into()),
                 }
             }
 
-            // (b) Send data to server
             maybe_data = rx_guard.recv() => {
                 if let Some(data) = maybe_data {
-                    writer.write_all(&data).await?;  // write (with '\n' already appended)
-                    writer.write_all(b"\n").await?;
-                    writer.flush().await?;           // ensure immediate send
+                    if let Err(e) = writer.write_all(&data).await {
+                        eprintln!("Failed to write to TCP stream: {}", e);
+                        return Err(e.into());
+                    }
+                    if let Err(e) = writer.write_all(b"\n").await {
+                        eprintln!("Failed to write newline: {}", e);
+                        return Err(e.into());
+                    }
+                    if let Err(e) = writer.flush().await {
+                        eprintln!("Failed to flush: {}", e);
+                        return Err(e.into());
+                    }
                 } else {
                     println!("Channel closed. Reconnecting...");
                     return Ok(());
                 }
             }
         }
-
-        // `rx_guard` is dropped here, at the end of the loop iteration,
-        // and will be re-acquired at the top of the next iteration.
     }
 }
+
 //
 //
 //
@@ -290,12 +300,11 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
-// 1. WebSocket → TCP bridge: append `\n` when sending
 async fn handle_socket(socket: WebSocket, state: AppState) {
     println!("WebSocket connected");
     let (mut sender, mut receiver) = socket.split();
 
-    // Task: forward messages from TCP → WebSocket (unchanged)
+    // Task: forward messages from TCP → WebSocket
     let ws_rx = state.ws_rx.clone();
     tokio::spawn(async move {
         while let Some(message) = ws_rx.lock().await.recv().await {
@@ -306,21 +315,80 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     });
 
     // Task: handle incoming WS messages → send to TCP
-    while let Some(Ok(Message::Text(text))) = receiver.next().await {
-        println!("Got from client: {}", text);
-        let json_payload = MessagePayload { message: text.to_string() };
-        if let Ok(mut json_bytes) = serde_json::to_vec(&json_payload) {
-            json_bytes.push(b'\n'); // ← add newline delimiter
-            if let Err(e) = state.tx.lock().await.send(json_bytes).await {
-                eprintln!("Failed to send message to TCP stream: {}", e);
+    while let Some(Ok(message)) = receiver.next().await {
+        match message {
+            Message::Text(text) => {
+                println!("Got from client: {}", text);
+                let payload = match serde_json::from_str::<MessagePayload>(&text) {
+                    Ok(payload) => payload,
+                    Err(_) => {
+                        // Fallback for plain console input
+                        MessagePayload {
+                            r#type: "console".to_string(),
+                            message: text.to_string(),
+                        }
+                    }
+                };
+
+                if let Ok(mut json_bytes) = serde_json::to_vec(&payload) {
+                    json_bytes.push(b'\n');
+                    if let Err(e) = state.tx.lock().await.send(json_bytes).await {
+                        eprintln!("Failed to send message to TCP stream: {}", e);
+                    }
+                }
             }
+            Message::Close(_) => break,
+            _ => {} // Ignore other message types
         }
     }
 
     println!("WebSocket disconnected");
 }
 
-// API endpoints
+
+// Modified API handlers
+async fn process_general(
+    State(state): State<AppState>,
+    Json(payload): Json<IncomingMessage>,
+) -> Result<Json<ResponseMessage>, (StatusCode, String)> {
+    println!("Processing general message: {:?}", payload);
+    
+    let json_payload = MessagePayload {
+        r#type: payload.message_type.clone(),
+        message: payload.message.clone(),
+    };
+
+    // Serialize and send to TCP server
+    match serde_json::to_vec(&json_payload) {
+        Ok(mut json_bytes) => {
+            json_bytes.push(b'\n');
+            
+            // Get a clone of the sender channel
+            let tx = state.tx.clone();
+            let tx_guard = tx.lock().await;
+            
+            match tx_guard.send(json_bytes).await {
+                Ok(_) => {
+                    println!("Successfully forwarded message to TCP server");
+                    Ok(Json(ResponseMessage {
+                        response: format!("Processed: {}", payload.message),
+                    }))
+                },
+                Err(e) => {
+                    eprintln!("Failed to send message to TCP channel: {}", e);
+                    Err((StatusCode::INTERNAL_SERVER_ERROR,
+                        "Failed to forward message to server".to_string()))
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Serialization error: {}", e);
+            Err((StatusCode::BAD_REQUEST,
+                "Invalid message format".to_string()))
+        }
+    }
+}
+
 async fn get_nodes(State(state): State<AppState>) -> impl IntoResponse {
     match kubernetes::list_node_names(state.client).await {
         Ok(nodes) => Json(List { list: nodes }),
@@ -331,31 +399,40 @@ async fn get_nodes(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
-async fn process_general(State(state): State<AppState>, Json(payload): Json<IncomingMessage>) {
-    if payload.message == "create_server" {
-        let json_payload = MessagePayload { message: payload.message };
-        if let Ok(json_bytes) = serde_json::to_vec(&json_payload) {
-            if let Err(e) = state.tx.lock().await.send(json_bytes).await {
-                eprintln!("Failed to send message: {}", e);
-            }
-        }
-    }
-}
-
 async fn receive_message(
     State(state): State<AppState>,
     Json(payload): Json<IncomingMessage>,
-) -> Json<ResponseMessage> {
-    let json_payload = MessagePayload { message: payload.message.clone() };
-    if let Ok(json_bytes) = serde_json::to_vec(&json_payload) {
-        if let Err(e) = state.tx.lock().await.send(json_bytes).await {
-            eprintln!("Failed to send message: {}", e);
+) -> Result<Json<ResponseMessage>, (StatusCode, String)> {
+    // Create the payload to forward to TCP server
+    let json_payload = MessagePayload {
+        r#type: payload.message_type.clone(),
+        message: payload.message.clone(),
+    };
+
+    // Serialize and send to TCP server
+    match serde_json::to_vec(&json_payload) {
+        Ok(mut json_bytes) => {
+            json_bytes.push(b'\n'); // Add newline delimiter
+            
+            // Acquire lock and send the message
+            let tx_guard = state.tx.lock().await;
+            match tx_guard.send(json_bytes).await {
+                Ok(_) => Ok(Json(ResponseMessage {
+                    response: format!("Successfully sent message: {}", payload.message),
+                })),
+                Err(e) => {
+                    eprintln!("Failed to send message to TCP channel: {}", e);
+                    Err((StatusCode::INTERNAL_SERVER_ERROR, 
+                        "Failed to forward message to server".to_string()))
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Serialization error: {}", e);
+            Err((StatusCode::BAD_REQUEST, 
+                "Invalid message format".to_string()))
         }
     }
-
-    Json(ResponseMessage {
-        response: format!("You sent: {}", payload.message),
-    })
 }
 
 // Static file serving
@@ -406,40 +483,49 @@ fn routes_static(state: Arc<AppState>) -> Router {
     })
 }
 
-async fn get_message(State(state): State<AppState>) -> Json<MessagePayload> {
+
+async fn get_message(State(state): State<AppState>) -> Result<Json<MessagePayload>, (StatusCode, String)> {
     let request = MessagePayload {
+        r#type: "request".to_string(),
         message: "get_message".to_string(),
     };
 
-    let json_bytes = match serde_json::to_vec(&request) {
-        Ok(bytes) => bytes,
+    // Serialize and send the request
+    match serde_json::to_vec(&request) {
+        Ok(mut json_bytes) => {
+            json_bytes.push(b'\n');
+            
+            let tx_guard = state.tx.lock().await;
+            if let Err(e) = tx_guard.send(json_bytes).await {
+                eprintln!("Failed to send request: {}", e);
+                return Err((StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to send request to server".to_string()));
+            }
+
+            // Wait for response
+            let mut rx_guard = state.rx.lock().await;
+            match rx_guard.recv().await {
+                Some(response_bytes) => {
+                    match serde_json::from_slice::<MessagePayload>(&response_bytes) {
+                        Ok(msg) => Ok(Json(msg)),
+                        Err(e) => {
+                            eprintln!("Deserialization error: {}", e);
+                            Err((StatusCode::INTERNAL_SERVER_ERROR,
+                                "Failed to parse server response".to_string()))
+                        }
+                    }
+                },
+                None => {
+                    eprintln!("No response received");
+                    Err((StatusCode::INTERNAL_SERVER_ERROR,
+                        "No response from server".to_string()))
+                }
+            }
+        }
         Err(e) => {
             eprintln!("Serialization error: {}", e);
-            return Json(MessagePayload {
-                message: "Serialization failed".to_string(),
-            });
-        }
-    };
-
-    if let Err(e) = state.tx.lock().await.send(json_bytes).await {
-        eprintln!("Failed to send message: {}", e);
-    }
-
-    match state.rx.lock().await.recv().await {
-        Some(response_bytes) => match serde_json::from_slice::<MessagePayload>(&response_bytes) {
-            Ok(msg) => Json(msg),
-            Err(e) => {
-                eprintln!("Deserialization error: {}", e);
-                Json(MessagePayload {
-                    message: "Deserialization failed".to_string(),
-                })
-            }
-        },
-        None => {
-            eprintln!("No response received");
-            Json(MessagePayload {
-                message: "No response received".to_string(),
-            })
+            Err((StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to serialize request".to_string()))
         }
     }
 }
