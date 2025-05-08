@@ -62,7 +62,7 @@ impl Provider for Minecraft {
         Some(cmd)
     }
 }
-
+//
 fn get_providier(provider: String) -> Option<impl Provider> {
     match provider.as_str() {
         "minecraft" => Some(Minecraft),
@@ -76,14 +76,28 @@ async fn run_command_live_output(
     sender: Option<mpsc::Sender<String>>,
     stdin_arc: Option<Arc<Mutex<Option<ChildStdin>>>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    println!("[DEBUG] Preparing to run command: {:?}", cmd);
+
     let mut tokio_cmd = TokioCommand::from(cmd);
     tokio_cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::piped());
 
-    let mut child = tokio_cmd.spawn()?;
+    println!("[DEBUG] Spawning command...");
+    let mut child = match tokio_cmd.spawn() {
+        Ok(child) => {
+            println!("[DEBUG] Command spawned successfully");
+            child
+        }
+        Err(e) => {
+            eprintln!("[ERROR] Failed to spawn command: {}", e);
+            return Err(Box::new(e));
+        }
+    };
 
     if let Some(stdin) = stdin_arc {
+        println!("[DEBUG] Setting up stdin...");
         let child_stdin = child.stdin.take();
         *stdin.lock().await = child_stdin;
+        println!("[DEBUG] Stdin set");
     }
 
     let stdout = child.stdout.take();
@@ -94,19 +108,26 @@ async fn run_command_live_output(
     let stdout_label = label.clone();
     let stderr_label = label;
 
+    println!("[DEBUG] Starting stdout and stderr handlers");
+
     let stdout_handle = tokio::spawn(async move {
         if let Some(stdout) = stdout {
             let mut reader = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = reader.next_line().await {
-                println!("{}", line);
+                println!("[STDOUT DEBUG] {}", line);
                 let output = json!({
                     "type": "stdout",
                     "data": format!("[{}] {}", stdout_label, line)
                 });
                 if let Some(sender) = &stdout_sender {
-                    let _ = sender.send(output.to_string()).await;
+                    if let Err(e) = sender.send(output.to_string()).await {
+                        eprintln!("[ERROR] Failed to send stdout line: {}", e);
+                    }
                 }
             }
+            println!("[DEBUG] Stdout stream ended");
+        } else {
+            println!("[DEBUG] No stdout to read");
         }
     });
 
@@ -114,24 +135,38 @@ async fn run_command_live_output(
         if let Some(stderr) = stderr {
             let mut reader = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = reader.next_line().await {
-                println!("{}", line);
+                println!("[STDERR DEBUG] {}", line);
                 let output = json!({
                     "type": "stderr",
                     "data": format!("[{}] {}", stderr_label, line)
                 });
                 if let Some(sender) = &stderr_sender {
-                    let _ = sender.send(output.to_string()).await;
+                    if let Err(e) = sender.send(output.to_string()).await {
+                        eprintln!("[ERROR] Failed to send stderr line: {}", e);
+                    }
                 }
             }
+            println!("[DEBUG] Stderr stream ended");
+        } else {
+            println!("[DEBUG] No stderr to read");
         }
     });
 
-    let _ = child.wait().await?;
+    println!("[DEBUG] Waiting for child process to finish...");
+    let status = child.wait().await?;
+    println!("[DEBUG] Child process exited with: {}", status);
+
     let _ = stdout_handle.await;
     let _ = stderr_handle.await;
 
+    println!("[DEBUG] Output handlers finished");
+
     Ok(())
 }
+//
+//
+//
+//
 //
 
 #[tokio::main]
@@ -198,29 +233,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     } else if message["message"] == "create_server" {
                                         println!("Creating Minecraft server...");
                                         let minecraft = get_providier("minecraft".to_string()).unwrap();
-                                        
-                                        if let Some(cmd) = minecraft.pre_hook() {
-                                            if run_command_live_output(cmd, "Pre-hook".into(), None, None).await.is_err() {
-                                                break;
+                                    
+                                        if let Some(mut cmd) = minecraft.pre_hook() {
+                                            println!("Running pre-hook...");
+                                            if let Err(e) = run_command_live_output(cmd, "Pre-hook".into(), Some(cmd_tx.clone()), None).await {
+                                                eprintln!("Pre-hook failed: {}", e);
                                             }
+                                        } else {
+                                            println!("No pre-hook command defined");
                                         }
-
-                                        if let Some(cmd) = minecraft.install() {
-                                            if run_command_live_output(cmd, "Install".into(), None, None).await.is_err() {
-                                                break;
+                                    
+                                        if let Some(mut cmd) = minecraft.install() {
+                                            println!("Running install...");
+                                            if let Err(e) = run_command_live_output(cmd, "Install".into(), Some(cmd_tx.clone()), None).await {
+                                                eprintln!("Install failed: {}", e);
                                             }
+                                        } else {
+                                            println!("No install command defined");
                                         }
-
-                                        if let Some(cmd) = minecraft.post_hook() {
-                                            if run_command_live_output(cmd, "Post-hook".into(), None, None).await.is_err() {
-                                                break;
+                                    
+                                        if let Some(mut cmd) = minecraft.post_hook() {
+                                            println!("Running post-hook...");
+                                            if let Err(e) = run_command_live_output(cmd, "Post-hook".into(), Some(cmd_tx.clone()), None).await {
+                                                eprintln!("Post-hook failed: {}", e);
                                             }
+                                        } else {
+                                            println!("No post-hook command defined");
                                         }
-
-                                        if let Some(cmd) = minecraft.start() {
-                                            if run_command_live_output(cmd, "Server".into(), Some(cmd_tx.clone()), Some(stdin_clone.clone())).await.is_err() {
-                                                break;
+                                    
+                                        if let Some(mut cmd) = minecraft.start() {
+                                            println!("Starting Minecraft server...");
+                                            if let Err(e) = run_command_live_output(cmd, "Server".into(), Some(cmd_tx.clone()), Some(stdin_clone.clone())).await {
+                                                eprintln!("Server start failed: {}", e);
                                             }
+                                        } else {
+                                            println!("No start command defined");
                                         }
                                     } else {
                                         let _ = cmd_tx.send("Unrecognized command".into()).await;

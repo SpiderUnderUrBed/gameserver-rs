@@ -68,7 +68,7 @@ struct ResponseMessage {
 struct List {
     list: Vec<String>,
 }
-
+//
 #[derive(Clone)]
 struct AppState {
     tx: Arc<Mutex<Sender<Vec<u8>>>>,
@@ -90,7 +90,7 @@ async fn handle_server_data(
     ws_tx: &Sender<String>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     if let Ok(text) = String::from_utf8(data.to_vec()) {
-        println!("{}", text);
+        println!("data: {}", text);
         
         match serde_json::from_str::<ConsoleMessage>(&text) {
             Ok(console_msg) => {
@@ -110,6 +110,7 @@ async fn handle_server_data(
     }
     Ok(())
 }
+//
 async fn handle_stream(
     rx: Arc<Mutex<Receiver<Vec<u8>>>>,
     stream: &mut TcpStream,
@@ -294,7 +295,8 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     Ok(())
 }
-
+//
+//
 // WebSocket handler
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_socket(socket, state))
@@ -308,6 +310,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     let ws_rx = state.ws_rx.clone();
     tokio::spawn(async move {
         while let Some(message) = ws_rx.lock().await.recv().await {
+            println!("data2: {}", message);
             if sender.send(Message::Text(message.into())).await.is_err() {
                 break;
             }

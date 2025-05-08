@@ -63,9 +63,13 @@ pub async fn build_docker_image() -> Result<(), Box<dyn std::error::Error + Send
         if relative_path.starts_with("src/gameserver/target") {
             continue;
         }
-        if relative_path.starts_with("src/gameserver/server") {
+        if relative_path.components().next()
+            .map(|c| c.as_os_str() == "server")
+            .unwrap_or(false)
+        {
             continue;
         }
+ 
     
         // Optionally skip hidden files/directories if needed:
         if let Some(relative_str) = relative_path.to_str() {

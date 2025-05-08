@@ -6,7 +6,12 @@ const consoleInput = document.querySelector(".console-input");
 const historyContainer = document.querySelector(".console-history");
 
 async function addResult(inputAsString, output, addInput, addOutput) {
-    const outputAsString = output instanceof Array ? `[${output.join(",")}]` : output.toString();
+    const outputAsString = 
+        output === undefined ? "undefined" :
+        output === null ? "null" :
+        Array.isArray(output) ? `[${output.join(",")}]` :
+        output.toString();
+
     console.log(inputAsString, outputAsString);
 
     const isAtBottom = historyContainer.scrollHeight - historyContainer.scrollTop <= historyContainer.clientHeight + 5;
@@ -31,15 +36,18 @@ async function addResult(inputAsString, output, addInput, addOutput) {
 
 async function websocket() {
     const ws = new WebSocket(`${basePath}/ws`);
-
+    // console.log("Raw WebSocket message:", e.data);
+    
     ws.addEventListener("open", () => {
         console.log("We are connected");
     });
 
     ws.addEventListener("message", e => {
+         console.log("Raw WebSocket message:", e.data);
         try {
             const data = JSON.parse(e.data);
-            addResult("", data.message, false, true);
+            const message = data.message ?? JSON.stringify(data); // fallback to whole object
+            addResult("", message, false, true);
         } catch {
             addResult("", e.data, false, true);
         }
