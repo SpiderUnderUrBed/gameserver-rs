@@ -66,7 +66,6 @@ async fn run_command_live_output(
         *stdin_slot.lock().await = child_stdin;
     }
 
-    // STDOUT handler
     if let Some(stdout) = child.stdout.take() {
         let tx = sender.clone();
         let lbl = label.clone();
@@ -80,7 +79,7 @@ async fn run_command_live_output(
             }
         });
     }
-    // STDERR handler
+
     if let Some(stderr) = child.stderr.take() {
         let tx = sender.clone();
         let lbl = label.clone();
@@ -117,7 +116,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let (out_tx, mut out_rx) = mpsc::channel::<String>(32);
             let (cmd_tx, mut cmd_rx) = mpsc::channel::<String>(32);
 
-            // writer loop
             tokio::spawn(async move {
                 let mut writer = write_half;
                 loop {
@@ -144,7 +142,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let line = buf.trim_end();
 
-                // Detect JSON or raw console command
                 if line.starts_with('{') {
                     match serde_json::from_str::<Value>(line) {
                         Ok(val) => {
@@ -200,7 +197,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 } else if !line.is_empty() {
-                    // Treat raw text as console command
                     let mut guard = stdin_ref.lock().await;
                     if let Some(stdin) = guard.as_mut() {
                         let _ = stdin.write_all(format!("{}\n", line).as_bytes()).await;
