@@ -27,12 +27,10 @@ use tower_http::{
 mod docker;
 mod kubernetes;
 
-// Constants
 const CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(2);
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(20);
 const CHANNEL_BUFFER_SIZE: usize = 32;
 
-// Message structures
 #[derive(Debug, Serialize, Deserialize)]
 struct MessagePayload {
     r#type: String,
@@ -204,7 +202,6 @@ async fn try_initial_connection(
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     println!("Starting server...");
 
-    // Configuration
     let base_path = std::env::var("SITE_URL")
         .map(|s| {
             let mut s = s.trim().to_string();
@@ -225,12 +222,10 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     const BUILD_DOCKER_IMAGE: bool = true;
     const BUILD_DEPLOYMENT: bool = true;
 
-    // Initialize channels and Kubernetes client
     let (ws_tx, ws_rx) = mpsc::channel::<String>(CHANNEL_BUFFER_SIZE);
     let (tx, rx) = mpsc::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
     let client = Client::try_default().await?;
 
-    // Initial connection attempt
     if ENABLE_INITIAL_CONNECTION {
         println!("Trying initial connection...");
         if try_initial_connection(ws_tx.clone()).await.is_err() || FORCE_REBUILD {
@@ -244,9 +239,8 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         }
     }
 
-    // Start persistent connection task
     let rx_arc = Arc::new(Mutex::new(rx));
-    let rx_arc_clone = Arc::clone(&rx_arc); // <- clone before moving into task
+    let rx_arc_clone = Arc::clone(&rx_arc); 
     let ws_tx_clone = ws_tx.clone();
     
     tokio::spawn(async move {
@@ -257,21 +251,18 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     
     let state = AppState {
         tx: Arc::new(Mutex::new(tx)),
-        rx: rx_arc, // original one is still here
+        rx: rx_arc, 
         base_path: base_path.clone(),
         client,
         ws_tx: Arc::new(Mutex::new(ws_tx)),
         ws_rx: Arc::new(Mutex::new(ws_rx)),
     };
     
-
-    // Configure CORS
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods([Method::GET, Method::POST])
         .allow_headers(Any);
 
-    // Set up routes
     let inner_app = Router::new()
     .route("/message", get(get_message))
     .route("/api/send", post(receive_message))
@@ -288,8 +279,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             .nest(&base_path, inner_app)
             .layer(cors)
     };
-//
-    // Start server
+
     let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
     println!("Listening on http://{}", addr);
     axum::serve(TcpListener::bind(addr).await?, app).await?;
@@ -298,7 +288,6 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 }
 //
 //
-// WebSocket handler
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
@@ -307,7 +296,6 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     println!("WebSocket connected");
     let (mut sender, mut receiver) = socket.split();
 
-    // Task: forward messages from TCP → WebSocket
     let ws_rx = state.ws_rx.clone();
     tokio::spawn(async move {
         while let Some(message) = ws_rx.lock().await.recv().await {
@@ -318,7 +306,6 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         }
     });
 
-    // Task: handle incoming WS messages → send to TCP
     while let Some(Ok(message)) = receiver.next().await {
         match message {
             Message::Text(text) => {
@@ -326,7 +313,6 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 let payload = match serde_json::from_str::<MessagePayload>(&text) {
                     Ok(payload) => payload,
                     Err(_) => {
-                        // Fallback for plain console input
                         MessagePayload {
                             r#type: "console".to_string(),
                             message: text.to_string(),
@@ -342,7 +328,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 }
             }
             Message::Close(_) => break,
-            _ => {} // Ignore other message types
+            _ => {} 
         }
     }
 
@@ -351,7 +337,6 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 //
 //
 
-// Modified API handlers
 async fn process_general(
     State(state): State<AppState>,
     Json(payload): Json<IncomingMessage>,
@@ -363,12 +348,10 @@ async fn process_general(
         message: payload.message.clone(),
     };
 
-    // Serialize and send to TCP server
     match serde_json::to_vec(&json_payload) {
         Ok(mut json_bytes) => {
             json_bytes.push(b'\n');
-            
-            // Get a clone of the sender channel
+ 
             let tx = state.tx.clone();
             let tx_guard = tx.lock().await;
             
@@ -409,18 +392,15 @@ async fn receive_message(
     State(state): State<AppState>,
     Json(payload): Json<IncomingMessage>,
 ) -> Result<Json<ResponseMessage>, (StatusCode, String)> {
-    // Create the payload to forward to TCP server
     let json_payload = MessagePayload {
         r#type: payload.message_type.clone(),
         message: payload.message.clone(),
     };
 
-    // Serialize and send to TCP server
     match serde_json::to_vec(&json_payload) {
         Ok(mut json_bytes) => {
-            json_bytes.push(b'\n'); // Add newline delimiter
+            json_bytes.push(b'\n'); 
             
-            // Acquire lock and send the message
             let tx_guard = state.tx.lock().await;
             match tx_guard.send(json_bytes).await {
                 Ok(_) => Ok(Json(ResponseMessage {
@@ -441,7 +421,6 @@ async fn receive_message(
     }
 }
 
-// Static file serving
 async fn serve_html_with_replacement(
     file: &str,
     state: &AppState,
@@ -495,8 +474,8 @@ async fn get_message(State(state): State<AppState>) -> Result<Json<MessagePayloa
         r#type: "request".to_string(),
         message: "get_message".to_string(),
     };
-//
-    // Serialize and send the request
+    //
+
     match serde_json::to_vec(&request) {
         Ok(mut json_bytes) => {
             json_bytes.push(b'\n');
@@ -508,7 +487,6 @@ async fn get_message(State(state): State<AppState>) -> Result<Json<MessagePayloa
                     "Failed to send request to server".to_string()));
             }
 
-            // Wait for response
             let mut rx_guard = state.rx.lock().await;
             match rx_guard.recv().await {
                 Some(response_bytes) => {
