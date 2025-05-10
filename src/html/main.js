@@ -102,6 +102,32 @@ async function fetchNodes() {
 }
 fetchNodes()
 
+async function startServer(){
+    try {
+        const response = await fetch(`${basePath}/api/general`, {  // Changed from /api/send to /api/general
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ 
+                message: "start_server",
+                type: "command"  
+            })
+        });
+
+        if (response.ok) {
+            const data = await response.json();
+            document.getElementById('message').innerText = `Server Response: ${data.response}`;
+        } else {
+            const error = await response.json();
+            document.getElementById('message').innerText = `Failed: ${error}`;
+        }
+    } catch (error) {
+        document.getElementById('message').innerText = `Error: ${error.message}`;
+        console.error('Error:', error);
+    }
+}
+
 async function createDefaultServer() {
     try {
         const response = await fetch(`${basePath}/api/general`, {  // Changed from /api/send to /api/general

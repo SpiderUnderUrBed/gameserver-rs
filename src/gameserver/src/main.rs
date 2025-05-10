@@ -5,7 +5,7 @@ use tokio::net::TcpListener;
 use tokio::process::{Command as TokioCommand, ChildStdin};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-
+//
 const SERVER_DIR: &str = "server";
 
 struct Minecraft;
@@ -57,7 +57,6 @@ async fn run_command_live_output(
     sender: Option<mpsc::Sender<String>>,
     stdin_arc: Option<Arc<Mutex<Option<ChildStdin>>>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    println!("[DEBUG] Running {}: {:?}", label, cmd);
     let mut tokio_cmd = TokioCommand::from(cmd);
     tokio_cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::piped());
     let mut child = tokio_cmd.spawn()?;
@@ -65,7 +64,6 @@ async fn run_command_live_output(
     if let Some(stdin_slot) = stdin_arc {
         let child_stdin = child.stdin.take();
         *stdin_slot.lock().await = child_stdin;
-        println!("[DEBUG] Stdin set for {}", label);
     }
 
     // STDOUT handler
@@ -75,7 +73,6 @@ async fn run_command_live_output(
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = reader.next_line().await {
-                println!("[{} stdout] {}", lbl, line);
                 if let Some(tx) = &tx {
                     let msg = json!({"type":"stdout","data":format!("[{}] {}", lbl, line)}).to_string();
                     let _ = tx.send(msg).await;
@@ -90,7 +87,6 @@ async fn run_command_live_output(
         tokio::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = reader.next_line().await {
-                println!("[{} stderr] {}", lbl, line);
                 if let Some(tx) = &tx {
                     let msg = json!({"type":"stderr","data":format!("[{}] {}", lbl, line)}).to_string();
                     let _ = tx.send(msg).await;
@@ -100,20 +96,17 @@ async fn run_command_live_output(
     }
 
     let status = child.wait().await?;
-    println!("[DEBUG] Process {} exited with {}", label, status);
     Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind("0.0.0.0:8080").await?;
-    println!("[INFO] Listening on port 8080");
 
     let shared_stdin: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
 
     loop {
         let (socket, addr) = listener.accept().await?;
-        println!("[INFO] Connection from {}", addr);
         let stdin_ref = shared_stdin.clone();
 
         tokio::spawn(async move {
@@ -130,12 +123,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 loop {
                     tokio::select! {
                         Some(msg) = cmd_rx.recv() => {
-                            println!("[DEBUG] To client(info): {}", msg);
                             let payload = json!({"type":"info","data":msg}).to_string() + "\n";
                             let _ = writer.write_all(payload.as_bytes()).await;
                         }
                         Some(out) = out_rx.recv() => {
-                            println!("[DEBUG] To client(out): {}", out);
                             let _ = writer.write_all((out + "\n").as_bytes()).await;
                         }
                         else => break,
@@ -147,10 +138,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 buf.clear();
                 let n = reader.read_line(&mut buf).await;
                 if let Ok(0) = n { break; }
-                if let Err(e) = n { eprintln!("[ERROR] Read error: {}", e); break; }
+                if let Err(e) = n { 
+                    eprintln!("Read error: {}", e);
+                break; }
 
                 let line = buf.trim_end();
-                println!("[DEBUG] From client: {}", line);
 
                 // Detect JSON or raw console command
                 if line.starts_with('{') {
@@ -179,17 +171,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             let _ = cmd_tx.send("Server started".into()).await;
                                         }
                                     }
+                                } else if cmd_str == "start_server" { 
+                                    if let Some(prov) = get_provider("minecraft") {
+                                        if let Some(cmd) = prov.start() {
+                                            let tx = cmd_tx.clone();
+                                            let stdin_clone = stdin_ref.clone();
+                                            tokio::spawn(async move {
+                                                let _ = run_command_live_output(cmd, "Server".into(), Some(tx), Some(stdin_clone)).await;
+                                            });
+                                            let _ = cmd_tx.send("Server started".into()).await;
+                                        }
+                                    }
                                 } else {
                                     let _ = cmd_tx.send(format!("Unknown command: {}", cmd_str)).await;
                                 }
                             } else if typ == "console" {
                                 let input = val.get("message").and_then(Value::as_str).unwrap_or("");
-                                println!("[DEBUG] Console(JSON) input: {}", input);
                                 let mut guard = stdin_ref.lock().await;
                                 if let Some(stdin) = guard.as_mut() {
                                     let _ = stdin.write_all(format!("{}\n", input).as_bytes()).await;
                                     let _ = stdin.flush().await;
-                                    println!("[DEBUG] Wrote JSON console to server stdin");
                                     let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
                                 }
                             }
@@ -200,12 +201,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 } else if !line.is_empty() {
                     // Treat raw text as console command
-                    println!("[DEBUG] Console(raw) input: {}", line);
                     let mut guard = stdin_ref.lock().await;
                     if let Some(stdin) = guard.as_mut() {
                         let _ = stdin.write_all(format!("{}\n", line).as_bytes()).await;
                         let _ = stdin.flush().await;
-                        println!("[DEBUG] Wrote raw console to server stdin");
                         let _ = cmd_tx.send(format!("Sent to server: {}", line)).await;
                     } else {
                         let _ = cmd_tx.send("Server not running".into()).await;

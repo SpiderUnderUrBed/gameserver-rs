@@ -13,7 +13,7 @@ spec:
         app: gameserver
     spec:
       nodeSelector:
-        kubernetes.io/hostname: raspberrypi
+        kubernetes.io/hostname: extranuc
       containers:
         - name: gameserver
           image: localhost:5000/gameserver:latest
@@ -42,9 +42,14 @@ spec:
   selector:
     app: gameserver
   ports:
-    - protocol: TCP
+    - name: web
+      protocol: TCP
       port: 8080
       targetPort: 8080
+    - name: minecraft
+      protocol: TCP
+      port: 25565
+      targetPort: 25565
   type: ClusterIP
 ---
 apiVersion: v1
