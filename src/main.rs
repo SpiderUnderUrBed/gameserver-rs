@@ -221,7 +221,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         })
         .unwrap_or_default();
 
-    const ENABLE_K8S_CLIENT: bool = false;
+    const ENABLE_K8S_CLIENT: bool = true;
 
     const ENABLE_INITIAL_CONNECTION: bool = true;
     const FORCE_REBUILD: bool = false;
