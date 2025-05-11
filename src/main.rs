@@ -35,6 +35,7 @@ const CHANNEL_BUFFER_SIZE: usize = 32;
 struct MessagePayload {
     r#type: String,
     message: String,
+    authcode: String
 }
 
 #[derive(Debug, Deserialize)]
@@ -42,6 +43,7 @@ struct ConsoleMessage {
     data: String,
     #[serde(rename = "type")]
     message_type: String,
+    authcode: String
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -49,6 +51,7 @@ struct InnerData {
     data: String,
     #[serde(rename = "type")]
     message_type: String,
+    authcode: String
 }
 
 #[derive(Debug, Deserialize)]
@@ -56,6 +59,7 @@ struct IncomingMessage {
     message: String,
     #[serde(rename = "type")]
     message_type: String,
+    authcode: String
 }
 
 #[derive(Debug, Serialize)]
@@ -316,6 +320,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         MessagePayload {
                             r#type: "console".to_string(),
                             message: text.to_string(),
+                            authcode: "0".to_string(),
                         }
                     }
                 };
@@ -346,6 +351,7 @@ async fn process_general(
     let json_payload = MessagePayload {
         r#type: payload.message_type.clone(),
         message: payload.message.clone(),
+        authcode: payload.authcode.clone(),
     };
 
     match serde_json::to_vec(&json_payload) {
@@ -395,6 +401,7 @@ async fn receive_message(
     let json_payload = MessagePayload {
         r#type: payload.message_type.clone(),
         message: payload.message.clone(),
+        authcode: payload.authcode.clone(),
     };
 
     match serde_json::to_vec(&json_payload) {
@@ -473,6 +480,7 @@ async fn get_message(State(state): State<AppState>) -> Result<Json<MessagePayloa
     let request = MessagePayload {
         r#type: "request".to_string(),
         message: "get_message".to_string(),
+        authcode: "0".to_owned(),
     };
     //
 

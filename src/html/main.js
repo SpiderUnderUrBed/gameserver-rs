@@ -36,7 +36,6 @@ async function addResult(inputAsString, output, addInput, addOutput) {
 
 async function websocket() {
     const ws = new WebSocket(`${basePath}/ws`);
-    // console.log("Raw WebSocket message:", e.data);
     
     ws.addEventListener("open", () => {
         console.log("We are connected");
@@ -46,7 +45,7 @@ async function websocket() {
          console.log("Raw WebSocket message:", e.data);
         try {
             const data = JSON.parse(e.data);
-            const message = data.message ?? JSON.stringify(data); // fallback to whole object
+            const message = data.message ?? JSON.stringify(data); 
             addResult("", message, false, true);
         } catch {
             addResult("", e.data, false, true);
@@ -65,7 +64,8 @@ consoleInput.addEventListener("keyup", e => {
         ws.onopen = () => {
             ws.send(JSON.stringify({
                 type: "console",
-                message: code
+                message: code,
+                authcode: "0"
             }));
             ws.close();
         };
@@ -104,14 +104,15 @@ fetchNodes()
 
 async function startServer(){
     try {
-        const response = await fetch(`${basePath}/api/general`, {  // Changed from /api/send to /api/general
+        const response = await fetch(`${basePath}/api/general`, {  
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({ 
                 message: "start_server",
-                type: "command"  
+                type: "command",
+                authcode: "0"
             })
         });
 
@@ -130,14 +131,15 @@ async function startServer(){
 
 async function createDefaultServer() {
     try {
-        const response = await fetch(`${basePath}/api/general`, {  // Changed from /api/send to /api/general
+        const response = await fetch(`${basePath}/api/general`, { 
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({ 
                 message: "create_server",
-                type: "command"  // Make sure this matches your backend
+                type: "command",
+                authcode: "0"
             })
         });
 
@@ -171,7 +173,8 @@ async function sendMessage() {
             },
             body: JSON.stringify({
                 message: message,
-                type: "message"  // Consistent type
+                type: "message",
+                authcode: "0"
             })
         });
 
@@ -190,7 +193,6 @@ function handleButtonClick(i) {
     alert("Button " + i + " clicked!");
 }
 
-// Create sample boxes with buttons
 for (let i = 1; i <= 5; i++) {
     const div = document.createElement("div");
     div.className = "box";

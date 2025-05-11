@@ -121,7 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 loop {
                     tokio::select! {
                         Some(msg) = cmd_rx.recv() => {
-                            let payload = json!({"type":"info","data":msg}).to_string() + "\n";
+                            let payload = json!({"type":"info","data":msg,"authcode": "0"}).to_string() + "\n";
                             let _ = writer.write_all(payload.as_bytes()).await;
                         }
                         Some(out) = out_rx.recv() => {
