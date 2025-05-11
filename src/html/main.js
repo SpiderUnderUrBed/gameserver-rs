@@ -41,16 +41,38 @@ async function websocket() {
         console.log("We are connected");
     });
 
-    ws.addEventListener("message", e => {
-         console.log("Raw WebSocket message:", e.data);
+ws.addEventListener("message", e => {
+    const jsonStrings = e.data.split(/(?<=})\s*(?={)/);
+    
+    jsonStrings.forEach(jsonStr => {
+        let outputMessage = jsonStr;
+        
         try {
-            const data = JSON.parse(e.data);
-            const message = data.message ?? JSON.stringify(data); 
-            addResult("", message, false, true);
-        } catch {
-            addResult("", e.data, false, true);
+            const parsed = JSON.parse(jsonStr);
+            
+            if (parsed.data) {
+                if (typeof parsed.data === 'string') {
+                    try {
+                        const inner = JSON.parse(parsed.data);
+                        outputMessage = inner.data ?? parsed.data;
+                    } catch {
+                        outputMessage = parsed.data;
+                    }
+                } else {
+                    outputMessage = parsed.data;
+                }
+            } else {
+                outputMessage = parsed.message ?? JSON.stringify(parsed);
+            }
+        } catch (err) {
+            console.warn("Non-JSON or bad format:", err);
+            outputMessage = jsonStr;
         }
+
+        const cleanedOutput = outputMessage.replace(/^\[Server\] ?/, "").replace(/\\t/g, "\t").replace(/\\\\/g, "\\");
+        addResult("", cleanedOutput, false, true);
     });
+});
 }
 websocket()
 

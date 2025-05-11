@@ -100,7 +100,7 @@ async fn run_command_live_output(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let listener = TcpListener::bind("0.0.0.0:8080").await?;
+    let listener = TcpListener::bind("0.0.0.0:8082").await?;
 
     let shared_stdin: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
 
@@ -142,6 +142,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let line = buf.trim_end();
 
+                println!("{}", line);
+
                 if line.starts_with('{') {
                     match serde_json::from_str::<Value>(line) {
                         Ok(val) => {
@@ -160,6 +162,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             let _ = run_command_live_output(cmd, "Post-hook".into(), Some(cmd_tx.clone()), None).await;
                                         }
                                         if let Some(cmd) = prov.start() {
+                                            println!("starting");
                                             let tx = cmd_tx.clone();
                                             let stdin_clone = stdin_ref.clone();
                                             tokio::spawn(async move {
@@ -171,6 +174,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 } else if cmd_str == "start_server" { 
                                     if let Some(prov) = get_provider("minecraft") {
                                         if let Some(cmd) = prov.start() {
+                                            println!("starting");
                                             let tx = cmd_tx.clone();
                                             let stdin_clone = stdin_ref.clone();
                                             tokio::spawn(async move {
