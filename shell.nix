@@ -6,6 +6,7 @@ pkgs.mkShell {
     # cargo
    # rust-analyzer
     # rust-src
+
     openssl
     pkg-config
   ];

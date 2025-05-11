@@ -77,7 +77,7 @@ struct AppState {
     tx: Arc<Mutex<Sender<Vec<u8>>>>,
     rx: Arc<Mutex<Receiver<Vec<u8>>>>,
     base_path: String,
-    client: Client,
+    client: Option<Client>,
     ws_tx: Arc<Mutex<Sender<String>>>,
     ws_rx: Arc<Mutex<Receiver<String>>>,
 }
@@ -221,6 +221,8 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         })
         .unwrap_or_default();
 
+    const ENABLE_K8S_CLIENT: bool = false;
+
     const ENABLE_INITIAL_CONNECTION: bool = true;
     const FORCE_REBUILD: bool = false;
     const BUILD_DOCKER_IMAGE: bool = true;
@@ -228,7 +230,11 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     let (ws_tx, ws_rx) = mpsc::channel::<String>(CHANNEL_BUFFER_SIZE);
     let (tx, rx) = mpsc::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
-    let client = Client::try_default().await?;
+     
+    let mut client: Option<Client> = None;
+    if ENABLE_K8S_CLIENT {
+        client = Some(Client::try_default().await?);
+    }
 
     if ENABLE_INITIAL_CONNECTION {
         println!("Trying initial connection...");
@@ -237,8 +243,8 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             if BUILD_DOCKER_IMAGE {
                 docker::build_docker_image().await?;
             }
-            if BUILD_DEPLOYMENT {
-                kubernetes::create_k8s_deployment(&client).await?;
+            if BUILD_DEPLOYMENT && ENABLE_K8S_CLIENT {
+                kubernetes::create_k8s_deployment(client.as_ref().unwrap()).await?;
             }
         }
     }
@@ -384,12 +390,16 @@ async fn process_general(
 }
 
 async fn get_nodes(State(state): State<AppState>) -> impl IntoResponse {
-    match kubernetes::list_node_names(state.client).await {
-        Ok(nodes) => Json(List { list: nodes }),
-        Err(err) => {
-            eprintln!("Error listing nodes: {}", err);
-            Json(List { list: vec![] })
-        },
+    if state.client.is_some() {
+        match kubernetes::list_node_names(state.client.unwrap()).await {
+            Ok(nodes) => Json(List { list: nodes }),
+            Err(err) => {
+                eprintln!("Error listing nodes: {}", err);
+                Json(List { list: vec![] })
+            },
+        }
+    } else {
+        Json(List { list: vec![] })
     }
 }
 //
