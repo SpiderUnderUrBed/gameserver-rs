@@ -1,17 +1,22 @@
+use std::collections::HashMap;
 use std::{net::SocketAddr, path::Path, sync::Arc};
 
+use axum_login::{AuthUser, AuthnBackend, UserId};
+use axum::middleware::{self, Next};
 use axum::{
     body::Body,
-    extract::{Request, State, ws::{WebSocketUpgrade, WebSocket, Message}},
-    http::{Method, Response, StatusCode},
+    extract::{ws::{Message, WebSocket, WebSocketUpgrade}, Request, State},
+    http::{self, Method, Response, StatusCode},
     response::{Html, IntoResponse, Json},
     routing::{get, post},
     Router,
 };
 use futures_util::{sink::SinkExt, stream::StreamExt};
+// use k8s_openapi::chrono;
 use kube::Client;
 use mime_guess::from_path;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tokio::{
     fs as tokio_fs,
     io::{AsyncReadExt, AsyncWriteExt},
@@ -20,6 +25,9 @@ use tokio::{
     time::{timeout, Duration},
 };
 use tower_http::cors::{Any, CorsLayer};
+use bcrypt::{hash, verify, DEFAULT_COST};
+use chrono::{Utc, Duration as OtherDuration};
+use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, TokenData, Validation};
 
 mod docker;
 mod kubernetes;
@@ -51,14 +59,6 @@ struct InnerData {
     authcode: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct IncomingMessage {
-    message: String,
-    #[serde(rename = "type")]
-    message_type: String,
-    authcode: String,
-}
-
 #[derive(Debug, Serialize)]
 struct ResponseMessage {
     response: String,
@@ -68,6 +68,41 @@ struct ResponseMessage {
 struct List {
     list: Vec<String>,
 }
+
+enum WebErrors {
+    AuthError {
+        message: String,
+        status_code: StatusCode,
+    }
+}
+impl IntoResponse for WebErrors {
+    fn into_response(self) -> Response<Body> {
+        let (status_code, message) = match self {
+            WebErrors::AuthError { message, status_code } => (status_code, message),
+        };
+
+        Response::builder()
+            .status(status_code)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&json!({ "error": message })).unwrap()))
+            .unwrap()
+    }
+}
+
+
+// impl IntoResponse for WebErrors {
+//     fn into_response(self) -> Response<axum::body::Body> {
+//         match self {
+//             WebErrors::AuthError { message, status_code } => {
+//                 Response::builder()
+//                     .status(status_code)
+//                     .header("content-type", "text/plain")
+//                     .body(message.into())
+//                     .unwrap()
+//             }
+//         }
+//     }
+// }
 
 #[derive(Clone)]
 struct AppState {
@@ -79,9 +114,103 @@ struct AppState {
     base_path: String,
     client: Option<Client>,
 }
+#[derive(Deserialize, Serialize)]
+pub struct Claims {
+    pub expirery: usize,
+    pub iat: usize,
+    pub user: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct User {
+    pub username: String,
+    pub password_hash: String
+}
+impl AuthUser for User {
+    type Id = String;
+
+    fn id(&self) -> Self::Id {
+        self.username.clone()
+    }
+
+    fn session_auth_hash(&self) -> &[u8] {
+        &self.password_hash.as_bytes()
+    }
+}
+#[derive(Clone, Default)]
+struct Backend {
+    users: HashMap<i64, User>,
+}
+
+// #[async_trait]
+// impl AuthnBackend for Backend {
+//     type User = User;
+//     type Credentials = Credentials;
+//     type Error = std::convert::Infallible;
+
+//     async fn authenticate(
+//         &self,
+//         Credentials { user_id }: Self::Credentials,
+//     ) -> Result<Option<Self::User>, Self::Error> {
+//         Ok(self.users.get(&user_id).cloned())
+//     }
+
+//     async fn get_user(
+//         &self,
+//         user_id: &UserId<Self>,
+//     ) -> Result<Option<Self::User>, Self::Error> {
+//         Ok(self.users.get(user_id).cloned())
+//     }
+// }
+
+#[derive(Clone)]
+struct Credentials {
+    user_id: i64,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct IncomingMessage {
+    message: String,
+    #[serde(rename = "type")]
+    message_type: String,
+    authcode: String,
+}
+#[derive(Debug, Deserialize, Clone)]
+pub struct LoginData {
+    pub user: String,
+    pub password: String
+}
+#[derive(Debug, Deserialize, Clone)]
+#[serde(tag = "kind")]
+enum ApiCalls {
+    LoginData(LoginData),
+    IncomingMessage(IncomingMessage),
+}
+
+// Trait definition (assumed)
+trait ApiCall {
+    fn standard_response(&self) -> Option<IncomingMessage>;
+    fn login_data(&self) -> Option<LoginData>;
+}
+
+impl ApiCall for ApiCalls {
+    fn standard_response(&self) -> Option<IncomingMessage> {
+        match self {
+            ApiCalls::IncomingMessage(data) => Some(data.clone()),
+            _ => None,
+        }
+    }
+
+    fn login_data(&self) -> Option<LoginData> {
+        match self {
+            ApiCalls::LoginData(data) => Some(data.clone()),
+            _ => None,
+        }
+    }
+}
+
 
 async fn attempt_connection() -> Result<TcpStream, Box<dyn std::error::Error + Send + Sync>> {
-    println!("B");
     timeout(CONNECTION_TIMEOUT, TcpStream::connect("127.0.0.1:8082")).await?.map_err(Into::into)
 }
 
@@ -251,12 +380,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .allow_methods([Method::GET, Method::POST])
         .allow_headers(Any);
 
+    //let route1 = Router::new().route("/api/signin", post(sign_in));
     let inner = Router::new()
-        .route("/message", get(get_message))
+        .route("/api/message", get(get_message))
         .route("/api/send", post(receive_message))
         .route("/api/general", post(process_general))
         .route("/api/nodes", get(get_nodes))
-        .route("/ws", get(ws_handler))
+        .route("/api/ws", get(ws_handler))
+        .route("/api/signin", post(sign_in))
+        //.merge(route1)
         .fallback_service(routes_static(Arc::new(state.clone())))
         .with_state(state.clone());
 
@@ -315,8 +447,9 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
 async fn process_general(
     State(state): State<AppState>,
-    Json(payload): Json<IncomingMessage>,
+    Json(res): Json<ApiCalls>,
 ) -> Result<Json<ResponseMessage>, (StatusCode, String)> {
+    let payload = res.standard_response().unwrap();
     println!("Processing general message: {:?}", payload);
     
     let json_payload = MessagePayload {
@@ -368,10 +501,12 @@ async fn get_nodes(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
+
 async fn receive_message(
     State(state): State<AppState>,
-    Json(payload): Json<IncomingMessage>,
+    Json(res): Json<ApiCalls>,
 ) -> Result<Json<ResponseMessage>, (StatusCode, String)> {
+    let payload = res.standard_response().unwrap();
     let json_payload = MessagePayload {
         r#type: payload.message_type.clone(),
         message: payload.message.clone(),
@@ -427,26 +562,153 @@ async fn serve_html_with_replacement(
         .unwrap())
 }
 
-fn routes_static(state: Arc<AppState>) -> Router {
-    Router::new().fallback(move |req: Request<Body>| {
-        let state = state.clone();
-        async move {
-            let file = if req.uri().path() == "/" {
-                "index.html"
-            } else {
-                &req.uri().path()[1..]
-            };
+async fn handle_static_request(req: Request<Body>, state: Arc<AppState>) -> Response<Body> {
+    let path = req.uri().path();
+    let file = if path == "/" || path.is_empty() {
+        "index.html"
+    } else {
+        &path[1..]
+    };
 
-            match serve_html_with_replacement(file, &state).await {
-                Ok(res) => res,
-                Err(status) => Response::builder()
-                    .status(status)
-                    .header("content-type", "text/plain")
-                    .body(format!("Error serving `{}`", file).into())
-                    .unwrap(),
+    match serve_html_with_replacement(file, &state).await {
+        Ok(res) => res,
+        Err(status) => Response::builder()
+            .status(status)
+            .header("content-type", "text/plain")
+            .body(format!("Error serving `{}`", file).into())
+            .unwrap(),
+    }
+}
+
+
+fn routes_static(state: Arc<AppState>) -> Router {
+    let state_clone = state.clone();
+
+    let public_api = Router::new()
+        .route(
+            "/api/",
+            get(|| async { Json("This is a public API endpoint.") }),
+        )
+        .route("/", get({
+            let state = state.clone();
+            move |req| {
+                let state = state.clone();
+                async move { handle_static_request(req, state).await }
             }
-        }
-    })
+        }));
+
+    let fallback_router = Router::new()
+        .fallback({
+            let state = state_clone.clone();
+            move |req| {
+                let state = state.clone();
+                async move { handle_static_request(req, state).await }
+            }
+        })
+        .layer(middleware::from_fn(authorization_middleware));
+
+    Router::new()
+        .merge(public_api)     
+        .merge(fallback_router) 
+}
+
+
+
+
+pub async fn authorization_middleware(mut req: Request, next: Next) -> Result<Response<Body>, WebErrors> {
+    let auth_header = req.headers_mut().get(http::header::AUTHORIZATION);
+    let auth_header = match auth_header {
+        Some(header) => header.to_str().map_err(|_| WebErrors::AuthError {
+            message: "Please add the JWT token to the header".to_string(),
+            status_code: StatusCode::FORBIDDEN,
+        })?,
+        None => return Err(WebErrors::AuthError {
+            message: "Please add a JWK token".to_string(),
+            status_code: StatusCode::FORBIDDEN,
+        })
+    };
+    let mut header = auth_header.split_whitespace();
+    let (bearer, token) = (header.next(), header.next());
+    let token = match resolve_jwt(token.unwrap().to_string()) {
+        Ok(data) => data,
+        Err(_) => return Err(WebErrors::AuthError { 
+            message: "Failed to parse JWT token".to_string(), 
+            status_code: StatusCode::UNAUTHORIZED, 
+        })
+    };
+
+    let current_user = match retrive_user(token.claims.user){
+        Some(user) => user,
+        None => return Err(WebErrors::AuthError { 
+            message: "You are not authorized".to_string(), 
+            status_code: StatusCode::UNAUTHORIZED, 
+        })
+    };
+    req.extensions_mut().insert(current_user);
+    Ok(next.run(req).await)
+}
+
+
+pub fn verify_password(password: String, hash: String) -> Result<bool, bcrypt::BcryptError> {
+    // Ok(true)
+    verify(password, &hash)
+}
+
+pub async fn sign_in(
+    State(state): State<AppState>,
+    Json(res): Json<ApiCalls>,
+) -> Result<Json<ResponseMessage>, StatusCode> {
+    let user_data = res.login_data().unwrap();
+    println!("{:#?}", user_data);
+    let user = match retrive_user(user_data.user) {
+        Some(user) => user,
+        None => return Err(StatusCode::UNAUTHORIZED),
+    };
+
+   if !verify_password(user_data.password, user.password_hash)
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+   {
+    return Err(StatusCode::UNAUTHORIZED)
+   }
+
+   let token = encode_token(user.username)
+       .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(ResponseMessage { response: token }))
+}
+
+fn encode_token(user: String) -> Result<String, StatusCode>{
+    let secret: String = "randomString".to_string();
+    let now = chrono::Utc::now();
+    let expire = OtherDuration::hours(24);
+    let exp: usize = (now + expire).timestamp() as usize;
+    let iat: usize = now.timestamp() as usize;
+    let claim = Claims { 
+        expirery: expire.num_seconds() as usize,
+        iat, 
+        user 
+    };
+    encode(&Header::default(), &claim, &EncodingKey::from_secret(secret.as_ref()))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+fn retrive_user(user: String) -> Option<User>{
+    let current_user: User = User {
+        username: "e".to_string(),
+        password_hash: "$2a$12$6fsBTxFz7gpHT60ZbwFU9OVywslC9zD0GbqznzYRUP4Oq6o5vI.1y".to_string(),
+    };
+    Some(current_user)
+}
+fn resolve_jwt(jwt: String) -> Result<TokenData<Claims>, StatusCode>{
+    let secret = "randomString".to_string();
+    let result: Result<TokenData<Claims>, StatusCode> = decode(
+        &jwt, 
+          &DecodingKey::from_secret(secret.as_ref()), 
+   &Validation::default()
+    )
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
+    result
+
 }
 
 async fn get_message(

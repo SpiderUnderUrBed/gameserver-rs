@@ -48,11 +48,28 @@
             display: none;
             margin-top: 20px;
         }
+        .login {
+            display: flex;
+            flex-direction: column;
+        }
+        .signup {
+            width: auto;
+        }
     </style>
 </head>
 <body>
     <h1>Welcome to My Page</h1>
 
+    <p id="state"></p>
+    <div class="login">
+        <h4>Login:</h4>
+        <input class="user-login"></input>
+        <input class="user-password"></input>
+        <div>
+        <button class="signup">Signup</button>
+        <button class="login-button" onclick="login()">login</button>
+        </div>
+    </div>
     <button class="big-button" onclick="mainPage()">Go to main page</button>
     <button class="small-button" onclick="toggleDeveloper()">Developer Work</button>
 
@@ -78,9 +95,32 @@
             section.style.display = section.style.display === 'none' ? 'block' : 'none';
         }
 
+        async function login(){
+            const username = document.getElementsByClassName('user-login')[0].value;
+            const password = document.getElementsByClassName('user-password')[0].value;
+
+            let res = await fetch(`${basePath}/api/signin`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    kind: "LoginData",
+                    user: username,
+                    password: password
+                })
+            });
+            if (res.ok) {
+                const data = await res.json();
+                console.log("JWT Token:", data.response); 
+            } else {
+                console.error("Login failed:", res.status);
+            }
+        }
+
         async function fetchMessage() {
             try {
-                const response = await fetch(`${basePath}/message`);
+                const response = await fetch(`${basePath}/api/message`);
                 if (response.ok) {
                     const data = await response.json();
                     document.getElementById('message').innerText = data.message;

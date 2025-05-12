@@ -35,7 +35,7 @@ async function addResult(inputAsString, output, addInput, addOutput) {
 }
 
 async function websocket() {
-    const ws = new WebSocket(`${basePath}/ws`);
+    const ws = new WebSocket(`${basePath}/api/ws`);
     
     ws.addEventListener("open", () => {
         console.log("We are connected");
@@ -81,7 +81,7 @@ consoleInput.addEventListener("keyup", e => {
     if (code.length === 0) return;
     
     if (e.key === "Enter") {
-        const ws = new WebSocket(`${basePath}/ws`);
+        const ws = new WebSocket(`${basePath}/api/ws`);
         
         ws.onopen = () => {
             ws.send(JSON.stringify({
