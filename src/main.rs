@@ -727,7 +727,7 @@ fn routes_static(state: Arc<AppState>) -> Router<AppState> {
         .layer(AddExtensionLayer::new(state.clone()));
 
         let protected = Router::new()
-        .route("/main.html", get(handle_static_request))
+        .route("/{*wildcard}", get(handle_static_request))
         .layer(AddExtensionLayer::new(state.clone()))
         .route_layer(login_required!(Backend, login_url = "/index.html"));
 
