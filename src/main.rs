@@ -1,7 +1,14 @@
 use std::collections::HashMap;
+use std::convert::Infallible;
+use std::fs;
 use std::{net::SocketAddr, path::Path, sync::Arc};
 
-use axum_login::{AuthUser, AuthnBackend, UserId};
+use axum::extract::Query;
+use axum::http::header::AUTHORIZATION;
+use axum::response::Redirect;
+use axum::{Extension, Form};
+use axum_login::tower_sessions::{MemoryStore, SessionManagerLayer};
+use axum_login::{login_required, AuthManagerLayerBuilder, AuthUser, AuthnBackend, UserId};
 use axum::middleware::{self, Next};
 use axum::{
     body::Body,
@@ -28,6 +35,8 @@ use tower_http::cors::{Any, CorsLayer};
 use bcrypt::{hash, verify, DEFAULT_COST};
 use chrono::{Utc, Duration as OtherDuration};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, TokenData, Validation};
+use bcrypt::BcryptError;
+use async_trait::async_trait;
 
 mod docker;
 mod kubernetes;
@@ -114,59 +123,7 @@ struct AppState {
     base_path: String,
     client: Option<Client>,
 }
-#[derive(Deserialize, Serialize)]
-pub struct Claims {
-    pub expirery: usize,
-    pub iat: usize,
-    pub user: String,
-}
 
-#[derive(Clone, Debug)]
-pub struct User {
-    pub username: String,
-    pub password_hash: String
-}
-impl AuthUser for User {
-    type Id = String;
-
-    fn id(&self) -> Self::Id {
-        self.username.clone()
-    }
-
-    fn session_auth_hash(&self) -> &[u8] {
-        &self.password_hash.as_bytes()
-    }
-}
-#[derive(Clone, Default)]
-struct Backend {
-    users: HashMap<i64, User>,
-}
-
-// #[async_trait]
-// impl AuthnBackend for Backend {
-//     type User = User;
-//     type Credentials = Credentials;
-//     type Error = std::convert::Infallible;
-
-//     async fn authenticate(
-//         &self,
-//         Credentials { user_id }: Self::Credentials,
-//     ) -> Result<Option<Self::User>, Self::Error> {
-//         Ok(self.users.get(&user_id).cloned())
-//     }
-
-//     async fn get_user(
-//         &self,
-//         user_id: &UserId<Self>,
-//     ) -> Result<Option<Self::User>, Self::Error> {
-//         Ok(self.users.get(user_id).cloned())
-//     }
-// }
-
-#[derive(Clone)]
-struct Credentials {
-    user_id: i64,
-}
 
 #[derive(Debug, Deserialize, Clone)]
 struct IncomingMessage {
@@ -175,11 +132,7 @@ struct IncomingMessage {
     message_type: String,
     authcode: String,
 }
-#[derive(Debug, Deserialize, Clone)]
-pub struct LoginData {
-    pub user: String,
-    pub password: String
-}
+
 #[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "kind")]
 enum ApiCalls {
@@ -537,6 +490,171 @@ async fn receive_message(
     }
 }
 
+const SECRET: &str = "randomString";
+
+#[derive(Deserialize, Serialize, Clone)]
+pub struct Claims {
+    pub exp: usize,
+    pub iat: usize,
+    pub user: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct User {
+    pub username: String,
+    pub password_hash: String,
+}
+
+impl AuthUser for User {
+    type Id = String;
+    fn id(&self) -> Self::Id {
+        self.username.clone()
+    }
+    fn session_auth_hash(&self) -> &[u8] {
+        self.password_hash.as_bytes()
+    }
+}
+
+fn resolve_jwt(token: &str) -> Result<TokenData<Claims>, StatusCode> {
+    decode::<Claims>(
+        token,
+        &DecodingKey::from_secret(SECRET.as_bytes()),
+        &Validation::default(),
+    )
+    .map_err(|_| StatusCode::UNAUTHORIZED)
+}
+
+fn retrive_user(username: String) -> Option<User> {
+    if username == "testuser" {
+        let password_hash = hash("password123", DEFAULT_COST).unwrap();
+
+        Some(User {
+            username,
+            password_hash,
+        })
+    } else {
+        None
+    }
+}
+
+pub fn verify_password(password: String, hash: String) -> Result<bool, BcryptError> {
+    verify(password, &hash)
+}
+
+fn encode_token(user: String) -> Result<String, StatusCode> {
+    let now = Utc::now();
+    let exp = (now + OtherDuration::hours(24)).timestamp() as usize;
+    let iat = now.timestamp() as usize;
+    let claims = Claims { exp, iat, user };
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(SECRET.as_bytes()),
+    )
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+// pub struct JwtToken(pub String);
+
+pub async fn sign_in(
+    State(_): State<AppState>,
+    Json(request): Json<LoginData>,
+) -> Result<Json<ResponseMessage>, StatusCode> {
+    let user = retrive_user(request.user.clone()).ok_or(StatusCode::UNAUTHORIZED)?;
+    if !verify_password(request.password, user.password_hash.clone())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let token = encode_token(user.username)?;
+    Ok(Json(ResponseMessage { response: token }))
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct LoginData {
+    pub user: String,
+    pub password: String,
+}
+
+type AuthSession = axum_login::AuthSession<Backend>;
+
+// #[derive(Deserialize, Clone)]
+// struct LoginForm {
+//     username: String,
+//     password: String,
+// }
+#[derive(Deserialize)]
+struct JwtTokenForm {
+    token: String,
+}
+
+#[axum::debug_handler]
+async fn axum_login_method(
+    Extension(mut auth_session): Extension<AuthSession>,
+    Form(form): Form<JwtTokenForm>,
+) -> impl IntoResponse {
+    // Decode the token and get the token data struct
+    let token_data = match resolve_jwt(&form.token) {
+        Ok(data) => data,
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+    };
+
+    // Extract the username from the claims
+    let username = token_data.claims.user;
+
+    // Retrieve the user by username
+    let user = match retrive_user(username) {
+        Some(user) => user,
+        None => return StatusCode::UNAUTHORIZED.into_response(),
+    };
+
+    // Perform login
+    if auth_session.login(&user).await.is_err() {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    Redirect::to("/main.html").into_response()
+}
+
+
+#[derive(Clone, Default)]
+pub struct Backend {
+    pub users: HashMap<String, User>,
+}
+
+#[async_trait]
+impl AuthnBackend for Backend {
+    type User = User;
+    type Credentials = String;
+    type Error = Infallible;
+
+    async fn authenticate(
+        &self,
+        token: Self::Credentials,
+    ) -> Result<Option<Self::User>, Self::Error> {
+        let user = resolve_jwt(&token)
+            .ok()
+            .and_then(|data| retrive_user(data.claims.user));
+        Ok(user)
+    }
+
+    async fn get_user(
+        &self,
+        user_id: &<Self::User as AuthUser>::Id,
+    ) -> Result<Option<Self::User>, Self::Error> {
+        Ok(self.users.get(user_id).cloned())
+    }
+}
+fn sanitize_next_url(next: &str) -> &str {
+    // if next.starts_with('/') && !next.starts_with("/login") {
+    //     next
+    // } else {
+    //     "/main.html"
+    // }
+     "/main.html"
+}
+
+
 async fn serve_html_with_replacement(
     file: &str,
     state: &AppState,
@@ -582,133 +700,39 @@ async fn handle_static_request(req: Request<Body>, state: Arc<AppState>) -> Resp
 
 
 fn routes_static(state: Arc<AppState>) -> Router {
-    let state_clone = state.clone();
+    let session_store = MemoryStore::default();
+    let session_layer = SessionManagerLayer::new(session_store);
 
-    let public_api = Router::new()
-        .route(
-            "/api/",
-            get(|| async { Json("This is a public API endpoint.") }),
-        )
+    let backend = Backend::default();
+    let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
+
+    let public = Router::new()
+        // Serve login form GET /login
+        // .route("/login", get(login_form))
+        // Handle login POST /login (with form token)
+        // .route("/login", post(axum_login_method))
+        // Static files etc
         .route("/", get({
             let state = state.clone();
             move |req| {
                 let state = state.clone();
                 async move { handle_static_request(req, state).await }
             }
-        }));
+        }).post(axum_login_method));
 
-    let fallback_router = Router::new()
-        .fallback({
-            let state = state_clone.clone();
+    // Protected routes, require login
+    let protected = Router::new()
+        .route("/main.html", get({
+            let state = state.clone();
             move |req| {
                 let state = state.clone();
                 async move { handle_static_request(req, state).await }
             }
-        })
-        .layer(middleware::from_fn(authorization_middleware));
+        }))
+        .layer(auth_layer)
+        .layer(login_required!(Backend, login_url = "/login"));
 
-    Router::new()
-        .merge(public_api)     
-        .merge(fallback_router) 
-}
-
-
-
-
-pub async fn authorization_middleware(mut req: Request, next: Next) -> Result<Response<Body>, WebErrors> {
-    let auth_header = req.headers_mut().get(http::header::AUTHORIZATION);
-    let auth_header = match auth_header {
-        Some(header) => header.to_str().map_err(|_| WebErrors::AuthError {
-            message: "Please add the JWT token to the header".to_string(),
-            status_code: StatusCode::FORBIDDEN,
-        })?,
-        None => return Err(WebErrors::AuthError {
-            message: "Please add a JWK token".to_string(),
-            status_code: StatusCode::FORBIDDEN,
-        })
-    };
-    let mut header = auth_header.split_whitespace();
-    let (bearer, token) = (header.next(), header.next());
-    let token = match resolve_jwt(token.unwrap().to_string()) {
-        Ok(data) => data,
-        Err(_) => return Err(WebErrors::AuthError { 
-            message: "Failed to parse JWT token".to_string(), 
-            status_code: StatusCode::UNAUTHORIZED, 
-        })
-    };
-
-    let current_user = match retrive_user(token.claims.user){
-        Some(user) => user,
-        None => return Err(WebErrors::AuthError { 
-            message: "You are not authorized".to_string(), 
-            status_code: StatusCode::UNAUTHORIZED, 
-        })
-    };
-    req.extensions_mut().insert(current_user);
-    Ok(next.run(req).await)
-}
-
-
-pub fn verify_password(password: String, hash: String) -> Result<bool, bcrypt::BcryptError> {
-    // Ok(true)
-    verify(password, &hash)
-}
-
-pub async fn sign_in(
-    State(state): State<AppState>,
-    Json(res): Json<ApiCalls>,
-) -> Result<Json<ResponseMessage>, StatusCode> {
-    let user_data = res.login_data().unwrap();
-    println!("{:#?}", user_data);
-    let user = match retrive_user(user_data.user) {
-        Some(user) => user,
-        None => return Err(StatusCode::UNAUTHORIZED),
-    };
-
-   if !verify_password(user_data.password, user.password_hash)
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-   {
-    return Err(StatusCode::UNAUTHORIZED)
-   }
-
-   let token = encode_token(user.username)
-       .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    Ok(Json(ResponseMessage { response: token }))
-}
-
-fn encode_token(user: String) -> Result<String, StatusCode>{
-    let secret: String = "randomString".to_string();
-    let now = chrono::Utc::now();
-    let expire = OtherDuration::hours(24);
-    let exp: usize = (now + expire).timestamp() as usize;
-    let iat: usize = now.timestamp() as usize;
-    let claim = Claims { 
-        expirery: expire.num_seconds() as usize,
-        iat, 
-        user 
-    };
-    encode(&Header::default(), &claim, &EncodingKey::from_secret(secret.as_ref()))
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
-}
-
-fn retrive_user(user: String) -> Option<User>{
-    let current_user: User = User {
-        username: "e".to_string(),
-        password_hash: "$2a$12$6fsBTxFz7gpHT60ZbwFU9OVywslC9zD0GbqznzYRUP4Oq6o5vI.1y".to_string(),
-    };
-    Some(current_user)
-}
-fn resolve_jwt(jwt: String) -> Result<TokenData<Claims>, StatusCode>{
-    let secret = "randomString".to_string();
-    let result: Result<TokenData<Claims>, StatusCode> = decode(
-        &jwt, 
-          &DecodingKey::from_secret(secret.as_ref()), 
-   &Validation::default()
-    )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
-    result
-
+    public.merge(protected)
 }
 
 async fn get_message(

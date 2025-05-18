@@ -63,13 +63,13 @@
     <p id="state"></p>
     <div class="login">
         <h4>Login:</h4>
-        <input class="user-login"></input>
-        <input class="user-password"></input>
+        <input class="user-login" type="text" name="username" placeholder="Username" />
+        <input class="user-password" type="password" name="password" placeholder="Password" />
         <div>
-        <button class="signup">Signup</button>
-        <button class="login-button" onclick="login()">login</button>
+            <button class="signup">Signup</button>
+            <button class="login-button" onclick="login()">Login</button>
         </div>
-    </div>
+    </div>    
     <button class="big-button" onclick="mainPage()">Go to main page</button>
     <button class="small-button" onclick="toggleDeveloper()">Developer Work</button>
 
@@ -94,7 +94,6 @@
             const section = document.getElementById('developerSection');
             section.style.display = section.style.display === 'none' ? 'block' : 'none';
         }
-
         async function login(){
             const username = document.getElementsByClassName('user-login')[0].value;
             const password = document.getElementsByClassName('user-password')[0].value;
@@ -110,13 +109,52 @@
                     password: password
                 })
             });
+
             if (res.ok) {
                 const data = await res.json();
-                console.log("JWT Token:", data.response); 
+                console.log("JWT Token:", data.response);
+
+            
+                const loginRes = await fetch(`${basePath}/login`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: new URLSearchParams({ token: data.response }),
+                    credentials: 'include'  
+                });
+
+                // const loginRes = await fetch(`${basePath}/login`, {
+                //     method: 'POST',
+                //     headers: {
+                //         'Content-Type': 'application/json',
+                //     },
+                //     body: JSON.stringify({ token: data.response }),
+                //     credentials: 'include'
+                // });
+
+
+
+                if (loginRes.ok) {
+                    console.log("Logged in with session!");
+                    window.location.href = `${basePath}/main.html`;
+                } else {
+                    console.error("Failed to log in with session:", loginRes.status);
+                }
+
             } else {
                 console.error("Login failed:", res.status);
             }
         }
+              // const loginRes = await fetch(`${basePath}/login`, {
+                //     method: 'POST',
+                //     headers: {
+                //         'Content-Type': 'application/json',
+                //     },
+                //     body: JSON.stringify({ token: data.response }),
+                //     credentials: 'include'
+                // });
+
 
         async function fetchMessage() {
             try {
