@@ -1,203 +1,132 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Axum Message Request</title>
-    <meta name="site-url" content="{{SITE_URL}}">
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            margin: 40px;
-            background-color: #f0f0f0;
-            color: #333;
-        }
-        h1 {
-            color: #0066cc;
-        }
-        button {
-            padding: 10px 20px;
-            background-color: #0066cc;
-            color: white;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-        }
-        button:hover {
-            background-color: #0052a3;
-        }
-        #message {
-            margin-top: 20px;
-            font-size: 18px;
-        }
-        input {
-            padding: 8px;
-            margin-top: 10px;
-            width: 300px;
-            font-size: 16px;
-        }
-        .big-button {
-            font-size: 18px;
-            padding: 15px 30px;
-        }
-        .small-button {
-            font-size: 12px;
-            padding: 5px 10px;
-            margin-top: 20px;
-        }
-        #developerSection {
-            display: none;
-            margin-top: 20px;
-        }
-        .login {
-            display: flex;
-            flex-direction: column;
-        }
-        .signup {
-            width: auto;
-        }
-    </style>
+<meta charset="UTF-8" />
+<title>Axum Message Request</title>
+<meta name="site-url" content="{{SITE_URL}}" />
+<style>
+    /* your existing styles */
+</style>
 </head>
 <body>
-    <h1>Welcome to My Page</h1>
+<h1>Welcome to My Page</h1>
 
-    <p id="state"></p>
-    <div class="login">
-        <h4>Login:</h4>
-        <input class="user-login" type="text" name="username" placeholder="Username" />
-        <input class="user-password" type="password" name="password" placeholder="Password" />
-        <div>
-            <button class="signup">Signup</button>
-            <button class="login-button" onclick="login()">Login</button>
-        </div>
-    </div>    
-    <button class="big-button" onclick="mainPage()">Go to main page</button>
-    <button class="small-button" onclick="toggleDeveloper()">Developer Work</button>
-
-    <div id="developerSection">
-        <p>Click the button to get a message from the server:</p>
-        <button onclick="fetchMessage()">Get Message</button>
-        <div id="message"></div>
-
-        <h2>Send a Message to the Server:</h2>
-        <input type="text" id="userMessage" placeholder="Type your message here" />
-        <button onclick="sendUserMessage()">Send Message</button>
+<p id="state"></p>
+<div class="login">
+    <h4>Login:</h4>
+    <input class="user-login" type="text" name="username" placeholder="Username" />
+    <input class="user-password" type="password" name="password" placeholder="Password" />
+    <div>
+        <button class="signup">Signup</button>
+        <button class="login-button" onclick="login()">Login</button>
     </div>
+</div>    
+<button class="big-button" onclick="mainPage()">Go to main page</button>
+<button class="small-button" onclick="toggleDeveloper()">Developer Work</button>
 
-    <script>
-        const basePath = document.querySelector('meta[name="site-url"]').content.replace(/\/$/, '');
+<div id="developerSection" style="display:none;">
+    <p>Click the button to get a message from the server:</p>
+    <button onclick="fetchMessage()">Get Message</button>
+    <div id="message"></div>
 
-        function mainPage() {
-            window.location.href = `${basePath}/main.html`;
+    <h2>Send a Message to the Server:</h2>
+    <input type="text" id="userMessage" placeholder="Type your message here" />
+    <button onclick="sendUserMessage()">Send Message</button>
+</div>
+
+<script>
+const basePath = document.querySelector('meta[name="site-url"]').content.replace(/\/$/, '');
+
+function mainPage() {
+    window.location.href = `${basePath}/main.html`;
+}
+
+function toggleDeveloper() {
+    const section = document.getElementById('developerSection');
+    section.style.display = section.style.display === 'none' ? 'block' : 'none';
+}
+
+async function login(){
+    const username = document.querySelector('.user-login').value;
+    const password = document.querySelector('.user-password').value;
+
+    // Build urlencoded form data string
+    const formBody = new URLSearchParams();
+    formBody.append('user', username);
+    formBody.append('password', password);
+
+    try {
+        const res = await fetch(`${basePath}/api/signin`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: formBody.toString()
+        });
+
+        if (!res.ok) {
+            throw new Error(`Login failed with status ${res.status}`);
         }
 
-        function toggleDeveloper() {
-            const section = document.getElementById('developerSection');
-            section.style.display = section.style.display === 'none' ? 'block' : 'none';
-        }
-        async function login(){
-            const username = document.getElementsByClassName('user-login')[0].value;
-            const password = document.getElementsByClassName('user-password')[0].value;
+        const data = await res.json();
+        const jwtToken = data.response;
 
-            let res = await fetch(`${basePath}/api/signin`, {
+        console.log("JWT Token:", jwtToken);
+
+        const nextUrl = encodeURIComponent(`${basePath}/main.html`);
+        const jwkToken = encodeURIComponent(jwtToken);
+
+        window.location.href = `${basePath}/authenticate?next=${nextUrl}&jwk=${jwkToken}`;
+
+    } catch (err) {
+        console.error('Login error:', err);
+        alert('Login failed: ' + err.message);
+    }
+}
+
+
+async function fetchMessage() {
+    try {
+        const response = await fetch(`${basePath}/api/message`);
+        if (response.ok) {
+            const data = await response.json();
+            document.getElementById('message').innerText = data.message;
+        } else {
+            document.getElementById('message').innerText = 'Failed to get message from the server.';
+        }
+    } catch (error) {
+        document.getElementById('message').innerText = 'Error connecting to the server.';
+        console.error('Error fetching message:', error);
+    }
+}
+
+async function sendUserMessage() {
+    const message = document.getElementById('userMessage').value;
+
+    if (message) {
+        try {
+            const response = await fetch(`${basePath}/api/send`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({
-                    kind: "LoginData",
-                    user: username,
-                    password: password
-                })
+                body: JSON.stringify({ message: message })
             });
 
-            if (res.ok) {
-                const data = await res.json();
-                console.log("JWT Token:", data.response);
-
-            
-                const loginRes = await fetch(`${basePath}/login`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                    },
-                    body: new URLSearchParams({ token: data.response }),
-                    credentials: 'include'  
-                });
-
-                // const loginRes = await fetch(`${basePath}/login`, {
-                //     method: 'POST',
-                //     headers: {
-                //         'Content-Type': 'application/json',
-                //     },
-                //     body: JSON.stringify({ token: data.response }),
-                //     credentials: 'include'
-                // });
-
-
-
-                if (loginRes.ok) {
-                    console.log("Logged in with session!");
-                    window.location.href = `${basePath}/main.html`;
-                } else {
-                    console.error("Failed to log in with session:", loginRes.status);
-                }
-
+            if (response.ok) {
+                const data = await response.json();
+                document.getElementById('message').innerText = `Server Response: ${data.response}`;
             } else {
-                console.error("Login failed:", res.status);
+                document.getElementById('message').innerText = 'Failed to send message to the server.';
             }
+        } catch (error) {
+            document.getElementById('message').innerText = 'Error sending message to the server.';
+            console.error('Error sending message:', error);
         }
-              // const loginRes = await fetch(`${basePath}/login`, {
-                //     method: 'POST',
-                //     headers: {
-                //         'Content-Type': 'application/json',
-                //     },
-                //     body: JSON.stringify({ token: data.response }),
-                //     credentials: 'include'
-                // });
-
-
-        async function fetchMessage() {
-            try {
-                const response = await fetch(`${basePath}/api/message`);
-                if (response.ok) {
-                    const data = await response.json();
-                    document.getElementById('message').innerText = data.message;
-                } else {
-                    document.getElementById('message').innerText = 'Failed to get message from the server.';
-                }
-            } catch (error) {
-                document.getElementById('message').innerText = 'Error connecting to the server.';
-                console.error('Error fetching message:', error);
-            }
-        }
-
-        async function sendUserMessage() {
-            const message = document.getElementById('userMessage').value;
-
-            if (message) {
-                try {
-                    const response = await fetch(`${basePath}/api/send`, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                        },
-                        body: JSON.stringify({ message: message })
-                    });
-
-                    if (response.ok) {
-                        const data = await response.json();
-                        document.getElementById('message').innerText = `Server Response: ${data.response}`;
-                    } else {
-                        document.getElementById('message').innerText = 'Failed to send message to the server.';
-                    }
-                } catch (error) {
-                    document.getElementById('message').innerText = 'Error sending message to the server.';
-                    console.error('Error sending message:', error);
-                }
-            } else {
-                document.getElementById('message').innerText = 'Please enter a message to send.';
-            }
-        }
-    </script>
+    } else {
+        document.getElementById('message').innerText = 'Please enter a message to send.';
+    }
+}
+</script>
 </body>
 </html>

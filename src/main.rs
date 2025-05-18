@@ -5,6 +5,7 @@ use std::{net::SocketAddr, path::Path, sync::Arc};
 
 use axum::extract::Query;
 use axum::http::header::AUTHORIZATION;
+use axum::http::Uri;
 use axum::response::Redirect;
 use axum::{Extension, Form};
 use axum_login::tower_sessions::{MemoryStore, SessionManagerLayer};
@@ -19,6 +20,7 @@ use axum::{
     Router,
 };
 use futures_util::{sink::SinkExt, stream::StreamExt};
+use kube::api::Log;
 // use k8s_openapi::chrono;
 use kube::Client;
 use mime_guess::from_path;
@@ -37,6 +39,9 @@ use chrono::{Utc, Duration as OtherDuration};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, TokenData, Validation};
 use bcrypt::BcryptError;
 use async_trait::async_trait;
+use tower_http::add_extension::AddExtensionLayer;
+use axum::extract::FromRequest;
+
 
 mod docker;
 mod kubernetes;
@@ -112,17 +117,6 @@ impl IntoResponse for WebErrors {
 //         }
 //     }
 // }
-
-#[derive(Clone)]
-struct AppState {
-    tcp_tx: Arc<Mutex<mpsc::Sender<Vec<u8>>>>,
-    tcp_rx: Arc<Mutex<mpsc::Receiver<Vec<u8>>>>,
-    
-    ws_tx: broadcast::Sender<String>,
-    
-    base_path: String,
-    client: Option<Client>,
-}
 
 
 #[derive(Debug, Deserialize, Clone)]
@@ -270,6 +264,17 @@ async fn try_initial_connection(
     }
 }
 
+#[derive(Clone)]
+struct AppState {
+    tcp_tx: Arc<Mutex<mpsc::Sender<Vec<u8>>>>,
+    tcp_rx: Arc<Mutex<mpsc::Receiver<Vec<u8>>>>,
+    
+    ws_tx: broadcast::Sender<String>,
+    
+    base_path: String,
+    client: Option<Client>,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("Starting server...");
@@ -333,17 +338,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .allow_methods([Method::GET, Method::POST])
         .allow_headers(Any);
 
-    //let route1 = Router::new().route("/api/signin", post(sign_in));
-    let inner = Router::new()
-        .route("/api/message", get(get_message))
-        .route("/api/send", post(receive_message))
-        .route("/api/general", post(process_general))
-        .route("/api/nodes", get(get_nodes))
-        .route("/api/ws", get(ws_handler))
-        .route("/api/signin", post(sign_in))
-        //.merge(route1)
-        .fallback_service(routes_static(Arc::new(state.clone())))
-        .with_state(state.clone());
+        let fallback_router = routes_static(state.clone().into());
+
+        let inner = Router::new()
+            .route("/api/message", get(get_message))
+            .route("/api/send", post(receive_message))
+            .route("/api/general", post(process_general))
+            .route("/api/nodes", get(get_nodes))
+            .route("/api/ws", get(ws_handler))
+            .route("/api/signin", post(sign_in))
+            .merge(fallback_router)
+            .with_state(state.clone());
+        
 
     let app = if base_path.is_empty() || base_path == "/" {
         inner.layer(cors)
@@ -353,7 +359,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let addr: SocketAddr = "127.0.0.1:8081".parse().unwrap();
     println!("Listening on http://{}{}", addr, base_path);
-    axum::serve(TcpListener::bind(addr).await?, app).await?;
+
+    // let addr: SocketAddr = "127.0.0.1:8081".parse().unwrap();
+    // println!("Listening on http://{}{}", addr, base_path);
+    // axum::serve(TcpListener::bind(addr).await?, app).await?;
+
+    // Updated server start:
+    let listener = TcpListener::bind(addr).await?;
+    axum::serve(listener, app.into_make_service())
+        .await?;
 
     Ok(())
 }
@@ -490,7 +504,7 @@ async fn receive_message(
     }
 }
 
-const SECRET: &str = "randomString";
+pub type AuthSession = axum_login::AuthSession<Backend>;
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Claims {
@@ -502,120 +516,20 @@ pub struct Claims {
 #[derive(Clone, Debug)]
 pub struct User {
     pub username: String,
-    pub password_hash: String,
+    pub password_hash: Option<String>,
 }
 
 impl AuthUser for User {
     type Id = String;
+
     fn id(&self) -> Self::Id {
         self.username.clone()
     }
+
     fn session_auth_hash(&self) -> &[u8] {
-        self.password_hash.as_bytes()
+        self.username.as_bytes()
     }
 }
-
-fn resolve_jwt(token: &str) -> Result<TokenData<Claims>, StatusCode> {
-    decode::<Claims>(
-        token,
-        &DecodingKey::from_secret(SECRET.as_bytes()),
-        &Validation::default(),
-    )
-    .map_err(|_| StatusCode::UNAUTHORIZED)
-}
-
-fn retrive_user(username: String) -> Option<User> {
-    if username == "testuser" {
-        let password_hash = hash("password123", DEFAULT_COST).unwrap();
-
-        Some(User {
-            username,
-            password_hash,
-        })
-    } else {
-        None
-    }
-}
-
-pub fn verify_password(password: String, hash: String) -> Result<bool, BcryptError> {
-    verify(password, &hash)
-}
-
-fn encode_token(user: String) -> Result<String, StatusCode> {
-    let now = Utc::now();
-    let exp = (now + OtherDuration::hours(24)).timestamp() as usize;
-    let iat = now.timestamp() as usize;
-    let claims = Claims { exp, iat, user };
-    encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(SECRET.as_bytes()),
-    )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
-}
-
-// pub struct JwtToken(pub String);
-
-pub async fn sign_in(
-    State(_): State<AppState>,
-    Json(request): Json<LoginData>,
-) -> Result<Json<ResponseMessage>, StatusCode> {
-    let user = retrive_user(request.user.clone()).ok_or(StatusCode::UNAUTHORIZED)?;
-    if !verify_password(request.password, user.password_hash.clone())
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-    let token = encode_token(user.username)?;
-    Ok(Json(ResponseMessage { response: token }))
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct LoginData {
-    pub user: String,
-    pub password: String,
-}
-
-type AuthSession = axum_login::AuthSession<Backend>;
-
-// #[derive(Deserialize, Clone)]
-// struct LoginForm {
-//     username: String,
-//     password: String,
-// }
-#[derive(Deserialize)]
-struct JwtTokenForm {
-    token: String,
-}
-
-#[axum::debug_handler]
-async fn axum_login_method(
-    Extension(mut auth_session): Extension<AuthSession>,
-    Form(form): Form<JwtTokenForm>,
-) -> impl IntoResponse {
-    // Decode the token and get the token data struct
-    let token_data = match resolve_jwt(&form.token) {
-        Ok(data) => data,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
-    };
-
-    // Extract the username from the claims
-    let username = token_data.claims.user;
-
-    // Retrieve the user by username
-    let user = match retrive_user(username) {
-        Some(user) => user,
-        None => return StatusCode::UNAUTHORIZED.into_response(),
-    };
-
-    // Perform login
-    if auth_session.login(&user).await.is_err() {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
-
-    Redirect::to("/main.html").into_response()
-}
-
 
 #[derive(Clone, Default)]
 pub struct Backend {
@@ -628,32 +542,89 @@ impl AuthnBackend for Backend {
     type Credentials = String;
     type Error = Infallible;
 
-    async fn authenticate(
-        &self,
-        token: Self::Credentials,
-    ) -> Result<Option<Self::User>, Self::Error> {
-        let user = resolve_jwt(&token)
-            .ok()
-            .and_then(|data| retrive_user(data.claims.user));
+    async fn authenticate(&self, token: Self::Credentials) -> Result<Option<Self::User>, Self::Error> {
+        let user = resolve_jwt(&token).ok().map(|data| User {
+            username: data.claims.user,
+            password_hash: None,
+        });
         Ok(user)
     }
 
-    async fn get_user(
-        &self,
-        user_id: &<Self::User as AuthUser>::Id,
-    ) -> Result<Option<Self::User>, Self::Error> {
-        Ok(self.users.get(user_id).cloned())
+    async fn get_user(&self, user_id: &String) -> Result<Option<Self::User>, Self::Error> {
+        Ok(Some(User {
+            username: user_id.clone(),
+            password_hash: None,
+        }))
     }
 }
-fn sanitize_next_url(next: &str) -> &str {
-    // if next.starts_with('/') && !next.starts_with("/login") {
-    //     next
-    // } else {
-    //     "/main.html"
-    // }
-     "/main.html"
+
+const SECRET: &str = "randomString";
+
+fn resolve_jwt(token: &str) -> Result<TokenData<Claims>, StatusCode> {
+    decode::<Claims>(
+        token,
+        &DecodingKey::from_secret(SECRET.as_bytes()),
+        &Validation::default(),
+    ).map_err(|_| StatusCode::UNAUTHORIZED)
 }
 
+fn encode_token(user: String) -> Result<String, StatusCode> {
+    let now = Utc::now();
+    let exp = (now + chrono::Duration::hours(24)).timestamp() as usize;
+    let iat = now.timestamp() as usize;
+    let claims = Claims { exp, iat, user };
+
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(SECRET.as_bytes()),
+    ).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct LoginData {
+    pub user: String,
+    pub password: String,
+}
+
+#[derive(Deserialize)]
+pub struct JwtTokenForm {
+    pub token: String,
+}
+
+#[axum::debug_handler]
+pub async fn sign_in(
+    State(_): State<AppState>,
+    Form(request): Form<LoginData>
+) -> Result<Json<ResponseMessage>, StatusCode> {
+    let user = retrive_user(request.user.clone()).ok_or(StatusCode::UNAUTHORIZED)?;
+
+    let password_valid = verify_password(request.password, user.password_hash.unwrap())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if !password_valid {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let token = encode_token(user.username)?;
+    Ok(Json(ResponseMessage  { response: token }))
+}
+
+pub fn retrive_user(username: String) -> Option<User> {
+    if username == "testuser" {
+        let password_hash = bcrypt::hash("password123", bcrypt::DEFAULT_COST).ok();
+        Some(User {
+            username,
+            password_hash,
+        })
+    } else {
+        None
+    }
+}
+
+pub fn verify_password(password: String, hash: String) -> Result<bool, bcrypt::BcryptError> {
+    bcrypt::verify(password, &hash)
+}
 
 async fn serve_html_with_replacement(
     file: &str,
@@ -680,7 +651,11 @@ async fn serve_html_with_replacement(
         .unwrap())
 }
 
-async fn handle_static_request(req: Request<Body>, state: Arc<AppState>) -> Response<Body> {
+async fn handle_static_request(
+    Extension(state): Extension<Arc<AppState>>,
+    req: Request<Body>,
+) -> Result<Response<Body>, StatusCode> {
+ 
     let path = req.uri().path();
     let file = if path == "/" || path.is_empty() {
         "index.html"
@@ -689,17 +664,56 @@ async fn handle_static_request(req: Request<Body>, state: Arc<AppState>) -> Resp
     };
 
     match serve_html_with_replacement(file, &state).await {
-        Ok(res) => res,
-        Err(status) => Response::builder()
+        Ok(res) => Ok(res),
+        Err(status) => Ok(Response::builder()
             .status(status)
             .header("content-type", "text/plain")
             .body(format!("Error serving `{}`", file).into())
-            .unwrap(),
+            .unwrap()),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct AuthenticateParams {
+    next: String,
+    jwk: String,
+}
+
+async fn authenticate_route(
+    State(_state): State<AppState>,
+    Query(params): Query<AuthenticateParams>,
+    mut auth_session: AuthSession,
+) -> impl IntoResponse {
+    match resolve_jwt(&params.jwk) {
+        Ok(token_data) => {
+            let user = User {
+                username: token_data.claims.user,
+                password_hash: None,
+            };
+
+            if let Err(e) = auth_session.login(&user).await {
+                eprintln!("Failed to log in user: {:?}", e);
+                return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to log in").into_response();
+            }
+
+            if params.next.starts_with('/') {
+                if let Ok(uri) = params.next.parse::<Uri>() {
+                    return Redirect::to(&uri.to_string()).into_response();
+                } else {
+                    return (StatusCode::BAD_REQUEST, "Invalid next parameter: unable to parse URI").into_response();
+                }
+            } else {
+                return (StatusCode::BAD_REQUEST, "Invalid next parameter: must start with '/'").into_response();
+            }
+        }
+        Err(_) => {
+            (StatusCode::UNAUTHORIZED, "Invalid token").into_response()
+        }
     }
 }
 
 
-fn routes_static(state: Arc<AppState>) -> Router {
+fn routes_static(state: Arc<AppState>) -> Router<AppState> {
     let session_store = MemoryStore::default();
     let session_layer = SessionManagerLayer::new(session_store);
 
@@ -707,33 +721,20 @@ fn routes_static(state: Arc<AppState>) -> Router {
     let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
 
     let public = Router::new()
-        // Serve login form GET /login
-        // .route("/login", get(login_form))
-        // Handle login POST /login (with form token)
-        // .route("/login", post(axum_login_method))
-        // Static files etc
-        .route("/", get({
-            let state = state.clone();
-            move |req| {
-                let state = state.clone();
-                async move { handle_static_request(req, state).await }
-            }
-        }).post(axum_login_method));
+        // .route("/login", get(login_page).post(sign_in))
+        .route("/authenticate", get(authenticate_route))
+        .route("/index.html", get(handle_static_request))
+        .layer(AddExtensionLayer::new(state.clone()));
 
-    // Protected routes, require login
-    let protected = Router::new()
-        .route("/main.html", get({
-            let state = state.clone();
-            move |req| {
-                let state = state.clone();
-                async move { handle_static_request(req, state).await }
-            }
-        }))
-        .layer(auth_layer)
-        .layer(login_required!(Backend, login_url = "/login"));
+        let protected = Router::new()
+        .route("/main.html", get(handle_static_request))
+        .layer(AddExtensionLayer::new(state.clone()))
+        .route_layer(login_required!(Backend, login_url = "/index.html"));
 
-    public.merge(protected)
+    public.merge(protected).route_layer(auth_layer)
 }
+
+
 
 async fn get_message(
     State(state): State<AppState>,
