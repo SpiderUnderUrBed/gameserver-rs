@@ -124,30 +124,35 @@ async function fetchNodes() {
 }
 fetchNodes()
 
-async function startServer(){
+async function startServer() {
     try {
-        const response = await fetch(`${basePath}/api/general`, {  
+        console.log('Sending request to start server...');
+        const response = await fetch(`${basePath}/api/general`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ 
-                message: "start_server",
-                type: "command",
-                authcode: "0"
-            })
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: "start_server", type: "command", authcode: "0", kind: "IncomingMessage" }),
         });
 
+        console.log('Response status:', response.status);
+
+        const text = await response.text(); 
+
         if (response.ok) {
-            const data = await response.json();
-            document.getElementById('message').innerText = `Server Response: ${data.response}`;
+            try {
+                const data = JSON.parse(text);
+                console.log('Server response data:', data);
+                document.getElementById('message').innerText = `Server Response: ${data.response}`;
+            } catch {
+                document.getElementById('message').innerText = `Invalid JSON response: ${text}`;
+            }
         } else {
-            const error = await response.json();
-            document.getElementById('message').innerText = `Failed: ${error}`;
+            document.getElementById('message').innerText = `Failed (${response.status}): ${text}`;
+            console.error('Error response text:', text);
         }
+
     } catch (error) {
+        console.error('Fetch error:', error);
         document.getElementById('message').innerText = `Error: ${error.message}`;
-        console.error('Error:', error);
     }
 }
 
