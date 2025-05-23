@@ -17,7 +17,7 @@ VOLUME ["/usr/src/app"]
 EXPOSE 8080
 
 # Start with cargo-watch for hot-reloading, ignoring the src/html directory
-CMD ["cargo", "watch", "--ignore", "src/html/*", "--ignore", "src/css/*", "--ignore", "src/scripts/*", "--ignore", "src/gameserver/*", "-x", "run"]
+CMD ["cargo", "watch", "--ignore", "src/html/*", "--ignore", "src/css/*", "--ignore", "src/scripts/*", "--ignore", "src/gameserver/*", "-x", "run --features full-stack"]
 # -x watch
 # cargo run .
 # cargo watch -x run

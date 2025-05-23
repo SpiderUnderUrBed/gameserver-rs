@@ -10,6 +10,19 @@ const SERVER_DIR: &str = "server";
 
 struct Minecraft;
 
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct List {
+    list: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct MessagePayload {
+    r#type: String,
+    message: String,
+    authcode: String,
+}
+
+
 trait Provider {
     fn pre_hook(&self) -> Option<Command>;
     fn install(&self) -> Option<Command>;
@@ -121,15 +134,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 loop {
                     tokio::select! {
                         Some(msg) = cmd_rx.recv() => {
+                            // if let Ok(payload) = serde_json::from_str::<Value>(&msg) {
+                            //     println!("B");
+                            //     // Append newline here:
+                            //     let _ = writer.write_all((msg.clone() + "\n").as_bytes()).await;
+                            // } else {
+                            //     let payload = json!({"type":"info","data":msg,"authcode": "0"}).to_string() + "\n";
+                            //     let _ = writer.write_all(payload.as_bytes()).await;
+                            // }
                             let payload = json!({"type":"info","data":msg,"authcode": "0"}).to_string() + "\n";
                             let _ = writer.write_all(payload.as_bytes()).await;
                         }
                         Some(out) = out_rx.recv() => {
+                            println!("{}", out);
+                            // let payload = json!({"type":"info","data":out,"authcode": "0"}).to_string() + "\n";
+                            // let _ = writer.write_all(payload.as_bytes()).await;
                             let _ = writer.write_all((out + "\n").as_bytes()).await;
                         }
                         else => break,
                     }
                 }
+                
             });
 
             loop {
@@ -145,11 +170,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("{}", line);
 
                 if line.starts_with('{') {
-                    match serde_json::from_str::<Value>(line) {
-                        Ok(val) => {
-                            let typ = val.get("type").and_then(Value::as_str).unwrap_or("");
+                    // match serde_json::from_str::<Value>(line) {
+                    //     Ok(val) => {
+                        if let Ok(val) = serde_json::from_str::<MessagePayload>(line) {
+                            let typ = val.r#type;
+                            //.and_then(Value::as_str).unwrap_or("");
                             if typ == "command" {
-                                let cmd_str = val.get("message").and_then(Value::as_str).unwrap_or("");
+                                let cmd_str = val.message;
+                                //.and_then(Value::as_str).unwrap_or("");
                                 if cmd_str == "create_server" {
                                     if let Some(prov) = get_provider("minecraft") {
                                         if let Some(cmd) = prov.pre_hook() {
@@ -187,7 +215,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let _ = cmd_tx.send(format!("Unknown command: {}", cmd_str)).await;
                                 }
                             } else if typ == "console" {
-                                let input = val.get("message").and_then(Value::as_str).unwrap_or("");
+                                let input = val.message;
+                                //.and_then(Value::as_str).unwrap_or("");
                                 let mut guard = stdin_ref.lock().await;
                                 if let Some(stdin) = guard.as_mut() {
                                     let _ = stdin.write_all(format!("{}\n", input).as_bytes()).await;
@@ -195,11 +224,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
                                 }
                             }
+                        } else if let Ok(val) = serde_json::from_str::<List>(line) {
+                            println!("Recived capabilities");
+                            let _ = out_tx.send(
+                                serde_json::to_string(
+                                    &List {
+                                        list: vec!["all".to_string()]
+                                    }
+                                )
+                                .unwrap()
+                            ).await;
                         }
-                        Err(e) => {
-                            let _ = cmd_tx.send(format!("JSON parse error: {}", e)).await;
-                        }
-                    }
+                        // Err(e) => {
+                        //     let _ = cmd_tx.send(format!("JSON parse error: {}", e)).await;
+                        // }
+                   // }
                 } else if !line.is_empty() {
                     let mut guard = stdin_ref.lock().await;
                     if let Some(stdin) = guard.as_mut() {

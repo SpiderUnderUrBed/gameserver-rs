@@ -20,12 +20,12 @@ use axum::{
     Router,
 };
 use futures_util::{sink::SinkExt, stream::StreamExt};
-use kube::api::Log;
 // use k8s_openapi::chrono;
-use kube::Client;
+
 use mime_guess::from_path;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::{
     fs as tokio_fs,
     io::{AsyncReadExt, AsyncWriteExt},
@@ -43,8 +43,41 @@ use tower_http::add_extension::AddExtensionLayer;
 use axum::extract::FromRequest;
 
 
+#[cfg(feature = "full-stack")]
 mod docker;
+
+#[cfg(feature = "full-stack")]
+use kube::Client;
+
+#[cfg(feature = "full-stack")]
 mod kubernetes;
+
+#[cfg(not(feature = "full-stack"))]
+mod docker {
+    pub async fn build_docker_image() -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
+        Err("This should not be running".into())
+    }
+}
+#[cfg(not(feature = "full-stack"))]
+mod kubernetes {
+    pub async fn create_k8s_deployment(_: &crate::Client) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Err("This should not be running".into())
+    }
+    pub async fn list_node_names(_: crate::Client) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        Err("This should not be running".into())
+    }
+}
+
+#[cfg(not(feature = "full-stack"))]
+#[derive(Clone)]
+struct Client;
+
+#[cfg(not(feature = "full-stack"))]
+impl Client {
+    async fn try_default() -> Result<Self, Box<dyn std::error::Error + Send + Sync>>{
+        Err("This should not be running".into())
+    }
+}
 
 const CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(2);
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(3);
@@ -78,7 +111,7 @@ struct ResponseMessage {
     response: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct List {
     list: Vec<String>,
 }
@@ -165,11 +198,13 @@ async fn handle_server_data(
     data: &[u8],
     ws_tx: &broadcast::Sender<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    println!("A");
     if let Ok(text) = String::from_utf8(data.to_vec()) {
         println!("Raw message from server: {}", text);
         
-        if let Ok(outer_msg) = serde_json::from_str::<serde_json::Value>(&text) {
-            if let Some(inner_data_str) = outer_msg["data"].as_str() {
+        if let Ok(outer_msg) = serde_json::from_str::<InnerData>(&text) {
+            let inner_data_str = outer_msg.data.as_str();
+            //if let Some(inner_data_str) = outer_msg.data.as_str() {
                 if let Ok(inner_data) = serde_json::from_str::<serde_json::Value>(inner_data_str) {
                     if let Some(message_content) = inner_data["data"].as_str() {
                         println!("Extracted message: {}", message_content);
@@ -179,10 +214,14 @@ async fn handle_server_data(
                     println!("Sending raw inner data: {}", inner_data_str);
                     let _ = ws_tx.send(inner_data_str.to_string());
                 }
-            } else {
-                println!("Sending raw message: {}", text);
-                let _ = ws_tx.send(text);
-            }
+            // } else {
+            //     println!("Sending raw message: {}", text);
+            //     let _ = ws_tx.send(text);
+            // }
+        } else if let Ok(data) = serde_json::from_str::<MessagePayload>(&text) {
+            //let _ = ws_tx.send(data.message);
+        } else if let Ok(data) = serde_json::from_str::<List>(&text) {
+            println!("{:#?}", data);
         } else {
             println!("Sending raw text: {}", text);
             let _ = ws_tx.send(text);
@@ -198,6 +237,29 @@ async fn handle_stream(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (mut reader, mut writer) = stream.split();
     let mut buf = vec![0u8; 1024];
+    let mut buf_reader = BufReader::new(reader);
+    let mut line = String::new();
+    
+    let msg = serde_json::to_string(
+        &List {
+            list: vec!["all".to_string()],
+        }
+    )? + "\n";
+    
+    writer.write_all(msg.as_bytes()).await?;
+    match buf_reader.read_line(&mut line).await {
+        Ok(0) => {
+            println!("Error, possibly connection closed");
+        }
+        Ok(_) => {
+            println!("Received line: {}", line.trim_end());
+        }
+        Err(e) => {
+            println!("Error reading line: {:?}", e);
+            return Err(e.into());
+        }
+    }
+    reader = buf_reader.into_inner();
 
     loop {
         let mut rx_guard = rx.lock().await;
@@ -226,15 +288,15 @@ async fn connect_to_server(
         println!("→ trying to connect to 127.0.0.1:8082…");
         match timeout(CONNECTION_TIMEOUT, TcpStream::connect("127.0.0.1:8082")).await {
             Ok(Ok(mut stream)) => {
-                println!("✓ connected!");
+                println!("connected!");
                 handle_stream(rx.clone(), &mut stream, ws_tx.clone()).await?
             }
             Ok(Err(e)) => {
-                eprintln!("✗ connect error: {}", e);
+                eprintln!("connect error: {}", e);
                 tokio::time::sleep(CONNECTION_RETRY_DELAY).await;
             }
             Err(_) => {
-                eprintln!("✗ connect timed out after {:?}", CONNECTION_TIMEOUT);
+                eprintln!("connect timed out after {:?}", CONNECTION_TIMEOUT);
                 tokio::time::sleep(CONNECTION_RETRY_DELAY).await;
             }
         }
