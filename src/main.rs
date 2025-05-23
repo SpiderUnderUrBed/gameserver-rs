@@ -198,13 +198,11 @@ async fn handle_server_data(
     data: &[u8],
     ws_tx: &broadcast::Sender<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    println!("A");
     if let Ok(text) = String::from_utf8(data.to_vec()) {
         println!("Raw message from server: {}", text);
         
         if let Ok(outer_msg) = serde_json::from_str::<InnerData>(&text) {
             let inner_data_str = outer_msg.data.as_str();
-            //if let Some(inner_data_str) = outer_msg.data.as_str() {
                 if let Ok(inner_data) = serde_json::from_str::<serde_json::Value>(inner_data_str) {
                     if let Some(message_content) = inner_data["data"].as_str() {
                         println!("Extracted message: {}", message_content);
@@ -214,14 +212,10 @@ async fn handle_server_data(
                     println!("Sending raw inner data: {}", inner_data_str);
                     let _ = ws_tx.send(inner_data_str.to_string());
                 }
-            // } else {
-            //     println!("Sending raw message: {}", text);
-            //     let _ = ws_tx.send(text);
-            // }
-        } else if let Ok(data) = serde_json::from_str::<MessagePayload>(&text) {
-            //let _ = ws_tx.send(data.message);
-        } else if let Ok(data) = serde_json::from_str::<List>(&text) {
-            println!("{:#?}", data);
+        } else if let Ok(_) = serde_json::from_str::<MessagePayload>(&text) {
+            todo!()
+        } else if let Ok(_) = serde_json::from_str::<List>(&text) {
+            todo!()
         } else {
             println!("Sending raw text: {}", text);
             let _ = ws_tx.send(text);
