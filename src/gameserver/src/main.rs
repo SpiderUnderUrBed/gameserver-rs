@@ -113,7 +113,7 @@ async fn run_command_live_output(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let listener = TcpListener::bind("0.0.0.0:8082").await?;
+    let listener = TcpListener::bind("0.0.0.0:8080").await?;
 
     let shared_stdin: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
 
