@@ -10,6 +10,19 @@ const SERVER_DIR: &str = "server";
 
 struct Minecraft;
 
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct List {
+    list: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct MessagePayload {
+    r#type: String,
+    message: String,
+    authcode: String,
+}
+
+
 trait Provider {
     fn pre_hook(&self) -> Option<Command>;
     fn install(&self) -> Option<Command>;
@@ -100,7 +113,7 @@ async fn run_command_live_output(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let listener = TcpListener::bind("0.0.0.0:8080").await?;
+    let listener = TcpListener::bind("0.0.0.0:8082").await?;
 
     let shared_stdin: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
 
@@ -125,11 +138,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let _ = writer.write_all(payload.as_bytes()).await;
                         }
                         Some(out) = out_rx.recv() => {
+                            // println!("{}", out);
                             let _ = writer.write_all((out + "\n").as_bytes()).await;
                         }
                         else => break,
                     }
                 }
+                
             });
 
             loop {
@@ -141,13 +156,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 break; }
 
                 let line = buf.trim_end();
-
                 if line.starts_with('{') {
-                    match serde_json::from_str::<Value>(line) {
-                        Ok(val) => {
-                            let typ = val.get("type").and_then(Value::as_str).unwrap_or("");
+                        if let Ok(val) = serde_json::from_str::<MessagePayload>(line) {
+                            let typ = val.r#type;
                             if typ == "command" {
-                                let cmd_str = val.get("message").and_then(Value::as_str).unwrap_or("");
+                                let cmd_str = val.message;
                                 if cmd_str == "create_server" {
                                     if let Some(prov) = get_provider("minecraft") {
                                         if let Some(cmd) = prov.pre_hook() {
@@ -160,6 +173,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             let _ = run_command_live_output(cmd, "Post-hook".into(), Some(cmd_tx.clone()), None).await;
                                         }
                                         if let Some(cmd) = prov.start() {
+                                            println!("starting");
                                             let tx = cmd_tx.clone();
                                             let stdin_clone = stdin_ref.clone();
                                             tokio::spawn(async move {
@@ -171,6 +185,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 } else if cmd_str == "start_server" { 
                                     if let Some(prov) = get_provider("minecraft") {
                                         if let Some(cmd) = prov.start() {
+                                            println!("starting");
                                             let tx = cmd_tx.clone();
                                             let stdin_clone = stdin_ref.clone();
                                             tokio::spawn(async move {
@@ -183,7 +198,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let _ = cmd_tx.send(format!("Unknown command: {}", cmd_str)).await;
                                 }
                             } else if typ == "console" {
-                                let input = val.get("message").and_then(Value::as_str).unwrap_or("");
+                                let input = val.message;
                                 let mut guard = stdin_ref.lock().await;
                                 if let Some(stdin) = guard.as_mut() {
                                     let _ = stdin.write_all(format!("{}\n", input).as_bytes()).await;
@@ -191,11 +206,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
                                 }
                             }
+                        } else if let Ok(val) = serde_json::from_str::<List>(line) {
+                            println!("Recived capabilities");
+                            let _ = out_tx.send(
+                                serde_json::to_string(
+                                    &List {
+                                        list: vec!["all".to_string()]
+                                    }
+                                )
+                                .unwrap()
+                            ).await;
                         }
-                        Err(e) => {
-                            let _ = cmd_tx.send(format!("JSON parse error: {}", e)).await;
-                        }
-                    }
                 } else if !line.is_empty() {
                     let mut guard = stdin_ref.lock().await;
                     if let Some(stdin) = guard.as_mut() {

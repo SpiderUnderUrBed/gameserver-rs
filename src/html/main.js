@@ -35,22 +35,44 @@ async function addResult(inputAsString, output, addInput, addOutput) {
 }
 
 async function websocket() {
-    const ws = new WebSocket(`${basePath}/ws`);
+    const ws = new WebSocket(`${basePath}/api/ws`);
     
     ws.addEventListener("open", () => {
         console.log("We are connected");
     });
 
-    ws.addEventListener("message", e => {
-         console.log("Raw WebSocket message:", e.data);
+ws.addEventListener("message", e => {
+    const jsonStrings = e.data.split(/(?<=})\s*(?={)/);
+    
+    jsonStrings.forEach(jsonStr => {
+        let outputMessage = jsonStr;
+        
         try {
-            const data = JSON.parse(e.data);
-            const message = data.message ?? JSON.stringify(data); 
-            addResult("", message, false, true);
-        } catch {
-            addResult("", e.data, false, true);
+            const parsed = JSON.parse(jsonStr);
+            
+            if (parsed.data) {
+                if (typeof parsed.data === 'string') {
+                    try {
+                        const inner = JSON.parse(parsed.data);
+                        outputMessage = inner.data ?? parsed.data;
+                    } catch {
+                        outputMessage = parsed.data;
+                    }
+                } else {
+                    outputMessage = parsed.data;
+                }
+            } else {
+                outputMessage = parsed.message ?? JSON.stringify(parsed);
+            }
+        } catch (err) {
+            console.warn("Non-JSON or bad format:", err);
+            outputMessage = jsonStr;
         }
+
+        const cleanedOutput = outputMessage.replace(/^\[Server\] ?/, "").replace(/\\t/g, "\t").replace(/\\\\/g, "\\");
+        addResult("", cleanedOutput, false, true);
     });
+});
 }
 websocket()
 
@@ -59,7 +81,7 @@ consoleInput.addEventListener("keyup", e => {
     if (code.length === 0) return;
     
     if (e.key === "Enter") {
-        const ws = new WebSocket(`${basePath}/ws`);
+        const ws = new WebSocket(`${basePath}/api/ws`);
         
         ws.onopen = () => {
             ws.send(JSON.stringify({
@@ -102,30 +124,35 @@ async function fetchNodes() {
 }
 fetchNodes()
 
-async function startServer(){
+async function startServer() {
     try {
-        const response = await fetch(`${basePath}/api/general`, {  
+        console.log('Sending request to start server...');
+        const response = await fetch(`${basePath}/api/general`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ 
-                message: "start_server",
-                type: "command",
-                authcode: "0"
-            })
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: "start_server", type: "command", authcode: "0", kind: "IncomingMessage" }),
         });
 
+        console.log('Response status:', response.status);
+
+        const text = await response.text(); 
+
         if (response.ok) {
-            const data = await response.json();
-            document.getElementById('message').innerText = `Server Response: ${data.response}`;
+            try {
+                const data = JSON.parse(text);
+                console.log('Server response data:', data);
+                document.getElementById('message').innerText = `Server Response: ${data.response}`;
+            } catch {
+                document.getElementById('message').innerText = `Invalid JSON response: ${text}`;
+            }
         } else {
-            const error = await response.json();
-            document.getElementById('message').innerText = `Failed: ${error}`;
+            document.getElementById('message').innerText = `Failed (${response.status}): ${text}`;
+            console.error('Error response text:', text);
         }
+
     } catch (error) {
+        console.error('Fetch error:', error);
         document.getElementById('message').innerText = `Error: ${error.message}`;
-        console.error('Error:', error);
     }
 }
 
