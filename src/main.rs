@@ -67,6 +67,23 @@ mod kubernetes {
         Err("This should not be running".into())
     }
 }
+#[cfg(not(feature = "full-stack"))]
+static TcpUrl: &str = "127.0.0.1:8082";
+
+#[cfg(not(feature = "full-stack"))]
+static LocalUrl: &str = "127.0.0.1:8081";
+
+#[cfg(not(feature = "full-stack"))]
+static K8S_WORKS: bool = false;
+
+#[cfg(feature = "full-stack")]
+static TcpUrl: &str = "gameserver-rs:8080";
+
+#[cfg(feature = "full-stack")]
+static LocalUrl: &str = "127.0.0.1:8080";
+
+#[cfg(feature = "full-stack")]
+static K8S_WORKS: bool = true;
 
 #[cfg(not(feature = "full-stack"))]
 #[derive(Clone)]
@@ -191,7 +208,7 @@ impl ApiCall for ApiCalls {
 
 
 async fn attempt_connection() -> Result<TcpStream, Box<dyn std::error::Error + Send + Sync>> {
-    timeout(CONNECTION_TIMEOUT, TcpStream::connect("127.0.0.1:8082")).await?.map_err(Into::into)
+    timeout(CONNECTION_TIMEOUT, TcpStream::connect(TcpUrl)).await?.map_err(Into::into)
 }
 
 async fn handle_server_data(
@@ -279,8 +296,8 @@ async fn connect_to_server(
     ws_tx: broadcast::Sender<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     loop {
-        println!("→ trying to connect to 127.0.0.1:8082…");
-        match timeout(CONNECTION_TIMEOUT, TcpStream::connect("127.0.0.1:8082")).await {
+        println!("→ trying to connect to {}…", TcpUrl);
+        match timeout(CONNECTION_TIMEOUT, TcpStream::connect(TcpUrl)).await {
             Ok(Ok(mut stream)) => {
                 println!("connected!");
                 handle_stream(rx.clone(), &mut stream, ws_tx.clone()).await?
@@ -356,7 +373,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (tcp_tx, tcp_rx) = mpsc::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
 
     let mut client: Option<Client> = None;
-    if ENABLE_K8S_CLIENT {
+    if ENABLE_K8S_CLIENT && K8S_WORKS {
         client = Some(Client::try_default().await?);
     }
 
@@ -413,7 +430,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Router::new().nest(&base_path, inner).layer(cors)
     };
 
-    let addr: SocketAddr = "127.0.0.1:8081".parse().unwrap();
+    let addr: SocketAddr = LocalUrl.parse().unwrap();
     println!("Listening on http://{}{}", addr, base_path);
 
     // let addr: SocketAddr = "127.0.0.1:8081".parse().unwrap();
