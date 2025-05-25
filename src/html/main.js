@@ -166,17 +166,28 @@ async function createDefaultServer() {
             body: JSON.stringify({ 
                 message: "create_server",
                 type: "command",
-                authcode: "0"
+                authcode: "0",
+                kind: "IncomingMessage"
             })
         });
 
         if (response.ok) {
-            const data = await response.json();
-            document.getElementById('message').innerText = `Server Response: ${data.response}`;
+            try {
+                const data = await response.json();
+                document.getElementById('message').innerText = `Server Response: ${data.response}`;
+            } catch (parseError) {
+                const text = await response.text();
+                document.getElementById('message').innerText = `Success, but invalid JSON: ${text}`;
+            }
         } else {
-            const error = await response.json();
-            document.getElementById('message').innerText = `Failed: ${error}`;
+            try {
+                const text = await response.text();
+                document.getElementById('message').innerText = `Failed (${response.status}): ${text}`;
+            } catch (err) {
+                document.getElementById('message').innerText = `Unknown error occurred`;
+            }
         }
+        
     } catch (error) {
         document.getElementById('message').innerText = `Error: ${error.message}`;
         console.error('Error:', error);
