@@ -445,6 +445,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
+fn routes_static(state: Arc<AppState>) -> Router<AppState> {
+    let session_store = MemoryStore::default();
+    let session_layer = SessionManagerLayer::new(session_store);
+
+    let backend = Backend::default();
+    let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
+
+    let public = Router::new()
+        // .route("/login", get(login_page).post(sign_in))
+        .route("/", get(handle_static_request))
+        .route("/authenticate", get(authenticate_route))
+        .route("/index.html", get(handle_static_request))
+        .layer(AddExtensionLayer::new(state.clone()));
+
+        let protected = Router::new()
+        .route("/{*wildcard}", get(handle_static_request))
+        .layer(AddExtensionLayer::new(state.clone()))
+        .route_layer(login_required!(Backend, login_url = "/index.html"));
+
+    public.merge(protected).route_layer(auth_layer)
+}
+
+
+
 async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
@@ -785,27 +809,6 @@ async fn authenticate_route(
     }
 }
 
-
-fn routes_static(state: Arc<AppState>) -> Router<AppState> {
-    let session_store = MemoryStore::default();
-    let session_layer = SessionManagerLayer::new(session_store);
-
-    let backend = Backend::default();
-    let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
-
-    let public = Router::new()
-        // .route("/login", get(login_page).post(sign_in))
-        .route("/authenticate", get(authenticate_route))
-        .route("/index.html", get(handle_static_request))
-        .layer(AddExtensionLayer::new(state.clone()));
-
-        let protected = Router::new()
-        .route("/{*wildcard}", get(handle_static_request))
-        .layer(AddExtensionLayer::new(state.clone()))
-        .route_layer(login_required!(Backend, login_url = "/index.html"));
-
-    public.merge(protected).route_layer(auth_layer)
-}
 
 
 
