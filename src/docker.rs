@@ -132,11 +132,13 @@ pub async fn build_docker_image() -> Result<(), Box<dyn std::error::Error + Send
 
     let stream_body = StreamBody::new(boxed_stream);
 
+    let repo = std::env::var("DOCKER_REPO");
+
     // 3. Configure build options
     let options = BuildImageOptions {
         dockerfile: "Dockerfile",
         //t: "localhost:5000/gameserver:latest"
-        t: "gameserver:latest",
+        t: &format!("{}gameserver:latest", repo.clone().unwrap_or("".to_string())),
         rm: true,
         forcerm: true,
         ..Default::default()
@@ -166,14 +168,14 @@ pub async fn build_docker_image() -> Result<(), Box<dyn std::error::Error + Send
         }
     }
 
-    if ENABLE_TAG_AND_PUSH {
+    if ENABLE_TAG_AND_PUSH && !repo.clone().unwrap_or_else(|_| "".to_string()).is_empty() {
         // Tag the image before pushing
         docker.tag_image(
             "gameserver:latest",
             Some(TagImageOptions {
                 //repo: "gameserver".to_string(),
                 // repo: "localhost:5000/gameserver".to_string(),
-                repo: "192.168.68.77:5000/gameserver".to_string(),
+                repo: format!("{}/gameserver", repo.clone().unwrap_or("localhost:5000".to_string())),
                 tag: "latest".to_string(),
             }),
         ).await?;

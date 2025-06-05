@@ -95,8 +95,8 @@ spec:
       labels:
         app: rust-app
     spec:
-      # nodeSelector:
-      #   kubernetes.io/hostname: raspberrypi 
+      nodeSelector:
+        kubernetes.io/hostname: raspberrypi 
       serviceAccountName: pod-reader
       # dnsPolicy: "ClusterFirstWithHostNet"
       # dnsConfig:
@@ -113,7 +113,9 @@ spec:
             - containerPort: 8081
           env:  
             - name: SITE_URL 
-              value: "/gameserver-rs"  
+              value: "/gameserver-rs" 
+            - name: DOCKER_REPO
+              value: "localhost:5000" 
           volumeMounts:
             - name: source-code
               mountPath: /usr/src/app
