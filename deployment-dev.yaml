@@ -118,6 +118,16 @@ spec:
               value: "localhost:5000" 
             - name: TESTING_DEPLOYMENT
               value: "true"
+            - name: ADMIN_USER
+              value: testing
+            - value: ADMIN_PASSWORD
+              value: test
+            - name: MYSQL_USER
+              value: "gameserver"
+            - name: MYSQL_PASSWORD
+              value: "gameserverpass"
+            - name: MYSQL_DATABASE
+              value: "gameserver_db"
           volumeMounts:
             - name: source-code
               mountPath: /usr/src/app
@@ -165,3 +175,71 @@ spec:
         - name: rust-service
           port: 80
 ---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mysql-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+  storageClassName: local-path
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+spec:
+  selector:
+    matchLabels:
+      app: mysql
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: extranuc
+      containers:
+        - name: mysql
+          image: mysql:8
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              value: "rootpassword"
+            - name: MYSQL_DATABASE
+              value: "gameserver_db"
+            - name: MYSQL_USER
+              value: "gameserver"
+            - name: MYSQL_PASSWORD
+              value: "gameserverpass"
+          ports:
+            - name: mysql
+              containerPort: 3306
+            - name: mysqlx
+              containerPort: 33060
+          volumeMounts:
+            - name: mysql-pvc
+              mountPath: /var/lib/mysql
+      volumes:
+        - name: mysql-pvc
+          persistentVolumeClaim:
+            claimName: mysql-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+spec:
+  selector:
+    app: mysql
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+    - name: mysqlx
+      port: 33060
+      targetPort: 33060
+  type: ClusterIP

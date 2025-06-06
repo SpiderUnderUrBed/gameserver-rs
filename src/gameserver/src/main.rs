@@ -122,6 +122,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(format!("0.0.0.0:{}", PORT)).await?;
     println!("Listening on {}", PORT);
 
+    let verbose = std::env::var("VERBOSE").is_ok();
+
     let shared_stdin: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
 
     loop {

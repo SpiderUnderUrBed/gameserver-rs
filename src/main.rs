@@ -9,7 +9,8 @@ use axum::http::Uri;
 use axum::response::Redirect;
 use axum::{Extension, Form};
 use axum_login::tower_sessions::{MemoryStore, SessionManagerLayer};
-use axum_login::{login_required, AuthManagerLayerBuilder, AuthUser, AuthnBackend, UserId};
+use axum_login::AuthUser;
+use axum_login::{login_required, AuthManagerLayerBuilder, AuthnBackend, UserId};
 use axum::middleware::{self, Next};
 use axum::{
     body::Body,
@@ -42,6 +43,8 @@ use async_trait::async_trait;
 use tower_http::add_extension::AddExtensionLayer;
 use axum::extract::FromRequest;
 
+mod database;
+use database::User;
 
 #[cfg(feature = "full-stack")]
 mod docker;
@@ -68,10 +71,10 @@ mod kubernetes {
     }
 }
 #[cfg(not(feature = "full-stack"))]
-static TcpUrl: &str = "127.0.0.1:8082";
+static TcpUrl: &str = "0.0.0.0:8082";
 
 #[cfg(not(feature = "full-stack"))]
-static LocalUrl: &str = "127.0.0.1:8081";
+static LocalUrl: &str = "0.0.0.0:8081";
 
 #[cfg(not(feature = "full-stack"))]
 static K8S_WORKS: bool = false;
@@ -80,7 +83,7 @@ static K8S_WORKS: bool = false;
 static TcpUrl: &str = "gameserver-service:8080";
 
 #[cfg(feature = "full-stack")]
-static LocalUrl: &str = "127.0.0.1:8080";
+static LocalUrl: &str = "0.0.0.0:8080";
 
 #[cfg(feature = "full-stack")]
 static K8S_WORKS: bool = true;
@@ -352,6 +355,7 @@ struct AppState {
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("Starting server...");
 
+    let verbose = std::env::var("VERBOSE").is_ok();
     let base_path = std::env::var("SITE_URL")
         .map(|s| {
             let mut s = s.trim().to_string();
@@ -433,7 +437,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = LocalUrl.parse().unwrap();
     println!("Listening on http://{}{}", addr, base_path);
 
-    // let addr: SocketAddr = "127.0.0.1:8081".parse().unwrap();
+    // let addr: SocketAddr = "0.0.0.0:8081".parse().unwrap();
     // println!("Listening on http://{}{}", addr, base_path);
     // axum::serve(TcpListener::bind(addr).await?, app).await?;
 
@@ -610,23 +614,7 @@ pub struct Claims {
     pub user: String,
 }
 
-#[derive(Clone, Debug)]
-pub struct User {
-    pub username: String,
-    pub password_hash: Option<String>,
-}
 
-impl AuthUser for User {
-    type Id = String;
-
-    fn id(&self) -> Self::Id {
-        self.username.clone()
-    }
-
-    fn session_auth_hash(&self) -> &[u8] {
-        self.username.as_bytes()
-    }
-}
 
 #[derive(Clone, Default)]
 pub struct Backend {
@@ -689,12 +677,25 @@ pub struct JwtTokenForm {
     pub token: String,
 }
 
+
+impl AuthUser for User {
+    type Id = String;
+
+    fn id(&self) -> Self::Id {
+        self.username.clone()
+    }
+
+    fn session_auth_hash(&self) -> &[u8] {
+        self.username.as_bytes()
+    }
+}
+
 #[axum::debug_handler]
 pub async fn sign_in(
     State(_): State<AppState>,
     Form(request): Form<LoginData>
 ) -> Result<Json<ResponseMessage>, StatusCode> {
-    let user = retrive_user(request.user.clone()).ok_or(StatusCode::UNAUTHORIZED)?;
+    let user = database::retrive_user(request.user.clone()).ok_or(StatusCode::UNAUTHORIZED)?;
 
     let password_valid = verify_password(request.password, user.password_hash.unwrap())
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -707,17 +708,17 @@ pub async fn sign_in(
     Ok(Json(ResponseMessage  { response: token }))
 }
 
-pub fn retrive_user(username: String) -> Option<User> {
-    if username == "testuser" {
-        let password_hash = bcrypt::hash("password123", bcrypt::DEFAULT_COST).ok();
-        Some(User {
-            username,
-            password_hash,
-        })
-    } else {
-        None
-    }
-}
+// pub fn retrive_user(username: String) -> Option<User> {
+//     if username == "testuser" {
+//         let password_hash = bcrypt::hash("password123", bcrypt::DEFAULT_COST).ok();
+//         Some(User {
+//             username,
+//             password_hash,
+//         })
+//     } else {
+//         None
+//     }
+// }
 
 pub fn verify_password(password: String, hash: String) -> Result<bool, bcrypt::BcryptError> {
     bcrypt::verify(password, &hash)
