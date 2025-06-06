@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::fs;
 use std::{net::SocketAddr, path::Path, sync::Arc};
-
+//
 use axum::extract::Query;
 use axum::http::header::AUTHORIZATION;
 use axum::http::Uri;
@@ -77,7 +77,7 @@ static LocalUrl: &str = "127.0.0.1:8081";
 static K8S_WORKS: bool = false;
 
 #[cfg(feature = "full-stack")]
-static TcpUrl: &str = "gameserver-rs:8080";
+static TcpUrl: &str = "gameserver-service:8080";
 
 #[cfg(feature = "full-stack")]
 static LocalUrl: &str = "127.0.0.1:8080";
@@ -363,7 +363,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         })
         .unwrap_or_default();
 
-    const ENABLE_K8S_CLIENT: bool = false;
+    const ENABLE_K8S_CLIENT: bool = true;
     const ENABLE_INITIAL_CONNECTION: bool = false;
     const FORCE_REBUILD: bool = false;
     const BUILD_DOCKER_IMAGE: bool = true;

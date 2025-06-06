@@ -116,6 +116,8 @@ spec:
               value: "/gameserver-rs" 
             - name: DOCKER_REPO
               value: "localhost:5000" 
+            - name: TESTING_DEPLOYMENT
+              value: "true"
           volumeMounts:
             - name: source-code
               mountPath: /usr/src/app

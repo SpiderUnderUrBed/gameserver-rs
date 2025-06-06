@@ -23,6 +23,12 @@ struct MessagePayload {
 }
 
 
+#[cfg(feature = "full-stack")]
+static PORT: &str = "8080"
+
+#[cfg(not(feature = "full-stack"))]
+static PORT: &str = "8082"
+
 trait Provider {
     fn pre_hook(&self) -> Option<Command>;
     fn install(&self) -> Option<Command>;
@@ -113,7 +119,8 @@ async fn run_command_live_output(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let listener = TcpListener::bind("0.0.0.0:8082").await?;
+    let listener = TcpListener::bind(format!("0.0.0.0:{}", PORT)).await?;
+    println!("Listening on {}", PORT);
 
     let shared_stdin: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
 

@@ -21,19 +21,19 @@ spec:
       containers:
         - name: gameserver
           image: localhost:5000/gameserver:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           ports:
             - containerPort: 8080
           volumeMounts:
-            - name: docker-socket
-              mountPath: /var/run/docker.sock
+            # - name: docker-socket
+            #   mountPath: /var/run/docker.sock
             - name: gameserver-pvc
               mountPath: /usr/src/app
       volumes:
-        - name: docker-socket
-          hostPath:
-            path: /var/run/docker.sock
-            type: Socket
+        # - name: docker-socket
+        #   hostPath:
+        #     path: /var/run/docker.sock
+        #     type: Socket
         - name: gameserver-pvc
           persistentVolumeClaim:
             claimName: gameserver-pvc
