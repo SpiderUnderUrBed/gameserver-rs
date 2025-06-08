@@ -112,13 +112,15 @@ spec:
             - containerPort: 8080
             - containerPort: 8081
           env:  
+            - name: SECRET 
+              value: "test"  
             - name: SITE_URL 
               value: "/gameserver-rs"  
-            - name: MYSQL_USER
+            - name: POSTGRES_USER
               value: "gameserver"
-            - name: MYSQL_PASSWORD
+            - name: POSTGRES_PASSWORD
               value: "gameserverpass"
-            - name: MYSQL_DATABASE
+            - name: POSTGRES_DB
               value: "gameserver_db"
           volumeMounts:
             - name: source-code
@@ -170,7 +172,7 @@ spec:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: mysql-pvc
+  name: gameserver-postgres-pvc
 spec:
   accessModes:
     - ReadWriteOnce
@@ -182,56 +184,49 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: mysql
+  name: gameserver-postgres
 spec:
   selector:
     matchLabels:
-      app: mysql
+      app: gameserver-postgres
   replicas: 1
   template:
     metadata:
       labels:
-        app: mysql
+        app: gameserver-postgres
     spec:
       nodeSelector:
-        kubernetes.io/hostname: extranuc
+        kubernetes.io/hostname: raspberrypi
       containers:
-        - name: mysql
-          image: mysql:8
+        - name: gameserver-postgres
+          image: postgres:15
           env:
-            - name: MYSQL_ROOT_PASSWORD
-              value: "rootpassword"
-            - name: MYSQL_DATABASE
+            - name: POSTGRES_DB
               value: "gameserver_db"
-            - name: MYSQL_USER
+            - name: POSTGRES_USER
               value: "gameserver"
-            - name: MYSQL_PASSWORD
+            - name: POSTGRES_PASSWORD
               value: "gameserverpass"
           ports:
-            - name: mysql
-              containerPort: 3306
-            - name: mysqlx
-              containerPort: 33060
+            - name: postgres
+              containerPort: 5432
           volumeMounts:
-            - name: mysql-pvc
-              mountPath: /var/lib/mysql
+            - name: gameserver-postgres-pvc
+              mountPath: /var/lib/postgresql/data
       volumes:
-        - name: mysql-pvc
+        - name: gameserver-postgres-pvc
           persistentVolumeClaim:
-            claimName: mysql-pvc
+            claimName: gameserver-postgres-pvc
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: mysql
+  name: gameserver-postgres
 spec:
   selector:
-    app: mysql
+    app: gameserver-postgres
   ports:
-    - name: mysql
-      port: 3306
-      targetPort: 3306
-    - name: mysqlx
-      port: 33060
-      targetPort: 33060
+    - name: postgres
+      port: 5432
+      targetPort: 5432
   type: ClusterIP

@@ -60,3 +60,71 @@ body {
 .console-input:focus {
     background: rgba(255, 255, 255, 0.07);
 }
+.whole {
+    background-color: #828282;
+    display: flex;
+    /* justify-content: center; */
+    height: 100vh;
+}
+.side-panel {
+    background-color: #00ffcc;
+    width: 200px; 
+    height: 100vh; 
+}
+/* .center {
+    flex: 1; 
+} */
+
+.users-element {
+    background-color: red;
+}
+.user-whole {
+    background-color: #828282;
+    display: flex;
+    justify-content: center;
+    height: 100vh;
+}
+.user-operations {
+    background-color: white;
+    height: 5vh;
+    width: 100%;
+}
+.users {
+    background-color: #ff0000;
+    height: 5vh;
+    width: 100%;
+}
+.user-background {
+    background-color: #000000;
+    width: 20vw;
+    height: 20vh;
+    /* display: flex;
+    row-gap: 20vh; */
+}
+.user-center {
+    display: flex;
+    justify-content: center;
+    flex-direction: column;
+    /* background-color: #000000;
+    width: 20vw;
+    height: 20vh; */
+}
+.panel-n-setup {
+    display: flex;
+    height: 100vh;
+}
+.panel {
+    background-color: #000000;
+    width: 10vh;
+}
+.user-button-page {
+    /* height: 20vh;
+    width: 20wh; */
+}
+
+  /* .header {
+    background: rgba(7, 234, 234, 0.445);
+    display: flex;
+    justify-content: center;
+    padding: 10px;
+  } */

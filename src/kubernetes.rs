@@ -21,7 +21,7 @@ pub async fn list_node_names(client: Client) -> Result<Vec<String>, Box<dyn std:
 }
 pub async fn create_k8s_deployment(client: &Client) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     //let testing_deployment = !std::env::var("TESTING_DEPLOYMENT").unwrap_or("").is_empty();
-    let deployment = if std::env::var("TESTING_DEPLOYMENT").is_ok(){
+    let deployment = if std::env::var("TESTING").is_ok(){
         println!("Using dev deployment");
         "deployment-dev.yaml"
     } else {

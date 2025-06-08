@@ -7,34 +7,36 @@
     <title>Document</title>
     <link rel="stylesheet" href="main.css">
     <script src="main.js" defer></script>
-    <!-- <style>
-        .header {
-            justify-content: center;
-            display: flex;
-            background-color: rgba(7, 234, 234, 0.445);
-        }
-        .nodes-element {
-            background-color: red;
-        }
-    </style> -->
 </head>
 <body>
-    <div class="header">
-        <h2>Server panel</h2>
-    </div>
-    <button onclick="createDefaultServer()">Create server</button>
-    <button onclick="startServer()">Start server</button>
-    <div class="nodes"></div>
-    <!-- <div id="container"></div> -->
-    <p id="message"></p>
-    <input type="text" id="userMessage" placeholder="Enter a message">
-    <button onclick="sendMessage()">Send Message</button>
-    <div class="console">
-        <div class="console-history">
-            <div class="console-input-log"></div>
-            <div class="console-output-log"></div>
+    <div class="whole">
+      <!-- <div class="side-panel"></div> -->
+      <div class="center">
+        <div class="header">
+          <h2>Server panel</h2>
         </div>
-        <input class="console-input" type="text" autofocus spellcheck="false">
+        <div class="panel-n-setup">
+            <div class="panel">
+                <button class="user-button-page" onclick="window.location.href='users.html'">Users</button>
+                <!-- <a href="users.html" class="user-buttons">Users</a> -->
+            </div>
+            <div class="center-inner">
+                <div class="top-buttons">
+                <button onclick="createDefaultServer()">Create server</button>
+                <button onclick="startServer()">Start server</button>
+                <div class="nodes"></div>
+                </div>
+                <p id="message"></p>
+                <div class="console">
+                <div class="console-history">
+                    <div class="console-input-log"></div>
+                    <div class="console-output-log"></div>
+                </div>
+                <input class="console-input" type="text" autofocus spellcheck="false" />
+                </div>
+            </div>
+        </div>
+      </div>
     </div>
-</body>
+  </body>
 </html>

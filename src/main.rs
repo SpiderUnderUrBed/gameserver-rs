@@ -45,6 +45,8 @@ use axum::extract::FromRequest;
 
 mod database;
 use database::User;
+use database::CreateUserData;
+use database::RemoveUserData;
 
 #[cfg(feature = "full-stack")]
 mod docker;
@@ -133,7 +135,7 @@ struct ResponseMessage {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct List {
-    list: Vec<String>,
+    list: ApiCalls,
 }
 
 enum WebErrors {
@@ -172,7 +174,7 @@ impl IntoResponse for WebErrors {
 // }
 
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 struct IncomingMessage {
     message: String,
     #[serde(rename = "type")]
@@ -180,35 +182,18 @@ struct IncomingMessage {
     authcode: String,
 }
 
-#[derive(Debug, Deserialize, Clone)]
-#[serde(tag = "kind")]
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(tag = "kind", content = "data")]
 enum ApiCalls {
-    LoginData(LoginData),
+    None,
+    Capabilities(Vec<String>),
+    NodeList(Vec<String>),
+    UserList(Vec<User>),
+    // CreateUserData(CreateUserData),
+    // LoginData(LoginData),
+    UserData(LoginData),
     IncomingMessage(IncomingMessage),
 }
-
-// Trait definition (assumed)
-trait ApiCall {
-    fn standard_response(&self) -> Option<IncomingMessage>;
-    fn login_data(&self) -> Option<LoginData>;
-}
-
-impl ApiCall for ApiCalls {
-    fn standard_response(&self) -> Option<IncomingMessage> {
-        match self {
-            ApiCalls::IncomingMessage(data) => Some(data.clone()),
-            _ => None,
-        }
-    }
-
-    fn login_data(&self) -> Option<LoginData> {
-        match self {
-            ApiCalls::LoginData(data) => Some(data.clone()),
-            _ => None,
-        }
-    }
-}
-
 
 async fn attempt_connection() -> Result<TcpStream, Box<dyn std::error::Error + Send + Sync>> {
     timeout(CONNECTION_TIMEOUT, TcpStream::connect(TcpUrl)).await?.map_err(Into::into)
@@ -256,7 +241,12 @@ async fn handle_stream(
     
     let msg = serde_json::to_string(
         &List {
-            list: vec!["all".to_string()],
+            list: ApiCalls::Capabilities(vec!["all".to_string()])
+            // {
+            //     //let items: Vec<ApiCalls> = vec!["all".to_string()].iter().map(|item| ApiCalls::Capabilities(item.to_string())).collect();
+            //     let items: Vec<ApiCalls> = ApiCalls::Capabilities(vec!["all".to_string()]);
+            //     items
+            // },
         }
     )? + "\n";
     
@@ -349,11 +339,21 @@ struct AppState {
     
     base_path: String,
     client: Option<Client>,
+    database: database::Postgres
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("Starting server...");
+
+    let db_user = std::env::var("POSTGRES_USER").unwrap_or("gameserver".to_string());
+    let db_password = std::env::var("POSTGRES_PASSWORD").unwrap_or("gameserverpass".to_string());
+    let db = std::env::var("POSTGRES_DB").unwrap_or("gameserver_db".to_string());
+    let db_port = std::env::var("POSTGRES_PORT").unwrap_or("5432".to_string());
+    let db_host = std::env::var("POSTGRES_HOST").unwrap_or("gameserver-postgres".to_string());
+
+    let conn = sqlx::postgres::PgPool::connect(&format!("postgres://{}:{}@{}:{}/{}", db_user, db_password, db_host, db_port, db)).await.unwrap();
+    let database = database::Postgres::new(conn);
 
     let verbose = std::env::var("VERBOSE").is_ok();
     let base_path = std::env::var("SITE_URL")
@@ -386,6 +386,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         tcp_rx: Arc::new(Mutex::new(tcp_rx)),
         ws_tx: ws_tx.clone(),
         base_path: base_path.clone(),
+        database,
         client,
     };
 
@@ -419,11 +420,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         let inner = Router::new()
             .route("/api/message", get(get_message))
-            .route("/api/send", post(receive_message))
-            .route("/api/general", post(process_general))
             .route("/api/nodes", get(get_nodes))
             .route("/api/ws", get(ws_handler))
+            .route("/api/users", get(users))
+            .route("/api/send", post(receive_message))
+            .route("/api/general", post(process_general))
             .route("/api/signin", post(sign_in))
+            .route("/api/createuser", post(create_user))
+            .route("/api/deleteuser", post(delete_user))
             .merge(fallback_router)
             .with_state(state.clone());
         
@@ -449,6 +453,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
+async fn create_user(
+    State(state): State<AppState>,
+    Json(request): Json<CreateUserData>
+) -> impl IntoResponse {
+    let result = state.database.create_user_in_db(request).await;
+    StatusCode::CREATED
+}
+
+async fn delete_user(
+    State(state): State<AppState>,
+    Json(request): Json<RemoveUserData>
+) -> impl IntoResponse {
+    let result = state.database.remove_user_in_db(request).await;
+    StatusCode::CREATED
+}
+
+async fn capabilities(
+    State(_): State<AppState>,
+    //Form(request): Form<LoginData>
+) -> impl IntoResponse {
+    
+}
 fn routes_static(state: Arc<AppState>) -> Router<AppState> {
     let session_store = MemoryStore::default();
     let session_layer = SessionManagerLayer::new(session_store);
@@ -517,55 +543,73 @@ async fn process_general(
     State(state): State<AppState>,
     Json(res): Json<ApiCalls>,
 ) -> Result<Json<ResponseMessage>, (StatusCode, String)> {
-    let payload = res.standard_response().unwrap();
-    println!("Processing general message: {:?}", payload);
-    
-    let json_payload = MessagePayload {
-        r#type: payload.message_type.clone(),
-        message: payload.message.clone(),
-        authcode: payload.authcode.clone(),
-    };
+    //let payload = res.standard_response().unwrap();
+    if let ApiCalls::IncomingMessage(payload) = res {
+        println!("Processing general message: {:?}", payload);
+        
+        let json_payload = MessagePayload {
+            r#type: payload.message_type.clone(),
+            message: payload.message.clone(),
+            authcode: payload.authcode.clone(),
+        };
 
-    match serde_json::to_vec(&json_payload) {
-        Ok(mut json_bytes) => {
-            json_bytes.push(b'\n');
- 
-            let tx = state.tcp_tx.clone();
-            let tx_guard = tx.lock().await;
-            
-            match tx_guard.send(json_bytes).await {
-                Ok(_) => {
-                    println!("Successfully forwarded message to TCP server");
-                    Ok(Json(ResponseMessage {
-                        response: format!("Processed: {}", payload.message),
-                    }))
-                },
-                Err(e) => {
-                    eprintln!("Failed to send message to TCP channel: {}", e);
-                    Err((StatusCode::INTERNAL_SERVER_ERROR,
-                        "Failed to forward message to server".to_string()))
+        match serde_json::to_vec(&json_payload) {
+            Ok(mut json_bytes) => {
+                json_bytes.push(b'\n');
+    
+                let tx = state.tcp_tx.clone();
+                let tx_guard = tx.lock().await;
+                
+                match tx_guard.send(json_bytes).await {
+                    Ok(_) => {
+                        println!("Successfully forwarded message to TCP server");
+                        Ok(Json(ResponseMessage {
+                            response: format!("Processed: {}", payload.message),
+                        }))
+                    },
+                    Err(e) => {
+                        eprintln!("Failed to send message to TCP channel: {}", e);
+                        Err((StatusCode::INTERNAL_SERVER_ERROR,
+                            "Failed to forward message to server".to_string()))
+                    }
                 }
             }
+            Err(e) => {
+                eprintln!("Serialization error: {}", e);
+                Err((StatusCode::BAD_REQUEST,
+                    "Invalid message format".to_string()))
+            }
         }
-        Err(e) => {
-            eprintln!("Serialization error: {}", e);
-            Err((StatusCode::BAD_REQUEST,
-                "Invalid message format".to_string()))
-        }
+    } else {
+        Err((StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to forward message to server".to_string()))
     }
+}
+async fn users(State(state): State<AppState>) -> Result<impl IntoResponse, StatusCode> {
+    let users = state.database
+        .fetch_all("users")
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(List { list:  ApiCalls::UserList(users) }))
 }
 
 async fn get_nodes(State(state): State<AppState>) -> impl IntoResponse {
     if state.client.is_some() {
         match kubernetes::list_node_names(state.client.unwrap()).await {
-            Ok(nodes) => Json(List { list: nodes }),
+            Ok(nodes) => {
+                //let items: Json<List<Vec<ApiCalls>>> = Json(List { list: nodes.iter().map(|node| ApiCalls::NodeList(node.to_string())).collect() });
+                // let items: Json<List> = Json(List { list: nodes.iter().map(|node| ApiCalls::NodeList(node.to_string())).collect() });
+                let items: Json<List> = Json(List { list: ApiCalls::NodeList(nodes) });
+                items
+            },
             Err(err) => {
                 eprintln!("Error listing nodes: {}", err);
-                Json(List { list: vec![] })
+                Json(List { list: ApiCalls::None })
             },
         }
     } else {
-        Json(List { list: vec![] })
+        Json(List { list: ApiCalls::None })
     }
 }
 
@@ -574,34 +618,39 @@ async fn receive_message(
     State(state): State<AppState>,
     Json(res): Json<ApiCalls>,
 ) -> Result<Json<ResponseMessage>, (StatusCode, String)> {
-    let payload = res.standard_response().unwrap();
-    let json_payload = MessagePayload {
-        r#type: payload.message_type.clone(),
-        message: payload.message.clone(),
-        authcode: payload.authcode.clone(),
-    };
+    //let payload = res.standard_response().unwrap();
+    if let ApiCalls::IncomingMessage(payload) = res {
+        let json_payload = MessagePayload {
+            r#type: payload.message_type.clone(),
+            message: payload.message.clone(),
+            authcode: payload.authcode.clone(),
+        };
 
-    match serde_json::to_vec(&json_payload) {
-        Ok(mut json_bytes) => {
-            json_bytes.push(b'\n'); 
-            
-            let tx_guard = state.tcp_tx.lock().await;
-            match tx_guard.send(json_bytes).await {
-                Ok(_) => Ok(Json(ResponseMessage {
-                    response: format!("Successfully sent message: {}", payload.message),
-                })),
-                Err(e) => {
-                    eprintln!("Failed to send message to TCP channel: {}", e);
-                    Err((StatusCode::INTERNAL_SERVER_ERROR, 
-                        "Failed to forward message to server".to_string()))
+        match serde_json::to_vec(&json_payload) {
+            Ok(mut json_bytes) => {
+                json_bytes.push(b'\n'); 
+                
+                let tx_guard = state.tcp_tx.lock().await;
+                match tx_guard.send(json_bytes).await {
+                    Ok(_) => Ok(Json(ResponseMessage {
+                        response: format!("Successfully sent message: {}", payload.message),
+                    })),
+                    Err(e) => {
+                        eprintln!("Failed to send message to TCP channel: {}", e);
+                        Err((StatusCode::INTERNAL_SERVER_ERROR, 
+                            "Failed to forward message to server".to_string()))
+                    }
                 }
             }
+            Err(e) => {
+                eprintln!("Serialization error: {}", e);
+                Err((StatusCode::BAD_REQUEST, 
+                    "Invalid message format".to_string()))
+            }
         }
-        Err(e) => {
-            eprintln!("Serialization error: {}", e);
-            Err((StatusCode::BAD_REQUEST, 
-                "Invalid message format".to_string()))
-        }
+    } else {
+        Err((StatusCode::BAD_REQUEST, 
+            "Invalid message format".to_string()))
     }
 }
 
@@ -643,12 +692,15 @@ impl AuthnBackend for Backend {
     }
 }
 
-const SECRET: &str = "randomString";
+// const SECRET: &str = "randomString";
 
 fn resolve_jwt(token: &str) -> Result<TokenData<Claims>, StatusCode> {
+    let secret = std::env::var("SECRET").unwrap_or_else(|_| {
+        panic!("Need to specify a secret");
+    });
     decode::<Claims>(
         token,
-        &DecodingKey::from_secret(SECRET.as_bytes()),
+        &DecodingKey::from_secret(secret.as_bytes()),
         &Validation::default(),
     ).map_err(|_| StatusCode::UNAUTHORIZED)
 }
@@ -659,18 +711,24 @@ fn encode_token(user: String) -> Result<String, StatusCode> {
     let iat = now.timestamp() as usize;
     let claims = Claims { exp, iat, user };
 
+    let secret = std::env::var("SECRET").unwrap_or_else(|_| {
+        panic!("Need to specify a secret");
+    });
+
     encode(
         &Header::default(),
         &claims,
-        &EncodingKey::from_secret(SECRET.as_bytes()),
+        &EncodingKey::from_secret(secret.as_bytes()),
     ).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct LoginData {
     pub user: String,
     pub password: String,
 }
+
+
 
 #[derive(Deserialize)]
 pub struct JwtTokenForm {
@@ -692,10 +750,10 @@ impl AuthUser for User {
 
 #[axum::debug_handler]
 pub async fn sign_in(
-    State(_): State<AppState>,
+    State(state): State<AppState>,
     Form(request): Form<LoginData>
 ) -> Result<Json<ResponseMessage>, StatusCode> {
-    let user = database::retrive_user(request.user.clone()).ok_or(StatusCode::UNAUTHORIZED)?;
+    let user = state.database.retrive_user(request.user.clone()).await.ok_or(StatusCode::UNAUTHORIZED)?;
 
     let password_valid = verify_password(request.password, user.password_hash.unwrap())
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -755,6 +813,7 @@ async fn handle_static_request(
 ) -> Result<Response<Body>, StatusCode> {
  
     let path = req.uri().path();
+
     let file = if path == "/" || path.is_empty() {
         "index.html"
     } else {
