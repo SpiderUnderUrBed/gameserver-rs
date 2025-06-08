@@ -20,7 +20,15 @@ pub async fn list_node_names(client: Client) -> Result<Vec<String>, Box<dyn std:
     Ok(names)
 }
 pub async fn create_k8s_deployment(client: &Client) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let deployment_yaml = fs::read_to_string("/usr/src/app/src/gameserver/deployment.yaml")?;
+    //let testing_deployment = !std::env::var("TESTING_DEPLOYMENT").unwrap_or("").is_empty();
+    let deployment = if std::env::var("TESTING").is_ok(){
+        println!("Using dev deployment");
+        "deployment-dev.yaml"
+    } else {
+        "deployment.yaml"
+    };
+
+    let deployment_yaml = fs::read_to_string(format!("/usr/src/app/src/gameserver/{}", deployment))?;
     
     for doc in deployment_yaml.split("---") {
         let trimmed = doc.trim();

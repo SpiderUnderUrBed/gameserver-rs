@@ -16,3 +16,6 @@ path = "src/main.rs"
 
 [target.x86_64-unknown-linux-musl]
 linker = "musl-gcc"
+
+[features]
+full-stack = []

@@ -1,5 +1,5 @@
 use std::{error::Error, fs::File, io::{self, Cursor}, pin::Pin};
-
+//
 use bollard::{auth::DockerCredentials, image::{BuildImageOptions, TagImageOptions}, Docker};
 use futures_util::{Stream, StreamExt, TryStreamExt};
 use http_body::Frame;
@@ -132,11 +132,14 @@ pub async fn build_docker_image() -> Result<(), Box<dyn std::error::Error + Send
 
     let stream_body = StreamBody::new(boxed_stream);
 
+    let repo = std::env::var("DOCKER_REPO");
+    println!("Repo is: {}", repo.clone().unwrap_or("Nothing here".to_string()));
+
     // 3. Configure build options
     let options = BuildImageOptions {
         dockerfile: "Dockerfile",
         //t: "localhost:5000/gameserver:latest"
-        t: "gameserver:latest",
+        t: &format!("{}/gameserver:latest", repo.clone().unwrap_or("".to_string())),
         rm: true,
         forcerm: true,
         ..Default::default()
@@ -166,14 +169,16 @@ pub async fn build_docker_image() -> Result<(), Box<dyn std::error::Error + Send
         }
     }
 
-    if ENABLE_TAG_AND_PUSH {
+    // !repo.clone().unwrap_or_else(|_| "".to_string()).is_empty()
+    if ENABLE_TAG_AND_PUSH && repo.clone().is_ok() {
+        println!("Tagging and pushing repo");
         // Tag the image before pushing
         docker.tag_image(
             "gameserver:latest",
             Some(TagImageOptions {
                 //repo: "gameserver".to_string(),
                 // repo: "localhost:5000/gameserver".to_string(),
-                repo: "192.168.68.77:5000/gameserver".to_string(),
+                repo: format!("{}/gameserver", repo.clone().unwrap_or("localhost:5000/".to_string())),
                 tag: "latest".to_string(),
             }),
         ).await?;
@@ -182,7 +187,7 @@ pub async fn build_docker_image() -> Result<(), Box<dyn std::error::Error + Send
         docker.push_image(
             //"gameserver",
             //  "localhost:5000/gameserver",
-            "192.168.68.77:5000/gameserver",
+            &format!("{}/gameserver", repo.clone().unwrap_or("localhost:5000/".to_string())),
             None::<PushImageOptions<String>>,
             None::<DockerCredentials>,
         )

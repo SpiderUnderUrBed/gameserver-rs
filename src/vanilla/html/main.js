@@ -103,7 +103,7 @@ async function fetchNodes() {
         const response = await fetch(`${basePath}/api/nodes`);
         if (response.ok) {
             const data = await response.json();
-            const nodes = data.list;
+            const nodes = data.list.data;
 
             nodes_div.innerHTML = ""; 
 
@@ -126,11 +126,12 @@ fetchNodes()
 
 async function startServer() {
     try {
+        //Failed (422): Failed to deserialize the JSON body into the target type: missing field `data` at line 1 column 83
         console.log('Sending request to start server...');
         const response = await fetch(`${basePath}/api/general`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message: "start_server", type: "command", authcode: "0", kind: "IncomingMessage" }),
+            body: JSON.stringify({ kind: "IncomingMessage", data: { type: "command", message: "start_server", authcode: "0" }}),
         });
 
         console.log('Response status:', response.status);
@@ -164,24 +165,80 @@ async function createDefaultServer() {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({ 
-                message: "create_server",
-                type: "command",
-                authcode: "0"
+                kind: "IncomingMessage", 
+                data: {
+                    message: "create_server",
+                    type: "command",
+                    authcode: "0",
+                }
             })
         });
 
         if (response.ok) {
-            const data = await response.json();
-            document.getElementById('message').innerText = `Server Response: ${data.response}`;
+            try {
+                const data = await response.json();
+                document.getElementById('message').innerText = `Server Response: ${data.response}`;
+            } catch (parseError) {
+                const text = await response.text();
+                document.getElementById('message').innerText = `Success, but invalid JSON: ${text}`;
+            }
         } else {
-            const error = await response.json();
-            document.getElementById('message').innerText = `Failed: ${error}`;
+            try {
+                const text = await response.text();
+                document.getElementById('message').innerText = `Failed (${response.status}): ${text}`;
+            } catch (err) {
+                document.getElementById('message').innerText = `Unknown error occurred`;
+            }
         }
+        
     } catch (error) {
         document.getElementById('message').innerText = `Error: ${error.message}`;
         console.error('Error:', error);
     }
 }
+
+
+// async function login(){
+//     const username = document.querySelector('.user-login').value;
+//     const password = document.querySelector('.user-password').value;
+
+//     // Build urlencoded form data string
+//     const formBody = new URLSearchParams();
+//     formBody.append('user', username);
+//     formBody.append('password', password);
+
+//     try {
+//         const res = await fetch(`${basePath}/api/signin`, {
+//             method: 'POST',
+//             headers: {
+//                 'Content-Type': 'application/x-www-form-urlencoded',
+//             },
+//             body: formBody.toString()
+//         });
+
+//         if (!res.ok) {
+//             throw new Error(`Login failed with status ${res.status}`);
+//         }
+
+//         const data = await res.json();
+//         const jwtToken = data.response;
+
+//         console.log("JWT Token:", jwtToken);
+
+//         const nextUrl = encodeURIComponent(`${basePath}/main.html`);
+//         const jwkToken = encodeURIComponent(jwtToken);
+
+//         window.location.href = `${basePath}/authenticate?next=${nextUrl}&jwk=${jwkToken}`;
+
+//     } catch (err) {
+//         console.error('Login error:', err);
+//         alert('Login failed: ' + err.message);
+//     }
+// }
+
+
+
+// testing functions
 
 async function sendMessage() {
     const messageInput = document.getElementById('userMessage');

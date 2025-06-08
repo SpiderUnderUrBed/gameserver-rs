@@ -115,13 +115,27 @@ spec:
             - name: SECRET 
               value: "test"  
             - name: SITE_URL 
-              value: "/gameserver-rs"  
+              value: "/gameserver-rs" 
+            - name: DOCKER_REPO
+              value: "localhost:5000" 
+            - name: TESTING
+              value: "true"
+            - name: ADMIN_USER
+              value: testing
+            - name: ADMIN_PASSWORD
+              value: test
             - name: POSTGRES_USER
               value: "gameserver"
             - name: POSTGRES_PASSWORD
               value: "gameserverpass"
             - name: POSTGRES_DB
               value: "gameserver_db"
+            - name: POSTGRES_HOST
+              value: "gameserver-postgres"
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: MYSQL_HOST
+              value: "gameserver-mysql"
           volumeMounts:
             - name: source-code
               mountPath: /usr/src/app
@@ -170,6 +184,21 @@ spec:
           port: 80
 ---
 apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: gameserver-postgres-pv
+spec:
+  capacity:
+    storage: 2Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-path
+  hostPath:
+    path: /home/spiderunderurbed/k8s/pg_data
+    type: DirectoryOrCreate
+---
+apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: gameserver-postgres-pvc
@@ -180,6 +209,7 @@ spec:
     requests:
       storage: 2Gi
   storageClassName: local-path
+  volumeName: gameserver-postgres-pv
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -211,10 +241,10 @@ spec:
             - name: postgres
               containerPort: 5432
           volumeMounts:
-            - name: gameserver-postgres-pvc
+            - name: postgres-storage
               mountPath: /var/lib/postgresql/data
       volumes:
-        - name: gameserver-postgres-pvc
+        - name: postgres-storage
           persistentVolumeClaim:
             claimName: gameserver-postgres-pvc
 ---
