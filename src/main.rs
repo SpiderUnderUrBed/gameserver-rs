@@ -453,6 +453,111 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
+pub async fn serve_html_with_replacement(
+    file: &str,
+    state: &AppState,
+) -> Result<Response<Body>, StatusCode> {
+    let path = Path::new("src/svelte/build").join(file);
+
+    if path.extension().and_then(|e| e.to_str()) == Some("html") {
+        let html = tokio_fs::read_to_string(&path)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let mut replaced = html.replace(
+            "<head>",
+            &format!(r#"
+                <head>
+                    <script>window.__sveltekit_base = '[[SITE_URL]]';</script>
+                    <base href="[[SITE_URL]]/" />
+            "#)
+        );
+        replaced = replaced.replace("[[SITE_URL]]", &state.base_path);
+        return Ok(Html(replaced).into_response());
+    }
+
+    // For static files (CSS, JS, images), just serve normally
+    let bytes = tokio_fs::read(&path)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let content_type = from_path(&path).first_or_octet_stream().to_string();
+
+    Ok(Response::builder()
+        .header("Content-Type", content_type)
+        .body(Body::from(bytes))
+        .unwrap())
+}
+
+async fn handle_static_request(
+    Extension(state): Extension<Arc<AppState>>,
+    req: Request<Body>,
+) -> Result<Response<Body>, StatusCode> {
+    let base_path = &state.base_path;
+    let full_path = req.uri().path();
+
+    // Strip base_path
+    let relative_path = full_path.strip_prefix(base_path).unwrap_or(full_path);
+
+    let file = if relative_path == "/" || relative_path.is_empty() {
+        "index.html".to_string()
+    } else {
+        relative_path.trim_start_matches('/').to_string()
+    };
+
+    let ext = Path::new(&file)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+
+    if ext == "html" {
+        serve_html_with_replacement(&file, &state).await
+    } else {
+        let path = Path::new("src/svelte/build").join(&file);
+        let bytes = tokio_fs::read(&path)
+            .await
+            .map_err(|_| StatusCode::NOT_FOUND)?;
+        let content_type = from_path(&path).first_or_octet_stream().to_string();
+
+        Ok(Response::builder()
+            .header("Content-Type", content_type)
+            .body(Body::from(bytes))
+            .unwrap())
+    }
+}
+
+
+// // Inject the <script> into <head> tag, right after <head> opening
+// // This injects your runtime base path rewriter script
+// let injected_html = replaced.replacen(
+//     "<head>",
+//     &format!("<head>\n<script>{}</script>", BASE_PATH_INJECTOR_SCRIPT),
+//     1,
+// );
+
+
+// // Special case: if it's an _app request, *prepend* base_path
+// if path.starts_with("/_app") && !base_path.is_empty() {
+//     path = format!("{}{}", base_path, path);
+// }
+
+
+// const BASE_PATH_INJECTOR_SCRIPT: &str = r#"
+// (function() {
+//   const pathParts = window.location.pathname.split('/');
+//   const basePath = pathParts.length > 1 && pathParts[1] ? '/' + pathParts[1] : '';
+//   if (!basePath) return;
+//   function rewriteUrl(url) {
+//     if (url.startsWith('/_app/')) {
+//       return basePath + url;
+//     }
+//     return url;
+//   }
+//   document.querySelectorAll('script[src^="/_app/"]').forEach(el => { el.src = rewriteUrl(el.src); });
+//   document.querySelectorAll('link[href^="/_app/"]').forEach(el => { el.href = rewriteUrl(el.href); });
+//   document.querySelectorAll('img[src^="/_app/"]').forEach(el => { el.src = rewriteUrl(el.src); });
+// })();
+// "#;
+
 async fn create_user(
     State(state): State<AppState>,
     Json(request): Json<CreateUserData>
@@ -777,58 +882,13 @@ pub async fn sign_in(
 //         None
 //     }
 // }
+use crate::http::header;
 
 pub fn verify_password(password: String, hash: String) -> Result<bool, bcrypt::BcryptError> {
     bcrypt::verify(password, &hash)
 }
 
-async fn serve_html_with_replacement(
-    file: &str,
-    state: &AppState,
-) -> Result<Response<Body>, StatusCode> {
-    let path = Path::new("src/vanilla/html").join(file);
 
-    if path.extension().and_then(|e| e.to_str()) == Some("html") {
-        let html = tokio_fs::read_to_string(&path)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let replaced = html.replace("{{SITE_URL}}", &state.base_path);
-        return Ok(Html(replaced).into_response());
-    }
-
-    let bytes = tokio_fs::read(&path)
-        .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
-    let content_type = from_path(&path).first_or_octet_stream().to_string();
-
-    Ok(Response::builder()
-        .header("Content-Type", content_type)
-        .body(Body::from(bytes))
-        .unwrap())
-}
-
-async fn handle_static_request(
-    Extension(state): Extension<Arc<AppState>>,
-    req: Request<Body>,
-) -> Result<Response<Body>, StatusCode> {
- 
-    let path = req.uri().path();
-
-    let file = if path == "/" || path.is_empty() {
-        "index.html"
-    } else {
-        &path[1..]
-    };
-
-    match serve_html_with_replacement(file, &state).await {
-        Ok(res) => Ok(res),
-        Err(status) => Ok(Response::builder()
-            .status(status)
-            .header("content-type", "text/plain")
-            .body(format!("Error serving `{}`", file).into())
-            .unwrap()),
-    }
-}
 
 #[derive(Deserialize)]
 pub struct AuthenticateParams {

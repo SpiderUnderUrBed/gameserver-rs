@@ -791,6 +791,7 @@ dependencies = [
  "http-body",
  "http-body-util",
  "httpc-test",
+ "hyper",
  "jsonwebtoken",
  "k8s-openapi",
  "kube",

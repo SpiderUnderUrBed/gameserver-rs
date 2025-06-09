@@ -28,6 +28,7 @@ chrono = "0.4.41"
 axum-login = "0.17.0"
 async-trait = "0.1.88"
 sqlx = { version = "0.8.6", features = ["postgres", "runtime-tokio", "runtime-tokio-native-tls"] }
+hyper = "1.6.0"
 
 [features]
 default = []

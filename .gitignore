@@ -3,3 +3,5 @@
 /src/gameserver/target
 app.tar.gz
 /src/gameserver/server/*
+/src/svelte/node_modules
+/src/svelte/dist
