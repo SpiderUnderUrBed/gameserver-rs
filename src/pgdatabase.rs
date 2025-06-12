@@ -34,14 +34,14 @@ pub struct User {
 //     })
 
 #[derive(Clone)]
-pub struct Postgres {
+pub struct Database {
     connection: Pool<SqlxPostgres>,
 }
 
-impl Postgres {
-    pub fn new(connection: Pool<SqlxPostgres>) -> Postgres {
-        Postgres {
-            connection,
+impl Database {
+    pub fn new(connection: Pool<Option<SqlxPostgres>>) -> Database {
+        Database {
+            connection.unwrap(),
         }
     }
     pub async fn retrive_user(&self, username: String) -> Option<User> {

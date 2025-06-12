@@ -43,12 +43,25 @@ use async_trait::async_trait;
 use tower_http::add_extension::AddExtensionLayer;
 use axum::extract::FromRequest;
 
-mod database;
+#[cfg(any(feature = "full-stack", feature = "database"))]
+mod database {
+    include!("pgdatabase.rs");
+}
+
+#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
+mod database {
+    include!("jsondatabase.rs");
+}
+
+#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
+use database::JsonBackend;
+
 use database::User;
 use database::CreateUserData;
 use database::RemoveUserData;
 
-#[cfg(feature = "full-stack")]
+
+#[cfg(any(feature = "full-stack", feature = "database"))]
 mod docker;
 
 #[cfg(feature = "full-stack")]
@@ -99,6 +112,33 @@ impl Client {
     async fn try_default() -> Result<Self, Box<dyn std::error::Error + Send + Sync>>{
         Err("This should not be running".into())
     }
+}
+
+#[cfg(any(feature = "full-stack", feature = "database"))]
+async fn first_connection() -> Result<Pool<SqlxPostgres>, sqlx::Error> {
+    sqlx::postgres::PgPool::connect(&format!(
+        "postgres://{}:{}@{}:{}/{}",
+        db_user, db_password, db_host, db_port, db
+    )).await
+}
+#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
+async fn first_connection() -> Result<JsonBackend, String> {
+    Ok(JsonBackend {})
+}
+
+// enum DbType {
+//     #[cfg(any(feature = "full-stack", feature = "database"))]
+//     Postgres(Pool<SqlxPostgres>),
+//     Json(Json<JsonBackend>)
+// }
+// enum ErrorTypes {
+//     #[cfg(any(feature = "full-stack", feature = "database"))]
+//     SqlError(sqlx::Error)
+// }
+
+#[cfg(any(feature = "full-stack", feature = "database"))]
+async fn first_connection() -> Pool<SqlxPostgres> {
+    sqlx::postgres::PgPool::connect(&format!("postgres://{}:{}@{}:{}/{}", db_user, db_password, db_host, db_port, db)).await.unwrap()
 }
 
 const CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(2);
@@ -339,7 +379,7 @@ struct AppState {
     
     base_path: String,
     client: Option<Client>,
-    database: database::Postgres
+    database: database::Database
 }
 
 #[tokio::main]
@@ -352,8 +392,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let db_port = std::env::var("POSTGRES_PORT").unwrap_or("5432".to_string());
     let db_host = std::env::var("POSTGRES_HOST").unwrap_or("gameserver-postgres".to_string());
 
-    let conn = sqlx::postgres::PgPool::connect(&format!("postgres://{}:{}@{}:{}/{}", db_user, db_password, db_host, db_port, db)).await.unwrap();
-    let database = database::Postgres::new(conn);
+    let conn = first_connection().await?;
+    let database = database::Database::new(Some(conn));
 
     let verbose = std::env::var("VERBOSE").is_ok();
     let base_path = std::env::var("SITE_URL")
@@ -691,7 +731,6 @@ pub struct Claims {
     pub iat: usize,
     pub user: String,
 }
-
 
 
 #[derive(Clone, Default)]

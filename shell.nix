@@ -1,19 +1,17 @@
 { pkgs ? import <nixpkgs> {} }:
-
 pkgs.mkShell {
-  buildInputs = with pkgs; [
-    # rustc
-    # cargo
-   # rust-analyzer
-    # rust-src
-
+  nativeBuildInputs = with pkgs; [
+    rustup
     openssl
     pkg-config
+    postgresql 
+    mariadb.client  
   ];
 
-  OPENSSL_LIB_DIR = "${pkgs.openssl.out}/lib";
-  OPENSSL_INCLUDE_DIR = "${pkgs.openssl.dev}/include";
-  PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
-
- # TMPDIR = "${builtins.getEnv "HOME"}/tmp";
+  shellHook = ''
+    export PKG_CONFIG_PATH="${pkgs.openssl.dev}/lib/pkgconfig"
+    export OPENSSL_DIR="${pkgs.openssl.dev}"
+    export OPENSSL_LIB_DIR="${pkgs.openssl.out}/lib"
+    rustup default nightly
+  '';
 }
