@@ -475,6 +475,8 @@ async fn capabilities(
 ) -> impl IntoResponse {
     
 }
+use crate::middleware::from_fn;
+
 fn routes_static(state: Arc<AppState>) -> Router<AppState> {
     let session_store = MemoryStore::default();
     let session_layer = SessionManagerLayer::new(session_store);
@@ -482,23 +484,50 @@ fn routes_static(state: Arc<AppState>) -> Router<AppState> {
     let backend = Backend::default();
     let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
 
+    let base_path = std::env::var("SITE_URL")
+        .map(|s| {
+            let mut s = s.trim().to_string();
+            if !s.is_empty() {
+                if !s.starts_with('/') { s.insert(0, '/'); }
+                if s.ends_with('/') && s != "/" { s.pop(); }
+            }
+            s
+        })
+        .unwrap_or_default();
+
+        let login_url_base = Arc::new(format!("{}/index.html", base_path));
+
+        let login_required_middleware = {
+            let login_url_base = login_url_base.clone();
+        
+            from_fn(move |auth_session: AuthSession, req: Request<_>, next: Next| {
+                let login_url_base = login_url_base.clone();
+                async move {
+                    if auth_session.user.is_some() {
+                        next.run(req).await
+                    } else {
+                        let original_uri = req.uri();
+                        let next_path = original_uri.to_string(); 
+                        let redirect_url = format!("{}?next={}", login_url_base, urlencoding::encode(&next_path));
+                        Redirect::temporary(&redirect_url).into_response()
+                    }
+                }
+            })
+        };
+
     let public = Router::new()
-        // .route("/login", get(login_page).post(sign_in))
         .route("/", get(handle_static_request))
         .route("/authenticate", get(authenticate_route))
         .route("/index.html", get(handle_static_request))
         .layer(AddExtensionLayer::new(state.clone()));
 
-        let protected = Router::new()
+    let protected = Router::new()
         .route("/{*wildcard}", get(handle_static_request))
         .layer(AddExtensionLayer::new(state.clone()))
-        .route_layer(login_required!(Backend, login_url = "/index.html"));
+        .layer(login_required_middleware);
 
     public.merge(protected).route_layer(auth_layer)
 }
-
-
-
 async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
@@ -786,13 +815,13 @@ async fn serve_html_with_replacement(
     file: &str,
     state: &AppState,
 ) -> Result<Response<Body>, StatusCode> {
-    let path = Path::new("src/vanilla/html").join(file);
+    let path = Path::new("src/svelte/build").join(file);
 
     if path.extension().and_then(|e| e.to_str()) == Some("html") {
         let html = tokio_fs::read_to_string(&path)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let replaced = html.replace("{{SITE_URL}}", &state.base_path);
+        let replaced = html.replace("[[SITE_URL]]", &state.base_path);
         return Ok(Html(replaced).into_response());
     }
 
