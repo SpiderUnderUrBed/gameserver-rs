@@ -120,6 +120,8 @@ spec:
               value: "localhost:5000" 
             - name: TESTING
               value: "true"
+            - name: ENABLE_ADMIN_USER
+              value: "true"
             - name: ADMIN_USER
               value: testing
             - name: ADMIN_PASSWORD

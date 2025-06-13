@@ -87,30 +87,72 @@ trait Provider {
     fn start(&self) -> Option<Command>;
 }
 
+
 impl Provider for Minecraft {
     fn pre_hook(&self) -> Option<Command> {
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c").arg("apt-get update && apt-get install -y libssl-dev pkg-config wget");
-        Some(cmd)
+        if cfg!(target_os = "linux") {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg("apt-get update && apt-get install -y libssl-dev pkg-config wget");
+            Some(cmd)
+        } else if cfg!(target_os = "windows") {
+            let mut cmd = Command::new("powershell");
+            cmd.arg("-Command").arg("choco install -y wget");
+            Some(cmd)
+        } else {
+            None
+        }
     }
+
     fn install(&self) -> Option<Command> {
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c").arg(
-            "apt-get install -y openjdk-17-jre-headless && update-alternatives --set java /usr/lib/jvm/java-17-openjdk-amd64/bin/java"
-        );
-        Some(cmd)
+        if cfg!(target_os = "linux") {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg(
+                "apt-get install -y openjdk-17-jre-headless && update-alternatives --set java /usr/lib/jvm/java-17-openjdk-amd64/bin/java"
+            );
+            Some(cmd)
+        } else if cfg!(target_os = "windows") {
+            let mut cmd = Command::new("powershell");
+            cmd.arg("-Command").arg("choco install -y openjdk");
+            Some(cmd)
+        } else {
+            None
+        }
     }
+
     fn post_hook(&self) -> Option<Command> {
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c").arg(&format!(
-            "mkdir -p {SERVER_DIR} && cd {SERVER_DIR} && wget -O server.jar https://piston-data.mojang.com/v1/objects/84194a2f286ef7c14ed7ce0090dba59902951553/server.jar && echo 'eula=true' > eula.txt"
-        ));
-        Some(cmd)
+        if cfg!(target_os = "linux") {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg(format!(
+                "mkdir -p {dir} && cd {dir} && wget -O server.jar https://piston-data.mojang.com/v1/objects/84194a2f286ef7c14ed7ce0090dba59902951553/server.jar && echo 'eula=true' > eula.txt",
+                dir = SERVER_DIR
+            ));
+            Some(cmd)
+        } else if cfg!(target_os = "windows") {
+            let mut cmd = Command::new("powershell");
+            cmd.arg("-Command").arg(format!(
+                "New-Item -ItemType Directory -Force -Path {dir}; cd {dir}; Invoke-WebRequest -Uri https://piston-data.mojang.com/v1/objects/84194a2f286ef7c14ed7ce0090dba59902951553/server.jar -OutFile server.jar; 'eula=true' | Out-File -Encoding ASCII eula.txt",
+                dir = SERVER_DIR
+            ));
+            Some(cmd)
+        } else {
+            None
+        }
     }
+
     fn start(&self) -> Option<Command> {
-        let mut cmd = Command::new("java");
-        cmd.args(&["-Xmx1024M", "-Xms1024M", "-jar", "server.jar", "nogui"]).current_dir(SERVER_DIR);
-        Some(cmd)
+        if cfg!(target_os = "linux") {
+            let mut cmd = Command::new("java");
+            cmd.args(&["-Xmx1024M", "-Xms1024M", "-jar", "server.jar", "nogui"])
+                .current_dir(SERVER_DIR);
+            Some(cmd)
+        } else if cfg!(target_os = "windows") {
+            let mut cmd = Command::new("java");
+            cmd.args(&["-Xmx1024M", "-Xms1024M", "-jar", "server.jar", "nogui"])
+                .current_dir(SERVER_DIR);
+            Some(cmd)
+        } else {
+            None
+        }
     }
 }
 

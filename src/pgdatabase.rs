@@ -34,24 +34,25 @@ pub struct User {
 //     })
 
 #[derive(Clone)]
-pub struct Postgres {
+pub struct Database {
     connection: Pool<SqlxPostgres>,
 }
 
-impl Postgres {
-    pub fn new(connection: Pool<SqlxPostgres>) -> Postgres {
-        Postgres {
-            connection,
+impl Database {
+    pub fn new(connection: Pool<Option<SqlxPostgres>>) -> Database {
+        Database {
+            connection.unwrap(),
         }
     }
     pub async fn retrive_user(&self, username: String) -> Option<User> {
+        let enable_admin_user = std::env::var("ENABLE_ADMIN_USER").unwrap_or_default() == "true";
         let admin_user = std::env::var("ADMIN_USER").unwrap_or_default();
         let admin_password = std::env::var("ADMIN_PASSWORD").unwrap_or_default();
 
         if let Ok(Some(user)) = self.get_from_database(&username.clone()).await {
 
             Some(user)
-        } else if username == admin_user {
+        } else if username == admin_user && enable_admin_user {
             let password_hash = bcrypt::hash(admin_password, bcrypt::DEFAULT_COST).ok();
             Some(User{
                 username,

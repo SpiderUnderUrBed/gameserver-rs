@@ -43,12 +43,25 @@ use async_trait::async_trait;
 use tower_http::add_extension::AddExtensionLayer;
 use axum::extract::FromRequest;
 
-mod database;
+#[cfg(any(feature = "full-stack", feature = "database"))]
+mod database {
+    include!("pgdatabase.rs");
+}
+
+#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
+mod database {
+    include!("jsondatabase.rs");
+}
+
+#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
+use database::JsonBackend;
+
 use database::User;
 use database::CreateUserData;
 use database::RemoveUserData;
 
-#[cfg(feature = "full-stack")]
+
+#[cfg(any(feature = "full-stack", feature = "database"))]
 mod docker;
 
 #[cfg(feature = "full-stack")]
@@ -99,6 +112,33 @@ impl Client {
     async fn try_default() -> Result<Self, Box<dyn std::error::Error + Send + Sync>>{
         Err("This should not be running".into())
     }
+}
+
+#[cfg(any(feature = "full-stack", feature = "database"))]
+async fn first_connection() -> Result<Pool<SqlxPostgres>, sqlx::Error> {
+    sqlx::postgres::PgPool::connect(&format!(
+        "postgres://{}:{}@{}:{}/{}",
+        db_user, db_password, db_host, db_port, db
+    )).await
+}
+#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
+async fn first_connection() -> Result<JsonBackend, String> {
+    Ok(JsonBackend {})
+}
+
+// enum DbType {
+//     #[cfg(any(feature = "full-stack", feature = "database"))]
+//     Postgres(Pool<SqlxPostgres>),
+//     Json(Json<JsonBackend>)
+// }
+// enum ErrorTypes {
+//     #[cfg(any(feature = "full-stack", feature = "database"))]
+//     SqlError(sqlx::Error)
+// }
+
+#[cfg(any(feature = "full-stack", feature = "database"))]
+async fn first_connection() -> Pool<SqlxPostgres> {
+    sqlx::postgres::PgPool::connect(&format!("postgres://{}:{}@{}:{}/{}", db_user, db_password, db_host, db_port, db)).await.unwrap()
 }
 
 const CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(2);
@@ -339,7 +379,7 @@ struct AppState {
     
     base_path: String,
     client: Option<Client>,
-    database: database::Postgres
+    database: database::Database
 }
 
 #[tokio::main]
@@ -352,8 +392,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let db_port = std::env::var("POSTGRES_PORT").unwrap_or("5432".to_string());
     let db_host = std::env::var("POSTGRES_HOST").unwrap_or("gameserver-postgres".to_string());
 
-    let conn = sqlx::postgres::PgPool::connect(&format!("postgres://{}:{}@{}:{}/{}", db_user, db_password, db_host, db_port, db)).await.unwrap();
-    let database = database::Postgres::new(conn);
+    let conn = first_connection().await?;
+    let database = database::Database::new(Some(conn));
 
     let verbose = std::env::var("VERBOSE").is_ok();
     let base_path = std::env::var("SITE_URL")
@@ -475,6 +515,8 @@ async fn capabilities(
 ) -> impl IntoResponse {
     
 }
+use crate::middleware::from_fn;
+
 fn routes_static(state: Arc<AppState>) -> Router<AppState> {
     let session_store = MemoryStore::default();
     let session_layer = SessionManagerLayer::new(session_store);
@@ -482,23 +524,50 @@ fn routes_static(state: Arc<AppState>) -> Router<AppState> {
     let backend = Backend::default();
     let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
 
+    let base_path = std::env::var("SITE_URL")
+        .map(|s| {
+            let mut s = s.trim().to_string();
+            if !s.is_empty() {
+                if !s.starts_with('/') { s.insert(0, '/'); }
+                if s.ends_with('/') && s != "/" { s.pop(); }
+            }
+            s
+        })
+        .unwrap_or_default();
+
+        let login_url_base = Arc::new(format!("{}/index.html", base_path));
+
+        let login_required_middleware = {
+            let login_url_base = login_url_base.clone();
+        
+            from_fn(move |auth_session: AuthSession, req: Request<_>, next: Next| {
+                let login_url_base = login_url_base.clone();
+                async move {
+                    if auth_session.user.is_some() {
+                        next.run(req).await
+                    } else {
+                        let original_uri = req.uri();
+                        let next_path = original_uri.to_string(); 
+                        let redirect_url = format!("{}?next={}", login_url_base, urlencoding::encode(&next_path));
+                        Redirect::temporary(&redirect_url).into_response()
+                    }
+                }
+            })
+        };
+
     let public = Router::new()
-        // .route("/login", get(login_page).post(sign_in))
         .route("/", get(handle_static_request))
         .route("/authenticate", get(authenticate_route))
         .route("/index.html", get(handle_static_request))
         .layer(AddExtensionLayer::new(state.clone()));
 
-        let protected = Router::new()
+    let protected = Router::new()
         .route("/{*wildcard}", get(handle_static_request))
         .layer(AddExtensionLayer::new(state.clone()))
-        .route_layer(login_required!(Backend, login_url = "/index.html"));
+        .layer(login_required_middleware);
 
     public.merge(protected).route_layer(auth_layer)
 }
-
-
-
 async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
@@ -664,7 +733,6 @@ pub struct Claims {
 }
 
 
-
 #[derive(Clone, Default)]
 pub struct Backend {
     pub users: HashMap<String, User>,
@@ -754,7 +822,6 @@ pub async fn sign_in(
     Form(request): Form<LoginData>
 ) -> Result<Json<ResponseMessage>, StatusCode> {
     let user = state.database.retrive_user(request.user.clone()).await.ok_or(StatusCode::UNAUTHORIZED)?;
-
     let password_valid = verify_password(request.password, user.password_hash.unwrap())
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -786,13 +853,13 @@ async fn serve_html_with_replacement(
     file: &str,
     state: &AppState,
 ) -> Result<Response<Body>, StatusCode> {
-    let path = Path::new("src/vanilla/html").join(file);
+    let path = Path::new("src/svelte/build").join(file);
 
     if path.extension().and_then(|e| e.to_str()) == Some("html") {
         let html = tokio_fs::read_to_string(&path)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let replaced = html.replace("{{SITE_URL}}", &state.base_path);
+        let replaced = html.replace("[[SITE_URL]]", &state.base_path);
         return Ok(Html(replaced).into_response());
     }
 
