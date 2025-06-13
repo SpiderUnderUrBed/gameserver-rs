@@ -34,63 +34,170 @@ async function addResult(inputAsString, output, addInput, addOutput) {
     }
 }
 
-async function websocket() {
-    const ws = new WebSocket(`${basePath}/api/ws`);
-    
-    ws.addEventListener("open", () => {
-        console.log("We are connected");
-    });
+let globalWs = null;
+let rawOutputEnabled = false;
+let stillOutputDespiteError = false;
 
-ws.addEventListener("message", e => {
-    const jsonStrings = e.data.split(/(?<=})\s*(?={)/);
+async function websocket() {
+    if (globalWs) {
+        globalWs.close();
+    }
     
-    jsonStrings.forEach(jsonStr => {
-        let outputMessage = jsonStr;
+    globalWs = new WebSocket(`${basePath}/api/ws`);
+    
+    globalWs.addEventListener("open", () => {
+        console.log("WebSocket connected");
+        addResult("", "Connected to server", false, true);
+    });
+    
+    globalWs.addEventListener("message", e => {
+        if (rawOutputEnabled) {
+            
+            const lines = e.data.split('\n');
+            
+            lines.forEach(line => {
+                if (line.trim() === '') return;  
+                
+                try {
+                    
+                    const payload = JSON.parse(line.trim());
+                    
+                    
+                    const result = {
+                        payload: payload  
+                    };
+                    addResult("", JSON.stringify(result, null, 2), false, true);
+                } catch (err) {
+                    
+                    console.log("Failed to parse line:", line);
+                    const errorResult = {
+                        rawLine: line,
+                        parseError: err.message
+                    };
+                    addResult("", JSON.stringify(errorResult, null, 2), false, true);
+                }
+            });
+            return;
+        }
+        
+        
+        console.log("Raw message:", e.data);
+        
+        
+        if (!isPotentialJson(e.data)) {
+            const cleanedOutput = cleanOutput(e.data);
+            if (stillOutputDespiteError) {
+                addResult("", cleanedOutput, false, true);
+            }
+            return;
+        }
+        
         
         try {
-            const parsed = JSON.parse(jsonStr);
             
-            if (parsed.data) {
-                if (typeof parsed.data === 'string') {
-                    try {
-                        const inner = JSON.parse(parsed.data);
-                        outputMessage = inner.data ?? parsed.data;
-                    } catch {
-                        outputMessage = parsed.data;
-                    }
-                } else {
-                    outputMessage = parsed.data;
-                }
-            } else {
-                outputMessage = parsed.message ?? JSON.stringify(parsed);
-            }
+            const parsed = JSON.parse(e.data);
+            processMessage(parsed);
         } catch (err) {
-            console.warn("Non-JSON or bad format:", err);
-            outputMessage = jsonStr;
+            
+            try {
+                
+                const lines = e.data.split('\n');
+                for (const line of lines) {
+                    if (line.trim() === '') continue;
+                    
+                    try {
+                        const parsed = JSON.parse(line);
+                        processMessage(parsed);
+                    } catch (lineErr) {
+                        
+                        const cleanedOutput = cleanOutput(line);
+                        if (stillOutputDespiteError) {    
+                            addResult("", cleanedOutput, false, true);
+                        }
+                    }
+                }
+            } catch (splitErr) {
+                console.warn("Failed to process message:", splitErr);
+                const cleanedOutput = cleanOutput(e.data);
+                if (stillOutputDespiteError) {   
+                    addResult("", cleanedOutput, false, true);
+                }
+            }
         }
-
-        const cleanedOutput = outputMessage.replace(/^\[Server\] ?/, "").replace(/\\t/g, "\t").replace(/\\\\/g, "\\");
-        addResult("", cleanedOutput, false, true);
     });
-});
+    
+    globalWs.addEventListener("close", () => {
+        console.log("WebSocket disconnected");
+        
+        setTimeout(websocket, 1000);
+    });
+    
+    globalWs.addEventListener("error", (err) => {
+        console.error("WebSocket error:", err);
+        
+    });
 }
-websocket()
 
+function isPotentialJson(str) {
+    
+    return str.trim().startsWith('{') || str.trim().startsWith('[');
+}
+
+function cleanOutput(str) {
+    return str.replace(/\\t/g, "\t")
+              .replace(/\\\\/g, "\\")
+              .replace(/^\[Server\] ?/, "");
+}
+
+function processMessage(parsed) {
+    let outputMessage;
+    
+    if (parsed.data) {
+        if (typeof parsed.data === 'string') {
+            try {
+                const inner = JSON.parse(parsed.data);
+                outputMessage = inner.data ?? parsed.data;
+            } catch {
+                outputMessage = parsed.data;
+            }
+        } else {
+            outputMessage = parsed.data;
+        }
+    } else {
+        outputMessage = parsed.message ?? JSON.stringify(parsed);
+    }
+
+    const cleanedOutput = cleanOutput(outputMessage);
+    addResult("", cleanedOutput, false, true);
+}
+
+function toggleRaw() {
+    rawOutputEnabled = !rawOutputEnabled;
+    const rawButton = document.querySelector('.raw-toggle-button');
+    if (rawButton) {
+        rawButton.textContent = rawOutputEnabled ? 'Raw Output: ON' : 'Raw Output: OFF';
+    }
+    addResult("", `Raw output ${rawOutputEnabled ? 'enabled' : 'disabled'}`, false, true);
+    return rawOutputEnabled;
+}
+
+
+websocket();
 consoleInput.addEventListener("keyup", e => {
     const code = consoleInput.value.trim();
     if (code.length === 0) return;
     
     if (e.key === "Enter") {
-        const ws = new WebSocket(`${basePath}/api/ws`);
-        
-        ws.onopen = () => {
-            ws.send(JSON.stringify({
+        if (globalWs && globalWs.readyState === WebSocket.OPEN) {
+            globalWs.send(JSON.stringify({
                 type: "console",
                 message: code,
                 authcode: "0"
             }));
-            ws.close();
-        };
+        } else {
+            console.error("WebSocket not connected");
+            
+        }
 
         addResult(code, "", true, false);
         consoleInput.value = "";
@@ -119,14 +226,14 @@ async function fetchNodes() {
         }
     } catch (error) {
         document.getElementById('message').innerText = 'Error connecting to the server.';
-        console.error('Error fetching nodes:', error);
+        console.log('Error fetching nodes:', error);
     }
 }
 fetchNodes()
 
 async function startServer() {
     try {
-        //Failed (422): Failed to deserialize the JSON body into the target type: missing field `data` at line 1 column 83
+        
         console.log('Sending request to start server...');
         const response = await fetch(`${basePath}/api/general`, {
             method: 'POST',
@@ -198,48 +305,6 @@ async function createDefaultServer() {
 }
 
 
-// async function login(){
-//     const username = document.querySelector('.user-login').value;
-//     const password = document.querySelector('.user-password').value;
-
-//     // Build urlencoded form data string
-//     const formBody = new URLSearchParams();
-//     formBody.append('user', username);
-//     formBody.append('password', password);
-
-//     try {
-//         const res = await fetch(`${basePath}/api/signin`, {
-//             method: 'POST',
-//             headers: {
-//                 'Content-Type': 'application/x-www-form-urlencoded',
-//             },
-//             body: formBody.toString()
-//         });
-
-//         if (!res.ok) {
-//             throw new Error(`Login failed with status ${res.status}`);
-//         }
-
-//         const data = await res.json();
-//         const jwtToken = data.response;
-
-//         console.log("JWT Token:", jwtToken);
-
-//         const nextUrl = encodeURIComponent(`${basePath}/main.html`);
-//         const jwkToken = encodeURIComponent(jwtToken);
-
-//         window.location.href = `${basePath}/authenticate?next=${nextUrl}&jwk=${jwkToken}`;
-
-//     } catch (err) {
-//         console.error('Login error:', err);
-//         alert('Login failed: ' + err.message);
-//     }
-// }
-
-
-
-// testing functions
-
 async function sendMessage() {
     const messageInput = document.getElementById('userMessage');
     const message = messageInput.value.trim();
@@ -277,15 +342,23 @@ function handleButtonClick(i) {
     alert("Button " + i + " clicked!");
 }
 
-for (let i = 1; i <= 5; i++) {
-    const div = document.createElement("div");
-    div.className = "box";
-    div.textContent = "Box " + i + " ";
+document.addEventListener('DOMContentLoaded', function() {
+    const container = document.getElementById("container");
+    
+    for (let i = 1; i <= 5; i++) {
+        const div = document.createElement("div");
+        div.className = "box";
+        div.textContent = "Box " + i + " ";
 
-    const btn = document.createElement("button");
-    btn.textContent = "Click Me";
-    btn.onclick = () => handleButtonClick(i);
+        const btn = document.createElement("button");
+        btn.textContent = "Click Me";
+        btn.onclick = () => handleButtonClick(i);
 
-    div.appendChild(btn);
-    container.appendChild(div);
-}
+        div.appendChild(btn);
+        if (container) {
+            container.appendChild(div);
+        } else {
+            console.log("Container element not found");
+        }
+    }
+});
