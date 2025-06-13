@@ -822,7 +822,6 @@ pub async fn sign_in(
     Form(request): Form<LoginData>
 ) -> Result<Json<ResponseMessage>, StatusCode> {
     let user = state.database.retrive_user(request.user.clone()).await.ok_or(StatusCode::UNAUTHORIZED)?;
-
     let password_valid = verify_password(request.password, user.password_hash.unwrap())
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 

@@ -127,6 +127,63 @@ async function sendUserMessage() {
         document.getElementById('message').innerText = 'Please enter a message to send.';
     }
 }
+async function sendMessage() {
+    const messageInput = document.getElementById('userMessage');
+    const message = messageInput.value.trim();
+    
+    if (!message) {
+        document.getElementById('message').innerText = 'Please enter a message';
+        return;
+    }
+
+    try {
+        const response = await fetch(`${basePath}/api/send`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                message: message,
+                type: "message",
+                authcode: "0"
+            })
+        });
+
+        const result = await response.json();
+        if (response.ok) {
+            document.getElementById('message').innerText = result.response;
+        } else {
+            document.getElementById('message').innerText = `Error: ${result}`;
+        }
+    } catch (error) {
+        document.getElementById('message').innerText = `Network error: ${error.message}`;
+    }
+}
+
+function handleButtonClick(i) {
+    alert("Button " + i + " clicked!");
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    const container = document.getElementById("container");
+    
+    for (let i = 1; i <= 5; i++) {
+        const div = document.createElement("div");
+        div.className = "box";
+        div.textContent = "Box " + i + " ";
+
+        const btn = document.createElement("button");
+        btn.textContent = "Click Me";
+        btn.onclick = () => handleButtonClick(i);
+
+        div.appendChild(btn);
+        if (container) {
+            container.appendChild(div);
+        } else {
+            console.log("Container element not found");
+        }
+    }
+});
 </script>
 </body>
 </html>
