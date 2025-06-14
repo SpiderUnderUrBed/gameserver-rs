@@ -1,0 +1,48 @@
+<!DOCTYPE html><html lang="en"><head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="site-url" content="[[SITE_URL]]">
+  <title>Document</title>
+  <link rel="stylesheet" href="main.css">
+  <script src="main.js" defer=""></script>
+</head>
+<body>
+  <div class="whole">
+    <!-- <div class="side-panel"></div> -->
+    <div class="center">
+      <div class="header">
+        <h2>Server panel</h2>
+      </div>
+      <div class="panel-n-setup">
+          <div class="panel">
+              <div class="vertical-top-buttons-upper">
+                <button class="user-button-page" onclick="window.location.href='users.html'">Users</button>
+              </div>
+              <div class="vertical-top-buttons-lower">
+                <button class="user-button-page" style="display: none;" onclick="window.location.href='svelte-main.html'" id="svelteMainPageButton">Svelte main</button>
+                <button class="user-button-page" onclick="enableDeveloperOptions()">Toggle developer options</button>
+              </div>
+              <!-- <a href="users.html" class="user-buttons">Users</a> -->
+          </div>
+          <div class="center-inner">
+              <div class="horizontal-top-buttons">
+              <button onclick="createDefaultServer()">Create server</button>
+              <button onclick="startServer()">Start server</button>
+              <button class="raw-toggle-button" onclick="toggleRaw()">Raw Output: OFF</button>
+              <div class="nodes"></div>
+              </div>
+              <p id="message"></p>
+              <div class="console">
+              <div class="console-history">
+                  <div class="console-input-log"></div>
+                  <div class="console-output-log"></div>
+              </div>
+              <input class="console-input" type="text" autofocus="" spellcheck="false">
+              </div>
+          </div>
+      </div>
+    </div>
+  </div>
+
+
+</body></html>

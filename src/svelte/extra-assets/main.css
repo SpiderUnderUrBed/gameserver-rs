@@ -1,0 +1,116 @@
+body {
+    margin: 0;
+}
+.header {
+    justify-content: center;
+    display: flex;
+    background-color: rgba(7, 234, 234, 0.445);
+}
+.nodes-element {
+    background-color: red;
+}
+
+.console * {
+    font-family: monospace;
+}
+.console {
+    width: 175vh;
+    height: 60%;
+    display: flex;
+    flex-direction: column;
+    background-color: #111111;
+}
+.console-history {
+    flex-grow: 1;
+    box-sizing: border-box;
+    padding: 24px;
+    overflow: auto;
+}
+.console-input-log,
+.console-output-log {
+    box-sizing: border-box;
+    padding: 6px 12px;
+}
+.console-input-log:hover,
+.console-output-log:hover {
+    background: rgba(255, 255, 255, 0.03)
+}
+
+.console-input-log {
+    color: #ffffff;
+    font-weight: bold;
+}
+
+.console-output-log {
+    color: #00ffcc;
+    font-weight: bold;
+}
+.console-input {
+    flex-shrink: 0;
+    box-sizing: border-box;
+    padding: 20px;
+    border: none;
+    border-top: 1px solid #333333;
+    color: #ffffff;
+    outline: none;
+    background: rgba(255, 255, 255, 0.05);
+    transition: background 0.2s;
+}
+.console-input:hover,
+.console-input:focus {
+    background: rgba(255, 255, 255, 0.07);
+}
+.whole {
+    /* background-color: #828282; */
+    display: flex;
+    /* justify-content: center; */
+    height: 75vh;
+}
+.side-panel {
+    background-color: #00ffcc;
+    width: 200px; 
+    /* height: 50vh;  */
+}
+/* 
+.center {
+    flex: 1; 
+}
+*/
+
+.center-inner {
+    background-color: #414141;
+}
+.panel-n-setup {
+    display: flex;
+    height: 100%;
+}
+.panel {
+    display: flex;
+    flex-direction: column;
+    background-color: #000000;
+    width: 10%;
+    padding: 10px;
+}
+.user-button-page {
+    /* height: 20vh;
+    width: 20wh; */
+}
+.vertical-top-buttons-upper {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.vertical-top-buttons-lower {
+    margin-top: auto; 
+    display: flex;
+    justify-content: center;
+    flex-direction: column;
+}
+
+  /* .header {
+    background: rgba(7, 234, 234, 0.445);
+    display: flex;
+    justify-content: center;
+    padding: 10px;
+  } */
