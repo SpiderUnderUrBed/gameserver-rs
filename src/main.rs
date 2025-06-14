@@ -115,12 +115,19 @@ impl Client {
 }
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
-async fn first_connection() -> Result<Pool<SqlxPostgres>, sqlx::Error> {
+async fn first_connection() -> Result<sqlx::Pool<sqlx::Postgres>, sqlx::Error> {
+    let db_user = std::env::var("POSTGRES_USER").unwrap_or("gameserver".to_string());
+    let db_password = std::env::var("POSTGRES_PASSWORD").unwrap_or("gameserverpass".to_string());
+    let db = std::env::var("POSTGRES_DB").unwrap_or("gameserver_db".to_string());
+    let db_port = std::env::var("POSTGRES_PORT").unwrap_or("5432".to_string());
+    let db_host = std::env::var("POSTGRES_HOST").unwrap_or("gameserver-postgres".to_string());
+
     sqlx::postgres::PgPool::connect(&format!(
         "postgres://{}:{}@{}:{}/{}",
         db_user, db_password, db_host, db_port, db
     )).await
 }
+
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
 async fn first_connection() -> Result<JsonBackend, String> {
     Ok(JsonBackend {})
@@ -135,11 +142,6 @@ async fn first_connection() -> Result<JsonBackend, String> {
 //     #[cfg(any(feature = "full-stack", feature = "database"))]
 //     SqlError(sqlx::Error)
 // }
-
-#[cfg(any(feature = "full-stack", feature = "database"))]
-async fn first_connection() -> Pool<SqlxPostgres> {
-    sqlx::postgres::PgPool::connect(&format!("postgres://{}:{}@{}:{}/{}", db_user, db_password, db_host, db_port, db)).await.unwrap()
-}
 
 const CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(2);
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(3);
@@ -386,12 +388,6 @@ struct AppState {
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("Starting server...");
 
-    let db_user = std::env::var("POSTGRES_USER").unwrap_or("gameserver".to_string());
-    let db_password = std::env::var("POSTGRES_PASSWORD").unwrap_or("gameserverpass".to_string());
-    let db = std::env::var("POSTGRES_DB").unwrap_or("gameserver_db".to_string());
-    let db_port = std::env::var("POSTGRES_PORT").unwrap_or("5432".to_string());
-    let db_host = std::env::var("POSTGRES_HOST").unwrap_or("gameserver-postgres".to_string());
-
     let conn = first_connection().await?;
     let database = database::Database::new(Some(conn));
 
@@ -492,6 +488,103 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     Ok(())
 }
+
+pub async fn serve_html_with_replacement(
+    file: &str,
+    state: &AppState,
+) -> Result<Response<Body>, StatusCode> {
+    let path = Path::new("src/svelte/build").join(file);
+    let html = tokio_fs::read_to_string(&path)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Clean base path - ensure no trailing slash
+    let clean_base = state.base_path.trim_end_matches('/');
+    
+    let mut replaced = html.replace(
+        "<head>",
+        &format!(
+            r#"<head>
+                <script>window.__sveltekit_base = '{}';</script>
+                <base href="{}/" />"#,
+            clean_base, clean_base
+        )
+    );
+    
+    replaced = replaced.replace("[[SITE_URL]]", clean_base);
+    Ok(Html(replaced).into_response())
+}
+async fn handle_static_request(
+    Extension(state): Extension<Arc<AppState>>,
+    req: Request<Body>,
+) -> Result<Response<Body>, StatusCode> {
+    let base_path = &state.base_path;
+    let full_path = req.uri().path();
+
+    // Strip base_path
+    let relative_path = full_path.strip_prefix(base_path).unwrap_or(full_path);
+    let relative_path = relative_path.trim_start_matches('/');
+
+    // Handle root request
+    if relative_path.is_empty() {
+        return serve_html_with_replacement("index.html", &state).await;
+    }
+
+    let build_path = Path::new("src/svelte/build").join(relative_path);
+
+    // Check if file exists
+    if let Ok(metadata) = tokio_fs::metadata(&build_path).await {
+        if metadata.is_file() {
+            if build_path.extension().and_then(|e| e.to_str()) == Some("html") {
+                return serve_html_with_replacement(relative_path, &state).await;
+            } else {
+                let bytes = tokio_fs::read(&build_path)
+                    .await
+                    .map_err(|_| StatusCode::NOT_FOUND)?;
+                let content_type = from_path(&build_path).first_or_octet_stream().to_string();
+                return Ok(Response::builder()
+                    .header("Content-Type", content_type)
+                    .body(Body::from(bytes))
+                    .unwrap());
+            }
+        }
+    }
+
+    // Client-side route - serve index.html
+    serve_html_with_replacement("index.html", &state).await
+}
+
+// // Inject the <script> into <head> tag, right after <head> opening
+// // This injects your runtime base path rewriter script
+// let injected_html = replaced.replacen(
+//     "<head>",
+//     &format!("<head>\n<script>{}</script>", BASE_PATH_INJECTOR_SCRIPT),
+//     1,
+// );
+
+
+// // Special case: if it's an _app request, *prepend* base_path
+// if path.starts_with("/_app") && !base_path.is_empty() {
+//     path = format!("{}{}", base_path, path);
+// }
+
+
+// const BASE_PATH_INJECTOR_SCRIPT: &str = r#"
+// (function() {
+//   const pathParts = window.location.pathname.split('/');
+//   const basePath = pathParts.length > 1 && pathParts[1] ? '/' + pathParts[1] : '';
+//   if (!basePath) return;
+//   function rewriteUrl(url) {
+//     if (url.startsWith('/_app/')) {
+//       return basePath + url;
+//     }
+//     return url;
+//   }
+//   document.querySelectorAll('script[src^="/_app/"]').forEach(el => { el.src = rewriteUrl(el.src); });
+//   document.querySelectorAll('link[href^="/_app/"]').forEach(el => { el.href = rewriteUrl(el.href); });
+//   document.querySelectorAll('img[src^="/_app/"]').forEach(el => { el.src = rewriteUrl(el.src); });
+// })();
+// "#;
 
 async fn create_user(
     State(state): State<AppState>,

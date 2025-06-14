@@ -39,9 +39,9 @@ pub struct Database {
 }
 
 impl Database {
-    pub fn new(connection: Pool<Option<SqlxPostgres>>) -> Database {
+    pub fn new(connection: Option<Pool<SqlxPostgres>>) -> Database {
         Database {
-            connection.unwrap(),
+            connection: connection.unwrap(),
         }
     }
     pub async fn retrive_user(&self, username: String) -> Option<User> {
