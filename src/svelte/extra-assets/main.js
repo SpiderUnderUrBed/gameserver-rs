@@ -229,6 +229,8 @@ async function fetchNodes() {
                 button.onclick = () => alert(`Node clicked: ${node}`);
                 nodes_div.appendChild(button);
             });
+            addDefaultNodeSettings()
+
         } else {
             document.getElementById('message').innerText = 'Failed to get nodes from the server.';
         }
@@ -237,7 +239,40 @@ async function fetchNodes() {
         console.log('Error fetching nodes:', error);
     }
 }
+
 fetchNodes()
+
+function addDefaultNodeSettings(){
+    const addMoreButton = document.createElement("button");
+    const gap = document.createElement("div");
+    gap.style = "length: 10wh";
+    nodes_div.appendChild(gap)
+    addMoreButton.id = "non-node";
+    addMoreButton.textContent = "Add server";
+    addMoreButton.onclick = () => addMore();
+    addMoreButton.className = "nodes-element";
+    nodes_div.appendChild(addMoreButton)
+    const toggleNodesButton = document.createElement("button");
+    toggleNodesButton.id = "non-node";
+    toggleNodesButton.textContent = "Toggle nodes";
+    toggleNodesButton.onclick = () => toggleNodes();
+    toggleNodesButton.className = "nodes-element";
+    nodes_div.appendChild(toggleNodesButton)
+}
+let hidden_nodes = false;
+function toggleNodes(){
+    if (hidden_nodes == false) {
+        hidden_nodes = true;
+        nodes_div.innerHTML = ""; 
+        addDefaultNodeSettings();
+    } else {
+        hidden_nodes = false;
+        fetchNodes()
+    }
+}
+function addMore(){
+
+}
 
 async function startServer() {
     try {

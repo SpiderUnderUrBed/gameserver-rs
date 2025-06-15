@@ -12,12 +12,16 @@
     <div class="user-whole">
         <div class="user-center">
             <div class="user-background">
-                <div class="user-operations">
-                    <button onclick="document.getElementById('addUserDialog').showModal()">Add User</button>
-                    <button onclick="document.getElementById('deleteUserDialog').showModal()">Delete User</button>
-                </div>
-                <div class="users"></div>
-                <div id="message"></div>
+                    <!-- <div class="user-padding"> -->
+                        <div class="user-operations">
+                            <button class="users-element" onclick="document.getElementById('addUserDialog').showModal()">Add User</button>
+                            <button class="users-element" onclick="document.getElementById('deleteUserDialog').showModal()">Delete User</button>
+                        </div>
+                    <!-- </div> -->
+                <!-- <div class="user-padding"> -->
+                    <div class="users"></div>
+                    <div id="message"></div>
+                <!-- </div> -->
             </div>
             <dialog id="deleteUserDialog" class="user-dialog">
                 <form method="dialog">

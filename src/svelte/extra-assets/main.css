@@ -9,7 +9,9 @@ body {
 .nodes-element {
     background-color: red;
 }
-
+.nodes {
+    width: 20vw;
+}
 .console * {
     font-family: monospace;
 }
