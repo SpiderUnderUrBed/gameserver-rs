@@ -1,8 +1,13 @@
+// ALOT of imports, needed given the size of this project in what it covers
+// first imports are std ones
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::fs;
 use std::{net::SocketAddr, path::Path, sync::Arc};
-//
+
+// Axum is the routing framework, and the backbone to this project helping intergrate the backend with the frontend
+// and the general api, redirections, it will take form data and queries and make it easily accessible 
+// I also use axum_login to take off alot of effort that would be required for authentication
 use axum::extract::Query;
 use axum::http::header::AUTHORIZATION;
 use axum::http::Uri;
@@ -20,9 +25,16 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use futures_util::{sink::SinkExt, stream::StreamExt};
-// use k8s_openapi::chrono;
+use axum::extract::FromRequest;
+use crate::middleware::from_fn;
 
+// miscellancious imports, future traits are used because alot of the code is asyncronus and cant fully be contained in tokio
+// mime_guess as when I am serving the files, I need to serve it with the correct mime type
+// serde_json because I exchange alot of json data between the backend and frontend and to the gameserver
+// tokio because when working with alot of networking stuff and things that will take a indeterminent amount of time, async/await is the way to go (for better efficency too)
+// chrono for time, tower for cors (TODO:: use less permissive CORS due to potential security risks)
+// jsonwebtokens is standard when working with authentication, and bcrypt so I can use password hashs, I explain the authentication methods later
+use futures_util::{sink::SinkExt, stream::StreamExt};
 use mime_guess::from_path;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -41,8 +53,10 @@ use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, TokenData, 
 use bcrypt::BcryptError;
 use async_trait::async_trait;
 use tower_http::add_extension::AddExtensionLayer;
-use axum::extract::FromRequest;
 
+// For now I only restrict the json backend for running this without kubernetes
+// the json backend is only for testing in most cases, simple deployments would use full-stack feature flag
+// and you can use postgres manually with the database feature flag
 #[cfg(any(feature = "full-stack", feature = "database"))]
 mod database {
     include!("pgdatabase.rs");
@@ -53,23 +67,29 @@ mod database {
     include!("jsondatabase.rs");
 }
 
+// JsonDatabase is only something that would be unique to Json and not any other database managed by sqlx
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
 use database::JsonBackend;
 
+// Both database files and any more should have these structs
 use database::User;
 use database::CreateUserData;
 use database::RemoveUserData;
 
-
-#[cfg(any(feature = "full-stack", feature = "database"))]
-mod docker;
-
+// Docker AND kubernetes would be enabled with a standard deployment
+// as you wouldnt need the docker module (or the k8s module) for barebones testing
 #[cfg(feature = "full-stack")]
-use kube::Client;
+mod docker;
 
 #[cfg(feature = "full-stack")]
 mod kubernetes;
 
+// Main has to store the client, so I would remove the client here if this is not in a standard deployment in favor 
+// of a dummy one
+#[cfg(feature = "full-stack")]
+use kube::Client;
+
+// build_docker_image and the functions from the kubernetes modules needs to be faked to make the compiler happy if this is not a standard deployment
 #[cfg(not(feature = "full-stack"))]
 mod docker {
     pub async fn build_docker_image() -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
@@ -85,6 +105,10 @@ mod kubernetes {
         Err("This should not be running".into())
     }
 }
+
+// This part would potentially be removed later
+// I like these defaults for testing, and for the moment I doubt anyone would object
+// but at some point this will be removed in favor of testing with ENV varibles
 #[cfg(not(feature = "full-stack"))]
 static TcpUrl: &str = "0.0.0.0:8082";
 
@@ -100,9 +124,12 @@ static TcpUrl: &str = "gameserver-service:8080";
 #[cfg(feature = "full-stack")]
 static LocalUrl: &str = "0.0.0.0:8080";
 
+// K8S_WORKS needs to be true in the case where the full stack is running and not if that is not the case 
+// to avoid calling the dummy functions
 #[cfg(feature = "full-stack")]
 static K8S_WORKS: bool = true;
 
+// dummy client and function
 #[cfg(not(feature = "full-stack"))]
 #[derive(Clone)]
 struct Client;
@@ -114,39 +141,40 @@ impl Client {
     }
 }
 
+// The database connection would be avalible in the full-stack or explicit database testing
+// which in this case means postgres
 #[cfg(any(feature = "full-stack", feature = "database"))]
 async fn first_connection() -> Result<sqlx::Pool<sqlx::Postgres>, sqlx::Error> {
+    // The user should be able to customize alot about where the database is, how to authenticate with it, 
+    // whether it is being ran with the full stack or not, hence the env varibles with sensible defaults
     let db_user = std::env::var("POSTGRES_USER").unwrap_or("gameserver".to_string());
     let db_password = std::env::var("POSTGRES_PASSWORD").unwrap_or("gameserverpass".to_string());
     let db = std::env::var("POSTGRES_DB").unwrap_or("gameserver_db".to_string());
     let db_port = std::env::var("POSTGRES_PORT").unwrap_or("5432".to_string());
     let db_host = std::env::var("POSTGRES_HOST").unwrap_or("gameserver-postgres".to_string());
 
+    // initial connection which is returned
     sqlx::postgres::PgPool::connect(&format!(
         "postgres://{}:{}@{}:{}/{}",
         db_user, db_password, db_host, db_port, db
     )).await
 }
 
+// for the default testing environment, it should be json
+// due to reduced complexity, and currently at the time of writing this
+// dependency issues, so unless you are testing the postgres db itself with this project
+// the json backend MIGHT be sufficent, but at the time of writing this I have not made the json backend work
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
 async fn first_connection() -> Result<JsonBackend, String> {
     Ok(JsonBackend {})
 }
 
-// enum DbType {
-//     #[cfg(any(feature = "full-stack", feature = "database"))]
-//     Postgres(Pool<SqlxPostgres>),
-//     Json(Json<JsonBackend>)
-// }
-// enum ErrorTypes {
-//     #[cfg(any(feature = "full-stack", feature = "database"))]
-//     SqlError(sqlx::Error)
-// }
-
+// varibles which determines stuff about the tcp connection to the gameserver for data exchange
 const CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(2);
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(3);
 const CHANNEL_BUFFER_SIZE: usize = 32;
 
+// MessagePayload is how most data are exchanged between the gameserver, and the frontend
 #[derive(Debug, Serialize, Deserialize)]
 struct MessagePayload {
     r#type: String,
@@ -154,6 +182,7 @@ struct MessagePayload {
     authcode: String,
 }
 
+// console messages are for the console specifically, but this might be redundant
 #[derive(Debug, Deserialize)]
 struct ConsoleMessage {
     data: String,
@@ -162,6 +191,7 @@ struct ConsoleMessage {
     authcode: String,
 }
 
+// console output is sometimes contained within the data feild of json, but this also might be redundant
 #[derive(Debug, Deserialize, Serialize)]
 struct InnerData {
     data: String,
@@ -170,16 +200,19 @@ struct InnerData {
     authcode: String,
 }
 
+// A simple response message, no authorization needed, alhough the equivalent would be setting the authcode to 0 and making a custom type for this
 #[derive(Debug, Serialize)]
 struct ResponseMessage {
     response: String,
 }
 
+// a list for things like nodes, capabilities, etc
 #[derive(Debug, Serialize, Deserialize)]
 struct List {
     list: ApiCalls,
 }
 
+// some custom web error messages to be used in the frontend, graciously provided by axum
 enum WebErrors {
     AuthError {
         message: String,
@@ -200,22 +233,7 @@ impl IntoResponse for WebErrors {
     }
 }
 
-
-// impl IntoResponse for WebErrors {
-//     fn into_response(self) -> Response<axum::body::Body> {
-//         match self {
-//             WebErrors::AuthError { message, status_code } => {
-//                 Response::builder()
-//                     .status(status_code)
-//                     .header("content-type", "text/plain")
-//                     .body(message.into())
-//                     .unwrap()
-//             }
-//         }
-//     }
-// }
-
-
+// May be redundant, but this is a struct for incoming messages
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct IncomingMessage {
     message: String,
@@ -224,23 +242,29 @@ struct IncomingMessage {
     authcode: String,
 }
 
+// Some common api calls which is just what might get exchanged between the frontend and backend via api
+// this is needed rather than a bunch of structs or however else I might do it because in some cases I might not know what api call to expect
+// as it would be determined by a 'kind' flag provided by serde, and the content, be it a array or struct, be nested in json (which provides new hurdles for how to process 
+// data as I cant EXPECT JSON in there)
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(tag = "kind", content = "data")]
 enum ApiCalls {
     None,
     Capabilities(Vec<String>),
     NodeList(Vec<String>),
-    UserList(Vec<User>),
-    // CreateUserData(CreateUserData),
-    // LoginData(LoginData),
     UserData(LoginData),
+    UserList(Vec<User>),
     IncomingMessage(IncomingMessage),
 }
 
+// for the initial connection attempt, which will determine if possibly I would need to create the container and deployment upon failure
+// i will use rusts 'timeout' for x interval determined with CONNECTION_TIMEOUT
 async fn attempt_connection() -> Result<TcpStream, Box<dyn std::error::Error + Send + Sync>> {
     timeout(CONNECTION_TIMEOUT, TcpStream::connect(TcpUrl)).await?.map_err(Into::into)
 }
 
+// The websocket connection will be important for sending data to there and back
+// in this case, this is primarially used for transmitting console data to the frontend from the gameserver
 async fn handle_server_data(
     data: &[u8],
     ws_tx: &broadcast::Sender<String>,
@@ -259,10 +283,6 @@ async fn handle_server_data(
                     println!("Sending raw inner data: {}", inner_data_str);
                     let _ = ws_tx.send(inner_data_str.to_string());
                 }
-        } else if let Ok(_) = serde_json::from_str::<MessagePayload>(&text) {
-            todo!()
-        } else if let Ok(_) = serde_json::from_str::<List>(&text) {
-            todo!()
         } else {
             println!("Sending raw text: {}", text);
             let _ = ws_tx.send(text);
@@ -271,6 +291,9 @@ async fn handle_server_data(
     Ok(())
 }
 
+// this handles the main tcp stream between the gameserver and the client console, more specifically the data exchanged
+// as well as notifying the gameserver of its capabilities which at some point ill make dependent on what feature flag is set
+// `tokio::select!` is used to concurrently wait for either incoming TCP data or messages from the channel to send.
 async fn handle_stream(
     rx: Arc<Mutex<mpsc::Receiver<Vec<u8>>>>,
     stream: &mut TcpStream,
@@ -284,11 +307,6 @@ async fn handle_stream(
     let msg = serde_json::to_string(
         &List {
             list: ApiCalls::Capabilities(vec!["all".to_string()])
-            // {
-            //     //let items: Vec<ApiCalls> = vec!["all".to_string()].iter().map(|item| ApiCalls::Capabilities(item.to_string())).collect();
-            //     let items: Vec<ApiCalls> = ApiCalls::Capabilities(vec!["all".to_string()]);
-            //     items
-            // },
         }
     )? + "\n";
     
@@ -326,12 +344,13 @@ async fn handle_stream(
     }
 }
 
+// does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
 async fn connect_to_server(
     rx: Arc<Mutex<mpsc::Receiver<Vec<u8>>>>,
     ws_tx: broadcast::Sender<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     loop {
-        println!("→ trying to connect to {}…", TcpUrl);
+        println!("trying to connect to {}…", TcpUrl);
         match timeout(CONNECTION_TIMEOUT, TcpStream::connect(TcpUrl)).await {
             Ok(Ok(mut stream)) => {
                 println!("connected!");
@@ -349,6 +368,9 @@ async fn connect_to_server(
     }
 }
 
+// This function is soley for the initial connection to the tcp server, then passes it off to the dedicated handler, for the initial conneciton
+// this is where it determines wether or not to try and create the container and deployment, as attempt_connection itself is used in various diffrent contexts (like it will constantly
+// try to connect upon failing but it should not try to create the container and deployment every time it fails)
 async fn try_initial_connection(
     ws_tx: broadcast::Sender<String>,
     tcp_tx: Arc<Mutex<mpsc::Sender<Vec<u8>>>>,
@@ -372,6 +394,10 @@ async fn try_initial_connection(
     }
 }
 
+// AppState, this is a global struct which will be used to store data needed across the application like in routes and etc
+// which includes the sender and reciver to the tcp connection for gameserver, the websocket sender (receiver only needs to be managed by its own handler)
+// the base path like if all the routes are prefixed with something like /gameserver-rs which is the default for my testing deployment, and database as its needed frequently 
+// for user information and etc
 #[derive(Clone)]
 struct AppState {
     tcp_tx: Arc<Mutex<mpsc::Sender<Vec<u8>>>>,
@@ -384,6 +410,10 @@ struct AppState {
     database: database::Database
 }
 
+// main function handles the initial connection
+// initilizing the database struct, getting and setting the base path as well as alot of defaults in AppState
+// trying the initial tcp connection to gameserver, and considering creating it if it doesnt exist, and will continually try to make a connection with it 
+// until successful, then it will serve the webserver (maybe the pinging for gameserver should not be a requirement for the webserver to run)
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("Starting server...");
@@ -403,20 +433,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         })
         .unwrap_or_default();
 
+    // Overrides for testing or specific cases where how it worksin a setup may be diffrent
     const ENABLE_K8S_CLIENT: bool = true;
     const ENABLE_INITIAL_CONNECTION: bool = false;
     const FORCE_REBUILD: bool = false;
     const BUILD_DOCKER_IMAGE: bool = true;
     const BUILD_DEPLOYMENT: bool = true;
 
+    // creates a websocket broadcase and tcp channels
     let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
     let (tcp_tx, tcp_rx) = mpsc::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
 
+    // sets the client to be none by default unless this is ran the stanard way which will be ran with the appropriate feature-flag
+    // which will set the k8s client
     let mut client: Option<Client> = None;
     if ENABLE_K8S_CLIENT && K8S_WORKS {
         client = Some(Client::try_default().await?);
     }
 
+    // use everything so far to make the app state
     let state = AppState {
         tcp_tx: Arc::new(Mutex::new(tcp_tx)),
         tcp_rx: Arc::new(Mutex::new(tcp_rx)),
@@ -426,6 +461,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         client,
     };
 
+    // if there is supposed to be a initial connection and if there is a client (as it wont be able to create the deployment without it, and it would be pointless to create a docker container 
+    // without the abbility to deploy it)
     if ENABLE_INITIAL_CONNECTION && state.client.is_some() {
         println!("Trying initial connection...");
         if try_initial_connection(ws_tx.clone(), state.tcp_tx.clone()).await.is_err() || FORCE_REBUILD {
@@ -439,6 +476,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
+    // takes the tcp connection out of the arc mutex and gets a connection to the 
+    // websocket to send to connect_to_server to establish the date pipeline
     let bridge_rx = state.tcp_rx.clone();
     let bridge_tx = state.ws_tx.clone();
     tokio::spawn(async move {
@@ -447,41 +486,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     });
 
+    // Currently very permissive CORS for permissions
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods([Method::GET, Method::POST])
         .allow_headers(Any);
 
-        let fallback_router = routes_static(state.clone().into());
+    // fallback_router will serve all the basic files
+    let fallback_router = routes_static(state.clone().into());
 
-        let inner = Router::new()
-            .route("/api/message", get(get_message))
-            .route("/api/nodes", get(get_nodes))
-            .route("/api/ws", get(ws_handler))
-            .route("/api/users", get(users))
-            .route("/api/send", post(receive_message))
-            .route("/api/general", post(process_general))
-            .route("/api/signin", post(sign_in))
-            .route("/api/createuser", post(create_user))
-            .route("/api/deleteuser", post(delete_user))
-            .merge(fallback_router)
-            .with_state(state.clone());
-        
-
+    // the main route, this serves all the api stuff that wont be behind a login, but I handle the main routes in routes_static for better control
+    // over the authentication flow, if the api could be publically accessible in the future, you would need a diffrent way to authenticate with a api
+    let inner = Router::new()
+        .route("/api/message", get(get_message))
+        .route("/api/nodes", get(get_nodes))
+        .route("/api/ws", get(ws_handler))
+        .route("/api/users", get(users))
+        .route("/api/send", post(receive_message))
+        .route("/api/general", post(process_general))
+        .route("/api/signin", post(sign_in))
+        .route("/api/createuser", post(create_user))
+        .route("/api/deleteuser", post(delete_user))
+        .merge(fallback_router)
+        .with_state(state.clone());
+    
+    // Does nesting of routes behind a base path if configured, otherwise use defaults
     let app = if base_path.is_empty() || base_path == "/" {
         inner.layer(cors)
     } else {
         Router::new().nest(&base_path, inner).layer(cors)
     };
 
+    // serves the website 
     let addr: SocketAddr = LocalUrl.parse().unwrap();
     println!("Listening on http://{}{}", addr, base_path);
 
-    // let addr: SocketAddr = "0.0.0.0:8081".parse().unwrap();
-    // println!("Listening on http://{}{}", addr, base_path);
-    // axum::serve(TcpListener::bind(addr).await?, app).await?;
-
-    // Updated server start:
+    
     let listener = TcpListener::bind(addr).await?;
     axum::serve(listener, app.into_make_service())
         .await?;
@@ -489,39 +529,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
-
-// // Inject the <script> into <head> tag, right after <head> opening
-// // This injects your runtime base path rewriter script
-// let injected_html = replaced.replacen(
-//     "<head>",
-//     &format!("<head>\n<script>{}</script>", BASE_PATH_INJECTOR_SCRIPT),
-//     1,
-// );
-
-
-// // Special case: if it's an _app request, *prepend* base_path
-// if path.starts_with("/_app") && !base_path.is_empty() {
-//     path = format!("{}{}", base_path, path);
-// }
-
-
-// const BASE_PATH_INJECTOR_SCRIPT: &str = r#"
-// (function() {
-//   const pathParts = window.location.pathname.split('/');
-//   const basePath = pathParts.length > 1 && pathParts[1] ? '/' + pathParts[1] : '';
-//   if (!basePath) return;
-//   function rewriteUrl(url) {
-//     if (url.startsWith('/_app/')) {
-//       return basePath + url;
-//     }
-//     return url;
-//   }
-//   document.querySelectorAll('script[src^="/_app/"]').forEach(el => { el.src = rewriteUrl(el.src); });
-//   document.querySelectorAll('link[href^="/_app/"]').forEach(el => { el.href = rewriteUrl(el.href); });
-//   document.querySelectorAll('img[src^="/_app/"]').forEach(el => { el.src = rewriteUrl(el.src); });
-// })();
-// "#;
-
+// delegate user creation to the DB and return with relevent status code
 async fn create_user(
     State(state): State<AppState>,
     Json(request): Json<CreateUserData>
@@ -530,6 +538,7 @@ async fn create_user(
     StatusCode::CREATED
 }
 
+// delegate user delection to the DB and returns with relevent status code
 async fn delete_user(
     State(state): State<AppState>,
     Json(request): Json<RemoveUserData>
@@ -538,18 +547,20 @@ async fn delete_user(
     StatusCode::CREATED
 }
 
+// TODO: (capabilities), as I am considering if the frontend needs to be notified of capabilities as it might change via featureflag
 async fn capabilities(
     State(_): State<AppState>,
-    //Form(request): Form<LoginData>
 ) -> impl IntoResponse {
     
 }
-use crate::middleware::from_fn;
-
+// routes_static provides middlewares for authentication as well as serving all the user-orintated content
 fn routes_static(state: Arc<AppState>) -> Router<AppState> {
+    // Creates session stores and memory stores for credentials and to ensure that re-login attempts are not too frequent
+    // (I need to impliment cookies at some point)
     let session_store = MemoryStore::default();
     let session_layer = SessionManagerLayer::new(session_store);
 
+    // Initilize the backend and build a auth layer with it and the session layer 
     let backend = Backend::default();
     let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
 
@@ -564,11 +575,14 @@ fn routes_static(state: Arc<AppState>) -> Router<AppState> {
         })
         .unwrap_or_default();
 
+        // I cant use the axum_login middleware because I need to substiute the base path so it goes to the 
+        // correct index.html for the login page
         let login_url_base = Arc::new(format!("{}/index.html", base_path));
 
         let login_required_middleware = {
             let login_url_base = login_url_base.clone();
         
+            // This handles direct auth and redirects 
             from_fn(move |auth_session: AuthSession, req: Request<_>, next: Next| {
                 let login_url_base = login_url_base.clone();
                 async move {
@@ -584,6 +598,8 @@ fn routes_static(state: Arc<AppState>) -> Router<AppState> {
             })
         };
 
+    // easy way to put routes to be shown publically and privately (after authentication)
+    // by adding the login middleware to one (private is also using a wildcard for all assets)
     let public = Router::new()
         .route("/", get(handle_static_request))
         .route("/authenticate", get(authenticate_route))
@@ -595,8 +611,12 @@ fn routes_static(state: Arc<AppState>) -> Router<AppState> {
         .layer(AddExtensionLayer::new(state.clone()))
         .layer(login_required_middleware);
 
+    // merge these for all non-api assets to merge back again for the original route
     public.merge(protected).route_layer(auth_layer)
 }
+
+// When a websocket connection is initiated, it needs to wait for it to 'upgrade' for it to be a usable socket 
+// then its passed off to the handler for websockets
 async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
@@ -604,6 +624,9 @@ async fn ws_handler(
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
+
+// a handler for websocket which will wait for messages sent through other threads, from a specific thread it will forward it back through the websocket 
+// it will also wait for messages sent from the client, the websocket is primarially meant for the console, so it will immediately forward it to the gameserver to be ran for a running game
 async fn handle_socket(socket: WebSocket, state: AppState) {
     println!("WebSocket connected");
     let (mut sender, mut receiver) = socket.split();
@@ -637,11 +660,13 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     println!("WebSocket disconnected");
 }
 
+// For general messages, in alot if not most cases this is for development purposes
+// there are many cases where this can fail, if it does, it can simply return INTERNAL_SERVER_ERROR
+// it forwards the messages to the channel which forwards it to the gameserver
 async fn process_general(
     State(state): State<AppState>,
     Json(res): Json<ApiCalls>,
 ) -> Result<Json<ResponseMessage>, (StatusCode, String)> {
-    //let payload = res.standard_response().unwrap();
     if let ApiCalls::IncomingMessage(payload) = res {
         println!("Processing general message: {:?}", payload);
         
@@ -683,6 +708,9 @@ async fn process_general(
             "Failed to forward message to server".to_string()))
     }
 }
+
+// a list of users is returned, like alot of other routes, I need to add permissions, and check against those permissions to see if a user
+// can see all the other users, it will delegate the retrival to the database and pass it in as a ApiCalls
 async fn users(State(state): State<AppState>) -> Result<impl IntoResponse, StatusCode> {
     let users = state.database
         .fetch_all("users")
@@ -692,12 +720,11 @@ async fn users(State(state): State<AppState>) -> Result<impl IntoResponse, Statu
     Ok(Json(List { list:  ApiCalls::UserList(users) }))
 }
 
+// A list of nodes in a k8s cluster is returned, nothing is returned if there is not a client (k8s support is off)
 async fn get_nodes(State(state): State<AppState>) -> impl IntoResponse {
     if state.client.is_some() {
         match kubernetes::list_node_names(state.client.unwrap()).await {
             Ok(nodes) => {
-                //let items: Json<List<Vec<ApiCalls>>> = Json(List { list: nodes.iter().map(|node| ApiCalls::NodeList(node.to_string())).collect() });
-                // let items: Json<List> = Json(List { list: nodes.iter().map(|node| ApiCalls::NodeList(node.to_string())).collect() });
                 let items: Json<List> = Json(List { list: ApiCalls::NodeList(nodes) });
                 items
             },
@@ -711,12 +738,11 @@ async fn get_nodes(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
-
+// TODO:, REMOVE THIS
 async fn receive_message(
     State(state): State<AppState>,
     Json(res): Json<ApiCalls>,
 ) -> Result<Json<ResponseMessage>, (StatusCode, String)> {
-    //let payload = res.standard_response().unwrap();
     if let ApiCalls::IncomingMessage(payload) = res {
         let json_payload = MessagePayload {
             r#type: payload.message_type.clone(),
@@ -752,8 +778,10 @@ async fn receive_message(
     }
 }
 
+// Creates a new type for authsession with our custom backend
 pub type AuthSession = axum_login::AuthSession<Backend>;
 
+// Claims are important for JWT, particularially for expirery
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Claims {
     pub exp: usize,
@@ -762,11 +790,13 @@ pub struct Claims {
 }
 
 
+// Our custom backend, which only hash a list of users
 #[derive(Clone, Default)]
 pub struct Backend {
     pub users: HashMap<String, User>,
 }
 
+// Impliment the AuthBackend trait provided by axum_login for Backend, so it knows how to use it to authenticate and get users
 #[async_trait]
 impl AuthnBackend for Backend {
     type User = User;
@@ -789,8 +819,8 @@ impl AuthnBackend for Backend {
     }
 }
 
-// const SECRET: &str = "randomString";
-
+// Using the secret which MUST be set, it will attempt to decode the claim, which means that it if fails to decode it, its not authorized and did not come from the secret
+// and thus is unauthorized
 fn resolve_jwt(token: &str) -> Result<TokenData<Claims>, StatusCode> {
     let secret = std::env::var("SECRET").unwrap_or_else(|_| {
         panic!("Need to specify a secret");
@@ -802,6 +832,7 @@ fn resolve_jwt(token: &str) -> Result<TokenData<Claims>, StatusCode> {
     ).map_err(|_| StatusCode::UNAUTHORIZED)
 }
 
+// Creates a claim with respect to the secret, and gives it a expirery
 fn encode_token(user: String) -> Result<String, StatusCode> {
     let now = Utc::now();
     let exp = (now + chrono::Duration::hours(24)).timestamp() as usize;
@@ -819,20 +850,20 @@ fn encode_token(user: String) -> Result<String, StatusCode> {
     ).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
+// LoginData arrives as just a user and password
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct LoginData {
     pub user: String,
     pub password: String,
 }
 
-
-
+// When a JWT arrives from the frontend, it simply arrives with the token argument
 #[derive(Deserialize)]
 pub struct JwtTokenForm {
     pub token: String,
 }
 
-
+// Impliment AuthUser for User for axum login so it knows how to identify the user and get the hash
 impl AuthUser for User {
     type Id = String;
 
@@ -845,6 +876,9 @@ impl AuthUser for User {
     }
 }
 
+// The sign in function which is the main part of authentication
+// rely on the database to try and find the user entry, if it fails, its immediately unauthorized, or it will try and match the password next
+// if it fails, its unauthorized
 #[axum::debug_handler]
 pub async fn sign_in(
     State(state): State<AppState>,
@@ -862,22 +896,14 @@ pub async fn sign_in(
     Ok(Json(ResponseMessage  { response: token }))
 }
 
-// pub fn retrive_user(username: String) -> Option<User> {
-//     if username == "testuser" {
-//         let password_hash = bcrypt::hash("password123", bcrypt::DEFAULT_COST).ok();
-//         Some(User {
-//             username,
-//             password_hash,
-//         })
-//     } else {
-//         None
-//     }
-// }
-
+// Simple way to check if the passwords correct with bycrypt, considering the hash and normal password
 pub fn verify_password(password: String, hash: String) -> Result<bool, bcrypt::BcryptError> {
     bcrypt::verify(password, &hash)
 }
 
+// We replace [[SITE_URL]], which is crucial for support with a custom prefix for routes, like so /gameserver-rs/index.html instead of just index.html, 
+// this is because within my HTML, I made it so by replacing the contents of a metatag with that string, the scripts read from the metatag, and some of the HREFS, and adds it as a prefix
+// it also serves it with the correct mime type (content_type)
 async fn serve_html_with_replacement(
     file: &str,
     state: &AppState,
@@ -903,6 +929,9 @@ async fn serve_html_with_replacement(
         .unwrap())
 }
 
+// Handles the requests to the backend, like for static assets and so on
+// this ensures that by default things are redirected to index.html, otherwised passed on normally
+// and served, if its html, it will serve it with its replacement
 async fn handle_static_request(
     Extension(state): Extension<Arc<AppState>>,
     req: Request<Body>,
@@ -926,6 +955,8 @@ async fn handle_static_request(
     }
 }
 
+// This is crucial for authentication, it will take a next for redirects, and a jwk to verify the claim with, then it grants the claim for the current session 
+// and redirects the user to their original destination
 #[derive(Deserialize)]
 pub struct AuthenticateParams {
     next: String,
@@ -965,9 +996,8 @@ async fn authenticate_route(
     }
 }
 
-
-
-
+// Gets a message from the server
+// TODO: think about removing this
 async fn get_message(
     State(state): State<AppState>,
 ) -> Result<Json<MessagePayload>, (StatusCode, String)> {
