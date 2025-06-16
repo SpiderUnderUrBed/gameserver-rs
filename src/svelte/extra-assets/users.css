@@ -40,8 +40,16 @@
     background-color: #38d54f;
     width: 20vw;
     height: 30%;
-    /* display: flex;
-    row-gap: 20vh; */
+    display:flex;
+    justify-content: space-evenly;
+    align-items: center;
+    flex-direction: column;
+}
+.user-background>* {
+    display:flex;
+    justify-content: center;
+    align-items: center;
+    flex-direction: row;
 }
 .user-center {
     display: flex;
@@ -51,3 +59,12 @@
     width: 20vw;
     height: 20vh; */
 }
+.background {
+    background-color: #5dd6dd;
+    /* height: 100%;
+    width: 100%; */
+}
+/* 
+body {
+    background-color: black;
+} */

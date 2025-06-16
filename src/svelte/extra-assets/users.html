@@ -9,49 +9,50 @@
     <script src="users.js" defer></script>
 </head>
 <body>
-    <div class="user-whole">
-        <div class="user-center">
-            <div class="user-background">
+    <div class="background">
+        <div class="user-whole">
+            <div class="user-center">
+                <div class="user-background">
+                        <!-- <div class="user-padding"> -->
+                            <div class="user-operations">
+                                <button class="users-element" onclick="document.getElementById('addUserDialog').showModal()">Add User</button>
+                                <button class="users-element" onclick="document.getElementById('deleteUserDialog').showModal()">Delete User</button>
+                            </div>
+                        <!-- </div> -->
                     <!-- <div class="user-padding"> -->
-                        <div class="user-operations">
-                            <button class="users-element" onclick="document.getElementById('addUserDialog').showModal()">Add User</button>
-                            <button class="users-element" onclick="document.getElementById('deleteUserDialog').showModal()">Delete User</button>
-                        </div>
+                        <div class="users"></div>
+                        <div id="message"></div>
                     <!-- </div> -->
-                <!-- <div class="user-padding"> -->
-                    <div class="users"></div>
-                    <div id="message"></div>
-                <!-- </div> -->
+                </div>
+                <dialog id="deleteUserDialog" class="user-dialog">
+                    <form method="dialog">
+                        <h3>Delete User</h3>
+                        <label for="username">Username:</label><br>
+                        <input type="text" id="delete-username" name="username" required><br>
+            
+                        <div class="dialog-buttons">
+                            <button type="submit" onclick="deleteUser()">Delete User</button>
+                            <button onclick="document.getElementById('deleteUserDialog').close()">Cancel</button>
+                        </div>
+                    </form>
+                </dialog>
+                <dialog id="addUserDialog" class="user-dialog">
+                    <form method="dialog">
+                        <h3>Add User</h3>
+                        <label for="username">Username:</label><br>
+                        <input type="text" id="create-username" name="username" required><br>
+            
+                        <label for="password">Password:</label><br>
+                        <input type="password" id="password" name="password" required><br>
+            
+                        <div class="dialog-buttons">
+                            <button type="submit" onclick="addUser()">Add User</button>
+                            <button onclick="document.getElementById('addUserDialog').close()">Cancel</button>
+                        </div>
+                    </form>
+                </dialog>
             </div>
-            <dialog id="deleteUserDialog" class="user-dialog">
-                <form method="dialog">
-                    <h3>Delete User</h3>
-                    <label for="username">Username:</label><br>
-                    <input type="text" id="delete-username" name="username" required><br>
-        
-                    <div class="dialog-buttons">
-                        <button type="submit" onclick="deleteUser()">Delete User</button>
-                        <button onclick="document.getElementById('deleteUserDialog').close()">Cancel</button>
-                    </div>
-                </form>
-            </dialog>
-            <dialog id="addUserDialog" class="user-dialog">
-                <form method="dialog">
-                    <h3>Add User</h3>
-                    <label for="username">Username:</label><br>
-                    <input type="text" id="create-username" name="username" required><br>
-        
-                    <label for="password">Password:</label><br>
-                    <input type="password" id="password" name="password" required><br>
-        
-                    <div class="dialog-buttons">
-                        <button type="submit" onclick="addUser()">Add User</button>
-                        <button onclick="document.getElementById('addUserDialog').close()">Cancel</button>
-                    </div>
-                </form>
-            </dialog>
         </div>
-        
     </div>
 </body>
 </html>
