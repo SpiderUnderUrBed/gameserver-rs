@@ -1,21 +1,16 @@
 .users-element {
     /* padding: 0.5em 1em; */
     border-radius: 10%;
+    min-width: 5%;
+    height: 5vh;
     background-color: #5dd6dd;
 }
 .user-whole {
-    background-color: #f8fdf9;
+    background-color: #061a0a;
     display: flex;
     /* justify-content: */
     height: 100vh;
 }
-/* .user-padding {
-    display: flex;
-    height: 20vh;
-    /* padding-top: 20vh; */
-    /* flex-direction: column;
-    justify-content: center;
-} */ */
 .user-operations {
     /* padding-top: 10vh; */
     background-color: #5dd6dd;
@@ -59,11 +54,18 @@
     width: 20vw;
     height: 20vh; */
 }
-.background {
+/* .user-padding {
+    display: flex;
+    height: 20vh;
+    /* padding-top: 20vh; */
+    /* flex-direction: column;
+    justify-content: center;
+} */
+/* .background {
     background-color: #5dd6dd;
     /* height: 100%;
-    width: 100%; */
-}
+    width: 100%;
+} */
 /* 
 body {
     background-color: black;

@@ -17,7 +17,10 @@ async function fetchUsers() {
                 button.textContent = user.username;
                 button.className = "users-element";
                 button.onclick = () => alert(`User clicked: ${user.username}`);
+                const spacer = document.createElement("span");
+                spacer.style = "width: 20px";
                 user_div.appendChild(button);
+                user_div.appendChild(spacer);
             });
         } else {
             console.log("Failed to get users from the server");
