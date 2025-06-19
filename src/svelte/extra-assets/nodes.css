@@ -1,8 +1,8 @@
 .side-bar {
-    min-width: 15vh;
+    width: 10vh;
     background-color: #4889c3;
 }
-.users-element {
+.nodes-element {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -21,38 +21,38 @@
     text-decoration: none; */
 
     cursor: pointer;
-    user-select: none;
+    node-select: none;
     transition: background-color 0.2s ease, transform 0.1s ease;
 }
 
-.users-element:hover {
+.nodes-element:hover {
     background-color: #000000;
 }
 
-.users-element:active {
+.nodes-element:active {
     transform: scale(0.98);
     background-color: #000000;
 }
 
-.users-element:focus {
+.nodes-element:focus {
     outline: 2px solid #000000;
     outline-offset: 2px;
 }
 
-.users-element-operations {
+.nodes-element-operations {
     /* padding: 0.5em 1em; */
     border-radius: 10%;
     min-width: 10%;
     height: 5vh;
     background-color:#67e91d;
 }
-.user-whole {
+.node-whole {
     background-color: #000000;
     display: flex;
     /* justify-content: */
     height: 100vh;
 }
-.user-operations {
+.node-operations {
     /* padding-top: 10vh; */
     background-color: #5dd6dd;
     /* height: 30%; */
@@ -62,7 +62,7 @@
     flex-direction: column;
     justify-content: center; */
 }
-.user-background {
+.node-background {
     background-color: #38d54f;
     width: 185vh;
     height: 30%;
@@ -71,13 +71,13 @@
     align-items: center;
     flex-direction: column;
 }
-.user-background>* {
+.node-background>* {
     display:flex;
     justify-content: center;
     align-items: center;
     flex-direction: row;
 }
-.users {
+.nodes {
     /* padding-top: 10vh; */
     background-color: #95e8da;
     /* height: 20%; */
@@ -90,7 +90,7 @@
     flex-direction: column;
     justify-content: center; */
 }
-.user-center {
+.node-center {
     display: flex;
     /* justify-content: center; */
     flex-direction: column;
@@ -98,7 +98,7 @@
     width: 20vw;
     height: 20vh; */
 }
-/* .user-padding {
+/* .node-padding {
     display: flex;
     height: 20vh;
     /* padding-top: 20vh; */

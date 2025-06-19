@@ -13,14 +13,15 @@ async function fetchUsers() {
             user_div.innerHTML = ""; 
 
             users.forEach((user, index) => {
-                const button = document.createElement("button");
-                button.textContent = user.username;
+                const button = document.createElement("div");
+                button.role = "button";
+                button.innerHTML = `<div style="width: 20px"></div><h5>${user.username}</h5>`;
                 button.className = "users-element";
-                button.onclick = () => alert(`User clicked: ${user.username}`);
-                const spacer = document.createElement("span");
-                spacer.style = "width: 20px";
+                button.onclick = () => {
+                    document.getElementById('user').textContent = user.username;
+                    document.getElementById('globalUserDialog').showModal();
+                };
                 user_div.appendChild(button);
-                user_div.appendChild(spacer);
             });
         } else {
             console.log("Failed to get users from the server");
@@ -33,6 +34,13 @@ async function fetchUsers() {
 }
 fetchUsers()
 
+async function addPerms(){
+    let permission = document.getElementById("perms").value;
+    console.log(permission);
+
+    let perm_div = document.getElementById("current-perms");
+    perm_div.innerHTML += `<div class="perm-item">${permission}</div>`;
+}
 async function addUser(){
     event.preventDefault()
     console.log("adding user");

@@ -166,7 +166,7 @@ async fn first_connection() -> Result<sqlx::Pool<sqlx::Postgres>, sqlx::Error> {
 // the json backend MIGHT be sufficent, but at the time of writing this I have not made the json backend work
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
 async fn first_connection() -> Result<JsonBackend, String> {
-    Ok(JsonBackend {})
+    Ok(JsonBackend::new(None))
 }
 
 // varibles which determines stuff about the tcp connection to the gameserver for data exchange
@@ -500,6 +500,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let inner = Router::new()
         .route("/api/message", get(get_message))
         .route("/api/nodes", get(get_nodes))
+        .route("/api/servers", get(get_servers))
         .route("/api/ws", get(ws_handler))
         .route("/api/users", get(users))
         .route("/api/send", post(receive_message))
@@ -737,7 +738,9 @@ async fn get_nodes(State(state): State<AppState>) -> impl IntoResponse {
         Json(List { list: ApiCalls::None })
     }
 }
-
+async fn get_servers(State(state): State<AppState>) -> impl IntoResponse {
+    Json(List { list: ApiCalls::None })
+}
 // TODO:, REMOVE THIS
 async fn receive_message(
     State(state): State<AppState>,

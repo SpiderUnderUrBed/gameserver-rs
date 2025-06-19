@@ -11,17 +11,26 @@
 <body>
     <!-- <div class="background"> -->
         <div class="user-whole">
+            <div class="side-bar">
+                <button class="user-button-page" onclick="window.location.href='main.html'">Homepage</button><br>
+                <button class="user-button-page" onclick="window.location.href='users.html'">Users</button><br>
+                <button class="server-button-page" onclick="window.location.href='servers.html'">Servers</button><br>
+                <button class="user-button-page" onclick="window.location.href='nodes.html'">Nodes</button>
+            </div>
             <div class="user-center">
                 <div class="user-background">
                         <!-- <div class="user-padding"> -->
                             <div class="user-operations">
-                                <button class="users-element" onclick="document.getElementById('addUserDialog').showModal()">Add User</button>
+                                <button class="users-element-operations" onclick="document.getElementById('addUserDialog').showModal()">Add User</button>
                                 <span style="width: 20px;"></span>
-                                <button class="users-element" onclick="document.getElementById('deleteUserDialog').showModal()">Delete User</button>
+                                <button class="users-element-operations" onclick="document.getElementById('deleteUserDialog').showModal()">Delete User</button>
                             </div>
                         <!-- </div> -->
                     <!-- <div class="user-padding"> -->
-                        <div class="users"></div>
+                        <div class="users">
+                            <!-- <button class="users-element">Test</button>
+                            <button class="users-element">Test</button> -->
+                        </div>
                         <div id="message"></div>
                     <!-- </div> -->
                 </div>
@@ -37,6 +46,13 @@
                         </div>
                     </form>
                 </dialog>
+                <dialog id="globalUserDialog" class="user-dialog">
+                    <p id="user"></p>
+                    <button>Delete user</button>
+                    <!-- <button>Add user</button> -->
+                    <button>Edit permissions</button>
+                    <button onclick="document.getElementById('globalUserDialog').close()">Close</button>
+                </dialog>
                 <dialog id="addUserDialog" class="user-dialog">
                     <form method="dialog">
                         <h3>Add User</h3>
@@ -45,7 +61,19 @@
             
                         <label for="password">Password:</label><br>
                         <input type="password" id="password" name="password" required><br>
-            
+                        
+                        <div style="height: 20px;"></div>
+                        <div id="current-perms"></div>
+
+                        <label for="perms"></label><br>
+                        <select id="perms" name="perms">
+                            <option>Create Server</option>
+                            <option>Create Users</option>
+                        </select>
+                        <button onclick="addPerms()">Add permission</button>
+
+                        <div style="height: 5vh;"></div>
+
                         <div class="dialog-buttons">
                             <button type="submit" onclick="addUser()">Add User</button>
                             <button onclick="document.getElementById('addUserDialog').close()">Cancel</button>

@@ -216,11 +216,11 @@ consoleInput.addEventListener("keyup", e => {
 async function fetchNodes() {
     try {
         const response = await fetch(`${basePath}/api/nodes`);
+        nodes_div.innerHTML = ""; 
+        addDefaultNodeSettings();
         if (response.ok) {
             const data = await response.json();
             const nodes = data.list.data;
-
-            nodes_div.innerHTML = ""; 
 
             nodes.forEach((node, index) => {
                 const button = document.createElement("button");
@@ -229,8 +229,6 @@ async function fetchNodes() {
                 button.onclick = () => alert(`Node clicked: ${node}`);
                 nodes_div.appendChild(button);
             });
-            addDefaultNodeSettings()
-
         } else {
             document.getElementById('message').innerText = 'Failed to get nodes from the server.';
         }
