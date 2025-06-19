@@ -1,5 +1,8 @@
 use serde::Deserialize;
 use serde::Serialize;
+use std::error::Error;
+pub mod databasespec;
+pub use databasespec::{User, CreateUserData, RemoveUserData, UserDatabase};
 // use std::path::Path;
 use std::path::PathBuf;
 use std::fs::OpenOptions;
@@ -7,24 +10,6 @@ use std::fs::File;
 use std::io::Write;
 use std::io::Read;
 
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct User {
-    pub username: String,
-    pub password_hash: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct CreateUserData {
-    pub user: String,
-    pub password: String,
-    pub authcode: String
-}
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct RemoveUserData {
-    pub user: String,
-    pub authcode: String
-}
 
 #[derive(Clone)]
 pub struct JsonBackend {
@@ -95,7 +80,21 @@ impl Database {
             connection,
         }
     }
-    pub async fn retrive_user(&self, username: String) -> Option<User> {
+    fn clear_db(&self){
+        let clear_file = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .read(true)
+            .open(&self.connection.file)
+            .map_err(|e| format!("Failed to open file: {}", e));
+        if clear_file.is_err(){
+            println!("{:#?}", clear_file);
+        }
+    }
+}
+
+impl UserDatabase for Database {
+    async fn retrieve_user(&self, username: String) -> Option<User> {
         let enable_admin_user = std::env::var("ENABLE_ADMIN_USER").unwrap_or_default() == "true";
         let admin_user = std::env::var("ADMIN_USER").unwrap_or_default();
         let admin_password = std::env::var("ADMIN_PASSWORD").unwrap_or_default();
@@ -112,7 +111,7 @@ impl Database {
         }
 
     }
-    pub async fn fetch_all(&self, item: &str) -> Result<Vec<User>, String>{
+    async fn fetch_all(&self, item: &str) -> Result<Vec<User>, Box<dyn Error + Send + Sync>>{
         let mut file = OpenOptions::new()
         .write(true)
         .read(true)
@@ -125,7 +124,7 @@ impl Database {
         
         Ok(database.users)
     }
-    pub async fn get_from_database(&self, username: &str) -> Result<Option<User>, String>{ 
+    async fn get_from_database(&self, username: &str) -> Result<Option<User>, Box<dyn Error + Send + Sync>> { 
         let file = File::open(&self.connection.file)
             .map_err(|e| format!("Failed to open file: {}", e))?;
         let database: JsonBackendContent = serde_json::from_reader(&file).map_err(|e| {
@@ -140,7 +139,7 @@ impl Database {
     }
   
     
-    pub async fn create_user_in_db(&self, user: CreateUserData) -> Result<User, String> {
+    async fn create_user_in_db(&self, user: CreateUserData) -> Result<User, Box<dyn Error + Send + Sync>> {
         let file_path = &self.connection.file;
     
         let mut read_file = File::open(file_path)
@@ -178,18 +177,7 @@ impl Database {
         Ok(final_user)
     }
     
-    fn clear_db(&self){
-        let clear_file = OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .read(true)
-            .open(&self.connection.file)
-            .map_err(|e| format!("Failed to open file: {}", e));
-        if clear_file.is_err(){
-            println!("{:#?}", clear_file);
-        }
-    }
-    pub async fn remove_user_in_db(&self, user: RemoveUserData) -> Result<Option<User>, String> {
+    async fn remove_user_in_db(&self, user: RemoveUserData) -> Result<Option<User>, Box<dyn Error + Send + Sync>> {
         Ok(None)
     }
 }

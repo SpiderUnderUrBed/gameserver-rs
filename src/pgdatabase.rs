@@ -1,31 +1,16 @@
 
 // use axum_login::AuthUser;
 use bcrypt::{hash};
-use crate::Serialize;
-use crate::Deserialize;
+// use crate::Serialize;
+// use crate::Deserialize;
 use bcrypt::DEFAULT_COST;
 use sqlx::{Pool, Postgres as SqlxPostgres};
-use sqlx::FromRow;
+// use sqlx::FromRow;
 
 use std::error::Error;
+mod databasespec;
+pub use databasespec::{User, CreateUserData, RemoveUserData, UserDatabase};
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct CreateUserData {
-    pub user: String,
-    pub password: String,
-    pub authcode: String
-}
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct RemoveUserData {
-    pub user: String,
-    pub authcode: String
-}
-
-#[derive(Clone, Debug, FromRow, Serialize, Deserialize)]
-pub struct User {
-    pub username: String,
-    pub password_hash: Option<String>,
-}
 // } else if username == "testuser" {
 //     let password_hash = bcrypt::hash("password123", bcrypt::DEFAULT_COST).ok();
 //     Some(User {
@@ -44,7 +29,7 @@ impl Database {
             connection: connection.unwrap(),
         }
     }
-    pub async fn retrive_user(&self, username: String) -> Option<User> {
+    pub async fn retrieve_user(&self, username: String) -> Option<User> {
         let enable_admin_user = std::env::var("ENABLE_ADMIN_USER").unwrap_or_default() == "true";
         let admin_user = std::env::var("ADMIN_USER").unwrap_or_default();
         let admin_password = std::env::var("ADMIN_PASSWORD").unwrap_or_default();

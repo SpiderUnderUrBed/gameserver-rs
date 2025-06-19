@@ -1,6 +1,13 @@
 .side-bar {
     min-width: 15vh;
     background-color: #4889c3;
+    display: flex;
+    justify-content: center;
+}
+.user-button-page {
+    color: #000000;
+    outline: none;
+    box-shadow: none;
 }
 .users-element {
     display: flex;
@@ -98,19 +105,3 @@
     width: 20vw;
     height: 20vh; */
 }
-/* .user-padding {
-    display: flex;
-    height: 20vh;
-    /* padding-top: 20vh; */
-    /* flex-direction: column;
-    justify-content: center;
-} */
-/* .background {
-    background-color: #5dd6dd;
-    /* height: 100%;
-    width: 100%;
-} */
-/* 
-body {
-    background-color: black;
-} */

@@ -28,6 +28,10 @@ use axum::{
 use axum::extract::FromRequest;
 use crate::middleware::from_fn;
 
+// mod databasespec;
+// use databasespec::UserDatabase;
+use crate::database::databasespec::UserDatabase;
+
 // miscellancious imports, future traits are used because alot of the code is asyncronus and cant fully be contained in tokio
 // mime_guess as when I am serving the files, I need to serve it with the correct mime type
 // serde_json because I exchange alot of json data between the backend and frontend and to the gameserver
@@ -75,6 +79,7 @@ use database::JsonBackend;
 use database::User;
 use database::CreateUserData;
 use database::RemoveUserData;
+// use databasespec::{User, CreateUserData, RemoveUserData};
 
 // Docker AND kubernetes would be enabled with a standard deployment
 // as you wouldnt need the docker module (or the k8s module) for barebones testing
@@ -731,11 +736,11 @@ async fn get_nodes(State(state): State<AppState>) -> impl IntoResponse {
             },
             Err(err) => {
                 eprintln!("Error listing nodes: {}", err);
-                Json(List { list: ApiCalls::None })
+                Json(List { list: ApiCalls::NodeList(vec![]) })
             },
         }
     } else {
-        Json(List { list: ApiCalls::None })
+        Json(List { list: ApiCalls::NodeList(vec![]) })
     }
 }
 async fn get_servers(State(state): State<AppState>) -> impl IntoResponse {
@@ -887,7 +892,7 @@ pub async fn sign_in(
     State(state): State<AppState>,
     Form(request): Form<LoginData>
 ) -> Result<Json<ResponseMessage>, StatusCode> {
-    let user = state.database.retrive_user(request.user.clone()).await.ok_or(StatusCode::UNAUTHORIZED)?;
+    let user = state.database.retrieve_user(request.user.clone()).await.ok_or(StatusCode::UNAUTHORIZED)?;
     let password_valid = verify_password(request.password, user.password_hash.unwrap())
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
