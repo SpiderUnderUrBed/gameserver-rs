@@ -6,10 +6,10 @@ use bcrypt::{hash};
 use bcrypt::DEFAULT_COST;
 use sqlx::{Pool, Postgres as SqlxPostgres};
 // use sqlx::FromRow;
-
+use crate::StatusCode;
 use std::error::Error;
 pub mod databasespec;
-pub use databasespec::{User, CreateUserData, RemoveUserData, UserDatabase};
+pub use databasespec::{User, CreateUserData, RemoveUserData, UserDatabase, DatabaseError, RetrieveUser};
 
 // } else if username == "testuser" {
 //     let password_hash = bcrypt::hash("password123", bcrypt::DEFAULT_COST).ok();
@@ -43,7 +43,8 @@ impl UserDatabase for Database {
             let password_hash = bcrypt::hash(admin_password, bcrypt::DEFAULT_COST).ok();
             Some(User{
                 username,
-                password_hash
+                password_hash,
+                user_perms: vec![]
             })
         } else {
             None
@@ -67,7 +68,12 @@ impl UserDatabase for Database {
         Ok(user)
     }
 
-    async fn create_user_in_db(&self, user: CreateUserData) -> Result<User, Box<dyn Error + Send + Sync>> {
+    async fn create_user_in_db(&self, user: CreateUserData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+        let already_exists = self.get_from_database(&user.user).await?;
+        if already_exists.is_some() {
+            return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
+        }
+
         let hashed = hash(&user.password, DEFAULT_COST).map_err(|e| {
             sqlx::Error::Protocol(e.to_string().into())
         })?;
@@ -78,18 +84,22 @@ impl UserDatabase for Database {
         .fetch_one(&self.connection)
         .await?;
 
-        Ok(user)
+        Ok(StatusCode::CREATED)
     }
     // pub fn remove_user_in_db(&self, user: RemoveUserData){
     //     //DELETE FROM users WHERE username = $1
 
     // }
-    async fn remove_user_in_db(&self, user: RemoveUserData) -> Result<Option<User>, Box<dyn Error + Send + Sync>> {
+    async fn remove_user_in_db(&self, user: RemoveUserData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         let user = sqlx::query_as::<_, User>("DELETE FROM users WHERE username = $1 RETURNING *")
             .bind(user.user)
-        .fetch_optional(&self.connection)
-        .await?;
+            .fetch_optional(&self.connection)
+            .await?;
 
-        Ok(user)
+        if user.is_some(){
+            Ok(StatusCode::CREATED)
+        } else {
+            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+        }
     }
 }

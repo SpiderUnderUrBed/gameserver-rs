@@ -41,6 +41,7 @@ pub struct RemoveUserData {
 pub struct User {
     pub username: String,
     pub password_hash: Option<String>,
+    pub user_perms: Vec<String>
 }
 
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
