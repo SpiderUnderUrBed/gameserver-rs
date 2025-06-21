@@ -77,6 +77,7 @@ use database::JsonBackend;
 
 // Both database files and any more should have these structs
 use database::User;
+use database::RetrieveUser;
 use database::CreateUserData;
 use database::RemoveUserData;
 // use databasespec::{User, CreateUserData, RemoveUserData};
@@ -508,6 +509,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/servers", get(get_servers))
         .route("/api/ws", get(ws_handler))
         .route("/api/users", get(users))
+        .route("/api/getuser", post(get_user))
         .route("/api/send", post(receive_message))
         .route("/api/general", post(process_general))
         .route("/api/signin", post(sign_in))
@@ -540,8 +542,19 @@ async fn create_user(
     State(state): State<AppState>,
     Json(request): Json<CreateUserData>
 ) -> impl IntoResponse {
-    let result = state.database.create_user_in_db(request).await;
-    StatusCode::CREATED
+    let result = state.database.create_user_in_db(request)       
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
+    result
+}
+
+// get the user from the db
+async fn get_user(
+    State(state): State<AppState>,
+    Json(request): Json<RetrieveUser>
+) -> impl IntoResponse {
+    let result = state.database.get_from_database(&request.user).await.unwrap().unwrap();
+    Json(result)
 }
 
 // delegate user delection to the DB and returns with relevent status code
@@ -549,8 +562,10 @@ async fn delete_user(
     State(state): State<AppState>,
     Json(request): Json<RemoveUserData>
 ) -> impl IntoResponse {
-    let result = state.database.remove_user_in_db(request).await;
-    StatusCode::CREATED
+    let result = state.database.remove_user_in_db(request)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
+    result
 }
 
 // TODO: (capabilities), as I am considering if the frontend needs to be notified of capabilities as it might change via featureflag
@@ -815,6 +830,7 @@ impl AuthnBackend for Backend {
         let user = resolve_jwt(&token).ok().map(|data| User {
             username: data.claims.user,
             password_hash: None,
+            user_perms: vec![]
         });
         Ok(user)
     }
@@ -823,6 +839,7 @@ impl AuthnBackend for Backend {
         Ok(Some(User {
             username: user_id.clone(),
             password_hash: None,
+            user_perms: vec![]
         }))
     }
 }
@@ -981,6 +998,7 @@ async fn authenticate_route(
             let user = User {
                 username: token_data.claims.user,
                 password_hash: None,
+                user_perms: vec![]
             };
 
             if let Err(e) = auth_session.login(&user).await {
@@ -1056,6 +1074,38 @@ async fn get_message(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "No response from server".into(),
             ))
+        }
+    }
+}
+
+// Unit tests
+#[cfg(test)]
+mod tests {
+    use crate::database::Database;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn duplicate_user(){
+        let database = Database::new(None);
+        let userA = CreateUserData {
+            user: "A".to_owned(),
+            password: "".to_owned(),
+            jwt: "".to_owned(),
+            user_perms: vec![],
+        };
+        let userB = CreateUserData {
+            user: "A".to_owned(),
+            password: "".to_owned(),
+            jwt: "".to_owned(),
+            user_perms: vec![],
+        };
+        let resultA = database.create_user_in_db(userB).await;
+        let resultB = database.create_user_in_db(userA).await;
+        if resultB.is_err(){
+            assert!(true)
+        } else {
+            assert!(false)
         }
     }
 }

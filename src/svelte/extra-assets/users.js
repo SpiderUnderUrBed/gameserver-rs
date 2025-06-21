@@ -6,22 +6,24 @@ async function fetchUsers() {
     try {
         const response = await fetch(`${basePath}/api/users`);
         if (response.ok) {
+            user_div.innerHTML = "";
+
             const data = await response;
             const json_data = await  data.json();
             const users = json_data.list.data;
 
-            user_div.innerHTML = ""; 
-
             users.forEach((user, index) => {
-                const button = document.createElement("div");
-                button.role = "button";
-                button.innerHTML = `<div style="width: 20px"></div><h5>${user.username}</h5>`;
-                button.className = "users-element";
-                button.onclick = () => {
-                    document.getElementById('user').textContent = user.username;
-                    document.getElementById('globalUserDialog').showModal();
-                };
-                user_div.appendChild(button);
+                const userbutton = document.createElement("div");
+                userbutton.role = "button";
+            
+                const clone = document.getElementById("user-element-inner-template").content.cloneNode(true);
+                clone.getElementById('username').textContent = user.username;
+                if (user.user_perms.length != 0) {
+                    clone.getElementById('roles').textContent = user.user_perms;
+                }
+                userbutton.appendChild(clone);
+                // userbutton.className = "users-element";
+                user_div.appendChild(userbutton);
             });
         } else {
             console.log("Failed to get users from the server");
@@ -34,12 +36,43 @@ async function fetchUsers() {
 }
 fetchUsers()
 
+async function extraSettings(button){
+    const username = button.closest("[data-user-container]").querySelector("#username").innerText;
+    document.getElementById('user').innerText = username;
+    document.getElementById('globalUserDialog').showModal()
+}
+async function togglePassword(button){
+    const img = button.querySelector("img");
+    if (img.src.includes("show.svg")) {
+        try {
+            const username = button.closest("[data-user-container]").querySelector("#username").innerText;
+            const response = await fetch(`${basePath}/api/getuser`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ user: username })
+                });
+            if (response.ok) {
+                const json = await response.json();
+                console.log(json);
+            }
+        } catch (e) {
+            console.error(`Error: ${e}`);
+        }
+        img.src = "icons/hide.svg"
+    } else {
+        img.src = "icons/show.svg"
+    }
+}
 async function addPerms(){
-    let permission = document.getElementById("perms").value;
+    let perms_div = document.getElementById("perms");
+    let permission = perms_div.value;
+    let permission_text = perms_div.options[perms_div.selectedIndex].text;
     console.log(permission);
 
     let perm_div = document.getElementById("current-perms");
-    perm_div.innerHTML += `<div class="perm-item">${permission}</div>`;
+    perm_div.innerHTML += `<div class="perm-item" data-value=${permission}>${permission_text}</div>`;
 }
 async function addUser(){
     event.preventDefault()
@@ -47,9 +80,13 @@ async function addUser(){
     
     const user = document.getElementById('create-username').value;
     const password = document.getElementById('password').value;
-    const authcode = "0";
-
-    console.log(user);
+    const jwt = "";
+    const user_perms = [];
+    const user_perms_div = document.getElementById("current-perms");
+    for (let child of user_perms_div.children){
+        console.log(`Permission: ${child.dataset.value}`);
+        user_perms.push(child.dataset.value);
+    }
 
     try {
         const response = await fetch(`${basePath}/api/createuser`, {
@@ -57,7 +94,7 @@ async function addUser(){
         headers: {
             'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ user, password, authcode })
+        body: JSON.stringify({ user, password, jwt, user_perms })
         });
 
         if (!response.ok) {
@@ -76,19 +113,15 @@ async function addUser(){
         alert('An error occurred while creating the user.');
     }
 }
-async function deleteUser(){
-    event.preventDefault()
-    
-    const user = document.getElementById('delete-username').value;
-    const authcode = "0";
-
+async function deleteUser(user){
+    const jwt = "";
     try {
         const response = await fetch(`${basePath}/api/deleteuser`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ user, authcode })
+        body: JSON.stringify({ user, jwt })
         });
 
         if (!response.ok) {
@@ -105,4 +138,15 @@ async function deleteUser(){
         console.error('Request failed:', err);
         alert('An error occurred while creating the user.');
     }
+}
+async function deleteUserByDialog(){
+    event.preventDefault()
+    
+    const user = document.getElementById('delete-username').value;
+    // const user_perms = [];
+    deleteUser(user);
+}
+async function deleteUserByClick(button){
+    const user = button.closest("[data-user-container]").querySelector("#user").innerText;
+    deleteUser(user);
 }

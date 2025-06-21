@@ -2,7 +2,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::error::Error;
 pub mod databasespec;
-pub use databasespec::{User, CreateUserData, RemoveUserData, UserDatabase};
+pub use databasespec::{User, CreateUserData, RemoveUserData, UserDatabase, RetrieveUser, DatabaseError};
 // use std::path::Path;
 use std::path::PathBuf;
 use std::fs::OpenOptions;
@@ -10,6 +10,7 @@ use std::fs::File;
 use std::io::Write;
 use std::io::Read;
 
+use crate::StatusCode;
 
 #[derive(Clone)]
 pub struct JsonBackend {
@@ -102,7 +103,8 @@ impl UserDatabase for Database {
             let password_hash = bcrypt::hash(admin_password, bcrypt::DEFAULT_COST).ok();
             return Some(User{
                 username,
-                password_hash
+                password_hash, 
+                user_perms: vec!["all".to_string()]
             });
         } if let Ok(Some(user)) = self.get_from_database(&username.clone()).await {
             Some(user)
@@ -139,7 +141,7 @@ impl UserDatabase for Database {
     }
   
     
-    async fn create_user_in_db(&self, user: CreateUserData) -> Result<User, Box<dyn Error + Send + Sync>> {
+    async fn create_user_in_db(&self, user: CreateUserData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         let file_path = &self.connection.file;
     
         let mut read_file = File::open(file_path)
@@ -160,8 +162,13 @@ impl UserDatabase for Database {
         let final_user = User {
             username: user.user,
             password_hash: Some(password_hash.unwrap()),
+            user_perms: user.user_perms
         };
-        database.users.push(final_user.clone());
+        if database.users.iter().any(|db_user| db_user.username == final_user.username){
+            return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
+        } else {
+            database.users.push(final_user.clone());
+        }
     
         let json = serde_json::to_string_pretty(&database)
             .map_err(|e| format!("Failed to serialize JSON: {}", e))?;
@@ -174,10 +181,38 @@ impl UserDatabase for Database {
     
         write_file.write_all(json.as_bytes()).map_err(|e| format!("Write error: {}", e))?;
     
-        Ok(final_user)
+        Ok(StatusCode::CREATED)
     }
     
-    async fn remove_user_in_db(&self, user: RemoveUserData) -> Result<Option<User>, Box<dyn Error + Send + Sync>> {
-        Ok(None)
+    async fn remove_user_in_db(&self, user: RemoveUserData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+        let file_path = &self.connection.file;
+    
+        let mut read_file = File::open(file_path)
+            .map_err(|e| format!("Failed to open file: {}", e))?;
+        let mut contents = String::new();
+        read_file.read_to_string(&mut contents).map_err(|e| format!("Read error: {}", e))?;
+    
+        let mut database: JsonBackendContent = if contents.trim().is_empty() {
+            JsonBackendContent::default()
+        } else {
+            serde_json::from_str(&contents).map_err(|e| {
+                println!("Failed to parse JSON: {}", e); 
+                format!("Error: {}", e)
+            })?
+        };
+        database.users.retain(|db_user| db_user.username != user.user);
+
+        let json = serde_json::to_string_pretty(&database)
+        .map_err(|e| format!("Failed to serialize JSON: {}", e))?;
+
+        let mut write_file = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(file_path)
+            .map_err(|e| format!("Failed to re-open file for writing: {}", e))?;
+
+        write_file.write_all(json.as_bytes()).map_err(|e| format!("Write error: {}", e))?;
+        
+        Ok(StatusCode::CREATED)
     }
 }
