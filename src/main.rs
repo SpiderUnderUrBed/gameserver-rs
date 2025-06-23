@@ -117,10 +117,10 @@ mod kubernetes {
 // I like these defaults for testing, and for the moment I doubt anyone would object
 // but at some point this will be removed in favor of testing with ENV varibles
 #[cfg(not(feature = "full-stack"))]
-static TcpUrl: &str = "0.0.0.0:8082";
+static TcpUrl: &str = "127.0.0.1:8082";
 
 #[cfg(not(feature = "full-stack"))]
-static LocalUrl: &str = "0.0.0.0:8081";
+static LocalUrl: &str = "127.0.0.1:8081";
 
 #[cfg(not(feature = "full-stack"))]
 static K8S_WORKS: bool = false;
@@ -129,7 +129,7 @@ static K8S_WORKS: bool = false;
 static TcpUrl: &str = "gameserver-service:8080";
 
 #[cfg(feature = "full-stack")]
-static LocalUrl: &str = "0.0.0.0:8080";
+static LocalUrl: &str = "127.0.0.1:8080";
 
 // K8S_WORKS needs to be true in the case where the full stack is running and not if that is not the case 
 // to avoid calling the dummy functions
