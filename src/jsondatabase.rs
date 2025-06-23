@@ -86,7 +86,7 @@ impl Database {
             connection,
         }
     }
-    pub fn clear_db(&self){
+    pub async fn clear_db(&self) -> Result<(), String> {
         let clear_file = OpenOptions::new()
             .write(true)
             .truncate(true)
@@ -95,7 +95,10 @@ impl Database {
             .map_err(|e| format!("Failed to open file: {}", e));
         if clear_file.is_err(){
             println!("{:#?}", clear_file);
+            return Err("Error".to_string())
         }
+
+        Ok(())
     }
     async fn write_database(&self, database: JsonBackendContent) -> Result<String, String> {
         let file_path = &self.connection.file;
