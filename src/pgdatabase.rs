@@ -29,7 +29,7 @@ impl Database {
             connection: connection.unwrap(),
         }
     }
-    pub async fn clear_db(&self){
+    pub async fn clear_db(&self) -> Result<(), sqlx::Error> {
         let tables = [
             "users",
         ];
@@ -37,7 +37,9 @@ impl Database {
         let delete = format!("TRUNCATE TABLE {} RESTART IDENTITY CASCADE;", tables.join(", "));
 
         sqlx::query(&delete)
-            .execute(&self.connection).await;
+            .execute(&self.connection).await?;
+        
+        Ok(())
         // println!("Skipping this");
     }
 }
@@ -70,9 +72,9 @@ impl UserDatabase for Database {
         Ok(users)
     }
     async fn edit_user_in_db(&self, element: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
-        if let Element::User { password, user, user_perms } = element.element {
+        if let Element::User { password, user, user_perms } = &element.element {
             if password.is_empty() {
-                sqlx::query(
+                match sqlx::query(
                     r#"
                     UPDATE users
                     SET user_perms = $1,
@@ -83,11 +85,22 @@ impl UserDatabase for Database {
                 .bind(&user_perms)
                 .bind(&user)
                 .execute(&self.connection)
-                .await?;
+                .await {
+                    Ok(result) => {
+                    },
+                    Err(e) => {
+                        return Err(Box::new(e));
+                    }
+                }
             } else {
-                let password_hash = bcrypt::hash(password, bcrypt::DEFAULT_COST)?;
+                let password_hash = match bcrypt::hash(password, bcrypt::DEFAULT_COST) {
+                    Ok(hash) => hash,
+                    Err(e) => {
+                        return Err(Box::new(e));
+                    }
+                };
 
-                sqlx::query(
+                match sqlx::query(
                     r#"
                     UPDATE users
                     SET password_hash = $1,
@@ -100,7 +113,13 @@ impl UserDatabase for Database {
                 .bind(&user_perms)
                 .bind(&user)
                 .execute(&self.connection)
-                .await?;
+                .await {
+                    Ok(result) => {
+                    },
+                    Err(e) => {
+                        return Err(Box::new(e));
+                    }
+                }
             }
 
             Ok(StatusCode::CREATED)
@@ -108,10 +127,14 @@ impl UserDatabase for Database {
             Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
         }
     }
-        async fn create_user_in_db(&self, element: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+
+
+    async fn create_user_in_db(&self, element: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         if let Element::User { password, user, user_perms } = element.element {
             let already_exists = self.get_from_database(&user).await?;
+            println!("{:#?}", already_exists);
             if already_exists.is_some() {
+                println!("Returning err");
                 return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
             }
             if password.is_empty(){

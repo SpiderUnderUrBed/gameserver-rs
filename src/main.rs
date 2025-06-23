@@ -58,7 +58,7 @@ use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, TokenData, 
 use bcrypt::BcryptError;
 use async_trait::async_trait;
 use tower_http::add_extension::AddExtensionLayer;
-
+use serial_test::serial;
 // For now I only restrict the json backend for running this without kubernetes
 // the json backend is only for testing in most cases, simple deployments would use full-stack feature flag
 // and you can use postgres manually with the database feature flag
@@ -1105,10 +1105,23 @@ mod tests {
         use crate::database::{Database, Element};
         use super::*;
 
+        #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
+        async fn create_db_for_tests() ->  Result<Database, String> {
+            Ok(Database::new(None))
+        }
+
+        #[cfg(any(feature = "full-stack", feature = "database"))]
+        async fn create_db_for_tests() -> Result<Database, sqlx::Error> {
+            let conn = first_connection().await?;
+            let database = database::Database::new(Some(conn));
+            Ok(database)
+        }
+
         #[tokio::test]
+        #[serial]
         async fn remove_user(){
-            let database = Database::new(None);
-            database.clear_db();
+            let database = create_db_for_tests().await.unwrap();
+            database.clear_db().await.expect("Failed to clear DB");
             let user = CreateElementData {
                 element: Element::User {
                     user: "kk".to_owned(),
@@ -1117,7 +1130,7 @@ mod tests {
                 },
                 jwt: "".to_owned(),
             };
-            let _ = database.create_user_in_db(user).await;
+            let _ = database.create_user_in_db(user).await.expect("Failed to clear DB");
             let remove_user_result = database.remove_user_in_db(RemoveElementData { element: "kk".to_string(), jwt: "".to_string() }).await;
             if remove_user_result.is_ok() {
                 assert!(true)
@@ -1127,9 +1140,10 @@ mod tests {
         }
         
         #[tokio::test]
+        #[serial]
         async fn create_user_perms(){
-            let database = Database::new(None);
-            database.clear_db();
+            let database = create_db_for_tests().await.unwrap();
+            database.clear_db().await.expect("Failed to clear DB");
             let user = CreateElementData { 
                 element: Element::User {
                     user: "kk".to_owned(),
@@ -1148,9 +1162,10 @@ mod tests {
         }
 
         #[tokio::test]
+        #[serial]
         async fn create_user(){
-            let database = Database::new(None);
-            database.clear_db();
+            let database = create_db_for_tests().await.unwrap();
+            database.clear_db().await.expect("Failed to clear DB");
             let user = CreateElementData {
                 element: Element::User {
                     user: "kk".to_owned(),
@@ -1160,7 +1175,6 @@ mod tests {
                 jwt: "".to_owned(),
             };
             let create_user_result = database.create_user_in_db(user).await;
-            // println!("{:#?}", database.fetch_all().await);
             if create_user_result.is_ok() {
                 assert!(true)
             } else {
@@ -1169,28 +1183,30 @@ mod tests {
         }
 
         #[tokio::test]
+        #[serial]
         async fn edit_user_password_changes(){
-            let database = Database::new(None);
-            database.clear_db();
+            let database = create_db_for_tests().await.unwrap();
+            database.clear_db().await.expect("Failed to clear DB");
             let user = CreateElementData {
                 element: Element::User {
-                    user: "A".to_owned(),
+                    user: "b".to_owned(),
                     password: "ddd".to_owned(),
                     user_perms: vec![],
                 },
                 jwt: "".to_owned(),
             };
             let create_user_result = database.create_user_in_db(user).await;
+            println!("{:#?}", create_user_result);
             let edit_user = CreateElementData {
                 element: Element::User{
-                    user: "A".to_owned(),
+                    user: "b".to_owned(),
                     password: "ccc".to_owned(),
                     user_perms: vec![],
                 },
                 jwt: "".to_owned(),
             };
             let result = database.edit_user_in_db(edit_user).await;
-            let final_user = database.retrieve_user("A".to_string()).await;
+            let final_user = database.retrieve_user("b".to_string()).await;
             if let Some(user) = final_user {
                 assert!(bcrypt::verify("ccc", &user.password_hash.unwrap()).is_ok())
             } else {
@@ -1198,12 +1214,13 @@ mod tests {
             }
         }
         #[tokio::test]
+        #[serial]
         async fn edit_user_password_does_not_change(){
-            let database = Database::new(None);
-            database.clear_db();
+            let database = create_db_for_tests().await.unwrap();
+            database.clear_db().await.expect("Failed to clear DB");
             let user = CreateElementData {
                 element: Element::User {
-                    user: "T".to_owned(),
+                    user: "A".to_owned(),
                     password: "a".to_owned(),
                     user_perms: vec![],
                 },
@@ -1212,7 +1229,7 @@ mod tests {
             let create_user_result = database.create_user_in_db(user).await;
             let edit_user = CreateElementData {
                 element: Element::User {
-                    user: "T".to_owned(),
+                    user: "A".to_owned(),
                     password: "".to_owned(),
                     user_perms: vec![],
                 },
@@ -1222,17 +1239,16 @@ mod tests {
             let final_user = database.retrieve_user("A".to_string()).await;
             if let Some(user) = final_user {
                 assert!(bcrypt::verify("a", &user.password_hash.unwrap()).is_ok())
-                // println!("{:#?} : {:#?}", user.password_hash.clone().unwrap(), bcrypt::hash("a", bcrypt::DEFAULT_COST).ok().unwrap());
-                // assert_eq!(user.password_hash, bcrypt::hash("a", bcrypt::DEFAULT_COST).ok())
             } else {
                 assert!(false)
             }
         }  
 
         #[tokio::test]
+        #[serial]
         async fn empty_password(){
-            let database = Database::new(None);
-            database.clear_db();
+            let database = create_db_for_tests().await.unwrap();
+            database.clear_db().await.expect("Failed to clear DB");
             let user = CreateElementData {
                 element: Element::User { 
                     user: "A".to_owned(),
@@ -1250,9 +1266,10 @@ mod tests {
         }
 
         #[tokio::test]
+        #[serial]
         async fn duplicate_user(){
-            let database = Database::new(None);
-            database.clear_db();
+            let database = create_db_for_tests().await.unwrap();
+            database.clear_db().await.expect("Failed to clear DB");
             let userA = CreateElementData {
                 element: Element::User { 
                     user: "A".to_owned(),
@@ -1271,14 +1288,10 @@ mod tests {
             };
             let resultA = database.create_user_in_db(userB).await;
             let resultB = database.create_user_in_db(userA).await;
-            println!("Result A: {:?}", resultA);
-            println!("Result B: {:?}", resultB);
 
-            // println!("{:#?}", database.fetch_all().await);
             if resultB.is_err(){
                 assert!(true)
             } else {
-                // eprintln!("{:#?}", resultB.err());
                 assert!(false)
             }
         }
