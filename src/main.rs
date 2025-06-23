@@ -1108,6 +1108,7 @@ mod tests {
         #[tokio::test]
         async fn remove_user(){
             let database = Database::new(None);
+            database.clear_db();
             let user = CreateElementData {
                 element: Element::User {
                     user: "kk".to_owned(),
@@ -1118,7 +1119,6 @@ mod tests {
             };
             let _ = database.create_user_in_db(user).await;
             let remove_user_result = database.remove_user_in_db(RemoveElementData { element: "kk".to_string(), jwt: "".to_string() }).await;
-            database.clear_db();
             if remove_user_result.is_ok() {
                 assert!(true)
             } else {
@@ -1129,6 +1129,7 @@ mod tests {
         #[tokio::test]
         async fn create_user_perms(){
             let database = Database::new(None);
+            database.clear_db();
             let user = CreateElementData { 
                 element: Element::User {
                     user: "kk".to_owned(),
@@ -1139,7 +1140,6 @@ mod tests {
             };
             let _ = database.create_user_in_db(user).await;
             let retrieved_user_option = database.retrieve_user("kk".to_string()).await;
-            database.clear_db();
             if let Some(retrieved_user) = retrieved_user_option {
                 assert_eq!(retrieved_user.user_perms, vec!["test"])
             } else {
@@ -1150,6 +1150,7 @@ mod tests {
         #[tokio::test]
         async fn create_user(){
             let database = Database::new(None);
+            database.clear_db();
             let user = CreateElementData {
                 element: Element::User {
                     user: "kk".to_owned(),
@@ -1160,7 +1161,6 @@ mod tests {
             };
             let create_user_result = database.create_user_in_db(user).await;
             // println!("{:#?}", database.fetch_all().await);
-            database.clear_db();
             if create_user_result.is_ok() {
                 assert!(true)
             } else {
@@ -1171,6 +1171,7 @@ mod tests {
         #[tokio::test]
         async fn edit_user_password_changes(){
             let database = Database::new(None);
+            database.clear_db();
             let user = CreateElementData {
                 element: Element::User {
                     user: "A".to_owned(),
@@ -1190,7 +1191,6 @@ mod tests {
             };
             let result = database.edit_user_in_db(edit_user).await;
             let final_user = database.retrieve_user("A".to_string()).await;
-            database.clear_db();
             if let Some(user) = final_user {
                 assert!(bcrypt::verify("ccc", &user.password_hash.unwrap()).is_ok())
             } else {
@@ -1200,9 +1200,10 @@ mod tests {
         #[tokio::test]
         async fn edit_user_password_does_not_change(){
             let database = Database::new(None);
+            database.clear_db();
             let user = CreateElementData {
                 element: Element::User {
-                    user: "A".to_owned(),
+                    user: "T".to_owned(),
                     password: "a".to_owned(),
                     user_perms: vec![],
                 },
@@ -1211,7 +1212,7 @@ mod tests {
             let create_user_result = database.create_user_in_db(user).await;
             let edit_user = CreateElementData {
                 element: Element::User {
-                    user: "A".to_owned(),
+                    user: "T".to_owned(),
                     password: "".to_owned(),
                     user_perms: vec![],
                 },
@@ -1219,7 +1220,6 @@ mod tests {
             };
             let result = database.edit_user_in_db(edit_user).await;
             let final_user = database.retrieve_user("A".to_string()).await;
-            database.clear_db();
             if let Some(user) = final_user {
                 assert!(bcrypt::verify("a", &user.password_hash.unwrap()).is_ok())
                 // println!("{:#?} : {:#?}", user.password_hash.clone().unwrap(), bcrypt::hash("a", bcrypt::DEFAULT_COST).ok().unwrap());
@@ -1232,6 +1232,7 @@ mod tests {
         #[tokio::test]
         async fn empty_password(){
             let database = Database::new(None);
+            database.clear_db();
             let user = CreateElementData {
                 element: Element::User { 
                     user: "A".to_owned(),
@@ -1241,7 +1242,6 @@ mod tests {
                 jwt: "".to_owned(),
             };
             let result = database.create_user_in_db(user).await;
-            database.clear_db();
             if result.is_err(){
                 assert!(true)
             } else {
@@ -1252,6 +1252,7 @@ mod tests {
         #[tokio::test]
         async fn duplicate_user(){
             let database = Database::new(None);
+            database.clear_db();
             let userA = CreateElementData {
                 element: Element::User { 
                     user: "A".to_owned(),
@@ -1270,8 +1271,10 @@ mod tests {
             };
             let resultA = database.create_user_in_db(userB).await;
             let resultB = database.create_user_in_db(userA).await;
+            println!("Result A: {:?}", resultA);
+            println!("Result B: {:?}", resultB);
+
             // println!("{:#?}", database.fetch_all().await);
-            database.clear_db();
             if resultB.is_err(){
                 assert!(true)
             } else {
