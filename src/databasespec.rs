@@ -17,23 +17,38 @@ impl fmt::Display for DatabaseError {
 
 impl Error for DatabaseError {}
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct CreateUserData {
-    pub user: String,
-    pub password: String,
-    pub jwt: String,
-    pub user_perms: Vec<String>
-}
+
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct RetrieveUser {
     pub user: String
 }
 
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct RemoveUserData {
-    pub user: String,
+pub struct RemoveElementData {
+    pub element: String,
     pub jwt: String
+}
+
+//, content = "data"
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(tag = "kind", content = "data")]
+pub enum Element {
+    User {
+        password: String,
+        user: String,
+        user_perms: Vec<String>
+    },
+    Node,
+    Server
+}
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct CreateElementData {
+    pub element: Element,
+    // pub password: String,
+    pub jwt: String,
+//     pub user_perms: Vec<String>
 }
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
@@ -52,11 +67,54 @@ pub struct User {
     pub user_perms: Vec<String>
 }
 
+#[cfg(any(feature = "full-stack", feature = "database"))]
+#[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize)]
+pub struct Node {
+    pub nodename: String,
+}
+
+#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Node {
+    pub nodename: String,
+}
+
+#[cfg(any(feature = "full-stack", feature = "database"))]
+#[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize)]
+pub struct Server {
+    pub servername: String,
+}
+
+#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Server {
+    pub servername: String,
+}
+
+
 // #[async_trait]
 pub trait UserDatabase {
     async fn retrieve_user(&self, username: String) -> Option<User>;
-    async fn fetch_all(&self, item: &str) -> Result<Vec<User>, Box<dyn Error + Send + Sync>>;
+    async fn fetch_all(&self) -> Result<Vec<User>, Box<dyn Error + Send + Sync>>;
     async fn get_from_database(&self, username: &str) -> Result<Option<User>, Box<dyn Error + Send + Sync>>;
-    async fn create_user_in_db(&self, user: CreateUserData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
-    async fn remove_user_in_db(&self, user: RemoveUserData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn create_user_in_db(&self, user: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn remove_user_in_db(&self, user: RemoveElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn edit_user_in_db(&self, user: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+}
+
+pub trait ServerDatabase {
+    async fn retrieve_server(&self, username: String) -> Option<User>;
+    async fn fetch_all_servers(&self) -> Result<Vec<User>, Box<dyn Error + Send + Sync>>;
+    async fn get_from_servers_database(&self, username: &str) -> Result<Option<User>, Box<dyn Error + Send + Sync>>;
+    async fn create_server_in_db(&self, user: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn remove_server_in_db(&self, user: RemoveElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn edit_server_in_db(&self, user: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+}
+pub trait NodesDatabase {
+    async fn retrieve_nodes(&self, nodename: String) -> Option<Node>;
+    async fn fetch_all_nodes(&self) -> Result<Vec<Node>, Box<dyn Error + Send + Sync>>;
+    async fn get_from_nodes_database(&self, nodename: &str) -> Result<Option<Node>, Box<dyn Error + Send + Sync>>;
+    async fn create_nodes_in_db(&self, node: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn remove_node_in_db(&self, node: RemoveElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn edit_node_in_db(&self, node: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
 }

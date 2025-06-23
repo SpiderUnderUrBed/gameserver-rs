@@ -57,8 +57,9 @@
             <dialog id="globalUserDialog" class="user-dialog">
                 <div class="user-dialog" data-user-container>
                     <p id="user"></p>
+                    <div id="current-user-perms">Test</div>
                     <button onclick="deleteUserByClick(this)">Delete user</button>
-                    <button>Edit permissions</button>
+                    <button onclick="editPermissions(this)">Edit permissions</button>
                     <button onclick="document.getElementById('globalUserDialog').close()">Close</button>
                 </div>
             </dialog>

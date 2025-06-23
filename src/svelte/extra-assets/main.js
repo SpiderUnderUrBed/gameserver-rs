@@ -33,12 +33,14 @@ async function addResult(inputAsString, output, addInput, addOutput) {
         historyContainer.scrollTop = historyContainer.scrollHeight;
     }
 }
-const svelteMainPageButton = document.getElementById("svelteMainPageButton");
+// const svelteMainPageButton = document.getElementById("svelteMainPageButton");
+// const createServerDedicatedPage = document.getElementById("createServerDedicatedPage");
+const toggablePages = document.getElementById("toggablePages");
 function enableDeveloperOptions(){
-    if (svelteMainPageButton.style.display ==  "none"){
-        svelteMainPageButton.style.display = "block";
+    if (toggablePages.style.display ==  "none"){
+        toggablePages.style.display = "flex";
     } else {
-        svelteMainPageButton.style.display = "none";
+        toggablePages.style.display = "none";
     }
 }
 

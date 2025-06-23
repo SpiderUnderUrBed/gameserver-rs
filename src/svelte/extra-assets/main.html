@@ -22,7 +22,11 @@
                 <button class="user-button-page" onclick="window.location.href='nodes.html'">Nodes</button>
               </div>
               <div class="vertical-top-buttons-lower">
-                <button class="user-button-page" style="display: none;" onclick="window.location.href='svelte-main.html'" id="svelteMainPageButton">Svelte main</button>
+                <div class="toggablePages" id="toggablePages">
+                  <!-- style="display: none;" -->
+                  <button class="user-button-page" onclick="window.location.href='create-servers.html'" id="createServers">Create severs</button>
+                  <button class="user-button-page" onclick="window.location.href='svelte-main.html'" id="svelteMainPageButton">Svelte main</button>
+                </div>
                 <button class="user-button-page" onclick="enableDeveloperOptions()">Toggle developer options</button>
               </div>
               <!-- <a href="users.html" class="user-buttons">Users</a> -->

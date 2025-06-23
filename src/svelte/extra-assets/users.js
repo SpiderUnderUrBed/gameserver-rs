@@ -38,8 +38,31 @@ fetchUsers()
 
 async function extraSettings(button){
     const username = button.closest("[data-user-container]").querySelector("#username").innerText;
+    const currentuserperms = document.getElementById('current-user-perms');
     document.getElementById('user').innerText = username;
     document.getElementById('globalUserDialog').showModal()
+    try {
+        const response = await fetch(`${basePath}/api/getuser`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ user: username })
+            });
+        if (response.ok) {
+            const json = await response.json();
+            if (json.user_perms.length == 0) {
+                currentuserperms.innerText = "No Roles at the moment"
+            } else {
+                currentuserperms.innerText = json.user_perms.join(",");
+            }
+        } else {
+            console.error(response.body);
+        }
+    } catch (error) {
+        currentuserperms.innerText = "Error getting data from the server";
+        console.error(error);
+    } 
 }
 async function togglePassword(button){
     const img = button.querySelector("img");
@@ -56,6 +79,8 @@ async function togglePassword(button){
             if (response.ok) {
                 const json = await response.json();
                 console.log(json);
+            } else {
+                console.error(response.body);
             }
         } catch (e) {
             console.error(`Error: ${e}`);
@@ -94,7 +119,13 @@ async function addUser(){
         headers: {
             'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ user, password, jwt, user_perms })
+        body: JSON.stringify({
+            element: { 
+                kind: "User", 
+                data: { user, password, user_perms }
+            },
+            jwt
+        })
         });
 
         if (!response.ok) {
@@ -113,26 +144,59 @@ async function addUser(){
         alert('An error occurred while creating the user.');
     }
 }
+async function editPermissions(button){
+    const user = button.closest("[data-user-container]").querySelector("#user").innerText;
+    let jwt = "";
+    let user_perms = [];
+    let password = "";
+    
+    try {
+        const response = await fetch(`${basePath}/api/edituser`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                element: { user, password, user_perms },
+                jwt
+            })
+        });
+
+        if (!response.ok) {
+            const error = await response.text();
+            console.error('Server error:', error);
+            alert('Failed to delete user.');
+        } else {
+            const result = await response.text();
+            console.log('User deleted:', result);
+            alert('User delete successfully!');
+            fetchUsers()
+        }
+    } catch (err) {
+        console.error('Request failed:', err);
+        alert('An error occurred while creating the user.');
+    }
+}
 async function deleteUser(user){
     const jwt = "";
     try {
         const response = await fetch(`${basePath}/api/deleteuser`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ user, jwt })
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ element: user, jwt })
         });
 
         if (!response.ok) {
-        const error = await response.text();
-        console.error('Server error:', error);
-        alert('Failed to delete user.');
+            const error = await response.text();
+            console.error('Server error:', error);
+            alert('Failed to delete user.');
         } else {
-        const result = await response.text();
-        console.log('User deleted:', result);
-        alert('User delete successfully!');
-        fetchUsers()
+            const result = await response.text();
+            console.log('User deleted:', result);
+            alert('User delete successfully!');
+            fetchUsers()
         }
     } catch (err) {
         console.error('Request failed:', err);

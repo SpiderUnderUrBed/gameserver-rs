@@ -30,6 +30,7 @@ use crate::middleware::from_fn;
 
 // mod databasespec;
 // use databasespec::UserDatabase;
+use crate::database::databasespec::NodesDatabase;
 use crate::database::databasespec::UserDatabase;
 
 // miscellancious imports, future traits are used because alot of the code is asyncronus and cant fully be contained in tokio
@@ -78,8 +79,8 @@ use database::JsonBackend;
 // Both database files and any more should have these structs
 use database::User;
 use database::RetrieveUser;
-use database::CreateUserData;
-use database::RemoveUserData;
+use database::CreateElementData;
+use database::RemoveElementData;
 // use databasespec::{User, CreateUserData, RemoveUserData};
 
 // Docker AND kubernetes would be enabled with a standard deployment
@@ -509,6 +510,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/servers", get(get_servers))
         .route("/api/ws", get(ws_handler))
         .route("/api/users", get(users))
+        .route("/api/edituser", post(edit_user))
         .route("/api/getuser", post(get_user))
         .route("/api/send", post(receive_message))
         .route("/api/general", post(process_general))
@@ -540,12 +542,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 // delegate user creation to the DB and return with relevent status code
 async fn create_user(
     State(state): State<AppState>,
-    Json(request): Json<CreateUserData>
+    Json(request): Json<CreateElementData>
 ) -> impl IntoResponse {
     let result = state.database.create_user_in_db(request)       
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
+        .map_err(|e| {
+            eprintln!("{:#?}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        });
+    println!("{:#?}", result.is_ok());
     result
+}
+// edits the user data in the db
+async fn edit_user(
+    State(state): State<AppState>,
+    Json(request): Json<RetrieveUser>
+) -> impl IntoResponse {
+    
 }
 
 // get the user from the db
@@ -560,7 +573,7 @@ async fn get_user(
 // delegate user delection to the DB and returns with relevent status code
 async fn delete_user(
     State(state): State<AppState>,
-    Json(request): Json<RemoveUserData>
+    Json(request): Json<RemoveElementData>
 ) -> impl IntoResponse {
     let result = state.database.remove_user_in_db(request)
         .await
@@ -734,7 +747,7 @@ async fn process_general(
 // can see all the other users, it will delegate the retrival to the database and pass it in as a ApiCalls
 async fn users(State(state): State<AppState>) -> Result<impl IntoResponse, StatusCode> {
     let users = state.database
-        .fetch_all("users")
+        .fetch_all()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -743,20 +756,25 @@ async fn users(State(state): State<AppState>) -> Result<impl IntoResponse, Statu
 
 // A list of nodes in a k8s cluster is returned, nothing is returned if there is not a client (k8s support is off)
 async fn get_nodes(State(state): State<AppState>) -> impl IntoResponse {
+    let mut node_list= vec![];
     if state.client.is_some() {
         match kubernetes::list_node_names(state.client.unwrap()).await {
             Ok(nodes) => {
-                let items: Json<List> = Json(List { list: ApiCalls::NodeList(nodes) });
-                items
+                node_list.extend(nodes.clone());
             },
             Err(err) => {
                 eprintln!("Error listing nodes: {}", err);
-                Json(List { list: ApiCalls::NodeList(vec![]) })
             },
         }
-    } else {
-        Json(List { list: ApiCalls::NodeList(vec![]) })
+    } 
+    match state.database.fetch_all_nodes().await {
+        Ok(nodes) => {
+            let nodename_list: Vec<String> = nodes.iter().map(|node| node.nodename.clone()).collect();
+            node_list.extend(nodename_list)
+        },
+        Err(err) => eprintln!("Error fetching DB nodes: {}", err),
     }
+    Json(List { list: ApiCalls::NodeList(node_list) })
 }
 async fn get_servers(State(state): State<AppState>) -> impl IntoResponse {
     Json(List { list: ApiCalls::None })
@@ -1081,31 +1099,185 @@ async fn get_message(
 // Unit tests
 #[cfg(test)]
 mod tests {
-    use crate::database::Database;
-
     use super::*;
 
-    #[tokio::test]
-    async fn duplicate_user(){
-        let database = Database::new(None);
-        let userA = CreateUserData {
-            user: "A".to_owned(),
-            password: "".to_owned(),
-            jwt: "".to_owned(),
-            user_perms: vec![],
-        };
-        let userB = CreateUserData {
-            user: "A".to_owned(),
-            password: "".to_owned(),
-            jwt: "".to_owned(),
-            user_perms: vec![],
-        };
-        let resultA = database.create_user_in_db(userB).await;
-        let resultB = database.create_user_in_db(userA).await;
-        if resultB.is_err(){
-            assert!(true)
-        } else {
-            assert!(false)
+    mod db_users {
+        use crate::database::{Database, Element};
+        use super::*;
+
+        #[tokio::test]
+        async fn remove_user(){
+            let database = Database::new(None);
+            let user = CreateElementData {
+                element: Element::User {
+                    user: "kk".to_owned(),
+                    password: "ddd".to_owned(),
+                    user_perms: vec![],
+                },
+                jwt: "".to_owned(),
+            };
+            let _ = database.create_user_in_db(user).await;
+            let remove_user_result = database.remove_user_in_db(RemoveElementData { element: "kk".to_string(), jwt: "".to_string() }).await;
+            database.clear_db();
+            if remove_user_result.is_ok() {
+                assert!(true)
+            } else {
+                assert!(false)
+            }
+        }
+        
+        #[tokio::test]
+        async fn create_user_perms(){
+            let database = Database::new(None);
+            let user = CreateElementData { 
+                element: Element::User {
+                    user: "kk".to_owned(),
+                    password: "ddd".to_owned(),
+                    user_perms: vec!["test".to_string()],
+                },
+                jwt: "".to_owned(),
+            };
+            let _ = database.create_user_in_db(user).await;
+            let retrieved_user_option = database.retrieve_user("kk".to_string()).await;
+            database.clear_db();
+            if let Some(retrieved_user) = retrieved_user_option {
+                assert_eq!(retrieved_user.user_perms, vec!["test"])
+            } else {
+                assert!(false)
+            }
+        }
+
+        #[tokio::test]
+        async fn create_user(){
+            let database = Database::new(None);
+            let user = CreateElementData {
+                element: Element::User {
+                    user: "kk".to_owned(),
+                    password: "ddd".to_owned(),
+                    user_perms: vec![],
+                },
+                jwt: "".to_owned(),
+            };
+            let create_user_result = database.create_user_in_db(user).await;
+            // println!("{:#?}", database.fetch_all().await);
+            database.clear_db();
+            if create_user_result.is_ok() {
+                assert!(true)
+            } else {
+                assert!(false)
+            }
+        }
+
+        #[tokio::test]
+        async fn edit_user_password_changes(){
+            let database = Database::new(None);
+            let user = CreateElementData {
+                element: Element::User {
+                    user: "A".to_owned(),
+                    password: "ddd".to_owned(),
+                    user_perms: vec![],
+                },
+                jwt: "".to_owned(),
+            };
+            let create_user_result = database.create_user_in_db(user).await;
+            let edit_user = CreateElementData {
+                element: Element::User{
+                    user: "A".to_owned(),
+                    password: "ccc".to_owned(),
+                    user_perms: vec![],
+                },
+                jwt: "".to_owned(),
+            };
+            let result = database.edit_user_in_db(edit_user).await;
+            let final_user = database.retrieve_user("A".to_string()).await;
+            database.clear_db();
+            if let Some(user) = final_user {
+                assert!(bcrypt::verify("ccc", &user.password_hash.unwrap()).is_ok())
+            } else {
+                assert!(false)
+            }
+        }
+        #[tokio::test]
+        async fn edit_user_password_does_not_change(){
+            let database = Database::new(None);
+            let user = CreateElementData {
+                element: Element::User {
+                    user: "A".to_owned(),
+                    password: "a".to_owned(),
+                    user_perms: vec![],
+                },
+                jwt: "".to_owned(),
+            };
+            let create_user_result = database.create_user_in_db(user).await;
+            let edit_user = CreateElementData {
+                element: Element::User {
+                    user: "A".to_owned(),
+                    password: "".to_owned(),
+                    user_perms: vec![],
+                },
+                jwt: "".to_owned(),
+            };
+            let result = database.edit_user_in_db(edit_user).await;
+            let final_user = database.retrieve_user("A".to_string()).await;
+            database.clear_db();
+            if let Some(user) = final_user {
+                assert!(bcrypt::verify("a", &user.password_hash.unwrap()).is_ok())
+                // println!("{:#?} : {:#?}", user.password_hash.clone().unwrap(), bcrypt::hash("a", bcrypt::DEFAULT_COST).ok().unwrap());
+                // assert_eq!(user.password_hash, bcrypt::hash("a", bcrypt::DEFAULT_COST).ok())
+            } else {
+                assert!(false)
+            }
+        }  
+
+        #[tokio::test]
+        async fn empty_password(){
+            let database = Database::new(None);
+            let user = CreateElementData {
+                element: Element::User { 
+                    user: "A".to_owned(),
+                    password: "".to_owned(),
+                    user_perms: vec![],
+                },
+                jwt: "".to_owned(),
+            };
+            let result = database.create_user_in_db(user).await;
+            database.clear_db();
+            if result.is_err(){
+                assert!(true)
+            } else {
+                assert!(false)
+            }
+        }
+
+        #[tokio::test]
+        async fn duplicate_user(){
+            let database = Database::new(None);
+            let userA = CreateElementData {
+                element: Element::User { 
+                    user: "A".to_owned(),
+                    password: "test".to_owned(),
+                    user_perms: vec![],
+                },
+                jwt: "".to_owned(),
+            };
+            let userB = CreateElementData {
+                element: Element::User { 
+                    user: "A".to_owned(),
+                    password: "test".to_owned(),
+                    user_perms: vec![],
+                },
+                jwt: "".to_owned(),
+            };
+            let resultA = database.create_user_in_db(userB).await;
+            let resultB = database.create_user_in_db(userA).await;
+            // println!("{:#?}", database.fetch_all().await);
+            database.clear_db();
+            if resultB.is_err(){
+                assert!(true)
+            } else {
+                // eprintln!("{:#?}", resultB.err());
+                assert!(false)
+            }
         }
     }
 }
