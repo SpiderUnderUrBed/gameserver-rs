@@ -24,7 +24,10 @@
     background-color: #BDC3C7;
     color: #2C3E50;           
 }
-
+.current-user-perms {
+    display: flex;
+    /* min-width: 60vh; */
+}
 
 .user-whole {
     background-color: #ECF0F1;
@@ -78,7 +81,9 @@
     border-radius: 0.5em;
 }
 
-
+.user-dialog {
+    min-width: 50vh;
+}
 .user-data-colum {
     display: flex;
     justify-content: space-around;

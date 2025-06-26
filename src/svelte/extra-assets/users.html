@@ -55,9 +55,15 @@
             </dialog>
     
             <dialog id="globalUserDialog" class="user-dialog">
-                <div class="user-dialog" data-user-container>
+                <div class="user-dialog" data-user-container data-value="edit-perms">
                     <p id="user"></p>
-                    <div id="current-user-perms">Test</div>
+                    <div id="perms" class="perms">
+                        <select id="perms-selector" name="perms-selector">
+                            <option value="server">Create Server</option>
+                            <option value="createusers">Create Users</option>
+                        </select>
+                        <button onclick="addPerms(this)">+</button>
+                    </div>
                     <button onclick="deleteUserByClick(this)">Delete user</button>
                     <button onclick="editPermissions(this)">Edit permissions</button>
                     <button onclick="document.getElementById('globalUserDialog').close()">Close</button>
@@ -65,26 +71,28 @@
             </dialog>
     
             <dialog id="addUserDialog" class="user-dialog">
-                <form method="dialog">
-                    <h3>Add User</h3>
-                    <label for="username">Username:</label><br>
-                    <input type="text" id="create-username" name="username" required><br>
-                    <label for="password">Password:</label><br>
-                    <input type="password" id="password" name="password" required><br>
-                    <div style="height: 20px;"></div>
-                    <div id="current-perms"></div>
-                    <label for="perms"></label><br>
-                    <select id="perms" name="perms">
-                        <option value="server">Create Server</option>
-                        <option value="createusers">Create Users</option>
-                    </select>
-                    <button type="button" onclick="addPerms()">Add permission</button>
-                    <div style="height: 5vh;"></div>
-                    <div class="dialog-buttons">
-                        <button type="submit" onclick="addUser()">Add User</button>
-                        <button onclick="document.getElementById('addUserDialog').close()">Cancel</button>
-                    </div>
-                </form>
+                <div class="user-dialog" data-user-container>
+                    <form method="dialog">
+                        <h3>Add User</h3>
+                        <label for="username">Username:</label><br>
+                        <input type="text" id="create-username" name="username" required><br>
+                        <label for="password">Password:</label><br>
+                        <input type="password" id="password" name="password" required><br>
+                        <div style="height: 20px;"></div>
+                        <div id="perms"></div>
+                        <label for="perms-selector"></label><br>
+                        <select id="perms-selector" name="perms-selector">
+                            <option value="server">Create Server</option>
+                            <option value="createusers">Create Users</option>
+                        </select>
+                        <button type="button" onclick="addPerms(this)">Add permission</button>
+                        <div style="height: 5vh;"></div>
+                        <div class="dialog-buttons">
+                            <button type="submit" onclick="addUser()">Add User</button>
+                            <button onclick="document.getElementById('addUserDialog').close()">Cancel</button>
+                        </div>
+                    </form>
+                </div>
             </dialog>
             <!-- <dialog id="extraSettingsDialog">
                 <form method="dialog">

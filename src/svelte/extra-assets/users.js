@@ -19,7 +19,7 @@ async function fetchUsers() {
                 const clone = document.getElementById("user-element-inner-template").content.cloneNode(true);
                 clone.getElementById('username').textContent = user.username;
                 if (user.user_perms.length != 0) {
-                    clone.getElementById('roles').textContent = user.user_perms;
+                    clone.getElementById('roles').textContent = user.user_perms.join(", ");
                 }
                 userbutton.appendChild(clone);
                 // userbutton.className = "users-element";
@@ -38,7 +38,7 @@ fetchUsers()
 
 async function extraSettings(button){
     const username = button.closest("[data-user-container]").querySelector("#username").innerText;
-    const currentuserperms = document.getElementById('current-user-perms');
+    const currentuserperms = document.getElementById('perms');
     document.getElementById('user').innerText = username;
     document.getElementById('globalUserDialog').showModal()
     try {
@@ -51,10 +51,27 @@ async function extraSettings(button){
             });
         if (response.ok) {
             const json = await response.json();
-            if (json.user_perms.length == 0) {
-                currentuserperms.innerText = "No Roles at the moment"
+            // for (const child of currentuserperms.children) {
+
+            // }
+            if (json.user_perms.length == 0 && currentuserperms.children.length < 3) {
+                const internal_content = document.createElement("div");
+                internal_content.textContent = "No Roles at the moment";
+                internal_content.id = "no-roles";
+                currentuserperms.prepend(internal_content)
             } else {
-                currentuserperms.innerText = json.user_perms.join(",");
+                let no_role_button = document.getElementById("no-roles");
+                if (no_role_button){
+                    no_role_button.remove()
+                }
+                // for (let perm of json.user_perms){
+                //     const internal_content = document.createElement("button");
+                //     internal_content.onclick = function() {
+                //         deletePerm(internal_content);
+                //     }
+                //     internal_content.textContent = perm;
+                //     currentuserperms.prepend(internal_content)
+                // }
             }
         } else {
             console.error(response.body);
@@ -90,14 +107,32 @@ async function togglePassword(button){
         img.src = "icons/show.svg"
     }
 }
-async function addPerms(){
-    let perms_div = document.getElementById("perms");
-    let permission = perms_div.value;
-    let permission_text = perms_div.options[perms_div.selectedIndex].text;
-    console.log(permission);
+async function addPerms(button){
+    let root = button.closest("[data-user-container]");
+    const perms_div = root.querySelector("#perms-selector");
+    console.log(root.dataset.value);
+    // if (root.value != "edit-perms"){
+        console.log("e");
+        const permission = perms_div.value;
+        const permission_text = perms_div.options[perms_div.selectedIndex].text;
 
-    let perm_div = document.getElementById("current-perms");
-    perm_div.innerHTML += `<div class="perm-item" data-value=${permission}>${permission_text}</div>`;
+        const display_perms_div = root.querySelector("#perms");
+
+        const btn = document.createElement("button");
+        btn.className = "perm-item";
+        btn.dataset.value = permission;
+        btn.textContent = permission_text;
+        btn.onclick = function () {
+            deletePerm(btn);
+        };
+
+        display_perms_div.appendChild(btn);
+    //}
+}
+
+async function deletePerm(button){
+    console.log("Deleting perm");
+    button.remove();
 }
 async function addUser(){
     event.preventDefault()
@@ -107,10 +142,12 @@ async function addUser(){
     const password = document.getElementById('password').value;
     const jwt = "";
     const user_perms = [];
-    const user_perms_div = document.getElementById("current-perms");
+    const user_perms_div = document.getElementById("perms");
     for (let child of user_perms_div.children){
         console.log(`Permission: ${child.dataset.value}`);
-        user_perms.push(child.dataset.value);
+        if (child.dataset.value != undefined) {
+            user_perms.push(child.dataset.value);
+        }
     }
 
     try {
@@ -122,7 +159,9 @@ async function addUser(){
         body: JSON.stringify({
             element: { 
                 kind: "User", 
-                data: { user, password, user_perms }
+                data: { 
+                    user, password, user_perms
+                }
             },
             jwt
         })
@@ -146,9 +185,17 @@ async function addUser(){
 }
 async function editPermissions(button){
     const user = button.closest("[data-user-container]").querySelector("#user").innerText;
+    
     let jwt = "";
     let user_perms = [];
     let password = "";
+
+    for (let child of button.closest("[data-user-container]").querySelector("#perms").children){
+        if (child.dataset.value != undefined) {
+            user_perms.push(child.dataset.value);
+        }
+    }
+    console.log(user_perms);
     
     try {
         const response = await fetch(`${basePath}/api/edituser`, {
@@ -157,7 +204,12 @@ async function editPermissions(button){
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                element: { user, password, user_perms },
+                element: { 
+                    data: {
+                        user, password, user_perms
+                    }, 
+                    kind: "User" 
+                },
                 jwt
             })
         });
@@ -165,16 +217,16 @@ async function editPermissions(button){
         if (!response.ok) {
             const error = await response.text();
             console.error('Server error:', error);
-            alert('Failed to delete user.');
+            alert('Failed to edit user.');
         } else {
             const result = await response.text();
-            console.log('User deleted:', result);
-            alert('User delete successfully!');
+            console.log('User edited:', result);
+            alert('User edited successfully!');
             fetchUsers()
         }
     } catch (err) {
         console.error('Request failed:', err);
-        alert('An error occurred while creating the user.');
+        alert('An error occurred while editing the user.');
     }
 }
 async function deleteUser(user){

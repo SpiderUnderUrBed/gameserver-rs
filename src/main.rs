@@ -547,18 +547,17 @@ async fn create_user(
     let result = state.database.create_user_in_db(request)       
         .await
         .map_err(|e| {
-            eprintln!("{:#?}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         });
-    println!("{:#?}", result.is_ok());
     result
 }
 // edits the user data in the db
 async fn edit_user(
     State(state): State<AppState>,
-    Json(request): Json<RetrieveUser>
+    Json(request): Json<CreateElementData>
 ) -> impl IntoResponse {
-    
+    let result = state.database.edit_user_in_db(request).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
+    result
 }
 
 // get the user from the db
@@ -566,7 +565,7 @@ async fn get_user(
     State(state): State<AppState>,
     Json(request): Json<RetrieveUser>
 ) -> impl IntoResponse {
-    let result = state.database.get_from_database(&request.user).await.unwrap().unwrap();
+    let result = state.database.get_from_database(&request.user).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR).unwrap();
     Json(result)
 }
 
