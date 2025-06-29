@@ -36,11 +36,12 @@ async function fetchUsers() {
 }
 fetchUsers()
 
-async function extraSettings(button){
+async function extraSettings(button) {
     const username = button.closest("[data-user-container]").querySelector("#username").innerText;
     const currentuserperms = document.getElementById('perms');
     document.getElementById('user').innerText = username;
-    document.getElementById('globalUserDialog').showModal()
+    document.getElementById('globalUserDialog').showModal();
+    
     try {
         const response = await fetch(`${basePath}/api/getuser`, {
             method: 'POST',
@@ -48,39 +49,49 @@ async function extraSettings(button){
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({ user: username })
-            });
+        });
+        
         if (response.ok) {
             const json = await response.json();
-            // for (const child of currentuserperms.children) {
-
-            // }
-            if (json.user_perms.length == 0 && currentuserperms.children.length < 3) {
+            
+            while (currentuserperms.children.length > 2) {
+                currentuserperms.removeChild(currentuserperms.lastChild);
+            }
+            
+            const noRoleButton = document.getElementById("no-roles");
+            if (noRoleButton) {
+                noRoleButton.remove();
+            }
+            
+            if (json.user_perms.length === 0) {
                 const internal_content = document.createElement("div");
                 internal_content.textContent = "No Roles at the moment";
                 internal_content.id = "no-roles";
-                currentuserperms.prepend(internal_content)
+                currentuserperms.appendChild(internal_content);
             } else {
-                let no_role_button = document.getElementById("no-roles");
-                if (no_role_button){
-                    no_role_button.remove()
-                }
-                // for (let perm of json.user_perms){
-                //     const internal_content = document.createElement("button");
-                //     internal_content.onclick = function() {
-                //         deletePerm(internal_content);
-                //     }
-                //     internal_content.textContent = perm;
-                //     currentuserperms.prepend(internal_content)
-                // }
+                const uniquePerms = [...new Set(json.user_perms)];
+                
+                uniquePerms.forEach(perm => {
+                    const btn = document.createElement("button");
+                    btn.className = "perm-item";
+                    btn.dataset.value = perm;
+                    btn.textContent = perm;
+                    btn.onclick = function() {
+                        deletePerm(btn);
+                    };
+                    currentuserperms.appendChild(btn);
+                });
             }
         } else {
             console.error(response.body);
+            currentuserperms.innerText = "Error getting user data";
         }
     } catch (error) {
         currentuserperms.innerText = "Error getting data from the server";
         console.error(error);
-    } 
+    }
 }
+
 async function togglePassword(button){
     const img = button.querySelector("img");
     if (img.src.includes("show.svg")) {

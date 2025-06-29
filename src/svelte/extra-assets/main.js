@@ -71,8 +71,9 @@ async function websocket() {
                 try {
                     
                     const payload = JSON.parse(line.trim());
-                    
-                    
+                    // console.log(payload)
+                    // document.getElementById("loader").style.display = "none";
+                    // console.log(document.getElementById("loader").style.display);
                     const result = {
                         payload: payload  
                     };
@@ -92,6 +93,11 @@ async function websocket() {
         
         
         console.log("Raw message:", e.data);
+        //console.log(payload)
+        if (e.data.includes("Failed to start the minecraft server") || e.data.includes(`For help, type "help"`)){
+            document.getElementById("loader").style.display = "none";
+        };
+        //console.log(document.getElementById("loader").style.display);
         
         
         if (!isPotentialJson(e.data)) {
@@ -293,6 +299,7 @@ async function startServer() {
                 const data = JSON.parse(text);
                 console.log('Server response data:', data);
                 document.getElementById('message').innerText = `Server Response: ${data.response}`;
+                document.getElementById("loader").style.display = "block";
             } catch {
                 document.getElementById('message').innerText = `Invalid JSON response: ${text}`;
             }
@@ -328,6 +335,7 @@ async function createDefaultServer() {
             try {
                 const data = await response.json();
                 document.getElementById('message').innerText = `Server Response: ${data.response}`;
+                document.getElementById("loader").style.display = "block";
             } catch (parseError) {
                 const text = await response.text();
                 document.getElementById('message').innerText = `Success, but invalid JSON: ${text}`;

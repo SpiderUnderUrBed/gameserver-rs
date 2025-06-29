@@ -1,6 +1,11 @@
 body {
     margin: 0;
 }
+.loader {
+    display: none;
+    width: 20px;
+    height: 20px;
+}
 .header {
     justify-content: center;
     display: flex;

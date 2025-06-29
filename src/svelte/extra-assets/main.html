@@ -33,9 +33,14 @@
           </div>
           <div class="center-inner">
               <div class="horizontal-top-buttons">
-              <button onclick="createDefaultServer()">Create server</button>
-              <button onclick="startServer()">Start server</button>
-              <button class="raw-toggle-button" onclick="toggleRaw()">Raw Output: OFF</button>
+              <div>
+                <button onclick="createDefaultServer()">Create server</button>
+                <button onclick="startServer()">Start server</button>
+                <button class="raw-toggle-button" onclick="toggleRaw()">Raw Output: OFF</button>
+              </div>
+              <!-- <div id="loader" class="loader"> -->
+                <img id="loader" class="loader" src="icons/loading-load.gif" alt="loading">
+              <!-- </div> -->
               <div class="nodes"></div>
               </div>
               <p id="message"></p>
