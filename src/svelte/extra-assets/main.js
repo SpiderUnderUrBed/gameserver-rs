@@ -1,10 +1,10 @@
-let hidden_nodes = false;
-const nodes_div = document.querySelector(".nodes");
-const container = document.getElementById("container");
 const basePath = document.querySelector('meta[name="site-url"]').content.replace(/\/$/, '');
-
 const consoleInput = document.querySelector(".console-input");
 const historyContainer = document.querySelector(".console-history");
+const toggablePages = document.getElementById("toggablePages");
+let globalWs = null;
+let rawOutputEnabled = false;
+let stillOutputDespiteError = false;
 
 async function addResult(inputAsString, output, addInput, addOutput) {
     const outputAsString = 
@@ -34,20 +34,14 @@ async function addResult(inputAsString, output, addInput, addOutput) {
         historyContainer.scrollTop = historyContainer.scrollHeight;
     }
 }
-// const svelteMainPageButton = document.getElementById("svelteMainPageButton");
-// const createServerDedicatedPage = document.getElementById("createServerDedicatedPage");
-const toggablePages = document.getElementById("toggablePages");
-function enableDeveloperOptions(){
-    if (toggablePages.style.display ==  "none"){
+
+function enableDeveloperOptions() {
+    if (toggablePages.style.display === "none" || !toggablePages.style.display) {
         toggablePages.style.display = "flex";
     } else {
         toggablePages.style.display = "none";
     }
 }
-
-let globalWs = null;
-let rawOutputEnabled = false;
-let stillOutputDespiteError = false;
 
 async function websocket() {
     if (globalWs) {
@@ -63,24 +57,18 @@ async function websocket() {
     
     globalWs.addEventListener("message", e => {
         if (rawOutputEnabled) {
-            
             const lines = e.data.split('\n');
             
             lines.forEach(line => {
                 if (line.trim() === '') return;  
                 
                 try {
-                    
                     const payload = JSON.parse(line.trim());
-                    // console.log(payload)
-                    // document.getElementById("loader").style.display = "none";
-                    // console.log(document.getElementById("loader").style.display);
                     const result = {
                         payload: payload  
                     };
                     addResult("", JSON.stringify(result, null, 2), false, true);
                 } catch (err) {
-                    
                     console.log("Failed to parse line:", line);
                     const errorResult = {
                         rawLine: line,
@@ -92,14 +80,7 @@ async function websocket() {
             return;
         }
         
-        
         console.log("Raw message:", e.data);
-        //console.log(payload)
-        if (e.data.includes("Failed to start the minecraft server") || e.data.includes(`For help, type "help"`)){
-            document.getElementById("loader").style.display = "none";
-        };
-        //console.log(document.getElementById("loader").style.display);
-        
         
         if (!isPotentialJson(e.data)) {
             const cleanedOutput = cleanOutput(e.data);
@@ -109,15 +90,11 @@ async function websocket() {
             return;
         }
         
-        
         try {
-            
             const parsed = JSON.parse(e.data);
             processMessage(parsed);
         } catch (err) {
-            
             try {
-                
                 const lines = e.data.split('\n');
                 for (const line of lines) {
                     if (line.trim() === '') continue;
@@ -126,7 +103,6 @@ async function websocket() {
                         const parsed = JSON.parse(line);
                         processMessage(parsed);
                     } catch (lineErr) {
-                        
                         const cleanedOutput = cleanOutput(line);
                         if (stillOutputDespiteError) {    
                             addResult("", cleanedOutput, false, true);
@@ -145,25 +121,22 @@ async function websocket() {
     
     globalWs.addEventListener("close", () => {
         console.log("WebSocket disconnected");
-        
         setTimeout(websocket, 1000);
     });
     
     globalWs.addEventListener("error", (err) => {
         console.error("WebSocket error:", err);
-        
     });
 }
 
 function isPotentialJson(str) {
-    
     return str.trim().startsWith('{') || str.trim().startsWith('[');
 }
 
 function cleanOutput(str) {
     return str.replace(/\\t/g, "\t")
-              .replace(/\\\\/g, "\\")
-              .replace(/^\[Server\] ?/, "");
+            .replace(/\\\\/g, "\\")
+            .replace(/^\[Server\] ?/, "");
 }
 
 function processMessage(parsed) {
@@ -197,142 +170,19 @@ function toggleRaw() {
     addResult("", `Raw output ${rawOutputEnabled ? 'enabled' : 'disabled'}`, false, true);
     return rawOutputEnabled;
 }
-document.addEventListener("DOMContentLoaded", () => {
-  const rawButton = document.querySelector('#raw-toggle-button');
-  if (rawButton) {
-    rawButton.addEventListener('click', toggleRaw);
-  }
-  console.log("Loaded");
-});
-
-
-websocket();
-consoleInput.addEventListener("keyup", e => {
-    const code = consoleInput.value.trim();
-    if (code.length === 0) return;
-    
-    if (e.key === "Enter") {
-        if (globalWs && globalWs.readyState === WebSocket.OPEN) {
-            globalWs.send(JSON.stringify({
-                type: "console",
-                message: code,
-                authcode: "0"
-            }));
-        } else {
-            console.error("WebSocket not connected");
-            
-        }
-
-        addResult(code, "", true, false);
-        consoleInput.value = "";
-        historyContainer.scrollTop = historyContainer.scrollHeight;
-    }
-});
-
-let hidden_nodes = false;
 
 function toggleNodes() {
-    hidden_nodes = !hidden_nodes;
-    renderNodesSection();
+    
+    console.log("Toggle nodes functionality");
 }
 
-function renderNodesSection() {
-    nodes_div.innerHTML = "";
-
-    // Always render "Add server" and "Toggle nodes"
-    const addMoreButton = document.createElement("button");
-    addMoreButton.textContent = "Add server";
-    addMoreButton.className = "nodes-element";
-    addMoreButton.onclick = () => addMore();
-    nodes_div.appendChild(addMoreButton);
-
-    const toggleButton = document.createElement("button");
-    toggleButton.textContent = hidden_nodes ? "Show nodes" : "Hide nodes";
-    toggleButton.className = "nodes-element";
-    toggleButton.onclick = toggleNodes;
-    nodes_div.appendChild(toggleButton);
-
-    if (!hidden_nodes) {
-        fetchNodesOnly(); // Load the actual nodes
-    }
-}
-
-async function fetchNodesOnly() {
-    try {
-        const response = await fetch(`${basePath}/api/nodes`);
-        const data = await response.json();
-        const nodes = data?.list?.data ?? [];
-
-        if (nodes.length === 0) {
-            const placeholder = document.createElement("div");
-            placeholder.textContent = "No nodes available.";
-            placeholder.style.color = "gray";
-            nodes_div.appendChild(placeholder);
-        }
-
-        nodes.forEach(node => {
-            const button = document.createElement("button");
-            button.textContent = node;
-            button.className = "nodes-element";
-            button.onclick = () => alert(`Node clicked: ${node}`);
-            nodes_div.appendChild(button);
-        });
-    } catch (err) {
-        console.error("Failed to fetch nodes:", err);
-        const errorMsg = document.createElement("div");
-        errorMsg.textContent = "Error loading nodes.";
-        errorMsg.style.color = "red";
-        nodes_div.appendChild(errorMsg);
-    }
-}
-
-
-renderNodesSection();
-
-document.addEventListener("DOMContentLoaded", () => {
-  const toggleButton = document.querySelector('button[onclick="toggleNodes()"]'); 
-  // or add an id or class to select better:
-  // <button id="toggleNodesButton">Toggle Nodes</button>
-  // and then
-  // const toggleButton = document.getElementById("toggleNodesButton");
-
-  if (toggleButton) {
-    toggleButton.addEventListener("click", toggleNodes);
-  }
-});
-
-
-async function fetchNodesOnly() {
-    try {
-        const response = await fetch(`${basePath}/api/nodes`);
-        if (response.ok) {
-            const data = await response.json();
-            const nodes = data.list.data;
-
-            nodes.forEach((node, index) => {
-                const button = document.createElement("button");
-                button.textContent = node;
-                button.className = "nodes-element";
-                button.onclick = () => alert(`Node clicked: ${node}`);
-                nodes_div.appendChild(button);
-            });
-        } else {
-            document.getElementById('message').innerText = 'Failed to get nodes from the server.';
-        }
-    } catch (error) {
-        document.getElementById('message').innerText = 'Error connecting to the server.';
-        console.log('Error fetching nodes:', error);
-    }
-}
-renderNodesSection();
-
-function addMore(){
-    document.getElementById('addServerDialog').showModal()
+function addMore() {
+    
+    console.log("Add more functionality");
 }
 
 async function startServer() {
     try {
-        
         console.log('Sending request to start server...');
         const response = await fetch(`${basePath}/api/general`, {
             method: 'POST',
@@ -341,26 +191,23 @@ async function startServer() {
         });
 
         console.log('Response status:', response.status);
-
-        const text = await response.text(); 
+        const text = await response.text();
 
         if (response.ok) {
             try {
                 const data = JSON.parse(text);
                 console.log('Server response data:', data);
-                document.getElementById('message').innerText = `Server Response: ${data.response}`;
-                document.getElementById("loader").style.display = "block";
+                addResult("", `Server Response: ${data.response}`, false, true);
             } catch {
-                document.getElementById('message').innerText = `Invalid JSON response: ${text}`;
+                addResult("", `Invalid JSON response: ${text}`, false, true);
             }
         } else {
-            document.getElementById('message').innerText = `Failed (${response.status}): ${text}`;
+            addResult("", `Failed (${response.status}): ${text}`, false, true);
             console.error('Error response text:', text);
         }
-
     } catch (error) {
         console.error('Fetch error:', error);
-        document.getElementById('message').innerText = `Error: ${error.message}`;
+        addResult("", `Error: ${error.message}`, false, true);
     }
 }
 
@@ -384,25 +231,46 @@ async function createDefaultServer() {
         if (response.ok) {
             try {
                 const data = await response.json();
-                document.getElementById('message').innerText = `Server Response: ${data.response}`;
-                document.getElementById("loader").style.display = "block";
+                addResult("", `Server Response: ${data.response}`, false, true);
             } catch (parseError) {
                 const text = await response.text();
-                document.getElementById('message').innerText = `Success, but invalid JSON: ${text}`;
+                addResult("", `Success, but invalid JSON: ${text}`, false, true);
             }
         } else {
             try {
                 const text = await response.text();
-                document.getElementById('message').innerText = `Failed (${response.status}): ${text}`;
+                addResult("", `Failed (${response.status}): ${text}`, false, true);
             } catch (err) {
-                document.getElementById('message').innerText = `Unknown error occurred`;
+                addResult("", `Unknown error occurred`, false, true);
             }
         }
-        
     } catch (error) {
-        document.getElementById('message').innerText = `Error: ${error.message}`;
+        addResult("", `Error: ${error.message}`, false, true);
         console.error('Error:', error);
     }
 }
 
 
+websocket();
+
+
+consoleInput.addEventListener("keyup", e => {
+    const code = consoleInput.value.trim();
+    if (code.length === 0) return;
+    
+    if (e.key === "Enter") {
+        if (globalWs && globalWs.readyState === WebSocket.OPEN) {
+            globalWs.send(JSON.stringify({
+                type: "console",
+                message: code,
+                authcode: "0"
+            }));
+        } else {
+            console.error("WebSocket not connected");
+        }
+
+        addResult(code, "", true, false);
+        consoleInput.value = "";
+        historyContainer.scrollTop = historyContainer.scrollHeight;
+    }
+});
