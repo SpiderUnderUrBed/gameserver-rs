@@ -1,3 +1,4 @@
+let hidden_nodes = false;
 const nodes_div = document.querySelector(".nodes");
 const container = document.getElementById("container");
 const basePath = document.querySelector('meta[name="site-url"]').content.replace(/\/$/, '');
@@ -196,6 +197,13 @@ function toggleRaw() {
     addResult("", `Raw output ${rawOutputEnabled ? 'enabled' : 'disabled'}`, false, true);
     return rawOutputEnabled;
 }
+document.addEventListener("DOMContentLoaded", () => {
+  const rawButton = document.querySelector('#raw-toggle-button');
+  if (rawButton) {
+    rawButton.addEventListener('click', toggleRaw);
+  }
+  console.log("Loaded");
+});
 
 
 websocket();
@@ -221,11 +229,82 @@ consoleInput.addEventListener("keyup", e => {
     }
 });
 
-async function fetchNodes() {
+let hidden_nodes = false;
+
+function toggleNodes() {
+    hidden_nodes = !hidden_nodes;
+    renderNodesSection();
+}
+
+function renderNodesSection() {
+    nodes_div.innerHTML = "";
+
+    // Always render "Add server" and "Toggle nodes"
+    const addMoreButton = document.createElement("button");
+    addMoreButton.textContent = "Add server";
+    addMoreButton.className = "nodes-element";
+    addMoreButton.onclick = () => addMore();
+    nodes_div.appendChild(addMoreButton);
+
+    const toggleButton = document.createElement("button");
+    toggleButton.textContent = hidden_nodes ? "Show nodes" : "Hide nodes";
+    toggleButton.className = "nodes-element";
+    toggleButton.onclick = toggleNodes;
+    nodes_div.appendChild(toggleButton);
+
+    if (!hidden_nodes) {
+        fetchNodesOnly(); // Load the actual nodes
+    }
+}
+
+async function fetchNodesOnly() {
     try {
         const response = await fetch(`${basePath}/api/nodes`);
-        nodes_div.innerHTML = ""; 
-        addDefaultNodeSettings();
+        const data = await response.json();
+        const nodes = data?.list?.data ?? [];
+
+        if (nodes.length === 0) {
+            const placeholder = document.createElement("div");
+            placeholder.textContent = "No nodes available.";
+            placeholder.style.color = "gray";
+            nodes_div.appendChild(placeholder);
+        }
+
+        nodes.forEach(node => {
+            const button = document.createElement("button");
+            button.textContent = node;
+            button.className = "nodes-element";
+            button.onclick = () => alert(`Node clicked: ${node}`);
+            nodes_div.appendChild(button);
+        });
+    } catch (err) {
+        console.error("Failed to fetch nodes:", err);
+        const errorMsg = document.createElement("div");
+        errorMsg.textContent = "Error loading nodes.";
+        errorMsg.style.color = "red";
+        nodes_div.appendChild(errorMsg);
+    }
+}
+
+
+renderNodesSection();
+
+document.addEventListener("DOMContentLoaded", () => {
+  const toggleButton = document.querySelector('button[onclick="toggleNodes()"]'); 
+  // or add an id or class to select better:
+  // <button id="toggleNodesButton">Toggle Nodes</button>
+  // and then
+  // const toggleButton = document.getElementById("toggleNodesButton");
+
+  if (toggleButton) {
+    toggleButton.addEventListener("click", toggleNodes);
+  }
+});
+
+
+async function fetchNodesOnly() {
+    try {
+        const response = await fetch(`${basePath}/api/nodes`);
         if (response.ok) {
             const data = await response.json();
             const nodes = data.list.data;
@@ -245,39 +324,10 @@ async function fetchNodes() {
         console.log('Error fetching nodes:', error);
     }
 }
+renderNodesSection();
 
-fetchNodes()
-
-function addDefaultNodeSettings(){
-    const addMoreButton = document.createElement("button");
-    const gap = document.createElement("div");
-    gap.style = "length: 10wh";
-    nodes_div.appendChild(gap)
-    addMoreButton.id = "non-node";
-    addMoreButton.textContent = "Add server";
-    addMoreButton.onclick = () => addMore();
-    addMoreButton.className = "nodes-element";
-    nodes_div.appendChild(addMoreButton)
-    const toggleNodesButton = document.createElement("button");
-    toggleNodesButton.id = "non-node";
-    toggleNodesButton.textContent = "Toggle nodes";
-    toggleNodesButton.onclick = () => toggleNodes();
-    toggleNodesButton.className = "nodes-element";
-    nodes_div.appendChild(toggleNodesButton)
-}
-let hidden_nodes = false;
-function toggleNodes(){
-    if (hidden_nodes == false) {
-        hidden_nodes = true;
-        nodes_div.innerHTML = ""; 
-        addDefaultNodeSettings();
-    } else {
-        hidden_nodes = false;
-        fetchNodes()
-    }
-}
 function addMore(){
-
+    document.getElementById('addServerDialog').showModal()
 }
 
 async function startServer() {
