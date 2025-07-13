@@ -1,43 +1,82 @@
 (() => {
-    const basePath = ""; 
+    const basePath = "";
     const consoleInput = document.querySelector(".console-input");
     const historyContainer = document.querySelector(".console-history");
     const toggablePages = document.getElementById("toggablePages");
 
     let globalWs = null;
     let rawOutputEnabled = false;
-    let stillOutputDespiteError = false;
     let reconnectAttempts = 0;
 
-    async function addResult(inputAsString, output, addInput, addOutput) {
-        const outputAsString = 
-            output === undefined ? "undefined" :
-            output === null ? "null" :
-            Array.isArray(output) ? `[${output.join(",")}]` :
-            output.toString();
+    const messageQueue = [];
+    let isProcessingQueue = false;
+    const MAX_RETRIES = 3;
+    const RETRY_DELAY = 100; 
 
-        console.log(inputAsString, outputAsString);
+    async function addResult(inputAsString, output, addInput, addOutput, retryCount = 0) {
+        try {
+            const outputAsString = 
+                output === undefined ? "undefined" :
+                output === null ? "null" :
+                Array.isArray(output) ? `[${output.join(",")}]` :
+                output.toString();
 
-        if (!historyContainer) return;
+            console.log(inputAsString, outputAsString);
 
-        const isAtBottom = historyContainer.scrollHeight - historyContainer.scrollTop <= historyContainer.clientHeight + 5;
+            if (!historyContainer) {
+                if (retryCount < MAX_RETRIES) {
+                    messageQueue.push({ inputAsString, output, addInput, addOutput, retryCount: retryCount + 1 });
+                    if (!isProcessingQueue) processQueue();
+                }
+                return;
+            }
 
-        if (addInput) {
-            const inputLogElement = document.createElement("div");
-            inputLogElement.classList.add("console-input-log");
-            inputLogElement.textContent = `> ${inputAsString}`;
-            historyContainer.append(inputLogElement);
+            const isAtBottom = historyContainer.scrollHeight - historyContainer.scrollTop <= historyContainer.clientHeight + 5;
+
+            if (addInput) {
+                const inputLogElement = document.createElement("div");
+                inputLogElement.classList.add("console-input-log");
+                inputLogElement.textContent = `> ${inputAsString}`;
+                historyContainer.append(inputLogElement);
+            }
+
+            if (addOutput) {
+                const outputLogElement = document.createElement("div");
+                outputLogElement.classList.add("console-output-log");
+                outputLogElement.textContent = outputAsString;
+                historyContainer.append(outputLogElement);
+            }
+
+            if (isAtBottom) {
+                historyContainer.scrollTop = historyContainer.scrollHeight;
+            }
+        } catch (error) {
+            console.error("Error adding result:", error);
+            if (retryCount < MAX_RETRIES) {
+                messageQueue.push({ inputAsString, output, addInput, addOutput, retryCount: retryCount + 1 });
+                if (!isProcessingQueue) processQueue();
+            }
         }
+    }
 
-        if (addOutput) {
-            const outputLogElement = document.createElement("div");
-            outputLogElement.classList.add("console-output-log");
-            outputLogElement.textContent = outputAsString;
-            historyContainer.append(outputLogElement);
-        }
-
-        if (isAtBottom) {
-            historyContainer.scrollTop = historyContainer.scrollHeight;
+    async function processQueue() {
+        if (isProcessingQueue || messageQueue.length === 0) return;
+        
+        isProcessingQueue = true;
+        try {
+            while (messageQueue.length > 0) {
+                const message = messageQueue.shift();
+                await addResult(
+                    message.inputAsString,
+                    message.output,
+                    message.addInput,
+                    message.addOutput,
+                    message.retryCount
+                );
+                await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+            }
+        } finally {
+            isProcessingQueue = false;
         }
     }
 
@@ -60,55 +99,31 @@
         });
 
         globalWs.addEventListener("message", e => {
-            if (rawOutputEnabled) {
-                const lines = e.data.split('\n');
-                lines.forEach(line => {
-                    if (line.trim() === '') return;
+            const lines = e.data.split('\n');
+            lines.forEach(line => {
+                if (line.trim() === '') return;
 
-                    try {
-                        const payload = JSON.parse(line.trim());
-                        addResult("", JSON.stringify({ payload }, null, 2), false, true);
-                    } catch (err) {
-                        addResult("", JSON.stringify({
-                            rawLine: line,
-                            parseError: err.message
-                        }, null, 2), false, true);
-                    }
-                });
-                return;
-            }
-
-            console.log("Raw message:", e.data);
-
-            if (!isPotentialJson(e.data)) {
-                const cleanedOutput = cleanOutput(e.data);
-                if (stillOutputDespiteError) {
-                    addResult("", cleanedOutput, false, true);
+                if (rawOutputEnabled) {
+                    addResult("", line, false, true);
+                    return;
                 }
-                return;
-            }
 
-            try {
-                const parsed = JSON.parse(e.data);
-                processMessage(parsed);
-            } catch {
-                const lines = e.data.split('\n');
-                for (const line of lines) {
-                    if (line.trim() === '') continue;
-                    try {
-                        const parsed = JSON.parse(line);
-                        processMessage(parsed);
-                    } catch {
-                        if (stillOutputDespiteError) {
-                            addResult("", cleanOutput(line), false, true);
-                        }
+                try {
+                    const parsed = JSON.parse(line);
+                    processMessage(parsed);
+                } catch {
+                    // If not JSON, treat as raw message
+                    const cleaned = cleanOutput(line);
+                    if (cleaned) {
+                        addResult("", cleaned, false, true);
                     }
                 }
-            }
+            });
         });
 
         globalWs.addEventListener("close", event => {
             console.log("WebSocket disconnected", event.code, event.reason);
+            addResult("", "Disconnected from server", false, true);
             reconnectAttempts++;
             const retryIn = Math.min(30000, 1000 * 2 ** reconnectAttempts);
             console.log(`Reconnecting in ${retryIn}ms...`);
@@ -117,40 +132,43 @@
 
         globalWs.addEventListener("error", err => {
             console.error("WebSocket error:", err);
+            addResult("", `WebSocket error: ${err.message}`, false, true);
         });
     }
 
-    function isPotentialJson(str) {
-        const trimmed = str.trim();
-        return trimmed.startsWith('{') || trimmed.startsWith('[');
-    }
-
     function cleanOutput(str) {
+        // Less aggressive cleaning - just handle escape sequences
         return str.replace(/\\t/g, "\t")
                   .replace(/\\\\/g, "\\")
-                  .replace(/^\[Server\] ?/, "");
+                  .replace(/^\[Server\] ?/, "")
+                  .trim();
     }
 
     function processMessage(parsed) {
-        let outputMessage;
+        let outputMessage = parsed;
 
-        if (parsed.data) {
-            if (typeof parsed.data === 'string') {
+        // Handle nested data structure
+        while (outputMessage && typeof outputMessage === 'object' && 'data' in outputMessage) {
+            if (typeof outputMessage.data === 'string') {
                 try {
-                    const inner = JSON.parse(parsed.data);
-                    outputMessage = inner.data ?? parsed.data;
+                    outputMessage = JSON.parse(outputMessage.data);
                 } catch {
-                    outputMessage = parsed.data;
+                    outputMessage = outputMessage.data;
+                    break;
                 }
             } else {
-                outputMessage = parsed.data;
+                outputMessage = outputMessage.data;
             }
-        } else {
-            outputMessage = parsed.message ?? JSON.stringify(parsed);
         }
 
-        const cleanedOutput = cleanOutput(outputMessage);
-        addResult("", cleanedOutput, false, true);
+        if (typeof outputMessage === 'object') {
+            outputMessage = outputMessage.message || outputMessage.response || JSON.stringify(outputMessage);
+        }
+
+        const cleanedOutput = cleanOutput(outputMessage.toString());
+        if (cleanedOutput) {
+            addResult("", cleanedOutput, false, true);
+        }
     }
 
     function toggleRaw() {
@@ -248,11 +266,11 @@
                         }));
                     } else {
                         console.error("WebSocket not connected");
+                        addResult("", "Error: Not connected to server", false, true);
                     }
 
                     addResult(code, "", true, false);
                     consoleInput.value = "";
-                    historyContainer.scrollTop = historyContainer.scrollHeight;
                 }
             });
         }
