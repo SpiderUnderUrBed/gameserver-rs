@@ -78,6 +78,10 @@ main {
     margin-bottom: 0.5em;
 }
 
+.console-history {
+    min-height: 300vh;
+}
+
 input[type="text"] {
     background: hsl(0 0% 15%);
     padding: 1em;

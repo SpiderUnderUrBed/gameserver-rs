@@ -411,11 +411,16 @@ struct AppState {
     tcp_rx: Arc<Mutex<mpsc::Receiver<Vec<u8>>>>,
     
     ws_tx: broadcast::Sender<String>,
-    
+    peer_addr: Option<String>,
     base_path: String,
     client: Option<Client>,
     database: database::Database
 }
+use tokio_util::bytes::Bytes;
+use std::sync::atomic::{AtomicUsize, Ordering};
+static CONNECTION_COUNTER: AtomicUsize = AtomicUsize::new(0);
+use tokio::time::interval;
+use log::{info, debug, warn, trace};
 
 // main function handles the initial connection
 // initilizing the database struct, getting and setting the base path as well as alot of defaults in AppState
@@ -464,6 +469,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         tcp_rx: Arc::new(Mutex::new(tcp_rx)),
         ws_tx: ws_tx.clone(),
         base_path: base_path.clone(),
+        peer_addr: None,
         database,
         client,
     };
@@ -508,7 +514,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/message", get(get_message))
         .route("/api/nodes", get(get_nodes))
         .route("/api/servers", get(get_servers))
-        .route("/api/ws", get(ws_handler))
         .route("/api/users", get(users))
         .route("/api/edituser", post(edit_user))
         .route("/api/getuser", post(get_user))
@@ -519,12 +524,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/deleteuser", post(delete_user))
         .merge(fallback_router)
         .with_state(state.clone());
+    let inner_async = Router::new()
+       .route("/api/ws", get(ws_handler))
+       .with_state(Arc::new(state.clone()));
+
+    let normal_routes = Router::new()
+        .merge(inner)
+        .merge(inner_async);
     
     // Does nesting of routes behind a base path if configured, otherwise use defaults
     let app = if base_path.is_empty() || base_path == "/" {
-        inner.layer(cors)
+        normal_routes.layer(cors)
     } else {
-        Router::new().nest(&base_path, inner).layer(cors)
+        Router::new().nest(&base_path, normal_routes).layer(cors)
     };
 
     // serves the website 
@@ -538,6 +550,150 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     Ok(())
 }
+
+async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
+    let conn_id = CONNECTION_COUNTER.fetch_add(1, Ordering::SeqCst);
+    
+    // Get peer address from extensions if available
+    let remote_addr = state.peer_addr.clone().unwrap_or_else(|| "unknown".to_string());
+    info!("[Conn {}] WebSocket connected from {}", conn_id, remote_addr);
+    debug!("[Conn {}] Spawning ping task", conn_id);
+
+    let (sender, mut receiver) = socket.split();
+    let sender = Arc::new(Mutex::new(sender));
+
+    // Ping task with detailed logging
+    let ping_task = {
+        let conn_id = conn_id;
+        let sender = Arc::clone(&sender);
+        let mut interval = interval(Duration::from_secs(30));
+        
+        tokio::spawn(async move {
+            debug!("[Conn {}] Ping task started", conn_id);
+            
+            loop {
+                interval.tick().await;
+                trace!("[Conn {}] Sending ping", conn_id);
+                
+                let mut sender = sender.lock().await;
+                match sender.send(Message::Ping(Bytes::new())).await {
+                    Ok(_) => trace!("[Conn {}] Ping sent successfully", conn_id),
+                    Err(e) => {
+                        warn!("[Conn {}] Ping failed: {}", conn_id, e);
+                        break;
+                    }
+                }
+            }
+            
+            debug!("[Conn {}] Ping task exiting", conn_id);
+        })
+    };
+
+    // Broadcast receiver task with detailed logging
+    let broadcast_task = {
+        let conn_id = conn_id;
+        let sender = Arc::clone(&sender);
+        let mut broadcast_rx = state.ws_tx.subscribe();
+        
+        tokio::spawn(async move {
+            debug!("[Conn {}] Broadcast receiver task started", conn_id);
+            
+            while let Ok(msg) = broadcast_rx.recv().await {
+                trace!("[Conn {}] Received broadcast message: {}", conn_id, msg);
+                
+                let mut sender = sender.lock().await;
+                match sender.send(Message::Text(msg.into())).await {
+                    Ok(_) => trace!("[Conn {}] Forwarded message successfully", conn_id),
+                    Err(e) => {
+                        warn!("[Conn {}] Failed to forward message: {}", conn_id, e);
+                        break;
+                    }
+                }
+            }
+            
+            debug!("[Conn {}] Broadcast receiver task exiting", conn_id);
+        })
+    };
+
+    // Main message processing loop with detailed logging
+    debug!("[Conn {}] Starting message processing loop", conn_id);
+    
+    while let Some(result) = receiver.next().await {
+        match result {
+            Ok(Message::Text(text)) => {
+                debug!("[Conn {}] Received text message: {}", conn_id, text);
+                
+                match serde_json::from_str::<MessagePayload>(&text) {
+                    Ok(payload) => {
+                        trace!("[Conn {}] Parsed payload: {:?}", conn_id, payload);
+                        
+                        match serde_json::to_vec(&payload) {
+                            Ok(mut bytes) => {
+                                bytes.push(b'\n');
+                                trace!("[Conn {}] Serialized payload to {} bytes", conn_id, bytes.len());
+                                
+                                match state.tcp_tx.lock().await.send(bytes).await {
+                                    Ok(_) => trace!("[Conn {}] Sent to TCP channel", conn_id),
+                                    Err(e) => warn!("[Conn {}] Failed to send to TCP channel: {}", conn_id, e),
+                                }
+                            }
+                            Err(e) => warn!("[Conn {}] Failed to serialize payload: {}", conn_id, e),
+                        }
+                    }
+                    Err(e) => warn!("[Conn {}] Failed to parse message: {}", conn_id, e),
+                }
+            }
+            Ok(Message::Binary(bin)) => {
+                debug!("[Conn {}] Received binary message ({} bytes)", conn_id, bin.len());
+            }
+            Ok(Message::Ping(data)) => {
+                trace!("[Conn {}] Received ping ({} bytes)", conn_id, data.len());
+            }
+            Ok(Message::Pong(data)) => {
+                trace!("[Conn {}] Received pong ({} bytes)", conn_id, data.len());
+            }
+            Ok(Message::Close(frame)) => {
+                info!("[Conn {}] Received close frame: {:?}", conn_id, frame);
+                break;
+            }
+            Err(e) => {
+                warn!("[Conn {}] WebSocket error: {}", conn_id, e);
+                break;
+            }
+        }
+    }
+
+    debug!("[Conn {}] Shutting down connection tasks", conn_id);
+    ping_task.abort();
+    broadcast_task.abort();
+    
+    match ping_task.await {
+        Ok(_) => debug!("[Conn {}] Ping task shut down cleanly", conn_id),
+        Err(e) => warn!("[Conn {}] Ping task shutdown error: {:?}", conn_id, e),
+    }
+    
+    match broadcast_task.await {
+        Ok(_) => debug!("[Conn {}] Broadcast task shut down cleanly", conn_id),
+        Err(e) => warn!("[Conn {}] Broadcast task shutdown error: {:?}", conn_id, e),
+    }
+
+    info!("[Conn {}] WebSocket disconnected", conn_id);
+}
+
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    log::debug!("Incoming WebSocket upgrade request");
+    
+    ws.max_frame_size(1024 * 1024) // 1MB frame size limit
+      .max_message_size(1024 * 1024) // 1MB message size limit
+      .on_upgrade(move |socket| {
+          log::debug!("WebSocket upgrade complete, spawning handler");
+          handle_socket(socket, state)
+      })
+}
+
 
 // delegate user creation to the DB and return with relevent status code
 async fn create_user(
@@ -648,50 +804,6 @@ fn routes_static(state: Arc<AppState>) -> Router<AppState> {
     public.merge(protected).route_layer(auth_layer)
 }
 
-// When a websocket connection is initiated, it needs to wait for it to 'upgrade' for it to be a usable socket 
-// then its passed off to the handler for websockets
-async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<AppState>,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
-}
-
-
-// a handler for websocket which will wait for messages sent through other threads, from a specific thread it will forward it back through the websocket 
-// it will also wait for messages sent from the client, the websocket is primarially meant for the console, so it will immediately forward it to the gameserver to be ran for a running game
-async fn handle_socket(socket: WebSocket, state: AppState) {
-    println!("WebSocket connected");
-    let (mut sender, mut receiver) = socket.split();
-
-    let mut broadcast_rx = state.ws_tx.subscribe();
-    tokio::spawn(async move {
-        while let Ok(msg) = broadcast_rx.recv().await {
-            println!("Forwarding: {}", msg);
-            if sender.send(Message::Text(msg.into())).await.is_err() {
-                break;
-            }
-        }
-    });
-
-    while let Some(Ok(message)) = receiver.next().await {
-        if let Message::Text(text) = message {
-            println!("Got from client: {}", text);
-            let payload = serde_json::from_str::<MessagePayload>(&text).unwrap_or(MessagePayload {
-                r#type: "console".into(),
-                message: text.to_string(),
-                authcode: "0".into(),
-            });
-
-            if let Ok(mut bytes) = serde_json::to_vec(&payload) {
-                bytes.push(b'\n');
-                let _ = state.tcp_tx.lock().await.send(bytes).await;
-            }
-        }
-    }
-
-    println!("WebSocket disconnected");
-}
 
 // For general messages, in alot if not most cases this is for development purposes
 // there are many cases where this can fail, if it does, it can simply return INTERNAL_SERVER_ERROR

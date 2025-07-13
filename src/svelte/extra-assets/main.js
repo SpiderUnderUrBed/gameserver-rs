@@ -1,10 +1,10 @@
-const basePath = document.querySelector('meta[name="site-url"]').content.replace(/\/$/, '');
-const consoleInput = document.querySelector(".console-input");
-const historyContainer = document.querySelector(".console-history");
-const toggablePages = document.getElementById("toggablePages");
-let globalWs = null;
-let rawOutputEnabled = false;
-let stillOutputDespiteError = false;
+// const basePath = document.querySelector('meta[name="site-url"]').content.replace(/\/$/, '');
+// const consoleInput = document.querySelector(".console-input");
+// const historyContainer = document.querySelector(".console-history");
+// const toggablePages = document.getElementById("toggablePages");
+// let globalWs = null;
+// let rawOutputEnabled = false;
+// let stillOutputDespiteError = false;
 
 async function addResult(inputAsString, output, addInput, addOutput) {
     const outputAsString = 
@@ -35,6 +35,7 @@ async function addResult(inputAsString, output, addInput, addOutput) {
     }
 }
 
+
 function enableDeveloperOptions() {
     if (toggablePages.style.display === "none" || !toggablePages.style.display) {
         toggablePages.style.display = "flex";
@@ -48,7 +49,12 @@ async function websocket() {
         globalWs.close();
     }
     
-    globalWs = new WebSocket(`${basePath}/api/ws`);
+    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+    const host = window.location.host;
+    globalWs = new WebSocket(`${protocol}://${host}${basePath}/api/ws`);
+    console.log(`${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}${basePath}/api/ws`);
+
+
     
     globalWs.addEventListener("open", () => {
         console.log("WebSocket connected");
@@ -119,10 +125,11 @@ async function websocket() {
         }
     });
     
-    globalWs.addEventListener("close", () => {
-        console.log("WebSocket disconnected");
+    globalWs.addEventListener("close", event => {
+        console.log("WebSocket disconnected", event.code, event.reason);
         setTimeout(websocket, 1000);
     });
+
     
     globalWs.addEventListener("error", (err) => {
         console.error("WebSocket error:", err);

@@ -7,11 +7,23 @@
     let userMessage = '';
     let serverMessage = '';
     let showDeveloper = false;
+    let colorState = 'WHITE';
   
     onMount(() => {
       const meta = document.querySelector('meta[name="site-url"]');
       siteUrl = (meta?.getAttribute('content') ?? '').replace(/\/$/, '');
     });
+    function toggleColor(){
+      if (colorState == "WHITE"){
+        sessionStorage.setItem('binary-theme', 'black');
+        document.body.style.backgroundColor = "black";
+        colorState = "BLACK";
+      } else {
+        sessionStorage.setItem('binary-theme', 'white');
+        document.body.style.backgroundColor = "white";
+        colorState = "WHITE";
+      }
+    }
   
     function goToMainPage() {
       window.location.href = `${siteUrl}/main.html`;
@@ -94,25 +106,73 @@
   </script>
   <meta name="site-url" content="[[SITE_URL]]" />
   <style>
-    /* Move your original styles here */
+    /* .color-toggle-white {
+      background-color: white;
+      color: black;
+    }
+    .color-toggle-black {
+      background-color: black;
+      color: white;
+    } */
+    .header-white {
+      background-color: white;
+      color: black; 
+    }
+    .header-black {
+      background-color: black;
+      color: white;
+    }
+    .secondary-header-white {
+      background-color: white;
+      color: black; 
+    }
+    .secondary-header-black {
+      background-color: black;
+      color: white;
+    }
+    .general-buttons-white {
+      background-color: white;
+      color: black; 
+    }
+    .general-buttons-black {
+      background-color: black;
+      color: white;
+    }
+    .user-login-white {
+      background-color: white;
+      color: black; 
+    }
+    .user-login-black {
+      background-color: black;
+      color: white;
+    }
+    .user-password-white {
+      background-color: white;
+      color: black; 
+    } 
+    .user-password-black {
+      background-color: black;
+      color: white;
+    } 
   </style>
   
-  <h1>Welcome to My Page</h1>
+  <h1 class="header-{colorState === "WHITE" ? "white" : "black"}">Welcome to My Page</h1>
   
   <p>{siteUrl ? `Base Path: ${siteUrl}` : ''}</p>
   
   <div class="login">
-    <h4>Login:</h4>
-    <input class="user-login" type="text" bind:value={username} placeholder="Username" />
-    <input class="user-password" type="password" bind:value={password} placeholder="Password" />
+    <h4 class="secondary-header-{colorState === "WHITE" ? "white" : "black"}">Login:</h4>
+    <input class="user-login-{colorState === "WHITE" ? "white" : "black"}" type="text" bind:value={username} placeholder="Username" />
+    <input class="user-password-{colorState === "WHITE" ? "white" : "black"}" type="password" bind:value={password} placeholder="Password" />
     <div>
-      <button class="signup">Signup</button>
-      <button class="login-button" on:click={login}>Login</button>
+      <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}">Signup</button>
+      <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}" on:click={login}>Login</button>
     </div>
   </div>
   
-  <button class="big-button" on:click={goToMainPage}>Go to main page</button>
-  <button class="small-button" on:click={toggleDeveloper}>Developer Work</button>
+  <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}" on:click={goToMainPage}>Go to main page</button>
+  <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}" on:click={toggleColor}>Toggle {colorState}</button>
+  <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}" on:click={toggleDeveloper}>Developer Work</button>
   
   {#if showDeveloper}
     <div class="developer-section">
