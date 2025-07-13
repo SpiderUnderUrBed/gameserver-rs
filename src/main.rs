@@ -524,13 +524,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/deleteuser", post(delete_user))
         .merge(fallback_router)
         .with_state(state.clone());
-    let inner_async = Router::new()
-       .route("/api/ws", get(ws_handler))
-       .with_state(Arc::new(state.clone()));
+    // let inner_async = Router::new()
+    //    .route("/api/ws", get(ws_handler))
+    //    .with_state(Arc::new(state.clone()));
 
     let normal_routes = Router::new()
-        .merge(inner)
-        .merge(inner_async);
+        .merge(inner);
+        // .merge(inner_async);
     
     // Does nesting of routes behind a base path if configured, otherwise use defaults
     let app = if base_path.is_empty() || base_path == "/" {
@@ -550,150 +550,220 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     Ok(())
 }
-
-async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
+async fn handle_socket(socket: WebSocket, state: AppState) {
     let conn_id = CONNECTION_COUNTER.fetch_add(1, Ordering::SeqCst);
     
     // Get peer address from extensions if available
     let remote_addr = state.peer_addr.clone().unwrap_or_else(|| "unknown".to_string());
-    info!("[Conn {}] WebSocket connected from {}", conn_id, remote_addr);
-    debug!("[Conn {}] Spawning ping task", conn_id);
+    println!("[Conn {}] NEW WEBSOCKET CONNECTION from {}", conn_id, remote_addr); // <-- Always print connection
 
     let (sender, mut receiver) = socket.split();
     let sender = Arc::new(Mutex::new(sender));
 
-    // Ping task with detailed logging
+    // Ping task with more visible logging
     let ping_task = {
         let conn_id = conn_id;
         let sender = Arc::clone(&sender);
         let mut interval = interval(Duration::from_secs(30));
         
         tokio::spawn(async move {
-            debug!("[Conn {}] Ping task started", conn_id);
+            println!("[Conn {}] PING TASK STARTED", conn_id);
             
             loop {
                 interval.tick().await;
-                trace!("[Conn {}] Sending ping", conn_id);
+                println!("[Conn {}] SENDING PING", conn_id); // <-- Log ping attempts
                 
                 let mut sender = sender.lock().await;
                 match sender.send(Message::Ping(Bytes::new())).await {
-                    Ok(_) => trace!("[Conn {}] Ping sent successfully", conn_id),
+                    Ok(_) => println!("[Conn {}] PING SENT SUCCESSFULLY", conn_id),
                     Err(e) => {
-                        warn!("[Conn {}] Ping failed: {}", conn_id, e);
+                        println!("[Conn {}] PING FAILED: {}", conn_id, e);
                         break;
                     }
                 }
             }
             
-            debug!("[Conn {}] Ping task exiting", conn_id);
+            println!("[Conn {}] PING TASK EXITING", conn_id);
         })
     };
 
-    // Broadcast receiver task with detailed logging
+    // Broadcast receiver task with more visible logging
     let broadcast_task = {
         let conn_id = conn_id;
         let sender = Arc::clone(&sender);
         let mut broadcast_rx = state.ws_tx.subscribe();
         
         tokio::spawn(async move {
-            debug!("[Conn {}] Broadcast receiver task started", conn_id);
+            println!("[Conn {}] BROADCAST TASK STARTED", conn_id);
             
             while let Ok(msg) = broadcast_rx.recv().await {
-                trace!("[Conn {}] Received broadcast message: {}", conn_id, msg);
+                println!("[Conn {}] RECEIVED BROADCAST: {}", conn_id, msg);
                 
                 let mut sender = sender.lock().await;
                 match sender.send(Message::Text(msg.into())).await {
-                    Ok(_) => trace!("[Conn {}] Forwarded message successfully", conn_id),
+                    Ok(_) => println!("[Conn {}] FORWARDED MESSAGE", conn_id),
                     Err(e) => {
-                        warn!("[Conn {}] Failed to forward message: {}", conn_id, e);
+                        println!("[Conn {}] FAILED TO FORWARD: {}", conn_id, e);
                         break;
                     }
                 }
             }
             
-            debug!("[Conn {}] Broadcast receiver task exiting", conn_id);
+            println!("[Conn {}] BROADCAST TASK EXITING", conn_id);
         })
     };
 
-    // Main message processing loop with detailed logging
-    debug!("[Conn {}] Starting message processing loop", conn_id);
+    // Main message processing loop with more visible logging
+    println!("[Conn {}] STARTING MESSAGE PROCESSING", conn_id);
     
     while let Some(result) = receiver.next().await {
         match result {
             Ok(Message::Text(text)) => {
-                debug!("[Conn {}] Received text message: {}", conn_id, text);
+                println!("[Conn {}] RECEIVED TEXT: {}", conn_id, text);
                 
                 match serde_json::from_str::<MessagePayload>(&text) {
                     Ok(payload) => {
-                        trace!("[Conn {}] Parsed payload: {:?}", conn_id, payload);
+                        println!("[Conn {}] PARSED PAYLOAD: {:?}", conn_id, payload);
                         
                         match serde_json::to_vec(&payload) {
                             Ok(mut bytes) => {
                                 bytes.push(b'\n');
-                                trace!("[Conn {}] Serialized payload to {} bytes", conn_id, bytes.len());
+                                println!("[Conn {}] SERIALIZED TO {} BYTES", conn_id, bytes.len());
                                 
                                 match state.tcp_tx.lock().await.send(bytes).await {
-                                    Ok(_) => trace!("[Conn {}] Sent to TCP channel", conn_id),
-                                    Err(e) => warn!("[Conn {}] Failed to send to TCP channel: {}", conn_id, e),
+                                    Ok(_) => println!("[Conn {}] SENT TO TCP", conn_id),
+                                    Err(e) => println!("[Conn {}] TCP SEND FAILED: {}", conn_id, e),
                                 }
                             }
-                            Err(e) => warn!("[Conn {}] Failed to serialize payload: {}", conn_id, e),
+                            Err(e) => println!("[Conn {}] SERIALIZATION FAILED: {}", conn_id, e),
                         }
                     }
-                    Err(e) => warn!("[Conn {}] Failed to parse message: {}", conn_id, e),
+                    Err(e) => println!("[Conn {}] PARSE FAILED: {}", conn_id, e),
                 }
             }
             Ok(Message::Binary(bin)) => {
-                debug!("[Conn {}] Received binary message ({} bytes)", conn_id, bin.len());
+                println!("[Conn {}] RECEIVED BINARY ({} bytes)", conn_id, bin.len());
             }
             Ok(Message::Ping(data)) => {
-                trace!("[Conn {}] Received ping ({} bytes)", conn_id, data.len());
+                println!("[Conn {}] RECEIVED PING ({} bytes)", conn_id, data.len());
             }
             Ok(Message::Pong(data)) => {
-                trace!("[Conn {}] Received pong ({} bytes)", conn_id, data.len());
+                println!("[Conn {}] RECEIVED PONG ({} bytes)", conn_id, data.len());
             }
             Ok(Message::Close(frame)) => {
-                info!("[Conn {}] Received close frame: {:?}", conn_id, frame);
+                println!("[Conn {}] CLOSE FRAME: {:?}", conn_id, frame);
                 break;
             }
             Err(e) => {
-                warn!("[Conn {}] WebSocket error: {}", conn_id, e);
+                println!("[Conn {}] WEBSOCKET ERROR: {}", conn_id, e);
                 break;
             }
         }
     }
 
-    debug!("[Conn {}] Shutting down connection tasks", conn_id);
+    println!("[Conn {}] SHUTTING DOWN", conn_id);
     ping_task.abort();
     broadcast_task.abort();
     
     match ping_task.await {
-        Ok(_) => debug!("[Conn {}] Ping task shut down cleanly", conn_id),
-        Err(e) => warn!("[Conn {}] Ping task shutdown error: {:?}", conn_id, e),
+        Ok(_) => println!("[Conn {}] PING TASK SHUT DOWN", conn_id),
+        Err(e) => println!("[Conn {}] PING TASK ERROR: {:?}", conn_id, e),
     }
     
     match broadcast_task.await {
-        Ok(_) => debug!("[Conn {}] Broadcast task shut down cleanly", conn_id),
-        Err(e) => warn!("[Conn {}] Broadcast task shutdown error: {:?}", conn_id, e),
+        Ok(_) => println!("[Conn {}] BROADCAST TASK SHUT DOWN", conn_id),
+        Err(e) => println!("[Conn {}] BROADCAST TASK ERROR: {:?}", conn_id, e),
     }
 
-    info!("[Conn {}] WebSocket disconnected", conn_id);
+    println!("[Conn {}] DISCONNECTED", conn_id);
 }
-
+use crate::http::HeaderMap;
 async fn ws_handler(
     ws: WebSocketUpgrade,
-    State(state): State<Arc<AppState>>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
-    log::debug!("Incoming WebSocket upgrade request");
+    println!("WEBSOCKET UPGRADE REQUEST RECEIVED");
+    println!("Headers: {:?}", headers);
     
-    ws.max_frame_size(1024 * 1024) // 1MB frame size limit
-      .max_message_size(1024 * 1024) // 1MB message size limit
+    ws.max_frame_size(1024 * 1024)
+      .max_message_size(1024 * 1024)
+      .on_failed_upgrade(|e| {
+          println!("WEBSOCKET UPGRADE FAILED: {:?}", e);
+      })
       .on_upgrade(move |socket| {
-          log::debug!("WebSocket upgrade complete, spawning handler");
+          println!("WEBSOCKET UPGRADE SUCCESSFUL");
           handle_socket(socket, state)
       })
 }
 
+// routes_static provides middlewares for authentication as well as serving all the user-orintated content
+fn routes_static(state: Arc<AppState>) -> Router<AppState> {
+    // Creates session stores and memory stores for credentials and to ensure that re-login attempts are not too frequent
+    // (I need to impliment cookies at some point)
+    let session_store = MemoryStore::default();
+    let session_layer = SessionManagerLayer::new(session_store);
+
+    // Initilize the backend and build a auth layer with it and the session layer 
+    let backend = Backend::default();
+    let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
+
+    let base_path = std::env::var("SITE_URL")
+        .map(|s| {
+            let mut s = s.trim().to_string();
+            if !s.is_empty() {
+                if !s.starts_with('/') { s.insert(0, '/'); }
+                if s.ends_with('/') && s != "/" { s.pop(); }
+            }
+            s
+        })
+        .unwrap_or_default();
+
+        // I cant use the axum_login middleware because I need to substiute the base path so it goes to the 
+        // correct index.html for the login page
+        let login_url_base = Arc::new(format!("{}/index.html", base_path));
+
+        let login_required_middleware = {
+            let login_url_base = login_url_base.clone();
+        
+            // This handles direct auth and redirects 
+            from_fn(move |auth_session: AuthSession, req: Request<_>, next: Next| {
+                let login_url_base = login_url_base.clone();
+                async move {
+                    if auth_session.user.is_some() {
+                        next.run(req).await
+                    } else {
+                        let original_uri = req.uri();
+                        let next_path = original_uri.to_string(); 
+                        let redirect_url = format!("{}?next={}", login_url_base, urlencoding::encode(&next_path));
+                        Redirect::temporary(&redirect_url).into_response()
+                    }
+                }
+            })
+        };
+
+    // easy way to put routes to be shown publically and privately (after authentication)
+    // by adding the login middleware to one (private is also using a wildcard for all assets)
+    
+    let public = Router::new()
+        .route("/", get(handle_static_request))
+        .route("/authenticate", get(authenticate_route))
+        .route("/index.html", get(handle_static_request))
+        .route("/api/ws", get(ws_handler))
+        .layer(AddExtensionLayer::new(state.clone()));
+
+    let protected = Router::new()
+        .route("/{*wildcard}", get(handle_static_request))
+        .layer(AddExtensionLayer::new(state.clone()))
+        .layer(login_required_middleware);
+
+    // let public_async = Router::new()
+    //    .route("/api/ws", get(ws_handler))
+    //    .layer(AddExtensionLayer::new(state));
+
+    // merge these for all non-api assets to merge back again for the original route
+    public.merge(protected).route_layer(auth_layer)
+}
 
 // delegate user creation to the DB and return with relevent status code
 async fn create_user(
@@ -742,68 +812,6 @@ async fn capabilities(
 ) -> impl IntoResponse {
     
 }
-// routes_static provides middlewares for authentication as well as serving all the user-orintated content
-fn routes_static(state: Arc<AppState>) -> Router<AppState> {
-    // Creates session stores and memory stores for credentials and to ensure that re-login attempts are not too frequent
-    // (I need to impliment cookies at some point)
-    let session_store = MemoryStore::default();
-    let session_layer = SessionManagerLayer::new(session_store);
-
-    // Initilize the backend and build a auth layer with it and the session layer 
-    let backend = Backend::default();
-    let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
-
-    let base_path = std::env::var("SITE_URL")
-        .map(|s| {
-            let mut s = s.trim().to_string();
-            if !s.is_empty() {
-                if !s.starts_with('/') { s.insert(0, '/'); }
-                if s.ends_with('/') && s != "/" { s.pop(); }
-            }
-            s
-        })
-        .unwrap_or_default();
-
-        // I cant use the axum_login middleware because I need to substiute the base path so it goes to the 
-        // correct index.html for the login page
-        let login_url_base = Arc::new(format!("{}/index.html", base_path));
-
-        let login_required_middleware = {
-            let login_url_base = login_url_base.clone();
-        
-            // This handles direct auth and redirects 
-            from_fn(move |auth_session: AuthSession, req: Request<_>, next: Next| {
-                let login_url_base = login_url_base.clone();
-                async move {
-                    if auth_session.user.is_some() {
-                        next.run(req).await
-                    } else {
-                        let original_uri = req.uri();
-                        let next_path = original_uri.to_string(); 
-                        let redirect_url = format!("{}?next={}", login_url_base, urlencoding::encode(&next_path));
-                        Redirect::temporary(&redirect_url).into_response()
-                    }
-                }
-            })
-        };
-
-    // easy way to put routes to be shown publically and privately (after authentication)
-    // by adding the login middleware to one (private is also using a wildcard for all assets)
-    let public = Router::new()
-        .route("/", get(handle_static_request))
-        .route("/authenticate", get(authenticate_route))
-        .route("/index.html", get(handle_static_request))
-        .layer(AddExtensionLayer::new(state.clone()));
-
-    let protected = Router::new()
-        .route("/{*wildcard}", get(handle_static_request))
-        .layer(AddExtensionLayer::new(state.clone()))
-        .layer(login_required_middleware);
-
-    // merge these for all non-api assets to merge back again for the original route
-    public.merge(protected).route_layer(auth_layer)
-}
-
 
 // For general messages, in alot if not most cases this is for development purposes
 // there are many cases where this can fail, if it does, it can simply return INTERNAL_SERVER_ERROR
