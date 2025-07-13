@@ -25,8 +25,10 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use axum::extract::ws::Message as WsMessage;
 use axum::extract::FromRequest;
 use crate::middleware::from_fn;
+use crate::http::HeaderMap;
 
 // mod databasespec;
 // use databasespec::UserDatabase;
@@ -59,6 +61,9 @@ use bcrypt::BcryptError;
 use async_trait::async_trait;
 use tower_http::add_extension::AddExtensionLayer;
 use serial_test::serial;
+
+use futures_util::stream;
+
 // For now I only restrict the json backend for running this without kubernetes
 // the json backend is only for testing in most cases, simple deployments would use full-stack feature flag
 // and you can use postgres manually with the database feature flag
@@ -131,6 +136,7 @@ static TcpUrl: &str = "gameserver-service:8080";
 #[cfg(feature = "full-stack")]
 static LocalUrl: &str = "127.0.0.1:8080";
 
+static WEBSOCKET_DEBUGGING: bool = false;
 // K8S_WORKS needs to be true in the case where the full stack is running and not if that is not the case 
 // to avoid calling the dummy functions
 #[cfg(feature = "full-stack")]
@@ -553,14 +559,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 async fn handle_socket(socket: WebSocket, state: AppState) {
     let conn_id = CONNECTION_COUNTER.fetch_add(1, Ordering::SeqCst);
     
-    // Get peer address from extensions if available
     let remote_addr = state.peer_addr.clone().unwrap_or_else(|| "unknown".to_string());
-    println!("[Conn {}] NEW WEBSOCKET CONNECTION from {}", conn_id, remote_addr); // <-- Always print connection
+    println!("[Conn {}] NEW WEBSOCKET CONNECTION from {}", conn_id, remote_addr);
 
     let (sender, mut receiver) = socket.split();
     let sender = Arc::new(Mutex::new(sender));
 
-    // Ping task with more visible logging
+    let mut broadcast_rx = state.ws_tx.subscribe();
+    let broadcast_sender = sender.clone();
+    tokio::spawn(async move {
+        while let Ok(msg) = broadcast_rx.recv().await {
+            println!("[Conn {}] Forwarding: {}", conn_id, msg);
+            let mut sender = broadcast_sender.lock().await;
+            if sender.send(Message::Text(msg.into())).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    if WEBSOCKET_DEBUGGING {
+        ws_debug(conn_id, state, sender.clone(), &mut receiver).await;
+    } else {
+        while let Some(Ok(message)) = receiver.next().await {
+            if let Message::Text(text) = message {
+                println!("[Conn {}] Got from client: {}", conn_id, text);
+                let payload = serde_json::from_str::<MessagePayload>(&text).unwrap_or(MessagePayload {
+                    r#type: "console".into(),
+                    message: text.to_string(),
+                    authcode: "0".into(),
+                });
+
+                if let Ok(mut bytes) = serde_json::to_vec(&payload) {
+                    bytes.push(b'\n');
+                    let _ = state.tcp_tx.lock().await.send(bytes).await;
+                }
+            }
+        }
+    }
+
+    println!("[Conn {}] DISCONNECTED", conn_id);
+}
+
+async fn ws_debug(conn_id: usize, state: AppState, sender: Arc<Mutex<stream::SplitSink<WebSocket, WsMessage>>>, receiver: &mut stream::SplitStream<WebSocket>){
+        // Ping task with more visible logging
     let ping_task = {
         let conn_id = conn_id;
         let sender = Arc::clone(&sender);
@@ -674,18 +715,13 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         Ok(_) => println!("[Conn {}] BROADCAST TASK SHUT DOWN", conn_id),
         Err(e) => println!("[Conn {}] BROADCAST TASK ERROR: {:?}", conn_id, e),
     }
-
-    println!("[Conn {}] DISCONNECTED", conn_id);
 }
-use crate::http::HeaderMap;
 async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    println!("WEBSOCKET UPGRADE REQUEST RECEIVED");
-    println!("Headers: {:?}", headers);
-    
+  
     ws.max_frame_size(1024 * 1024)
       .max_message_size(1024 * 1024)
       .on_failed_upgrade(|e| {
@@ -756,10 +792,6 @@ fn routes_static(state: Arc<AppState>) -> Router<AppState> {
         .route("/{*wildcard}", get(handle_static_request))
         .layer(AddExtensionLayer::new(state.clone()))
         .layer(login_required_middleware);
-
-    // let public_async = Router::new()
-    //    .route("/api/ws", get(ws_handler))
-    //    .layer(AddExtensionLayer::new(state));
 
     // merge these for all non-api assets to merge back again for the original route
     public.merge(protected).route_layer(auth_layer)
