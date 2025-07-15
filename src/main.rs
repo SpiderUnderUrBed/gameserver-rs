@@ -309,10 +309,10 @@ struct AppState {
     database: database::Database
 }
 
+
 // for the initial connection attempt, which will determine if possibly I would need to create the container and deployment upon failure
 // i will use rusts 'timeout' for x interval determined with CONNECTION_TIMEOUT
 async fn attempt_connection() -> Result<TcpStream, Box<dyn std::error::Error + Send + Sync>> {
-    println!("[DEBUG] Attempting TCP connection to {}", TcpUrl);
     timeout(CONNECTION_TIMEOUT, TcpStream::connect(TcpUrl)).await?.map_err(Into::into)
 }
 
@@ -323,46 +323,37 @@ async fn handle_server_data(
     data: &[u8],
     ws_tx: &broadcast::Sender<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    println!("[DEBUG] Handling server data ({} bytes)", data.len());
-    
     if let Ok(text) = String::from_utf8(data.to_vec()) {
-        println!("[DEBUG] Raw message from server: {}", text);
+        println!("Raw message from server: {}", text);
         
         if let Ok(outer_msg) = serde_json::from_str::<InnerData>(&text) {
-            println!("[DEBUG] Parsed outer message successfully");
             let inner_data_str = outer_msg.data.as_str();
             let mut borrowed_state = state.write().await;
-            
             if let Some(start_keyword) = borrowed_state.gameserver["start_keyword"].as_str() {
-                println!("[DEBUG] Checking for start keyword: {}", start_keyword);
                 if inner_data_str.contains(start_keyword) {
-                    println!("[DEBUG] Start keyword found - setting status to Up");
                     borrowed_state.status = Status::Up;
                 } else {
-                    println!("[DEBUG] Start keyword not found - setting status to Down");
                     borrowed_state.status = Status::Down;             
                 }
             } else {
-                eprintln!("[DEBUG] start_keyword is not a string");
+                eprintln!("start_keyword is not a string");
             }
-            
             if let Ok(inner_data) = serde_json::from_str::<serde_json::Value>(inner_data_str) {
-                println!("[DEBUG] Parsed inner data successfully");
                 if ALLOW_NONJSON_DATA == true {
                     if let Some(message_content) = inner_data["data"].as_str() {
-                        println!("[DEBUG] Extracted message: {}", message_content);
+                        println!("Extracted message: {}", message_content);
                         let _ = ws_tx.send(message_content.to_string());
                     }
                 } else {
-                    println!("[DEBUG] Sending raw inner data: {}", inner_data_str);
+                    println!("Sending raw inner data: {}", inner_data_str);
                     let _ = ws_tx.send(inner_data_str.to_string());
                 }
             } else {
-                println!("[DEBUG] Failed to parse inner data, sending raw");
+                println!("Sending raw inner data: {}", inner_data_str);
                 let _ = ws_tx.send(inner_data_str.to_string());
             }
         } else {
-            println!("[DEBUG] Failed to parse outer message, sending raw text");
+            println!("Sending raw text: {}", text);
             let _ = ws_tx.send(text);
         }
     }
@@ -378,8 +369,6 @@ async fn handle_stream(
     stream: &mut TcpStream,
     ws_tx: broadcast::Sender<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    println!("[DEBUG] Starting stream handling");
-    
     let (mut reader, mut writer) = stream.split();
     let mut buf = vec![0u8; 1024];
     let mut buf_reader = BufReader::new(reader);
@@ -391,18 +380,16 @@ async fn handle_stream(
         }
     )? + "\n";
     
-    println!("[DEBUG] Sending capability message");
     writer.write_all(capability_msg.as_bytes()).await?;
-    
     match buf_reader.read_line(&mut line).await {
         Ok(0) => {
-            println!("[DEBUG] Connection possibly closed after capability message");
+            println!("Error, possibly connection closed");
         }
         Ok(_) => {
-            println!("[DEBUG] Received capability response: {}", line.trim_end());
+            println!("Received line: {}", line.trim_end());
         }
         Err(e) => {
-            println!("[DEBUG] Error reading capability response: {:?}", e);
+            println!("Error reading line: {:?}", e);
             return Err(e.into());
         }
     }
@@ -415,50 +402,36 @@ async fn handle_stream(
         }
     )? + "\n";
 
-    println!("[DEBUG] Sending server data request");
     writer.write_all(server_data_msg.as_bytes()).await?;
-    
     match buf_reader.read_line(&mut line).await {
         Ok(0) => {
-            println!("[DEBUG] Connection possibly closed after server data request");
+            println!("Error, possibly connection closed");
         }
         Ok(_) => {
-            println!("[DEBUG] Received server data: {}", line.trim_end());
+            println!("Received line: {}", line.trim_end());
             state.write().await.gameserver = serde_json::Value::String(line.clone());
         }
         Err(e) => {
-            println!("[DEBUG] Error reading server data: {:?}", e);
+            println!("Error reading line: {:?}", e);
             return Err(e.into());
         }
     }
 
     reader = buf_reader.into_inner();
-    println!("[DEBUG] Entering main stream loop");
 
     loop {
         let mut rx_guard = rx.lock().await;
         tokio::select! {
             result = reader.read(&mut buf) => match result {
-                Ok(0) => {
-                    println!("[DEBUG] Stream read returned 0 bytes - connection closed");
-                    return Ok(());
-                },
-                Ok(n) => {
-                    println!("[DEBUG] Received {} bytes from stream", n);
-                    handle_server_data(state.clone(), &buf[..n], &ws_tx).await?
-                },
-                Err(e) => {
-                    println!("[DEBUG] Stream read error: {:?}", e);
-                    return Err(e.into());
-                },
+                Ok(0) => return Ok(()),
+                Ok(n) => handle_server_data(state.clone(), &buf[..n], &ws_tx).await?,
+                Err(e) => return Err(e.into()),
             },
             result = rx_guard.recv() => if let Some(data) = result {
-                println!("[DEBUG] Sending {} bytes to server", data.len());
                 writer.write_all(&data).await?;
                 writer.write_all(b"\n").await?;
                 writer.flush().await?;
             } else {
-                println!("[DEBUG] Channel closed - ending stream handling");
                 return Ok(());
             }
         }
@@ -467,31 +440,25 @@ async fn handle_stream(
 
 // does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
 async fn connect_to_server(
-    state: &AppState,
+    state: Arc<RwLock<AppState>>,
     rx: Arc<Mutex<mpsc::Receiver<Vec<u8>>>>,
     ws_tx: broadcast::Sender<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    println!("[DEBUG] Starting connect_to_server loop");
-    
+
     loop {
-        println!("[DEBUG] Trying to connect to {}…", TcpUrl);
         match timeout(CONNECTION_TIMEOUT, TcpStream::connect(TcpUrl)).await {
             Ok(Ok(mut stream)) => {
-                println!("[DEBUG] Connection succeeded!");
-                handle_stream(Arc::new(RwLock::new(state.clone())), rx.clone(), &mut stream, ws_tx.clone()).await?
+                handle_stream(state.clone(), rx.clone(), &mut stream, ws_tx.clone()).await?
             }
             Ok(Err(e)) => {
-                eprintln!("[DEBUG] Connection error: {}", e);
                 tokio::time::sleep(CONNECTION_RETRY_DELAY).await;
             }
             Err(_) => {
-                eprintln!("[DEBUG] Connection timed out after {:?}", CONNECTION_TIMEOUT);
                 tokio::time::sleep(CONNECTION_RETRY_DELAY).await;
             }
         }
     }
 }
-
 // This function is soley for the initial connection to the tcp server, then passes it off to the dedicated handler, for the initial conneciton
 // this is where it determines wether or not to try and create the container and deployment, as attempt_connection itself is used in various diffrent contexts (like it will constantly
 // try to connect upon failing but it should not try to create the container and deployment every time it fails)
@@ -500,11 +467,9 @@ async fn try_initial_connection(
     ws_tx: broadcast::Sender<String>,
     tcp_tx: Arc<Mutex<mpsc::Sender<Vec<u8>>>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    println!("[DEBUG] Starting try_initial_connection");
-    
     match attempt_connection().await {
         Ok(mut stream) => {
-            println!("[DEBUG] Initial connection succeeded!");
+            println!("Initial connection succeeded!");
 
             let (temp_tx, temp_rx) = mpsc::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
 
@@ -515,21 +480,23 @@ async fn try_initial_connection(
             handle_stream(state,Arc::new(Mutex::new(temp_rx)), &mut stream, ws_tx).await
         }
         Err(e) => {
-            eprintln!("[DEBUG] Initial connection failed: {}", e);
+            eprintln!("Initial connection failed: {}", e);
             Err(e)
         }
     }
 }
 
+// main function handles the initial connection
+// initilizing the database struct, getting and setting the base path as well as alot of defaults in AppState
+// trying the initial tcp connection to gameserver, and considering creating it if it doesnt exist, and will continually try to make a connection with it 
+// until successful, then it will serve the webserver (maybe the pinging for gameserver should not be a requirement for the webserver to run)
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    println!("[DEBUG] Starting server...");
+    println!("Starting server...");
 
-    println!("[DEBUG] Establishing database connection...");
     let conn = first_connection().await?;
     let database = database::Database::new(Some(conn));
 
-    println!("[DEBUG] Loading configuration...");
     let verbose = std::env::var("VERBOSE").is_ok();
     let base_path = std::env::var("SITE_URL")
         .map(|s| {
@@ -549,18 +516,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     const BUILD_DOCKER_IMAGE: bool = true;
     const BUILD_DEPLOYMENT: bool = true;
 
-    println!("[DEBUG] Creating communication channels...");
+    // creates a websocket broadcase and tcp channels
     let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
     let (tcp_tx, tcp_rx) = mpsc::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
 
-    println!("[DEBUG] Initializing Kubernetes client if enabled...");
+    // sets the client to be none by default unless this is ran the stanard way which will be ran with the appropriate feature-flag
+    // which will set the k8s client
     let mut client: Option<Client> = None;
     if ENABLE_K8S_CLIENT && K8S_WORKS {
-        println!("[DEBUG] Creating Kubernetes client...");
         client = Some(Client::try_default().await?);
     }
 
-    println!("[DEBUG] Creating application state...");
+    // use everything so far to make the app state
     let state = AppState {
         gameserver: json!({}),
         status: Status::Down,
@@ -575,42 +542,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let multifaceted_state = Arc::new(RwLock::new(state));
 
+    // if there is supposed to be a initial connection and if there is a client (as it wont be able to create the deployment without it, and it would be pointless to create a docker container 
+    // without the abbility to deploy it)
     if ENABLE_INITIAL_CONNECTION && multifaceted_state.write().await.client.is_some() {
-        println!("[DEBUG] Trying initial connection...");
+        println!("Trying initial connection...");
         if try_initial_connection(multifaceted_state.clone(), ws_tx.clone(), multifaceted_state.write().await.tcp_tx.clone()).await.is_err() || FORCE_REBUILD {
-            eprintln!("[DEBUG] Initial connection failed or force rebuild enabled");
+            eprintln!("Initial connection failed or force rebuild enabled");
             if BUILD_DOCKER_IMAGE {
-                println!("[DEBUG] Building Docker image...");
                 docker::build_docker_image().await?;
             }
             if BUILD_DEPLOYMENT {
-                println!("[DEBUG] Creating Kubernetes deployment...");
                 kubernetes::create_k8s_deployment(multifaceted_state.write().await.client.as_ref().unwrap()).await?;
             }
         }
     }
 
-    println!("[DEBUG] Starting server connection task...");
-    let bridge_rx = multifaceted_state.write().await.tcp_rx.clone();
-    let bridge_tx = multifaceted_state.write().await.ws_tx.clone();
-
+    // takes the tcp connection out of the arc mutex and gets a connection to the 
+    // websocket to send to connect_to_server to establish the date pipeline
     let server_connection_state = multifaceted_state.clone();
+    let bridge_rx = multifaceted_state.read().await.tcp_rx.clone();
+    let bridge_tx = multifaceted_state.read().await.ws_tx.clone();
+
     tokio::spawn(async move {
-        println!("[DEBUG] Server connection task started");
-        let server_connecting_state_write = server_connection_state.write().await;
-        if let Err(e) = connect_to_server(&server_connecting_state_write, bridge_rx, bridge_tx).await {
+        if let Err(e) = connect_to_server(
+            server_connection_state,
+            bridge_rx,
+            bridge_tx,
+        ).await {
             eprintln!("[DEBUG] Connection task failed: {}", e);
         }
     });
 
-    println!("[DEBUG] Setting up CORS and routes...");
+
+    // Currently very permissive CORS for permissions
     let cors = CorsLayer::new()
         .allow_origin(CorsAny)
         .allow_methods([Method::GET, Method::POST])
         .allow_headers(CorsAny);
 
+    // fallback_router will serve all the basic files
     let fallback_router = routes_static(multifaceted_state.write().await.clone().into());
 
+    // the main route, this serves all the api stuff that wont be behind a login, but I handle the main routes in routes_static for better control
+    // over the authentication flow, if the api could be publically accessible in the future, you would need a diffrent way to authenticate with a api
+    let global_state = multifaceted_state.write().await.clone();
     let inner = Router::new()
         .route("/api/message", get(get_message))
         .route("/api/nodes", get(get_nodes))
@@ -626,23 +601,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/createuser", post(create_user))
         .route("/api/deleteuser", post(delete_user))
         .merge(fallback_router)
-        .with_state(multifaceted_state.write().await.clone());
+        .with_state(global_state);
+    // let inner_async = Router::new()
+    //    .route("/api/ws", get(ws_handler))
+    //    .with_state(Arc::new(state.clone()));
 
     let normal_routes = Router::new()
         .merge(inner);
+        // .merge(inner_async);
     
+    // Does nesting of routes behind a base path if configured, otherwise use defaults
     let app = if base_path.is_empty() || base_path == "/" {
-        println!("[DEBUG] Using root path for routes");
         normal_routes.layer(cors)
     } else {
-        println!("[DEBUG] Using base path '{}' for routes", base_path);
         Router::new().nest(&base_path, normal_routes).layer(cors)
     };
 
-    println!("[DEBUG] Starting web server...");
+    // serves the website 
     let addr: SocketAddr = LocalUrl.parse().unwrap();
-    println!("[DEBUG] Listening on http://{}{}", addr, base_path);
+    println!("Listening on http://{}{}", addr, base_path);
 
+    
     let listener = TcpListener::bind(addr).await?;
     axum::serve(listener, app.into_make_service())
         .await?;
