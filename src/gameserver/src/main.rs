@@ -34,27 +34,6 @@ enum ApiCalls {
     NodeList(Vec<String>),
     IncomingMessage(MessagePayload),
 }
-// Value::deserialize(
-// impl<'de> Deserialize<'de> for ApiCalls {
-//     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-//     where
-//         D: Deserializer<'de>,
-//     {
-//         let value = Value::deserialize(deserializer)?;
-
-//         if let Ok(direct) = serde_json::from_value::<ApiCalls>(value.clone()) {
-//             return Ok(direct);
-//         }
-
-//         if let Some(inner) = value.get("list") {
-//             if let Ok(wrapped) = serde_json::from_value::<ApiCalls>(inner.clone()) {
-//                 return Ok(wrapped);
-//             }
-//         }
-
-//         Err(serde::de::Error::custom("Invalid ApiCalls format"))
-//     }
-// }
 
 
 impl TryFrom<Value> for List {
@@ -154,6 +133,12 @@ impl Provider for Minecraft {
             None
         }
     }
+}
+
+#[derive(serde::Serialize)]
+struct GetState {
+    start_keyword: String,
+    stop_keyword: String
 }
 
 fn get_provider(name: &str) -> Option<Minecraft> {
@@ -297,6 +282,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     let _ = cmd_tx.send("Server started".into()).await;
                                                 }
                                             }
+                                        } else if cmd_str == "server_data" {
+                                            let _ = cmd_tx.send(
+                                                serde_json::to_string(
+                                                    &GetState {
+                                                        start_keyword: "help".to_string(),
+                                                        stop_keyword: "All dimensions are saved".to_string()
+                                                    }
+                                                ).expect("Failed, not json")
+                                            ).await;                                 
                                         } else {
                                             let _ = cmd_tx.send(format!("Unknown command: {}", cmd_str)).await;
                                         }

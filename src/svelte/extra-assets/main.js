@@ -281,8 +281,16 @@ class ServerConsole {
   updateStatus() {
     const loading = document.getElementById("loading");
     loading.style.display = "block";
+    const statusEvent = new EventSource(`${this.basePath}/api/awaitserverstatus`);
+    statusEvent.onmessage = (e) => {
+      console.log(e.data);
+      if (e.data == "healthy"){
+        loading.style.display = "none";
+      }
+    };
   }
 
+  
   async startServer() {
     this.updateStatus()
     try {

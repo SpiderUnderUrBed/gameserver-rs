@@ -1,8 +1,12 @@
+use std::any::Any;
+use std::cell::RefCell;
 // ALOT of imports, needed given the size of this project in what it covers
 // first imports are std ones
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::fs;
+// use std::fs;
+// use std::rc::Rc;
+use std::borrow::BorrowMut;
 use std::{net::SocketAddr, path::Path, sync::Arc};
 
 // Axum is the routing framework, and the backbone to this project helping intergrate the backend with the frontend
@@ -27,6 +31,8 @@ use axum::{
 };
 use axum::extract::ws::Message as WsMessage;
 use axum::extract::FromRequest;
+use futures_util::stream::once;
+use tokio::sync::RwLock;
 use crate::middleware::from_fn;
 use crate::http::HeaderMap;
 
@@ -44,7 +50,7 @@ use crate::database::databasespec::UserDatabase;
 use futures_util::{sink::SinkExt, stream::StreamExt};
 use mime_guess::from_path;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::{
     fs as tokio_fs,
@@ -53,7 +59,7 @@ use tokio::{
     sync::{broadcast, mpsc, Mutex},
     time::{timeout, Duration},
 };
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{Any as CorsAny, CorsLayer};
 use bcrypt::{hash, verify, DEFAULT_COST};
 use chrono::{Utc, Duration as OtherDuration};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, TokenData, Validation};
@@ -63,6 +69,11 @@ use tower_http::add_extension::AddExtensionLayer;
 use serial_test::serial;
 
 use futures_util::{stream, Stream};
+
+use tokio_util::bytes::Bytes;
+use std::sync::atomic::{AtomicUsize, Ordering};
+static CONNECTION_COUNTER: AtomicUsize = AtomicUsize::new(0);
+use tokio::time::interval;
 
 // For now I only restrict the json backend for running this without kubernetes
 // the json backend is only for testing in most cases, simple deployments would use full-stack feature flag
@@ -272,146 +283,12 @@ enum ApiCalls {
     IncomingMessage(IncomingMessage),
 }
 
-// for the initial connection attempt, which will determine if possibly I would need to create the container and deployment upon failure
-// i will use rusts 'timeout' for x interval determined with CONNECTION_TIMEOUT
-async fn attempt_connection() -> Result<TcpStream, Box<dyn std::error::Error + Send + Sync>> {
-    timeout(CONNECTION_TIMEOUT, TcpStream::connect(TcpUrl)).await?.map_err(Into::into)
-}
-
-// The websocket connection will be important for sending data to there and back
-// in this case, this is primarially used for transmitting console data to the frontend from the gameserver
-async fn handle_server_data(
-    data: &[u8],
-    ws_tx: &broadcast::Sender<String>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if let Ok(text) = String::from_utf8(data.to_vec()) {
-        println!("Raw message from server: {}", text);
-        
-        if let Ok(outer_msg) = serde_json::from_str::<InnerData>(&text) {
-            let inner_data_str = outer_msg.data.as_str();
-                if let Ok(inner_data) = serde_json::from_str::<serde_json::Value>(inner_data_str) {
-                    if ALLOW_NONJSON_DATA == true {
-                        if let Some(message_content) = inner_data["data"].as_str() {
-                            println!("Extracted message: {}", message_content);
-                            let _ = ws_tx.send(message_content.to_string());
-                        }
-                    } else {
-                        println!("Sending raw inner data: {}", inner_data_str);
-                        let _ = ws_tx.send(inner_data_str.to_string());
-                    }
-                } else {
-                    println!("Sending raw inner data: {}", inner_data_str);
-                    let _ = ws_tx.send(inner_data_str.to_string());
-                }
-        } else {
-            println!("Sending raw text: {}", text);
-            let _ = ws_tx.send(text);
-        }
-    }
-    Ok(())
-}
-
-// this handles the main tcp stream between the gameserver and the client console, more specifically the data exchanged
-// as well as notifying the gameserver of its capabilities which at some point ill make dependent on what feature flag is set
-// `tokio::select!` is used to concurrently wait for either incoming TCP data or messages from the channel to send.
-async fn handle_stream(
-    rx: Arc<Mutex<mpsc::Receiver<Vec<u8>>>>,
-    stream: &mut TcpStream,
-    ws_tx: broadcast::Sender<String>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let (mut reader, mut writer) = stream.split();
-    let mut buf = vec![0u8; 1024];
-    let mut buf_reader = BufReader::new(reader);
-    let mut line = String::new();
-    
-    let msg = serde_json::to_string(
-        &List {
-            list: ApiCalls::Capabilities(vec!["all".to_string()])
-        }
-    )? + "\n";
-    
-    writer.write_all(msg.as_bytes()).await?;
-    match buf_reader.read_line(&mut line).await {
-        Ok(0) => {
-            println!("Error, possibly connection closed");
-        }
-        Ok(_) => {
-            println!("Received line: {}", line.trim_end());
-        }
-        Err(e) => {
-            println!("Error reading line: {:?}", e);
-            return Err(e.into());
-        }
-    }
-    reader = buf_reader.into_inner();
-
-    loop {
-        let mut rx_guard = rx.lock().await;
-        tokio::select! {
-            result = reader.read(&mut buf) => match result {
-                Ok(0) => return Ok(()),
-                Ok(n) => handle_server_data(&buf[..n], &ws_tx).await?,
-                Err(e) => return Err(e.into()),
-            },
-            result = rx_guard.recv() => if let Some(data) = result {
-                writer.write_all(&data).await?;
-                writer.write_all(b"\n").await?;
-                writer.flush().await?;
-            } else {
-                return Ok(());
-            }
-        }
-    }
-}
-
-// does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
-async fn connect_to_server(
-    rx: Arc<Mutex<mpsc::Receiver<Vec<u8>>>>,
-    ws_tx: broadcast::Sender<String>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    loop {
-        println!("trying to connect to {}…", TcpUrl);
-        match timeout(CONNECTION_TIMEOUT, TcpStream::connect(TcpUrl)).await {
-            Ok(Ok(mut stream)) => {
-                println!("connected!");
-                handle_stream(rx.clone(), &mut stream, ws_tx.clone()).await?
-            }
-            Ok(Err(e)) => {
-                eprintln!("connect error: {}", e);
-                tokio::time::sleep(CONNECTION_RETRY_DELAY).await;
-            }
-            Err(_) => {
-                eprintln!("connect timed out after {:?}", CONNECTION_TIMEOUT);
-                tokio::time::sleep(CONNECTION_RETRY_DELAY).await;
-            }
-        }
-    }
-}
-
-// This function is soley for the initial connection to the tcp server, then passes it off to the dedicated handler, for the initial conneciton
-// this is where it determines wether or not to try and create the container and deployment, as attempt_connection itself is used in various diffrent contexts (like it will constantly
-// try to connect upon failing but it should not try to create the container and deployment every time it fails)
-async fn try_initial_connection(
-    ws_tx: broadcast::Sender<String>,
-    tcp_tx: Arc<Mutex<mpsc::Sender<Vec<u8>>>>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    match attempt_connection().await {
-        Ok(mut stream) => {
-            println!("Initial connection succeeded!");
-
-            let (temp_tx, temp_rx) = mpsc::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
-
-            {
-                let mut guard = tcp_tx.lock().await;
-                *guard = temp_tx;
-            }
-            handle_stream(Arc::new(Mutex::new(temp_rx)), &mut stream, ws_tx).await
-        }
-        Err(e) => {
-            eprintln!("Initial connection failed: {}", e);
-            Err(e)
-        }
-    }
+#[derive(Clone)]
+enum Status {
+    Up,
+    Healthy,
+    Down,
+    Unhealthy
 }
 
 // AppState, this is a global struct which will be used to store data needed across the application like in routes and etc
@@ -423,29 +300,236 @@ struct AppState {
     tcp_tx: Arc<Mutex<mpsc::Sender<Vec<u8>>>>,
     tcp_rx: Arc<Mutex<mpsc::Receiver<Vec<u8>>>>,
     
+    gameserver: Value,
+    status: Status,
     ws_tx: broadcast::Sender<String>,
     peer_addr: Option<String>,
     base_path: String,
     client: Option<Client>,
     database: database::Database
 }
-use tokio_util::bytes::Bytes;
-use std::sync::atomic::{AtomicUsize, Ordering};
-static CONNECTION_COUNTER: AtomicUsize = AtomicUsize::new(0);
-use tokio::time::interval;
-use log::{info, debug, warn, trace};
 
-// main function handles the initial connection
-// initilizing the database struct, getting and setting the base path as well as alot of defaults in AppState
-// trying the initial tcp connection to gameserver, and considering creating it if it doesnt exist, and will continually try to make a connection with it 
-// until successful, then it will serve the webserver (maybe the pinging for gameserver should not be a requirement for the webserver to run)
+// for the initial connection attempt, which will determine if possibly I would need to create the container and deployment upon failure
+// i will use rusts 'timeout' for x interval determined with CONNECTION_TIMEOUT
+async fn attempt_connection() -> Result<TcpStream, Box<dyn std::error::Error + Send + Sync>> {
+    println!("[DEBUG] Attempting TCP connection to {}", TcpUrl);
+    timeout(CONNECTION_TIMEOUT, TcpStream::connect(TcpUrl)).await?.map_err(Into::into)
+}
+
+// The websocket connection will be important for sending data to there and back
+// in this case, this is primarially used for transmitting console data to the frontend from the gameserver
+async fn handle_server_data(
+    state: Arc<RwLock<AppState>>,
+    data: &[u8],
+    ws_tx: &broadcast::Sender<String>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    println!("[DEBUG] Handling server data ({} bytes)", data.len());
+    
+    if let Ok(text) = String::from_utf8(data.to_vec()) {
+        println!("[DEBUG] Raw message from server: {}", text);
+        
+        if let Ok(outer_msg) = serde_json::from_str::<InnerData>(&text) {
+            println!("[DEBUG] Parsed outer message successfully");
+            let inner_data_str = outer_msg.data.as_str();
+            let mut borrowed_state = state.write().await;
+            
+            if let Some(start_keyword) = borrowed_state.gameserver["start_keyword"].as_str() {
+                println!("[DEBUG] Checking for start keyword: {}", start_keyword);
+                if inner_data_str.contains(start_keyword) {
+                    println!("[DEBUG] Start keyword found - setting status to Up");
+                    borrowed_state.status = Status::Up;
+                } else {
+                    println!("[DEBUG] Start keyword not found - setting status to Down");
+                    borrowed_state.status = Status::Down;             
+                }
+            } else {
+                eprintln!("[DEBUG] start_keyword is not a string");
+            }
+            
+            if let Ok(inner_data) = serde_json::from_str::<serde_json::Value>(inner_data_str) {
+                println!("[DEBUG] Parsed inner data successfully");
+                if ALLOW_NONJSON_DATA == true {
+                    if let Some(message_content) = inner_data["data"].as_str() {
+                        println!("[DEBUG] Extracted message: {}", message_content);
+                        let _ = ws_tx.send(message_content.to_string());
+                    }
+                } else {
+                    println!("[DEBUG] Sending raw inner data: {}", inner_data_str);
+                    let _ = ws_tx.send(inner_data_str.to_string());
+                }
+            } else {
+                println!("[DEBUG] Failed to parse inner data, sending raw");
+                let _ = ws_tx.send(inner_data_str.to_string());
+            }
+        } else {
+            println!("[DEBUG] Failed to parse outer message, sending raw text");
+            let _ = ws_tx.send(text);
+        }
+    }
+    Ok(())
+}
+
+// this handles the main tcp stream between the gameserver and the client console, more specifically the data exchanged
+// as well as notifying the gameserver of its capabilities which at some point ill make dependent on what feature flag is set
+// `tokio::select!` is used to concurrently wait for either incoming TCP data or messages from the channel to send.
+async fn handle_stream(
+    state: Arc<RwLock<AppState>>,
+    rx: Arc<Mutex<mpsc::Receiver<Vec<u8>>>>,
+    stream: &mut TcpStream,
+    ws_tx: broadcast::Sender<String>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    println!("[DEBUG] Starting stream handling");
+    
+    let (mut reader, mut writer) = stream.split();
+    let mut buf = vec![0u8; 1024];
+    let mut buf_reader = BufReader::new(reader);
+    let mut line = String::new();
+    
+    let capability_msg = serde_json::to_string(
+        &List {
+            list: ApiCalls::Capabilities(vec!["all".to_string()])
+        }
+    )? + "\n";
+    
+    println!("[DEBUG] Sending capability message");
+    writer.write_all(capability_msg.as_bytes()).await?;
+    
+    match buf_reader.read_line(&mut line).await {
+        Ok(0) => {
+            println!("[DEBUG] Connection possibly closed after capability message");
+        }
+        Ok(_) => {
+            println!("[DEBUG] Received capability response: {}", line.trim_end());
+        }
+        Err(e) => {
+            println!("[DEBUG] Error reading capability response: {:?}", e);
+            return Err(e.into());
+        }
+    }
+
+    let server_data_msg = serde_json::to_string(
+        &MessagePayload {
+            r#type: "command".to_string(),
+            message: "server_data".to_string(),
+            authcode: "0".to_string(),
+        }
+    )? + "\n";
+
+    println!("[DEBUG] Sending server data request");
+    writer.write_all(server_data_msg.as_bytes()).await?;
+    
+    match buf_reader.read_line(&mut line).await {
+        Ok(0) => {
+            println!("[DEBUG] Connection possibly closed after server data request");
+        }
+        Ok(_) => {
+            println!("[DEBUG] Received server data: {}", line.trim_end());
+            state.write().await.gameserver = serde_json::Value::String(line.clone());
+        }
+        Err(e) => {
+            println!("[DEBUG] Error reading server data: {:?}", e);
+            return Err(e.into());
+        }
+    }
+
+    reader = buf_reader.into_inner();
+    println!("[DEBUG] Entering main stream loop");
+
+    loop {
+        let mut rx_guard = rx.lock().await;
+        tokio::select! {
+            result = reader.read(&mut buf) => match result {
+                Ok(0) => {
+                    println!("[DEBUG] Stream read returned 0 bytes - connection closed");
+                    return Ok(());
+                },
+                Ok(n) => {
+                    println!("[DEBUG] Received {} bytes from stream", n);
+                    handle_server_data(state.clone(), &buf[..n], &ws_tx).await?
+                },
+                Err(e) => {
+                    println!("[DEBUG] Stream read error: {:?}", e);
+                    return Err(e.into());
+                },
+            },
+            result = rx_guard.recv() => if let Some(data) = result {
+                println!("[DEBUG] Sending {} bytes to server", data.len());
+                writer.write_all(&data).await?;
+                writer.write_all(b"\n").await?;
+                writer.flush().await?;
+            } else {
+                println!("[DEBUG] Channel closed - ending stream handling");
+                return Ok(());
+            }
+        }
+    }
+}
+
+// does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
+async fn connect_to_server(
+    state: &AppState,
+    rx: Arc<Mutex<mpsc::Receiver<Vec<u8>>>>,
+    ws_tx: broadcast::Sender<String>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    println!("[DEBUG] Starting connect_to_server loop");
+    
+    loop {
+        println!("[DEBUG] Trying to connect to {}…", TcpUrl);
+        match timeout(CONNECTION_TIMEOUT, TcpStream::connect(TcpUrl)).await {
+            Ok(Ok(mut stream)) => {
+                println!("[DEBUG] Connection succeeded!");
+                handle_stream(Arc::new(RwLock::new(state.clone())), rx.clone(), &mut stream, ws_tx.clone()).await?
+            }
+            Ok(Err(e)) => {
+                eprintln!("[DEBUG] Connection error: {}", e);
+                tokio::time::sleep(CONNECTION_RETRY_DELAY).await;
+            }
+            Err(_) => {
+                eprintln!("[DEBUG] Connection timed out after {:?}", CONNECTION_TIMEOUT);
+                tokio::time::sleep(CONNECTION_RETRY_DELAY).await;
+            }
+        }
+    }
+}
+
+// This function is soley for the initial connection to the tcp server, then passes it off to the dedicated handler, for the initial conneciton
+// this is where it determines wether or not to try and create the container and deployment, as attempt_connection itself is used in various diffrent contexts (like it will constantly
+// try to connect upon failing but it should not try to create the container and deployment every time it fails)
+async fn try_initial_connection(
+    state: Arc<RwLock<AppState>>,
+    ws_tx: broadcast::Sender<String>,
+    tcp_tx: Arc<Mutex<mpsc::Sender<Vec<u8>>>>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    println!("[DEBUG] Starting try_initial_connection");
+    
+    match attempt_connection().await {
+        Ok(mut stream) => {
+            println!("[DEBUG] Initial connection succeeded!");
+
+            let (temp_tx, temp_rx) = mpsc::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+
+            {
+                let mut guard = tcp_tx.lock().await;
+                *guard = temp_tx;
+            }
+            handle_stream(state,Arc::new(Mutex::new(temp_rx)), &mut stream, ws_tx).await
+        }
+        Err(e) => {
+            eprintln!("[DEBUG] Initial connection failed: {}", e);
+            Err(e)
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    println!("Starting server...");
+    println!("[DEBUG] Starting server...");
 
+    println!("[DEBUG] Establishing database connection...");
     let conn = first_connection().await?;
     let database = database::Database::new(Some(conn));
 
+    println!("[DEBUG] Loading configuration...");
     let verbose = std::env::var("VERBOSE").is_ok();
     let base_path = std::env::var("SITE_URL")
         .map(|s| {
@@ -465,19 +549,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     const BUILD_DOCKER_IMAGE: bool = true;
     const BUILD_DEPLOYMENT: bool = true;
 
-    // creates a websocket broadcase and tcp channels
+    println!("[DEBUG] Creating communication channels...");
     let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
     let (tcp_tx, tcp_rx) = mpsc::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
 
-    // sets the client to be none by default unless this is ran the stanard way which will be ran with the appropriate feature-flag
-    // which will set the k8s client
+    println!("[DEBUG] Initializing Kubernetes client if enabled...");
     let mut client: Option<Client> = None;
     if ENABLE_K8S_CLIENT && K8S_WORKS {
+        println!("[DEBUG] Creating Kubernetes client...");
         client = Some(Client::try_default().await?);
     }
 
-    // use everything so far to make the app state
+    println!("[DEBUG] Creating application state...");
     let state = AppState {
+        gameserver: json!({}),
+        status: Status::Down,
         tcp_tx: Arc::new(Mutex::new(tcp_tx)),
         tcp_rx: Arc::new(Mutex::new(tcp_rx)),
         ws_tx: ws_tx.clone(),
@@ -487,48 +573,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         client,
     };
 
-    // if there is supposed to be a initial connection and if there is a client (as it wont be able to create the deployment without it, and it would be pointless to create a docker container 
-    // without the abbility to deploy it)
-    if ENABLE_INITIAL_CONNECTION && state.client.is_some() {
-        println!("Trying initial connection...");
-        if try_initial_connection(ws_tx.clone(), state.tcp_tx.clone()).await.is_err() || FORCE_REBUILD {
-            eprintln!("Initial connection failed or force rebuild enabled");
+    let multifaceted_state = Arc::new(RwLock::new(state));
+
+    if ENABLE_INITIAL_CONNECTION && multifaceted_state.write().await.client.is_some() {
+        println!("[DEBUG] Trying initial connection...");
+        if try_initial_connection(multifaceted_state.clone(), ws_tx.clone(), multifaceted_state.write().await.tcp_tx.clone()).await.is_err() || FORCE_REBUILD {
+            eprintln!("[DEBUG] Initial connection failed or force rebuild enabled");
             if BUILD_DOCKER_IMAGE {
+                println!("[DEBUG] Building Docker image...");
                 docker::build_docker_image().await?;
             }
             if BUILD_DEPLOYMENT {
-                kubernetes::create_k8s_deployment(state.client.as_ref().unwrap()).await?;
+                println!("[DEBUG] Creating Kubernetes deployment...");
+                kubernetes::create_k8s_deployment(multifaceted_state.write().await.client.as_ref().unwrap()).await?;
             }
         }
     }
 
-    // takes the tcp connection out of the arc mutex and gets a connection to the 
-    // websocket to send to connect_to_server to establish the date pipeline
-    let bridge_rx = state.tcp_rx.clone();
-    let bridge_tx = state.ws_tx.clone();
+    println!("[DEBUG] Starting server connection task...");
+    let bridge_rx = multifaceted_state.write().await.tcp_rx.clone();
+    let bridge_tx = multifaceted_state.write().await.ws_tx.clone();
+
+    let server_connection_state = multifaceted_state.clone();
     tokio::spawn(async move {
-        if let Err(e) = connect_to_server(bridge_rx, bridge_tx).await {
-            eprintln!("Connection task failed: {}", e);
+        println!("[DEBUG] Server connection task started");
+        let server_connecting_state_write = server_connection_state.write().await;
+        if let Err(e) = connect_to_server(&server_connecting_state_write, bridge_rx, bridge_tx).await {
+            eprintln!("[DEBUG] Connection task failed: {}", e);
         }
     });
 
-    // Currently very permissive CORS for permissions
+    println!("[DEBUG] Setting up CORS and routes...");
     let cors = CorsLayer::new()
-        .allow_origin(Any)
+        .allow_origin(CorsAny)
         .allow_methods([Method::GET, Method::POST])
-        .allow_headers(Any);
+        .allow_headers(CorsAny);
 
-    // fallback_router will serve all the basic files
-    let fallback_router = routes_static(state.clone().into());
+    let fallback_router = routes_static(multifaceted_state.write().await.clone().into());
 
-    // the main route, this serves all the api stuff that wont be behind a login, but I handle the main routes in routes_static for better control
-    // over the authentication flow, if the api could be publically accessible in the future, you would need a diffrent way to authenticate with a api
     let inner = Router::new()
         .route("/api/message", get(get_message))
         .route("/api/nodes", get(get_nodes))
         .route("/api/servers", get(get_servers))
         .route("/api/users", get(users))
-        .route("/api/serverstatus", get(ongoing_server_status))
+        .route("/api/awaitserverstatus", get(ongoing_server_status))
         .route("/api/addnode", post(add_node))
         .route("/api/edituser", post(edit_user))
         .route("/api/getuser", post(get_user))
@@ -538,27 +626,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/createuser", post(create_user))
         .route("/api/deleteuser", post(delete_user))
         .merge(fallback_router)
-        .with_state(state.clone());
-    // let inner_async = Router::new()
-    //    .route("/api/ws", get(ws_handler))
-    //    .with_state(Arc::new(state.clone()));
+        .with_state(multifaceted_state.write().await.clone());
 
     let normal_routes = Router::new()
         .merge(inner);
-        // .merge(inner_async);
     
-    // Does nesting of routes behind a base path if configured, otherwise use defaults
     let app = if base_path.is_empty() || base_path == "/" {
+        println!("[DEBUG] Using root path for routes");
         normal_routes.layer(cors)
     } else {
+        println!("[DEBUG] Using base path '{}' for routes", base_path);
         Router::new().nest(&base_path, normal_routes).layer(cors)
     };
 
-    // serves the website 
+    println!("[DEBUG] Starting web server...");
     let addr: SocketAddr = LocalUrl.parse().unwrap();
-    println!("Listening on http://{}{}", addr, base_path);
+    println!("[DEBUG] Listening on http://{}{}", addr, base_path);
 
-    
     let listener = TcpListener::bind(addr).await?;
     axum::serve(listener, app.into_make_service())
         .await?;
@@ -806,14 +890,45 @@ fn routes_static(state: Arc<AppState>) -> Router<AppState> {
     // merge these for all non-api assets to merge back again for the original route
     public.merge(protected).route_layer(auth_layer)
 }
-async fn ongoing_server_status() -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let stream = stream::repeat_with(|| {
-        Event::default().data("Server time: ".to_owned() + &chrono::Local::now().to_string())
-    })
-    .map(Ok);
+// async fn status(state: &AppState) -> String {
+//     state.status
+// }
+async fn ongoing_server_status(
+    State(state): State<AppState>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    // let (tx, rx): (mpsc::Sender<String>, mpsc::Receiver<String>) = mpsc::channel(0);
+    // let initial_message = once(async {
+    //     Ok(Event::default()
+    //         .data("Connection established")
+    //         .event("handshake"))
+    // });
+    
+    let interval = interval(Duration::from_secs(3));
 
-    Sse::new(stream)
-        .keep_alive(axum::response::sse::KeepAlive::default())  
+    let updates = stream::unfold(interval, move |mut interval| {
+    let value = state.status.clone();
+    async move {
+        interval.tick().await;
+        Some((
+            Ok(Event::default()
+                .data(
+                    match value {
+                        Status::Up => "up",
+                        Status::Healthy => "healthy",
+                        Status::Down => "down",
+                        Status::Unhealthy => "unhealthy",
+                    }
+                )
+                .event("heartbeat")),
+            interval, 
+        ))
+    }
+    });
+
+    // let stream = initial_message.chain(updates);
+    
+    Sse::new(updates)
+        .keep_alive(axum::response::sse::KeepAlive::default())
 }
 
 async fn add_node(
