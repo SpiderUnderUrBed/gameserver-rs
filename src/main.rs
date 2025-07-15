@@ -21,7 +21,7 @@ use axum::{
     body::Body,
     extract::{ws::{Message, WebSocket, WebSocketUpgrade}, Request, State},
     http::{self, Method, Response, StatusCode},
-    response::{Html, IntoResponse, Json},
+    response::{sse::{Event, Sse}, Html, IntoResponse, Json},
     routing::{get, post},
     Router,
 };
@@ -62,7 +62,7 @@ use async_trait::async_trait;
 use tower_http::add_extension::AddExtensionLayer;
 use serial_test::serial;
 
-use futures_util::stream;
+use futures_util::{stream, Stream};
 
 // For now I only restrict the json backend for running this without kubernetes
 // the json backend is only for testing in most cases, simple deployments would use full-stack feature flag
@@ -187,6 +187,8 @@ const CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(2);
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(3);
 const CHANNEL_BUFFER_SIZE: usize = 32;
 
+const ALLOW_NONJSON_DATA: bool = false;
+
 // MessagePayload is how most data are exchanged between the gameserver, and the frontend
 #[derive(Debug, Serialize, Deserialize)]
 struct MessagePayload {
@@ -288,9 +290,14 @@ async fn handle_server_data(
         if let Ok(outer_msg) = serde_json::from_str::<InnerData>(&text) {
             let inner_data_str = outer_msg.data.as_str();
                 if let Ok(inner_data) = serde_json::from_str::<serde_json::Value>(inner_data_str) {
-                    if let Some(message_content) = inner_data["data"].as_str() {
-                        println!("Extracted message: {}", message_content);
-                        let _ = ws_tx.send(message_content.to_string());
+                    if ALLOW_NONJSON_DATA == true {
+                        if let Some(message_content) = inner_data["data"].as_str() {
+                            println!("Extracted message: {}", message_content);
+                            let _ = ws_tx.send(message_content.to_string());
+                        }
+                    } else {
+                        println!("Sending raw inner data: {}", inner_data_str);
+                        let _ = ws_tx.send(inner_data_str.to_string());
                     }
                 } else {
                     println!("Sending raw inner data: {}", inner_data_str);
@@ -521,6 +528,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/nodes", get(get_nodes))
         .route("/api/servers", get(get_servers))
         .route("/api/users", get(users))
+        .route("/api/serverstatus", get(ongoing_server_status))
+        .route("/api/addnode", post(add_node))
         .route("/api/edituser", post(edit_user))
         .route("/api/getuser", post(get_user))
         .route("/api/send", post(receive_message))
@@ -556,6 +565,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     Ok(())
 }
+
 async fn handle_socket(socket: WebSocket, state: AppState) {
     let conn_id = CONNECTION_COUNTER.fetch_add(1, Ordering::SeqCst);
     
@@ -795,6 +805,22 @@ fn routes_static(state: Arc<AppState>) -> Router<AppState> {
 
     // merge these for all non-api assets to merge back again for the original route
     public.merge(protected).route_layer(auth_layer)
+}
+async fn ongoing_server_status() -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let stream = stream::repeat_with(|| {
+        Event::default().data("Server time: ".to_owned() + &chrono::Local::now().to_string())
+    })
+    .map(Ok);
+
+    Sse::new(stream)
+        .keep_alive(axum::response::sse::KeepAlive::default())  
+}
+
+async fn add_node(
+    State(state): State<AppState>,
+    Json(request): Json<CreateElementData>
+) -> impl IntoResponse {
+    todo!()
 }
 
 // delegate user creation to the DB and return with relevent status code

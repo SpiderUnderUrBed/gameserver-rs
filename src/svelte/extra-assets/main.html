@@ -1,52 +1,75 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <meta name="site-url" content="[[SITE_URL]]" />
-  <title>Server Panel</title>
-  <link rel="stylesheet" href="main.css" />
-  <script src="main.js" defer></script>
-</head>
-<body>
-  <header>Server Panel</header>
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<meta name="site-url" content="[[SITE_URL]]" />
+		<title>Server Panel</title>
+		<link rel="stylesheet" href="main.css" />
+		<script src="main.js" defer></script>
+	</head>
+	<body>
+		<header>Server Panel</header>
 
-  <aside>
-    <button onclick="window.location.href='main.html'">Homepage</button>
-    <button onclick="window.location.href='users.html'">Users</button>
-    <button onclick="window.location.href='servers.html'">Servers</button>
-    <button onclick="window.location.href='nodes.html'">Nodes</button>
+		<aside>
+			<button onclick="window.location.href='main.html'">Homepage</button>
+			<button onclick="window.location.href='users.html'">Users</button>
+			<button onclick="window.location.href='servers.html'">Servers</button>
+			<button onclick="window.location.href='nodes.html'">Nodes</button>
 
-    <div class="toggablePages" id="toggablePages">
-      <button onclick="window.location.href='create-servers.html'">Create servers</button>
-      <button onclick="window.location.href='svelte-main.html'">Svelte main</button>
-    </div>
+			<div class="toggablePages" id="toggablePages">
+				<button onclick="window.location.href='create-servers.html'">Create servers</button>
+				<button onclick="window.location.href='svelte-main.html'">Svelte main</button>
+			</div>
 
-    <button class="bottom" onclick="enableDeveloperOptions()">Toggle Developer Options</button>
-  </aside>
+			<button class="bottom" onclick="enableDeveloperOptions()">Toggle Developer Options</button>
+		</aside>
 
-  <div class="top-bar">
-    <button class="main-buttons" onclick="createDefaultServer()">Create Server</button>
-    <button class="main-buttons" onclick="startServer()">Start Server</button>
-    <button class="main-buttons raw-toggle-button" onclick="toggleRaw()">Raw Output: OFF</button>
-    <button class="main-buttons" onclick="addMore()">Add Server</button>
-    <button class="main-buttons" onclick="toggleNodes()">Toggle Nodes</button>
-  </div>
-  <div class="nodes-bar" id="nodes-bar">
-    <p>test</p>
-  </div>
+		<div class="top-bar">
+			<button class="main-buttons" onclick="createDefaultServer()">Create Server</button>
+			<button class="main-buttons" onclick="startServer()">Start Server</button>
+            <img src="icons/12-dots-scale-rotate.svg" class="loading" id="loading">
+			<button class="main-buttons raw-toggle-button" onclick="toggleRaw()">Raw Output: OFF</button>
+			<button class="main-buttons" onclick="addMore()">Add Server</button>
+			<button class="main-buttons" onclick="toggleNodes()">Toggle Nodes</button>
+		</div>
+		<div class="nodes-bar" id="nodes-bar">
+			<p>test</p>
+		</div>
 
-  <main>
-    <div class="console-history" id="consoleHistory">
-      <!-- Console output goes here -->
-    </div>
-  </main>
+		<main>
+			<div class="console-history" id="consoleHistory">
+				<!-- Console output goes here -->
+			</div>
+		</main>
 
-  <div class="console-input-container">
-    <input type="text" class="console-input" autofocus spellcheck="false" />
-  </div>
-  <button id="scrollToBottom" style="position:fixed; bottom:70px; right:10px; display:none; z-index:999;">↓ Scroll to bottom</button>
+		<div class="console-input-container">
+			<input type="text" class="console-input" autofocus spellcheck="false" />
+		</div>
+		<button
+			id="scrollToBottom"
+			style="position: fixed; bottom: 70px; right: 10px; display: none; z-index: 999"
+		>
+			↓ Scroll to bottom
+		</button>
 
-  <footer></footer>
-</body>
+		<footer></footer>
+		<dialog id="addNodeDialog" class="user-dialog">
+			<form method="dialog">
+				<h3>Add Node</h3>
+				<div class="form-content">
+					<!-- Your node-specific content will go here -->
+					<div>Test</div>
+                    <label for="nodename">Node name:</label><br>
+                    <input type="text" id="nodename" name="nodename"><br>
+                    <label for="nodeip">Node Ip:</label><br>
+                    <input type="text" id="nodeip" name="nodeip"><br>
+				</div>
+				<div class="dialog-buttons">
+					<button type="submit">Confirm</button>
+					<button type="button" onclick="this.closest('dialog').close()">Cancel</button>
+				</div>
+			</form>
+		</dialog>
+	</body>
 </html>

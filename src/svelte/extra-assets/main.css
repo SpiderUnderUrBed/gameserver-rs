@@ -131,6 +131,19 @@ footer {
   margin-bottom: 1em;
 }
 
+.user-dialog {
+    min-width: 50vh;
+    position: fixed; 
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+}
+.loading {
+    display: none;
+    width: 40px;
+    height: 40px;
+}
+
 @media screen and (width >= 800px) {
   body {
     grid-template-columns: 250px 1fr;

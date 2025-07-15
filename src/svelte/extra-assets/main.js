@@ -269,6 +269,8 @@ class ServerConsole {
 
   addMore() {
     console.log("Add more functionality");
+    const addServer = document.getElementById("addNodeDialog");
+    addServer.showModal()
   }
 
   enableDeveloperOptions() {
@@ -276,8 +278,13 @@ class ServerConsole {
     this.toggablePages.style.display =
       this.toggablePages.style.display === "flex" ? "none" : "flex";
   }
+  updateStatus() {
+    const loading = document.getElementById("loading");
+    loading.style.display = "block";
+  }
 
   async startServer() {
+    this.updateStatus()
     try {
       const res = await fetch(`${this.basePath}/api/general`, {
         method: "POST",
@@ -305,6 +312,7 @@ class ServerConsole {
   }
 
   async createDefaultServer() {
+    this.updateStatus()
     try {
       const res = await fetch(`${this.basePath}/api/general`, {
         method: "POST",

@@ -40,7 +40,10 @@ pub enum Element {
         user: String,
         user_perms: Vec<String>
     },
-    Node,
+    Node {
+        ip: String,
+        name: String
+    },
     Server
 }
 #[derive(Debug, Deserialize, Serialize, Clone)]
