@@ -7,7 +7,7 @@ class ServerConsole {
 
     this.globalWs = null;
     this.rawOutputEnabled = false;
-    this.reconnectAttempts = 0;
+    // this.reconnectAttempts = 0;
 
     this.messageQueue = [];
     this.isProcessingQueue = false;
@@ -65,7 +65,7 @@ class ServerConsole {
     this.globalWs.addEventListener("open", () => {
       console.log("WebSocket connected");
       this.addResult("", "Connected to server", false, true);
-      this.reconnectAttempts = 0;
+    //   this.reconnectAttempts = 0;
     });
 
     this.globalWs.addEventListener("message", (e) => {
@@ -93,9 +93,10 @@ class ServerConsole {
     this.globalWs.addEventListener("close", (event) => {
       console.log("WebSocket disconnected", event.code, event.reason);
       this.addResult("", "Disconnected from server", false, true);
-      this.reconnectAttempts++;
-      const retryIn = Math.min(30000, 1000 * 2 ** this.reconnectAttempts);
-      setTimeout(() => this.connectWebSocket(), retryIn);
+      this.connectWebSocket()
+    //   this.reconnectAttempts++;
+    //   const retryIn = Math.min(30000, 1000 * 2 ** this.reconnectAttempts);
+    //   setTimeout(() => this.connectWebSocket(), retryIn);
     });
 
     this.globalWs.addEventListener("error", (err) => {
@@ -222,7 +223,13 @@ class ServerConsole {
 
   toggleNodes() {
     const nodesBar = document.querySelector("#nodes-bar");
-    if (nodesBar) nodesBar.style.display = "block";
+    if (nodesBar) {
+        if (nodesBar.classList.contains('visible')) {
+            nodesBar.classList.remove('visible');
+        } else {
+            nodesBar.classList.add('visible');
+        }
+    }
   }
 
   addMore() {

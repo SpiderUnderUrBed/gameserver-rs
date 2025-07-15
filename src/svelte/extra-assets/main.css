@@ -8,7 +8,7 @@ body {
   height: 100vh;
   height: 100svh;
   display: grid;
-  grid-template-rows: auto auto 1fr auto auto;
+  grid-template-rows: auto auto auto 1fr auto auto;
   font-family: system-ui;
   background: #111;
 }
@@ -59,7 +59,13 @@ aside button {
   background: red;
 }
 .nodes-bar {
-    display: none;
+    visibility: hidden;
+    height: 10vh;
+    background-color: #00ffcc;
+}
+
+.nodes-bar.visible {
+    visibility: visible;
 }
 
 main {
@@ -93,6 +99,10 @@ main {
   margin-bottom: 0.5em;
 }
 
+.console-input-container {
+  grid-column: 1 / -1;
+}
+
 input[type="text"].console-input {
   background: hsl(0 0% 15%);
   padding: 1em;
@@ -110,6 +120,7 @@ input[type="text"].console-input:focus {
 footer {
   min-height: 50px;
   background: #000;
+  grid-column: 1 / -1;
 }
 
 .toggablePages {
@@ -122,7 +133,7 @@ footer {
 @media screen and (width >= 800px) {
   body {
     grid-template-columns: 250px 1fr;
-    grid-template-rows: auto 1fr auto auto;
+    grid-template-rows: auto auto 1fr auto;
   }
 
   header {
@@ -130,6 +141,26 @@ footer {
   }
 
   aside {
-    grid-row: span 3;
+    grid-row: 2 / span 3;
+  }
+
+  .top-bar {
+    grid-column: 2;
+  }
+
+  .nodes-bar {
+    grid-column: 2;
+  }
+
+  main {
+    grid-column: 2;
+  }
+
+  .console-input-container {
+    grid-column: 2;
+  }
+
+  footer {
+    grid-column: 1 / -1;
   }
 }
