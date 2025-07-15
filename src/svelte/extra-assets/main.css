@@ -58,6 +58,9 @@ aside button {
 .top-bar button:nth-last-child(-n+2) {
   background: red;
 }
+.nodes-bar {
+    display: none;
+}
 
 main {
   background: #111111;
