@@ -1,124 +1,132 @@
 * {
-    box-sizing:border-box;
-    margin: 0;
-    padding: 0;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
 }
 
 body {
-    height: 100vh;
-    height: 100svh;
-    display: grid;
-    grid-template-rows: auto auto 1fr auto auto;
-    font-family: system-ui;
+  height: 100vh;
+  height: 100svh;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto auto;
+  font-family: system-ui;
+  background: #111;
 }
 
 header {
-    grid-column:1/-1;
-    background: rgba(7, 234, 234, 0.445);
-    min-height: 100px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 2rem;
-    font-weight: bold;
+  grid-column: 1 / -1;
+  background: rgba(7, 234, 234, 0.445);
+  min-height: 100px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2rem;
+  font-weight: bold;
 }
 
 aside {
-    background: #000;
-    display: flex;
-    padding: 1em;
-    gap: 1em;
-    flex-direction: column;
+  background: #000;
+  display: flex;
+  padding: 1em;
+  gap: 1em;
+  flex-direction: column;
 }
 
 aside button {
-    padding: 0.5em;
-    cursor: pointer;
+  padding: 0.5em;
+  cursor: pointer;
 }
 
 .main-buttons {
-    max-height: 30px;
+  max-height: 30px;
 }
 
 .top-bar {
-    background: hsl(0 0% 4%);
-    padding: 1em;
-    display: flex;
-    gap: 1em;
-    border-bottom: 1px solid hsl(0 0% 15%);
-    flex-wrap: wrap;
+  background: hsl(0 0% 4%);
+  padding: 1em;
+  display: flex;
+  gap: 1em;
+  border-bottom: 1px solid hsl(0 0% 15%);
+  flex-wrap: wrap;
 }
 
 .top-bar button {
-    cursor: pointer;
-    padding: 0.5em 1em;
+  cursor: pointer;
+  padding: 0.5em 1em;
 }
 
 .top-bar button:nth-last-child(-n+2) {
-    background: red;
+  background: red;
 }
 
 main {
-    background: #111111;
-    overflow-y: auto;
-    padding: 1em;
-    font-family: monospace;
-    color: white;
-}
-
-.console-input-log {
-    color: #ffffff;
-    font-weight: bold;
-    margin-bottom: 0.5em;
-}
-
-.console-output-log {
-    color: #00ffcc;
-    font-weight: bold;
-    margin-bottom: 0.5em;
+  background: #111111;
+  overflow-y: auto;
+  padding: 1em;
+  font-family: monospace;
+  color: white;
 }
 
 .console-history {
-    min-height: 300vh;
+  min-height: 70vh;
+  max-height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5em;
+  padding-bottom: 0.5em;
+  scrollbar-gutter: stable;
 }
 
-input[type="text"] {
-    background: hsl(0 0% 15%);
-    padding: 1em;
-    outline: none;
-    color: hsl(0 0% 100%);
-    border: none;
-    border-top: 1px solid #333;
-    width: 100%;
+.console-input-log {
+  color: #ffffff;
+  font-weight: bold;
+  margin-bottom: 0.5em;
 }
 
-input[type="text"]:focus {
-    box-shadow: inset 0 0 .7em hsl(0 0% 0%);
+.console-output-log {
+  color: #00ffcc;
+  font-weight: bold;
+  margin-bottom: 0.5em;
+}
+
+input[type="text"].console-input {
+  background: hsl(0 0% 15%);
+  padding: 1em;
+  outline: none;
+  color: hsl(0 0% 100%);
+  border: none;
+  border-top: 1px solid #333;
+  width: 100%;
+}
+
+input[type="text"].console-input:focus {
+  box-shadow: inset 0 0 .7em hsl(0 0% 0%);
 }
 
 footer {
-    min-height: 50px;
-    background: #000;
+  min-height: 50px;
+  background: #000;
 }
 
 .toggablePages {
-    display: none;
-    flex-direction: column;
-    gap: 1em;
-    margin-bottom: 1em;
+  display: none;
+  flex-direction: column;
+  gap: 1em;
+  margin-bottom: 1em;
 }
 
 @media screen and (width >= 800px) {
-    body {
+  body {
     grid-template-columns: 250px 1fr;
     grid-template-rows: auto 1fr auto auto;
-    }
-    
-    header {
+  }
+
+  header {
     grid-column: 1 / -1;
-    }
-    
-    aside {
+  }
+
+  aside {
     grid-row: span 3;
-    }
+  }
 }
