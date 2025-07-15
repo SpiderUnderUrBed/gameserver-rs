@@ -20,7 +20,7 @@ class ServerConsole {
   initialize() {
     this.setupInputListener();
     this.connectWebSocket();
-
+    this.fetchNodes();
     
     window.toggleNodes = () => this.toggleNodes();
     window.toggleRaw = () => this.toggleRaw();
@@ -29,6 +29,36 @@ class ServerConsole {
     window.createDefaultServer = () => this.createDefaultServer();
     window.enableDeveloperOptions = () => this.enableDeveloperOptions();
   }
+  async fetchNodes() {
+    try {
+        const response = await fetch(`${this.basePath}/api/nodes`);
+        if (response.ok) {
+            const data = await response.json();
+            const nodes = data.list.data;
+
+            const nodesBar = document.querySelector("#nodes-bar");
+            nodesBar.innerHTML = ""; 
+
+            nodes.forEach((node, index) => {
+                const button = document.createElement("button");
+                button.textContent = node;
+                button.className = "nodes-element";
+                button.onclick = () => alert(`Node clicked: ${node}`);
+                nodesBar.appendChild(button);
+            });
+        } else {
+            // document.getElementById('message').innerText = 'Failed to get nodes from the server.';
+        }
+    } catch (error) {
+        // document.getElementById('message').innerText = 'Error connecting to the server.';
+        console.log('Error fetching nodes:', error);
+    }
+}
+
+//   setupNodeBar(){
+//     const nodesBar = document.querySelector("#nodes-bar");
+
+//   }
 
   setupInputListener() {
     if (this.consoleInput && this.historyContainer) {
@@ -224,11 +254,16 @@ class ServerConsole {
   toggleNodes() {
     const nodesBar = document.querySelector("#nodes-bar");
     if (nodesBar) {
-        if (nodesBar.classList.contains('visible')) {
-            nodesBar.classList.remove('visible');
+        if (nodesBar.style.display == "none"){
+            nodesBar.style.display = "flex";
         } else {
-            nodesBar.classList.add('visible');
+            nodesBar.style.display = "none";
         }
+        // if (nodesBar.classList.contains('visible')) {
+        //     nodesBar.classList.remove('visible');
+        // } else {
+        //     nodesBar.classList.add('visible');
+        // }
     }
   }
 

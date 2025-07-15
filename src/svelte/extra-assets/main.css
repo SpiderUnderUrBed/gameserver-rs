@@ -59,14 +59,15 @@ aside button {
   background: red;
 }
 .nodes-bar {
-    visibility: hidden;
+    /* visibility: hidden; */
+    display: none;
     height: 10vh;
-    background-color: #00ffcc;
+    background-color: rgba(7, 234, 234, 0.445);
 }
 
-.nodes-bar.visible {
+/* .nodes-bar.visible {
     visibility: visible;
-}
+} */
 
 main {
   background: #111111;
