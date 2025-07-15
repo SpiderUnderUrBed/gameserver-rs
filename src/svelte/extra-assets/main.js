@@ -286,11 +286,13 @@ class ServerConsole {
       console.log(e.data);
       if (e.data == "healthy"){
         loading.style.display = "none";
+      } else if (e.data == "up"){
+        loading.style.display = "none";
       }
     };
   }
 
-  
+
   async startServer() {
     this.updateStatus()
     try {

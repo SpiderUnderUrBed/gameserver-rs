@@ -329,14 +329,38 @@ async fn handle_server_data(
         if let Ok(outer_msg) = serde_json::from_str::<InnerData>(&text) {
             let inner_data_str = outer_msg.data.as_str();
             let mut borrowed_state = state.write().await;
-            if let Some(start_keyword) = borrowed_state.gameserver["start_keyword"].as_str() {
-                if inner_data_str.contains(start_keyword) {
-                    borrowed_state.status = Status::Up;
-                } else {
-                    borrowed_state.status = Status::Down;             
+            let cloned_borrow_state = borrowed_state.clone();
+            let Some(gameserver_str) = cloned_borrow_state.gameserver.as_str() else {
+                eprintln!("gameserver is not a string");
+                return Ok(());
+            };
+
+            for line in gameserver_str.lines() {
+                if let Ok(line_val) = serde_json::from_str::<serde_json::Value>(line) {
+                    if let Some(data_str) = line_val.get("data").and_then(|d| d.as_str()) {
+                        if let Ok(parsed_data) = serde_json::from_str::<serde_json::Value>(data_str) {
+                            if let Some(start_keyword) = parsed_data.get("start_keyword").and_then(|s| s.as_str()) {
+                                if inner_data_str.contains(start_keyword) {
+                                    println!("Changed state to Up");
+                                    borrowed_state.status = Status::Up;
+                                } 
+                                // else {
+                                //     println!("Changed state to Down");
+                                //     borrowed_state.status = Status::Down;
+                                // }
+                            }
+                            if let Some(stop_keyword) = parsed_data.get("stop_keyword").and_then(|s| s.as_str()){
+                                if inner_data_str.contains(stop_keyword) {
+                                    println!("Changed state to Down");
+                                    borrowed_state.status = Status::Down;
+                                } 
+                            } 
+                            // else {
+                            //     eprintln!("start_keyword not found in parsed data");
+                            // }
+                        }
+                    }
                 }
-            } else {
-                eprintln!("start_keyword is not a string");
             }
             if let Ok(inner_data) = serde_json::from_str::<serde_json::Value>(inner_data_str) {
                 if ALLOW_NONJSON_DATA == true {
@@ -581,18 +605,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .allow_headers(CorsAny);
 
     // fallback_router will serve all the basic files
-    let fallback_router = routes_static(multifaceted_state.write().await.clone().into());
+    let fallback_router = routes_static(multifaceted_state.clone());
 
     // the main route, this serves all the api stuff that wont be behind a login, but I handle the main routes in routes_static for better control
     // over the authentication flow, if the api could be publically accessible in the future, you would need a diffrent way to authenticate with a api
-    let global_state = multifaceted_state.write().await.clone();
+    //let global_state = multifaceted_state.write().await.clone();
     let inner = Router::new()
         .route("/api/message", get(get_message))
         .route("/api/nodes", get(get_nodes))
         .route("/api/servers", get(get_servers))
         .route("/api/users", get(users))
+        .route("/api/ws", get(ws_handler))
         .route("/api/awaitserverstatus", get(ongoing_server_status))
-        .route("/api/addnode", post(add_node))
+        // .route("/api/addnode", post(add_node))
         .route("/api/edituser", post(edit_user))
         .route("/api/getuser", post(get_user))
         .route("/api/send", post(receive_message))
@@ -601,7 +626,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/createuser", post(create_user))
         .route("/api/deleteuser", post(delete_user))
         .merge(fallback_router)
-        .with_state(global_state);
+        .with_state(multifaceted_state.clone());
     // let inner_async = Router::new()
     //    .route("/api/ws", get(ws_handler))
     //    .with_state(Arc::new(state.clone()));
@@ -629,18 +654,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
-async fn handle_socket(socket: WebSocket, state: AppState) {
-    let conn_id = CONNECTION_COUNTER.fetch_add(1, Ordering::SeqCst);
-    
-    let remote_addr = state.peer_addr.clone().unwrap_or_else(|| "unknown".to_string());
+async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
+    // Acquire lock just to get needed data
+    let conn_id = {
+        let state = arc_state.read().await;
+        CONNECTION_COUNTER.fetch_add(1, Ordering::SeqCst)
+    };
+
+    let remote_addr = {
+        let state = arc_state.read().await;
+        state.peer_addr.clone().unwrap_or_else(|| "unknown".to_string())
+    };
+
     println!("[Conn {}] NEW WEBSOCKET CONNECTION from {}", conn_id, remote_addr);
 
     let (sender, mut receiver) = socket.split();
     let sender = Arc::new(Mutex::new(sender));
 
-    let mut broadcast_rx = state.ws_tx.subscribe();
+    // Subscribe to broadcast channel (no locking needed here)
+    let broadcast_rx = {
+        let state = arc_state.read().await;
+        state.ws_tx.subscribe()
+    };
+
     let broadcast_sender = sender.clone();
+
+    // Spawn task forwarding broadcast messages to this client
     tokio::spawn(async move {
+        let mut broadcast_rx = broadcast_rx;
         while let Ok(msg) = broadcast_rx.recv().await {
             println!("[Conn {}] Forwarding: {}", conn_id, msg);
             let mut sender = broadcast_sender.lock().await;
@@ -650,22 +691,28 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         }
     });
 
-    if WEBSOCKET_DEBUGGING {
-        ws_debug(conn_id, state, sender.clone(), &mut receiver).await;
-    } else {
-        while let Some(Ok(message)) = receiver.next().await {
-            if let Message::Text(text) = message {
-                println!("[Conn {}] Got from client: {}", conn_id, text);
-                let payload = serde_json::from_str::<MessagePayload>(&text).unwrap_or(MessagePayload {
-                    r#type: "console".into(),
-                    message: text.to_string(),
-                    authcode: "0".into(),
-                });
+    // Main receive loop
+    while let Some(Ok(message)) = receiver.next().await {
+        if let Message::Text(text) = message {
+            println!("[Conn {}] Got from client: {}", conn_id, text);
+            let payload = serde_json::from_str::<MessagePayload>(&text).unwrap_or(MessagePayload {
+                r#type: "console".into(),
+                message: text.to_string(),
+                authcode: "0".into(),
+            });
 
-                if let Ok(mut bytes) = serde_json::to_vec(&payload) {
-                    bytes.push(b'\n');
-                    let _ = state.tcp_tx.lock().await.send(bytes).await;
-                }
+            if let Ok(mut bytes) = serde_json::to_vec(&payload) {
+                bytes.push(b'\n');
+
+                // Acquire lock briefly only to send TCP message
+                let tcp_tx = {
+                    let state = arc_state.read().await;
+                    state.tcp_tx.clone()
+                };
+
+                let mut lock = tcp_tx.lock().await;
+                let _ = lock.send(bytes).await;
+
             }
         }
     }
@@ -673,7 +720,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     println!("[Conn {}] DISCONNECTED", conn_id);
 }
 
-async fn ws_debug(conn_id: usize, state: AppState, sender: Arc<Mutex<stream::SplitSink<WebSocket, WsMessage>>>, receiver: &mut stream::SplitStream<WebSocket>){
+async fn ws_debug(conn_id: usize, arc_state: Arc<RwLock<AppState>>, sender: Arc<Mutex<stream::SplitSink<WebSocket, WsMessage>>>, receiver: &mut stream::SplitStream<WebSocket>){
+    let state = arc_state.write().await;
         // Ping task with more visible logging
     let ping_task = {
         let conn_id = conn_id;
@@ -791,10 +839,10 @@ async fn ws_debug(conn_id: usize, state: AppState, sender: Arc<Mutex<stream::Spl
 }
 async fn ws_handler(
     ws: WebSocketUpgrade,
-    State(state): State<AppState>,
+    State(arc_state): State<Arc<RwLock<AppState>>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-  
+   // let state = arc_state.write().await;
     ws.max_frame_size(1024 * 1024)
       .max_message_size(1024 * 1024)
       .on_failed_upgrade(|e| {
@@ -802,24 +850,20 @@ async fn ws_handler(
       })
       .on_upgrade(move |socket| {
           println!("WEBSOCKET UPGRADE SUCCESSFUL");
-          handle_socket(socket, state)
+          handle_socket(socket, arc_state)
       })
 }
 
 // routes_static provides middlewares for authentication as well as serving all the user-orintated content
-fn routes_static(state: Arc<AppState>) -> Router<AppState> {
-    // Creates session stores and memory stores for credentials and to ensure that re-login attempts are not too frequent
-    // (I need to impliment cookies at some point)
+fn routes_static(state: Arc<RwLock<AppState>>) -> Router<Arc<RwLock<AppState>>> {
     let session_store = MemoryStore::default();
     let session_layer = SessionManagerLayer::new(session_store);
-
-    // Initilize the backend and build a auth layer with it and the session layer 
     let backend = Backend::default();
     let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
 
     let base_path = std::env::var("SITE_URL")
-        .map(|s| {
-            let mut s = s.trim().to_string();
+        .map(|mut s| {
+            s = s.trim().to_string();
             if !s.is_empty() {
                 if !s.starts_with('/') { s.insert(0, '/'); }
                 if s.ends_with('/') && s != "/" { s.pop(); }
@@ -828,90 +872,72 @@ fn routes_static(state: Arc<AppState>) -> Router<AppState> {
         })
         .unwrap_or_default();
 
-        // I cant use the axum_login middleware because I need to substiute the base path so it goes to the 
-        // correct index.html for the login page
-        let login_url_base = Arc::new(format!("{}/index.html", base_path));
+    let login_url_base = Arc::new(format!("{}/index.html", base_path));
 
-        let login_required_middleware = {
-            let login_url_base = login_url_base.clone();
-        
-            // This handles direct auth and redirects 
-            from_fn(move |auth_session: AuthSession, req: Request<_>, next: Next| {
-                let login_url_base = login_url_base.clone();
-                async move {
-                    if auth_session.user.is_some() {
-                        next.run(req).await
-                    } else {
-                        let original_uri = req.uri();
-                        let next_path = original_uri.to_string(); 
-                        let redirect_url = format!("{}?next={}", login_url_base, urlencoding::encode(&next_path));
-                        Redirect::temporary(&redirect_url).into_response()
-                    }
-                }
-            })
-        };
+    let login_required_middleware = from_fn(move |auth_session: AuthSession, req: Request<Body>, next: Next| {
+        let login_url_base = login_url_base.clone();
+        async move {
+            if auth_session.user.is_some() {
+                next.run(req).await
+            } else {
+                let original_uri = req.uri();
+                let next_path = original_uri.to_string();
+                let redirect_url = format!("{}?next={}", login_url_base, urlencoding::encode(&next_path));
+                Redirect::temporary(&redirect_url).into_response()
+            }
+        }
+    });
 
-    // easy way to put routes to be shown publically and privately (after authentication)
-    // by adding the login middleware to one (private is also using a wildcard for all assets)
-    
     let public = Router::new()
         .route("/", get(handle_static_request))
         .route("/authenticate", get(authenticate_route))
         .route("/index.html", get(handle_static_request))
-        .route("/api/ws", get(ws_handler))
-        .layer(AddExtensionLayer::new(state.clone()));
+        .with_state(state.clone());
 
     let protected = Router::new()
         .route("/{*wildcard}", get(handle_static_request))
-        .layer(AddExtensionLayer::new(state.clone()))
+        .with_state(state.clone())
         .layer(login_required_middleware);
 
-    // merge these for all non-api assets to merge back again for the original route
-    public.merge(protected).route_layer(auth_layer)
+    // Apply auth_layer only once at the root
+    Router::new()
+        .merge(public)
+        .merge(protected)
+        .layer(auth_layer)
 }
+
 // async fn status(state: &AppState) -> String {
 //     state.status
 // }
 async fn ongoing_server_status(
-    State(state): State<AppState>,
+    State(arc_state): State<Arc<RwLock<AppState>>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    // let (tx, rx): (mpsc::Sender<String>, mpsc::Receiver<String>) = mpsc::channel(0);
-    // let initial_message = once(async {
-    //     Ok(Event::default()
-    //         .data("Connection established")
-    //         .event("handshake"))
-    // });
-    
     let interval = interval(Duration::from_secs(3));
+    let state_clone = arc_state.clone();
 
-    let updates = stream::unfold(interval, move |mut interval| {
-    let value = state.status.clone();
-    async move {
+    let updates = stream::unfold((interval, state_clone), move |(mut interval, arc_state)| async move {
         interval.tick().await;
+
+        let status = arc_state.read().await.status.clone();
+        let status_str = match status {
+            Status::Up => "up",
+            Status::Healthy => "healthy",
+            Status::Down => "down",
+            Status::Unhealthy => "unhealthy",
+        };
+
         Some((
-            Ok(Event::default()
-                .data(
-                    match value {
-                        Status::Up => "up",
-                        Status::Healthy => "healthy",
-                        Status::Down => "down",
-                        Status::Unhealthy => "unhealthy",
-                    }
-                )
-                .event("heartbeat")),
-            interval, 
+            Ok(Event::default().data(status_str)),
+            (interval, arc_state),
         ))
-    }
     });
 
-    // let stream = initial_message.chain(updates);
-    
     Sse::new(updates)
         .keep_alive(axum::response::sse::KeepAlive::default())
 }
 
 async fn add_node(
-    State(state): State<AppState>,
+    State(arc_state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<CreateElementData>
 ) -> impl IntoResponse {
     todo!()
@@ -919,9 +945,10 @@ async fn add_node(
 
 // delegate user creation to the DB and return with relevent status code
 async fn create_user(
-    State(state): State<AppState>,
+    State(arc_state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<CreateElementData>
 ) -> impl IntoResponse {
+    let state = arc_state.write().await;
     let result = state.database.create_user_in_db(request)       
         .await
         .map_err(|e| {
@@ -931,27 +958,30 @@ async fn create_user(
 }
 // edits the user data in the db
 async fn edit_user(
-    State(state): State<AppState>,
+    State(arc_state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<CreateElementData>
 ) -> impl IntoResponse {
+    let state = arc_state.write().await;
     let result = state.database.edit_user_in_db(request).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
     result
 }
 
 // get the user from the db
 async fn get_user(
-    State(state): State<AppState>,
+    State(arc_state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<RetrieveUser>
 ) -> impl IntoResponse {
+    let state = arc_state.write().await;
     let result = state.database.get_from_database(&request.user).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR).unwrap();
     Json(result)
 }
 
 // delegate user delection to the DB and returns with relevent status code
 async fn delete_user(
-    State(state): State<AppState>,
+    State(arc_state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<RemoveElementData>
 ) -> impl IntoResponse {
+    let state = arc_state.write().await;
     let result = state.database.remove_user_in_db(request)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
@@ -969,9 +999,10 @@ async fn capabilities(
 // there are many cases where this can fail, if it does, it can simply return INTERNAL_SERVER_ERROR
 // it forwards the messages to the channel which forwards it to the gameserver
 async fn process_general(
-    State(state): State<AppState>,
+    State(arc_state): State<Arc<RwLock<AppState>>>,
     Json(res): Json<ApiCalls>,
 ) -> Result<Json<ResponseMessage>, (StatusCode, String)> {
+    let state = arc_state.write().await;
     if let ApiCalls::IncomingMessage(payload) = res {
         println!("Processing general message: {:?}", payload);
         
@@ -1016,7 +1047,8 @@ async fn process_general(
 
 // a list of users is returned, like alot of other routes, I need to add permissions, and check against those permissions to see if a user
 // can see all the other users, it will delegate the retrival to the database and pass it in as a ApiCalls
-async fn users(State(state): State<AppState>) -> Result<impl IntoResponse, StatusCode> {
+async fn users(State(arc_state): State<Arc<RwLock<AppState>>>,) -> Result<impl IntoResponse, StatusCode> {
+    let state = arc_state.write().await;
     let users = state.database
         .fetch_all()
         .await
@@ -1026,10 +1058,11 @@ async fn users(State(state): State<AppState>) -> Result<impl IntoResponse, Statu
 }
 
 // A list of nodes in a k8s cluster is returned, nothing is returned if there is not a client (k8s support is off)
-async fn get_nodes(State(state): State<AppState>) -> impl IntoResponse {
+async fn get_nodes(State(arc_state): State<Arc<RwLock<AppState>>>,) -> impl IntoResponse {
+    let state = arc_state.write().await;
     let mut node_list= vec![];
     if state.client.is_some() {
-        match kubernetes::list_node_names(state.client.unwrap()).await {
+        match kubernetes::list_node_names(state.client.clone().unwrap()).await {
             Ok(nodes) => {
                 node_list.extend(nodes.clone());
             },
@@ -1047,14 +1080,15 @@ async fn get_nodes(State(state): State<AppState>) -> impl IntoResponse {
     }
     Json(List { list: ApiCalls::NodeList(node_list) })
 }
-async fn get_servers(State(state): State<AppState>) -> impl IntoResponse {
+async fn get_servers(State(arc_state): State<Arc<RwLock<AppState>>>,) -> impl IntoResponse {
     Json(List { list: ApiCalls::None })
 }
 // TODO:, REMOVE THIS
 async fn receive_message(
-    State(state): State<AppState>,
+    State(arc_state): State<Arc<RwLock<AppState>>>,
     Json(res): Json<ApiCalls>,
 ) -> Result<Json<ResponseMessage>, (StatusCode, String)> {
+    let state = arc_state.write().await;
     if let ApiCalls::IncomingMessage(payload) = res {
         let json_payload = MessagePayload {
             r#type: payload.message_type.clone(),
@@ -1195,9 +1229,10 @@ impl AuthUser for User {
 // if it fails, its unauthorized
 #[axum::debug_handler]
 pub async fn sign_in(
-    State(state): State<AppState>,
+    State(arc_state): State<Arc<RwLock<AppState>>>,
     Form(request): Form<LoginData>
 ) -> Result<Json<ResponseMessage>, StatusCode> {
+    let state = arc_state.write().await;
     let user = state.database.retrieve_user(request.user.clone()).await.ok_or(StatusCode::UNAUTHORIZED)?;
     let password_valid = verify_password(request.password, user.password_hash.unwrap())
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -1247,10 +1282,10 @@ async fn serve_html_with_replacement(
 // this ensures that by default things are redirected to index.html, otherwised passed on normally
 // and served, if its html, it will serve it with its replacement
 async fn handle_static_request(
-    Extension(state): Extension<Arc<AppState>>,
+    State(arc_state): State<Arc<RwLock<AppState>>>,
     req: Request<Body>,
 ) -> Result<Response<Body>, StatusCode> {
- 
+    let state = arc_state.read().await; 
     let path = req.uri().path();
 
     let file = if path == "/" || path.is_empty() {
@@ -1269,6 +1304,7 @@ async fn handle_static_request(
     }
 }
 
+
 // This is crucial for authentication, it will take a next for redirects, and a jwk to verify the claim with, then it grants the claim for the current session 
 // and redirects the user to their original destination
 #[derive(Deserialize)]
@@ -1278,7 +1314,7 @@ pub struct AuthenticateParams {
 }
 
 async fn authenticate_route(
-    State(_state): State<AppState>,
+    State(_state): State<Arc<RwLock<AppState>>>,
     Query(params): Query<AuthenticateParams>,
     mut auth_session: AuthSession,
 ) -> impl IntoResponse {
@@ -1314,8 +1350,9 @@ async fn authenticate_route(
 // Gets a message from the server
 // TODO: think about removing this
 async fn get_message(
-    State(state): State<AppState>,
+    State(arc_state): State<Arc<RwLock<AppState>>>,
 ) -> Result<Json<MessagePayload>, (StatusCode, String)> {
+    let state = arc_state.write().await;
     let request = MessagePayload {
         r#type: "request".to_string(),
         message: "get_message".to_string(),
