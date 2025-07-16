@@ -247,13 +247,28 @@ impl NodesDatabase for Database {
         todo!()
     }
     async fn fetch_all_nodes(&self) -> Result<Vec<Node>, Box<dyn Error + Send + Sync>> {
-        Ok(vec![])
+        let database = self.get_database().await?;
+        Ok(database.nodes)
     }
     async fn get_from_nodes_database(&self, nodename: &str) -> Result<Option<Node>, Box<dyn Error + Send + Sync>> {
         todo!()
     }
-    async fn create_nodes_in_db(&self, node: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
-        todo!()
+    async fn create_nodes_in_db(&self, element: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+        if let Element::Node(Node { nodename, ip}) = element.element {
+            let mut database = self.get_database().await?;
+    
+            if database.nodes.iter().any(|node| node.nodename == nodename){
+                return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
+            } else {
+                let final_node = Node { nodename, ip };
+                database.nodes.push(final_node.clone());
+            }
+        
+            self.write_database(database).await;  
+            Ok(StatusCode::CREATED)
+        } else {
+            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+        }
     }
     async fn remove_node_in_db(&self, node: RemoveElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         todo!()

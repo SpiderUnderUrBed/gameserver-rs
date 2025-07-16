@@ -32,7 +32,9 @@ use axum::{
 use axum::extract::ws::Message as WsMessage;
 use axum::extract::FromRequest;
 use futures_util::stream::once;
+use serde::de::DeserializeOwned;
 use tokio::sync::RwLock;
+use crate::database::Element;
 use crate::middleware::from_fn;
 use crate::http::HeaderMap;
 
@@ -40,7 +42,7 @@ use crate::http::HeaderMap;
 // use databasespec::UserDatabase;
 use crate::database::databasespec::NodesDatabase;
 use crate::database::databasespec::UserDatabase;
-
+use crate::database::Node;
 // miscellancious imports, future traits are used because alot of the code is asyncronus and cant fully be contained in tokio
 // mime_guess as when I am serving the files, I need to serve it with the correct mime type
 // serde_json because I exchange alot of json data between the backend and frontend and to the gameserver
@@ -258,6 +260,12 @@ impl IntoResponse for WebErrors {
             .unwrap()
     }
 }
+#[derive(Debug, serde::Deserialize)]
+struct KeywordPayload {
+    start_keyword: Option<String>,
+    stop_keyword: Option<String>,
+}
+
 
 // May be redundant, but this is a struct for incoming messages
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -303,7 +311,7 @@ struct AppState {
     gameserver: Value,
     status: Status,
     ws_tx: broadcast::Sender<String>,
-    peer_addr: Option<String>,
+    // peer_addr: Option<String>,
     base_path: String,
     client: Option<Client>,
     database: database::Database
@@ -314,6 +322,32 @@ struct AppState {
 // i will use rusts 'timeout' for x interval determined with CONNECTION_TIMEOUT
 async fn attempt_connection() -> Result<TcpStream, Box<dyn std::error::Error + Send + Sync>> {
     timeout(CONNECTION_TIMEOUT, TcpStream::connect(TcpUrl)).await?.map_err(Into::into)
+}
+async fn value_from_line<T>(gameserver_str: &str) -> Vec<Result<T, serde_json::Error>>
+//Result<Vec<T>, Vec<serde_json::Error>>
+where
+    T: DeserializeOwned,
+{
+    let mut final_values = vec![];
+    // let mut serialization_errors = vec![];
+    for line in gameserver_str.lines() {
+        if let Ok(line_val) = serde_json::from_str::<Value>(line) {
+            if let Ok(result) = serde_json::from_value::<T>(line_val.clone()) {
+                final_values.push(Ok(result))
+                //return Ok(Some(result));
+            } else if let Err(err) = serde_json::from_value::<Value>(line_val) {
+                final_values.push(Err(err))
+            }
+        } else if let Err(err) = serde_json::from_str::<Value>(line) {
+            final_values.push(Err(err))
+        }
+    }
+    final_values
+    // if !matching_values.is_empty(){
+    //     Ok(None)
+    // } else {
+    //     Err(serialization_errors)
+    // }
 }
 
 // The websocket connection will be important for sending data to there and back
@@ -334,33 +368,22 @@ async fn handle_server_data(
                 eprintln!("gameserver is not a string");
                 return Ok(());
             };
-
-            for line in gameserver_str.lines() {
-                if let Ok(line_val) = serde_json::from_str::<serde_json::Value>(line) {
-                    if let Some(data_str) = line_val.get("data").and_then(|d| d.as_str()) {
-                        if let Ok(parsed_data) = serde_json::from_str::<serde_json::Value>(data_str) {
-                            if let Some(start_keyword) = parsed_data.get("start_keyword").and_then(|s| s.as_str()) {
-                                if inner_data_str.contains(start_keyword) {
-                                    println!("Changed state to Up");
-                                    borrowed_state.status = Status::Up;
-                                } 
-                                // else {
-                                //     println!("Changed state to Down");
-                                //     borrowed_state.status = Status::Down;
-                                // }
-                            }
-                            if let Some(stop_keyword) = parsed_data.get("stop_keyword").and_then(|s| s.as_str()){
-                                if inner_data_str.contains(stop_keyword) {
-                                    println!("Changed state to Down");
-                                    borrowed_state.status = Status::Down;
-                                } 
-                            } 
-                            // else {
-                            //     eprintln!("start_keyword not found in parsed data");
-                            // }
+            if let Ok(parsed_data) = value_from_line::<KeywordPayload>(gameserver_str).await.get(0).unwrap() {
+                // if let Some(parsed_data) = parsed_data_option {
+                    if let Some(start_keyword) = &parsed_data.start_keyword {
+                        if inner_data_str.contains(&*start_keyword) {
+                            println!("Changed state to Up");
+                            borrowed_state.status = Status::Up;
                         }
                     }
-                }
+
+                    if let Some(stop_keyword) = &parsed_data.stop_keyword {
+                        if inner_data_str.contains(&*stop_keyword) {
+                            println!("Changed state to Down");
+                            borrowed_state.status = Status::Down;
+                        }
+                    }
+                //}
             }
             if let Ok(inner_data) = serde_json::from_str::<serde_json::Value>(inner_data_str) {
                 if ALLOW_NONJSON_DATA == true {
@@ -393,6 +416,7 @@ async fn handle_stream(
     stream: &mut TcpStream,
     ws_tx: broadcast::Sender<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let ip = stream.peer_addr()?.to_string();
     let (mut reader, mut writer) = stream.split();
     let mut buf = vec![0u8; 1024];
     let mut buf_reader = BufReader::new(reader);
@@ -441,6 +465,71 @@ async fn handle_stream(
         }
     }
 
+    let server_node_name_msg = serde_json::to_string(
+        &MessagePayload {
+            r#type: "command".to_string(),
+            message: "server_name".to_string(),
+            authcode: "0".to_string(),
+        }
+    )? + "\n";
+
+    writer.write_all(server_node_name_msg.as_bytes()).await?;
+    match buf_reader.read_line(&mut line).await {
+        Ok(0) => {
+            println!("Error, possibly connection closed");
+        }
+        Ok(_) => {
+            println!("Received line: {}", line.trim_end());
+            //let outer: ConsoleMessage = serde_json::from_str(&line)?;
+            //let nodename_result = serde_json::from_str::<MessagePayload>(&outer.data);
+            //if let Ok(name_struct_option) = value_from_line::<ConsoleMessage>(&line).await {
+            for value in value_from_line::<ConsoleMessage>(&line).await {
+                if let Ok(potential_name_struct) = value {
+                    if let Ok(name_struct) = serde_json::from_str::<MessagePayload>(&potential_name_struct.data) {
+                        println!("Got the name");
+                        let db_state = &state.write().await.database;
+
+                        if let Ok(nodes) = db_state.fetch_all_nodes().await {
+                            println!("{:#?}", name_struct.message);
+                            println!("Got nodes");
+
+                            let node = Node {
+                                ip: ip.clone(),
+                                nodename: name_struct.message,
+                            };
+
+                            if !nodes.contains(&node) {
+                                println!("Making node");
+                                let _ = db_state
+                                    .create_nodes_in_db(CreateElementData {
+                                        element: Element::Node(node),
+                                        jwt: "".to_string(),
+                                        require_auth: false,
+                                    })
+                                    .await;
+                            }
+                        }
+                    } else {
+                        println!("No nodes");
+                    }
+                } else  {
+                    println!("No options");
+                    // optional: log error
+                }
+            } 
+            // else if let Err(errs) = value_from_line::<MessagePayload>(&line).await {
+            //     for err in errs {
+            //         println!("{:#?}", err);
+            //     }
+            // }
+            //state.write().await.gameserver = serde_json::Value::String(line.clone());
+        }
+        Err(e) => {
+            println!("Error reading line: {:?}", e);
+            return Err(e.into());
+        }
+    }
+
     reader = buf_reader.into_inner();
 
     loop {
@@ -467,12 +556,21 @@ async fn connect_to_server(
     state: Arc<RwLock<AppState>>,
     rx: Arc<Mutex<mpsc::Receiver<Vec<u8>>>>,
     ws_tx: broadcast::Sender<String>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<SocketAddr, Box<dyn std::error::Error + Send + Sync>> {
 
     loop {
         match timeout(CONNECTION_TIMEOUT, TcpStream::connect(TcpUrl)).await {
             Ok(Ok(mut stream)) => {
-                handle_stream(state.clone(), rx.clone(), &mut stream, ws_tx.clone()).await?
+                let stream_result = handle_stream(state.clone(), rx.clone(), &mut stream, ws_tx.clone()).await;
+                if stream_result.is_ok() {
+                    return Ok(stream.peer_addr()?);
+                    // Node {
+                    //     nodename: "".to_string(),
+                    //     ip: stream.peer_addr(),
+                    // }
+                } else if let Err(error) = stream_result {
+                    return Err(error);
+                }
             }
             Ok(Err(e)) => {
                 tokio::time::sleep(CONNECTION_RETRY_DELAY).await;
@@ -559,7 +657,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         tcp_rx: Arc::new(Mutex::new(tcp_rx)),
         ws_tx: ws_tx.clone(),
         base_path: base_path.clone(),
-        peer_addr: None,
         database,
         client,
     };
@@ -588,6 +685,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let bridge_tx = multifaceted_state.read().await.ws_tx.clone();
 
     tokio::spawn(async move {
+        // let server_result = connect_to_server(
+        //     server_connection_state,
+        //     bridge_rx,
+        //     bridge_tx,
+        // ).await;
+        // if let Ok(addr) = server_result{
+
+        // } else if let Err(err) = server_result{
+        //     eprintln!("[DEBUG] Connection task failed: {}", err);
+        // }
         if let Err(e) = connect_to_server(
             server_connection_state,
             bridge_rx,
@@ -617,7 +724,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/users", get(users))
         .route("/api/ws", get(ws_handler))
         .route("/api/awaitserverstatus", get(ongoing_server_status))
-        // .route("/api/addnode", post(add_node))
+        .route("/api/addnode", post(add_node))
         .route("/api/edituser", post(edit_user))
         .route("/api/getuser", post(get_user))
         .route("/api/send", post(receive_message))
@@ -661,12 +768,8 @@ async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
         CONNECTION_COUNTER.fetch_add(1, Ordering::SeqCst)
     };
 
-    let remote_addr = {
-        let state = arc_state.read().await;
-        state.peer_addr.clone().unwrap_or_else(|| "unknown".to_string())
-    };
 
-    println!("[Conn {}] NEW WEBSOCKET CONNECTION from {}", conn_id, remote_addr);
+    println!("[Conn {}] NEW WEBSOCKET CONNECTION", conn_id);
 
     let (sender, mut receiver) = socket.split();
     let sender = Arc::new(Mutex::new(sender));
@@ -940,7 +1043,13 @@ async fn add_node(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<CreateElementData>
 ) -> impl IntoResponse {
-    todo!()
+    let state = arc_state.write().await;
+    let result = state.database.create_nodes_in_db(request)       
+        .await
+        .map_err(|e| {
+            StatusCode::INTERNAL_SERVER_ERROR
+        });
+    result
 }
 
 // delegate user creation to the DB and return with relevent status code
@@ -1436,6 +1545,7 @@ mod tests {
                     password: "ddd".to_owned(),
                     user_perms: vec![],
                 },
+                require_auth: true,
                 jwt: "".to_owned(),
             };
             let _ = database.create_user_in_db(user).await.expect("Failed to clear DB");
@@ -1458,6 +1568,7 @@ mod tests {
                     password: "ddd".to_owned(),
                     user_perms: vec!["test".to_string()],
                 },
+                require_auth: true,
                 jwt: "".to_owned(),
             };
             let _ = database.create_user_in_db(user).await;
@@ -1480,6 +1591,7 @@ mod tests {
                     password: "ddd".to_owned(),
                     user_perms: vec![],
                 },
+                require_auth: true,
                 jwt: "".to_owned(),
             };
             let create_user_result = database.create_user_in_db(user).await;
@@ -1501,6 +1613,7 @@ mod tests {
                     password: "ddd".to_owned(),
                     user_perms: vec![],
                 },
+                require_auth: true,
                 jwt: "".to_owned(),
             };
             let create_user_result = database.create_user_in_db(user).await;
@@ -1511,6 +1624,7 @@ mod tests {
                     password: "ccc".to_owned(),
                     user_perms: vec![],
                 },
+                require_auth: true,
                 jwt: "".to_owned(),
             };
             let result = database.edit_user_in_db(edit_user).await;
@@ -1532,6 +1646,7 @@ mod tests {
                     password: "a".to_owned(),
                     user_perms: vec![],
                 },
+                require_auth: true,
                 jwt: "".to_owned(),
             };
             let create_user_result = database.create_user_in_db(user).await;
@@ -1541,6 +1656,7 @@ mod tests {
                     password: "".to_owned(),
                     user_perms: vec![],
                 },
+                require_auth: true,
                 jwt: "".to_owned(),
             };
             let result = database.edit_user_in_db(edit_user).await;
@@ -1563,6 +1679,7 @@ mod tests {
                     password: "".to_owned(),
                     user_perms: vec![],
                 },
+                require_auth: true,
                 jwt: "".to_owned(),
             };
             let result = database.create_user_in_db(user).await;
@@ -1584,6 +1701,7 @@ mod tests {
                     password: "test".to_owned(),
                     user_perms: vec![],
                 },
+                require_auth: true,
                 jwt: "".to_owned(),
             };
             let userB = CreateElementData {
@@ -1592,6 +1710,7 @@ mod tests {
                     password: "test".to_owned(),
                     user_perms: vec![],
                 },
+                require_auth: true,
                 jwt: "".to_owned(),
             };
             let resultA = database.create_user_in_db(userB).await;
@@ -1604,4 +1723,5 @@ mod tests {
             }
         }
     }
+    // Ok(())
 }

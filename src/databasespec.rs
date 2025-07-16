@@ -40,10 +40,7 @@ pub enum Element {
         user: String,
         user_perms: Vec<String>
     },
-    Node {
-        ip: String,
-        name: String
-    },
+    Node(Node),
     Server
 }
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -51,6 +48,7 @@ pub struct CreateElementData {
     pub element: Element,
     // pub password: String,
     pub jwt: String,
+    pub require_auth: bool,
 //     pub user_perms: Vec<String>
 }
 
@@ -71,15 +69,17 @@ pub struct User {
 }
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
-#[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize)]
+#[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize, PartialEq)]
 pub struct Node {
     pub nodename: String,
+    pub ip: String,
 }
 
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Node {
     pub nodename: String,
+    pub ip: String,
 }
 
 #[cfg(any(feature = "full-stack", feature = "database"))]

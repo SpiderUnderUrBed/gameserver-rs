@@ -291,6 +291,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     }
                                                 ).expect("Failed, not json")
                                             ).await;                                 
+                                        } else if cmd_str == "server_name" { 
+                                            let _ = cmd_tx.send(
+                                                serde_json::to_string(
+                                                    &MessagePayload {
+                                                        r#type: "command".to_string(),
+                                                        message: "main".to_string(),
+                                                        authcode: "0".to_string(),
+                                                    }
+                                                ).expect("Failed, not json")
+                                            ).await;                  
                                         } else {
                                             let _ = cmd_tx.send(format!("Unknown command: {}", cmd_str)).await;
                                         }
