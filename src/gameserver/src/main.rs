@@ -6,10 +6,10 @@ use tokio::process::{Command as TokioCommand, ChildStdin};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::convert::TryFrom;
+use std::error::Error;
+use std::ffi::OsString;
+use hostname::get;
 
-// use serde::Deserializer;
-// use serde::Deserialize;
-//
 const SERVER_DIR: &str = "server";
 
 struct Minecraft;
@@ -201,14 +201,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Listening on {}", PORT);
 
     let verbose = std::env::var("VERBOSE").is_ok();
-
     let shared_stdin: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
+    let hostname: Arc<Result<OsString, String>> =  Arc::new(match get(){
+        Ok(hostname) => Ok(hostname),
+        Err(err) => Err(err.to_string())
+    });
 
     loop {
+        let hostname = Arc::clone(&hostname);
         let (socket, addr) = listener.accept().await?;
         let stdin_ref = shared_stdin.clone();
 
         tokio::spawn(async move {
+            
             let (read_half, write_half) = split(socket);
             let mut reader = BufReader::new(read_half);
             let mut buf = String::new();
@@ -292,11 +297,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 ).expect("Failed, not json")
                                             ).await;                                 
                                         } else if cmd_str == "server_name" { 
+                                            let hostname_str = match hostname.as_ref() {
+                                                Ok(os) => os.to_string_lossy().to_string(),
+                                                Err(e) => e.clone(), 
+                                            };
                                             let _ = cmd_tx.send(
                                                 serde_json::to_string(
                                                     &MessagePayload {
                                                         r#type: "command".to_string(),
-                                                        message: "main".to_string(),
+                                                        message: hostname_str,
                                                         authcode: "0".to_string(),
                                                     }
                                                 ).expect("Failed, not json")
@@ -314,10 +323,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }
                                 } 
-                                //if let Ok(val) = serde_json::from_value::<List>(json_line.clone()) {
-                                // else if let Ok(val) = json_line.get("list").cloned().ok_or("fail").and_then(|item| List::try_from(item.get("data").cloned().unwrap())) as Result<List, _> {
-                                //else if let Ok(val) = json_line.get("list").cloned().ok_or("fail").and_then(List::try_from) as Result<List, _> {
-                                   // json_line.clone().try_into() as Result<List, _> {
                             else if let Ok(val) = json_line.clone().try_into() as Result<List, _> {
                                 println!("Recived capabilities");
                                 let _ = out_tx.send(

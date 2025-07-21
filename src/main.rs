@@ -4,6 +4,7 @@ use std::cell::RefCell;
 // first imports are std ones
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::fmt::Debug;
 // use std::fs;
 // use std::rc::Rc;
 use std::borrow::BorrowMut;
@@ -323,35 +324,53 @@ struct AppState {
 async fn attempt_connection() -> Result<TcpStream, Box<dyn std::error::Error + Send + Sync>> {
     timeout(CONNECTION_TIMEOUT, TcpStream::connect(TcpUrl)).await?.map_err(Into::into)
 }
+
 async fn value_from_line<T>(gameserver_str: &str) -> Vec<Result<T, serde_json::Error>>
-//Result<Vec<T>, Vec<serde_json::Error>>
 where
-    T: DeserializeOwned,
+    T: DeserializeOwned + Debug,
 {
     let mut final_values = vec![];
-    // let mut serialization_errors = vec![];
     for line in gameserver_str.lines() {
-        if let Ok(line_val) = serde_json::from_str::<Value>(line) {
-            if let Ok(result) = serde_json::from_value::<T>(line_val.clone()) {
-                final_values.push(Ok(result))
-                //return Ok(Some(result));
-            } else if let Err(err) = serde_json::from_value::<Value>(line_val) {
-                final_values.push(Err(err))
+        if line.trim().is_empty() {
+            continue;
+        }
+        if !line.contains("start_keyword") && !line.contains("stop_keyword") {
+            continue;
+        }
+        match serde_json::from_str::<Value>(line) {
+            Ok(line_val) => {
+                if let Ok(inner_data) = serde_json::from_value::<InnerData>(line_val.clone()) {
+                    match serde_json::from_str::<T>(&inner_data.data) {
+                        Ok(result) => {
+                            println!("Successfully parsed InnerData: {:#?}", result);
+                            final_values.push(Ok(result));
+                        }
+                        Err(e) => {
+                            println!("Failed to parse InnerData as T: {}", e);
+                            final_values.push(Err(e));
+                        }
+                    }
+                } else {
+                    match serde_json::from_value::<T>(line_val) {
+                        Ok(result) => {
+                            println!("Successfully parsed direct value: {:#?}", result);
+                            final_values.push(Ok(result));
+                        }
+                        Err(e) => {
+                            println!("Failed to parse direct value as T: {}", e);
+                            final_values.push(Err(e));
+                        }
+                    }
+                }
             }
-        } else if let Err(err) = serde_json::from_str::<Value>(line) {
-            final_values.push(Err(err))
+            Err(e) => {
+                println!("Failed to parse line as JSON: {}", e);
+                final_values.push(Err(e));
+            }
         }
     }
     final_values
-    // if !matching_values.is_empty(){
-    //     Ok(None)
-    // } else {
-    //     Err(serialization_errors)
-    // }
 }
-
-// The websocket connection will be important for sending data to there and back
-// in this case, this is primarially used for transmitting console data to the frontend from the gameserver
 async fn handle_server_data(
     state: Arc<RwLock<AppState>>,
     data: &[u8],
@@ -363,30 +382,58 @@ async fn handle_server_data(
         if let Ok(outer_msg) = serde_json::from_str::<InnerData>(&text) {
             let inner_data_str = outer_msg.data.as_str();
             let mut borrowed_state = state.write().await;
-            let cloned_borrow_state = borrowed_state.clone();
-            let Some(gameserver_str) = cloned_borrow_state.gameserver.as_str() else {
-                eprintln!("gameserver is not a string");
-                return Ok(());
-            };
-            if let Ok(parsed_data) = value_from_line::<KeywordPayload>(gameserver_str).await.get(0).unwrap() {
-                // if let Some(parsed_data) = parsed_data_option {
-                    if let Some(start_keyword) = &parsed_data.start_keyword {
-                        if inner_data_str.contains(&*start_keyword) {
-                            println!("Changed state to Up");
-                            borrowed_state.status = Status::Up;
-                        }
+            
+            let mut keyword_detected = false;
+            if let Ok(keyword_payload) = serde_json::from_str::<KeywordPayload>(inner_data_str) {
+                if let Some(start_keyword) = &keyword_payload.start_keyword {
+                    if inner_data_str.contains(start_keyword) {
+                        println!("Changed state to Up (current line)");
+                        borrowed_state.status = Status::Up;
+                        keyword_detected = true;
                     }
+                }
 
-                    if let Some(stop_keyword) = &parsed_data.stop_keyword {
-                        if inner_data_str.contains(&*stop_keyword) {
-                            println!("Changed state to Down");
-                            borrowed_state.status = Status::Down;
+                if let Some(stop_keyword) = &keyword_payload.stop_keyword {
+                    if inner_data_str.contains(stop_keyword) {
+                        println!("Changed state to Down (current line)");
+                        borrowed_state.status = Status::Down;
+                        keyword_detected = true;
+                    }
+                }
+            }
+            
+            if !keyword_detected {
+                if let Some(gameserver_str) = borrowed_state.gameserver.as_str() {
+                    if let Some(last_keyword_line) = gameserver_str
+                        .lines()
+                        .rev()
+                        .find(|l| l.contains("start_keyword") || l.contains("stop_keyword"))
+                    {
+                        let values = value_from_line::<KeywordPayload>(last_keyword_line).await;
+                        for value in values {
+                            if let Ok(parsed_data) = value {
+                                if let Some(start_keyword) = &parsed_data.start_keyword {
+                                    if inner_data_str.contains(start_keyword) {
+                                        println!("Changed state to Up (from log)");
+                                        borrowed_state.status = Status::Up;
+                                    }
+                                }
+                                if let Some(stop_keyword) = &parsed_data.stop_keyword {
+                                    if inner_data_str.contains(stop_keyword) {
+                                        println!("Changed state to Down (from log)");
+                                        borrowed_state.status = Status::Down;
+                                    }
+                                }
+                            }
                         }
                     }
-                //}
+                } else {
+                    eprintln!("gameserver is not a string");
+                }
             }
+            
             if let Ok(inner_data) = serde_json::from_str::<serde_json::Value>(inner_data_str) {
-                if ALLOW_NONJSON_DATA == true {
+                if ALLOW_NONJSON_DATA {
                     if let Some(message_content) = inner_data["data"].as_str() {
                         println!("Extracted message: {}", message_content);
                         let _ = ws_tx.send(message_content.to_string());
@@ -464,6 +511,7 @@ async fn handle_stream(
             return Err(e.into());
         }
     }
+    println!("State: {:#?}", state.read().await.gameserver);
 
     let server_node_name_msg = serde_json::to_string(
         &MessagePayload {
@@ -1183,7 +1231,11 @@ async fn get_nodes(State(arc_state): State<Arc<RwLock<AppState>>>,) -> impl Into
     match state.database.fetch_all_nodes().await {
         Ok(nodes) => {
             let nodename_list: Vec<String> = nodes.iter().map(|node| node.nodename.clone()).collect();
-            node_list.extend(nodename_list)
+            for node in nodename_list {
+                if !node_list.contains(&node){
+                    node_list.push(node);
+                }
+            }
         },
         Err(err) => eprintln!("Error fetching DB nodes: {}", err),
     }
