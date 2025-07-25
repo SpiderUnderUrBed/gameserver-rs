@@ -58,6 +58,25 @@ aside button {
 .top-bar button:nth-last-child(-n+2) {
   background: red;
 }
+
+.topmost-bar {
+  background: hsl(0 0% 4%);
+  padding: 1em;
+  display: flex;
+  gap: 1em;
+  border-bottom: 1px solid hsl(0 0% 15%);
+  flex-wrap: wrap;
+}
+
+.topmost-bar button {
+  cursor: pointer;
+  padding: 0.5em 1em;
+}
+
+.topmost-bar button:nth-last-child(-n+2) {
+  background: red;
+}
+
 .nodes-bar {
     /* visibility: hidden; */
     display: none;
@@ -161,6 +180,10 @@ footer {
   .top-bar {
     grid-column: 2;
   }
+  .topmost-bar {
+    grid-column: 2;
+  }
+
 
   .nodes-bar {
     grid-column: 2;

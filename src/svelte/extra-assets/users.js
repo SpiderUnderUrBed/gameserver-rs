@@ -174,6 +174,10 @@ async function addUser(){
                     user, password, user_perms
                 }
             },
+            // To be clear, just because its set to true at this point in the code, does not mean it gets to 
+            // demand the server to not require auth to prevent spoofing, the only time it respects that request is if its
+            // made internally
+            require_auth: true,
             jwt
         })
         });

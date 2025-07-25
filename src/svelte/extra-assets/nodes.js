@@ -65,13 +65,13 @@ async function addNode(){
     console.log("adding node");
     
     const node = document.getElementById('create-nodename').value;
-    const password = document.getElementById('password').value;
+    const password = document.getElementById('nodeip').value;
     const authcode = "0";
 
     console.log(node);
 
     try {
-        const response = await fetch(`${basePath}/api/createnode`, {
+        const response = await fetch(`${basePath}/api/addnode`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json'

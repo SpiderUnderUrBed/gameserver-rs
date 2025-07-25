@@ -275,6 +275,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     let _ = cmd_tx.send("Server started".into()).await;
                                                 }
                                             }
+                                        } else if cmd_str == "stop_server" {
+                                            let input = "stop";
+                                            let mut guard = stdin_ref.lock().await;
+                                            if let Some(stdin) = guard.as_mut() {
+                                                let _ = stdin.write_all(format!("{}\n", input).as_bytes()).await;
+                                                let _ = stdin.flush().await;
+                                                let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
+                                            }
                                         } else if cmd_str == "start_server" { 
                                             if let Some(prov) = get_provider("minecraft") {
                                                 if let Some(cmd) = prov.start() {

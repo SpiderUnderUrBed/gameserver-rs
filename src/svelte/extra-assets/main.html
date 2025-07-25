@@ -25,9 +25,20 @@
 			<button class="bottom" onclick="enableDeveloperOptions()">Toggle Developer Options</button>
 		</aside>
 
+		<div class="topmost-bar">
+			<button>Filebrowser</button>
+			<button>Statistics</button>
+			<button>Scedules</button>	
+			<button>Backups</button>
+			<button>Settings</button>
+
+			<span style="width: 10vh;"></span>
+			<button onclick="configureTopmostButtons()">Configure Button links</button>
+		</div>
 		<div class="top-bar">
 			<button class="main-buttons" onclick="createDefaultServer()">Create Server</button>
 			<button class="main-buttons" onclick="startServer()">Start Server</button>
+			<button class="main-buttons" onclick="stopServer()">Stop Server</button>
             <img src="icons/12-dots-scale-rotate.svg" class="loading" id="loading">
 			<button class="main-buttons raw-toggle-button" onclick="toggleRaw()">Raw Output: OFF</button>
 			<button class="main-buttons" onclick="addMore()">Add Server</button>
@@ -60,13 +71,25 @@
 				<div class="form-content">
 					<!-- Your node-specific content will go here -->
 					<div>Test</div>
-                    <label for="nodename">Node name:</label><br>
-                    <input type="text" id="nodename" name="nodename"><br>
+                    <label for="create-nodename">Node name:</label><br>
+                    <input type="text" id="create-nodename" name="nodename"><br>
                     <label for="nodeip">Node Ip:</label><br>
                     <input type="text" id="nodeip" name="nodeip"><br>
 				</div>
 				<div class="dialog-buttons">
-					<button type="submit">Confirm</button>
+					<button type="submit" onclick="addNode()">Confirm</button>
+					<button type="button" onclick="this.closest('dialog').close()">Cancel</button>
+				</div>
+			</form>
+		</dialog>
+		<dialog id="configureTopmostButtonDialog" class="user-dialog">
+			<form method="dialog">
+				<h3>Add Node</h3>
+				<div class="form-content">
+					
+				</div>
+				<div class="dialog-buttons">
+					<button type="submit" onclick="configuredTopmostButtons()">Confirm</button>
 					<button type="button" onclick="this.closest('dialog').close()">Cancel</button>
 				</div>
 			</form>

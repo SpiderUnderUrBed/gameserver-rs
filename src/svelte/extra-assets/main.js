@@ -22,6 +22,9 @@ class ServerConsole {
     this.connectWebSocket();
     this.fetchNodes();
     
+    window.configureTopmostButtons = () => this.configureTopmostButtons();
+    window.stopServer = () => this.stopServer();
+    window.addNode = () => this.addNode();
     window.toggleNodes = () => this.toggleNodes();
     window.toggleRaw = () => this.toggleRaw();
     window.addMore = () => this.addMore();
@@ -267,6 +270,58 @@ class ServerConsole {
     }
   }
 
+
+  async addNode(){
+      event.preventDefault()
+      console.log("adding node");
+      
+      const nodename = document.getElementById('create-nodename').value;
+      const nodeip = document.getElementById('nodeip').value;
+      const jwt = "";
+
+      try {
+          const response = await fetch(`${this.basePath}/api/addnode`, {
+          method: 'POST',
+          headers: {
+              'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+              element: { 
+                  kind: "Node", 
+                  data: { 
+                      nodename, ip: nodeip
+                  }
+              },
+              jwt,
+              // To be clear, just because its set to true at this point in the code, does not mean it gets to 
+              // demand the server to not require auth to prevent spoofing, the only time it respects that request is if its
+              // made internally
+              require_auth: true
+          })
+          });
+
+          if (!response.ok) {
+          const error = await response.text();
+          console.error('Server error:', error);
+          alert('Failed to create node.');
+          } else {
+          const result = await response.text();
+          console.log('Node created:', result);
+          // fetchUsers()
+          alert('Node created successfully!');
+          this.fetchNodes()
+          }
+      } catch (err) {
+          console.error('Request failed:', err);
+          alert('An error occurred while creating the node.');
+      }
+  };
+
+  configureTopmostButtons(){
+    const topmostDialog = document.getElementById("configureTopmostButtonDialog");
+    topmostDialog.showModal()
+  }
+
   addMore() {
     console.log("Add more functionality");
     const addServer = document.getElementById("addNodeDialog");
@@ -278,23 +333,51 @@ class ServerConsole {
     this.toggablePages.style.display =
       this.toggablePages.style.display === "flex" ? "none" : "flex";
   }
-  updateStatus() {
+  updateStatus(state) {
     const loading = document.getElementById("loading");
     loading.style.display = "block";
     const statusEvent = new EventSource(`${this.basePath}/api/awaitserverstatus`);
     statusEvent.onmessage = (e) => {
       console.log(e.data);
-      if (e.data == "healthy"){
+      if ((e.data == "healthy" || e.data == "up") && state == "up"){
         loading.style.display = "none";
-      } else if (e.data == "up"){
+      } else if (e.data == "down" && state == "down"){
         loading.style.display = "none";
+      } else {
+       // console.error("error");
       }
     };
   }
 
+  async stopServer() {
+    this.updateStatus("down")
+    try {
+      const res = await fetch(`${this.basePath}/api/general`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "IncomingMessage",
+          data: { type: "command", message: "stop_server", authcode: "0" },
+        }),
+      });
 
+      const text = await res.text();
+      if (res.ok) {
+        try {
+          const data = JSON.parse(text);
+          this.addResult("", `Server Response: ${data.response}`, false, true);
+        } catch {
+          this.addResult("", `Invalid JSON response: ${text}`, false, true);
+        }
+      } else {
+        this.addResult("", `Failed (${res.status}): ${text}`, false, true);
+      }
+    } catch (err) {
+      this.addResult("", `Error: ${err.message}`, false, true);
+    }
+  }
   async startServer() {
-    this.updateStatus()
+    this.updateStatus("up")
     try {
       const res = await fetch(`${this.basePath}/api/general`, {
         method: "POST",
@@ -322,7 +405,7 @@ class ServerConsole {
   }
 
   async createDefaultServer() {
-    this.updateStatus()
+    this.updateStatus("up")
     try {
       const res = await fetch(`${this.basePath}/api/general`, {
         method: "POST",
