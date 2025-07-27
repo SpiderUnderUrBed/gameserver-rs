@@ -544,9 +544,11 @@ async fn handle_stream(
                             let node = Node {
                                 ip: ip.clone(),
                                 nodename: name_struct.message,
+                                nodetype: "main".to_string(),
                             };
 
-                            if !nodes.contains(&node) {
+                            if !nodes.iter().any(|n| n.ip == node.ip && n.nodename == node.nodename){
+                            //.contains(&node) {
                                 println!("Making node");
                                 let _ = db_state
                                     .create_nodes_in_db(CreateElementData {

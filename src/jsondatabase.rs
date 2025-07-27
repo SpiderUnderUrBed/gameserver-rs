@@ -254,13 +254,13 @@ impl NodesDatabase for Database {
         todo!()
     }
     async fn create_nodes_in_db(&self, element: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
-        if let Element::Node(Node { nodename, ip}) = element.element {
+        if let Element::Node(Node { nodename, ip, nodetype }) = element.element {
             let mut database = self.get_database().await?;
     
             if database.nodes.iter().any(|node| node.nodename == nodename){
                 return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
             } else {
-                let final_node = Node { nodename, ip };
+                let final_node = Node { nodename,ip, nodetype };
                 database.nodes.push(final_node.clone());
             }
         

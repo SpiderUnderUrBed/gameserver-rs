@@ -76,10 +76,11 @@ pub struct Node {
 }
 
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Node {
     pub nodename: String,
     pub ip: String,
+    pub nodetype: String
 }
 
 #[cfg(any(feature = "full-stack", feature = "database"))]

@@ -21,6 +21,7 @@ class ServerConsole {
     this.setupInputListener();
     this.connectWebSocket();
     this.fetchNodes();
+    this.selectedNodeType()
     
     window.configureTopmostButtons = () => this.configureTopmostButtons();
     window.stopServer = () => this.stopServer();
@@ -32,6 +33,25 @@ class ServerConsole {
     window.createDefaultServer = () => this.createDefaultServer();
     window.enableDeveloperOptions = () => this.enableDeveloperOptions();
   }
+  
+  selectedNodeType(){
+    const selector = document.getElementById("nodetype-selector");
+    const ip = document.getElementById("nodeip");
+    
+    selector.addEventListener("change", function () {
+        const selectedValue = selector.value;
+
+        if (selectedValue === "custom") {
+            console.log("Custom selected");
+            ip.disabled = false;
+        } else if (selectedValue === "main") {
+            console.log("Main selected");
+            ip.value = "";
+            ip.disabled = true;
+        }
+    });
+  }
+
   async fetchNodes() {
     try {
         const response = await fetch(`${this.basePath}/api/nodes`);
@@ -277,6 +297,7 @@ class ServerConsole {
       
       const nodename = document.getElementById('create-nodename').value;
       const nodeip = document.getElementById('nodeip').value;
+      const nodetype = document.getElementById('nodetype-selector').value;
       const jwt = "";
 
       try {
@@ -289,7 +310,7 @@ class ServerConsole {
               element: { 
                   kind: "Node", 
                   data: { 
-                      nodename, ip: nodeip
+                      nodename, ip: nodeip, nodetype
                   }
               },
               jwt,

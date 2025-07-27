@@ -75,6 +75,11 @@
                     <input type="text" id="create-nodename" name="nodename"><br>
                     <label for="nodeip">Node Ip:</label><br>
                     <input type="text" id="nodeip" name="nodeip"><br>
+					<label for="nodetype-selector">Node Type:</label><br>
+					<select id="nodetype-selector" name="nodetype-selector">
+                            <option value="main">Initial gameserver</option>
+                            <option value="custom" selected="selected">Custom</option>
+                    </select>
 				</div>
 				<div class="dialog-buttons">
 					<button type="submit" onclick="addNode()">Confirm</button>
