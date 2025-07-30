@@ -22,8 +22,12 @@ class ServerConsole {
     this.connectWebSocket();
     this.fetchNodes();
     this.selectedNodeType();
-    this.loadTopmostButtonsLinks()
+    this.loadTopmostButtonsLinks();
     
+    window.loadTopmostButtonsLinks = () => this.loadTopmostButtonsLinks();
+    window.restoreButtonDefaults = () => this.restoreButtonDefaults();
+    window.temporaryButtonReset = () => this.temporaryButtonReset();
+    window.toggleButtons = () => this.toggleButtons();
     window.configuredTopmostButtons = () => this.configuredTopmostButtons();
     window.configureTopmostButtons = () => this.configureTopmostButtons();
     window.stopServer = () => this.stopServer();
@@ -260,6 +264,15 @@ class ServerConsole {
     }
   }
 
+  toggleButtons(){
+    const managementdiv = document.getElementById("management-buttons");
+    if (managementdiv.style.display == "none") {
+      managementdiv.style.display = "block";
+    } else {
+      managementdiv.style.display = "none";
+    }
+  }
+
   toggleRaw() {
     this.rawOutputEnabled = !this.rawOutputEnabled;
     const rawButton = document.querySelector(".raw-toggle-button");
@@ -292,31 +305,62 @@ class ServerConsole {
     }
   }
 
-  async fetchButtons(){
+  async restoreButtonDefaults(){
     try {
-        const response = await fetch(`${this.basePath}/api/buttons`);
-        if (response.ok) {
-            const data = await response.json();
-            const nodes = data.list.data;
+      const res = await fetch(`${this.basePath}/api/buttonreset`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "IncomingMessage",
+          data: { type: "command", message: "restore", authcode: "0" },
+        }),
+      });
 
-            // const nodesBar = document.querySelector("#nodes-bar");
-            // nodesBar.innerHTML = ""; 
-
-            // nodes.forEach((node, index) => {
-            //     const button = document.createElement("button");
-            //     button.textContent = node;
-            //     button.className = "nodes-element";
-            //     button.onclick = () => alert(`Node clicked: ${node}`);
-            //     nodesBar.appendChild(button);
-            // });
-        } else {
-            // document.getElementById('message').innerText = 'Failed to get nodes from the server.';
+      const text = await res.text();
+      if (res.ok) {
+        try {
+          const data = JSON.parse(text);
+          console.log(`Server Response: ${data.response}`)
+          //this.addResult("", `Server Response: ${data.response}`, false, true);
+        } catch {
+          console.log(`Invalid JSON response: ${text}`)
+          //this.addResult("", `Invalid JSON response: ${text}`, false, true);
         }
-    } catch (error) {
-        // document.getElementById('message').innerText = 'Error connecting to the server.';
-        console.log('Error fetching nodes:', error);
+      } else {
+        console.log(`Failed (${res.status}): ${text}`)
+        //this.addResult("", `Failed (${res.status}): ${text}`, false, true);
+      }
+    } catch (err) {
+      console.log(`Error: ${err.message}`)
+      //this.addResult("", `Error: ${err.message}`, false, true);
     }
   }
+
+  // async fetchButtons(){
+  //   try {
+  //       const response = await fetch(`${this.basePath}/api/buttons`);
+  //       if (response.ok) {
+  //           const data = await response.json();
+  //           const nodes = data.list.data;
+
+  //           // const nodesBar = document.querySelector("#nodes-bar");
+  //           // nodesBar.innerHTML = ""; 
+
+  //           // nodes.forEach((node, index) => {
+  //           //     const button = document.createElement("button");
+  //           //     button.textContent = node;
+  //           //     button.className = "nodes-element";
+  //           //     button.onclick = () => alert(`Node clicked: ${node}`);
+  //           //     nodesBar.appendChild(button);
+  //           // });
+  //       } else {
+  //           // document.getElementById('message').innerText = 'Failed to get nodes from the server.';
+  //       }
+  //   } catch (error) {
+  //       // document.getElementById('message').innerText = 'Error connecting to the server.';
+  //       console.log('Error fetching nodes:', error);
+  //   }
+  // }
   async addNode(){
       event.preventDefault()
       console.log("adding node");
@@ -363,8 +407,11 @@ class ServerConsole {
           alert('An error occurred while creating the node.');
       }
   };
-
-   async loadTopmostButtonsLinks() {
+  
+  async temporaryButtonReset(){
+    await window.loadTopmostButtonsLinks("default")
+  }
+  async loadTopmostButtonsLinks(type){
     // console.log("Latest");
     
     // const topmostButtonValue = document.getElementById("topmost-button-option").value;
@@ -389,19 +436,35 @@ class ServerConsole {
       if (res.ok) {
         try {
           const data = JSON.parse(text);
-          console.log(`Server Response: ${JSON.stringify(data)}`);
+          //console.log(`Server Response: ${JSON.stringify(data)}`);
             for (let i = 0; i < data.list.data.length; i++) {
               const button = data.list.data[i];
-              let newbutton = document.getElementById(button.name.toLowerCase());
-              if (newbutton) {
-                newbutton.addEventListener("click", () => {
-                  if (button.link) {
-                    window.location.href = button.link;
-                  }
-                });
-                // console.log(`Set newbutton href for: ${button.name}`);
-              } else {
-                console.warn(`No element found with id: ${button.name}`);
+              let originalButton = document.getElementById(button.name.toLowerCase());
+              if (originalButton) {
+                const newbutton = originalButton.cloneNode(true);
+                originalButton.replaceWith(newbutton);
+
+                if (type == "default") {
+                  newbutton.addEventListener("click", () => {
+                      const buttonLower = button.name.toLowerCase();
+                      window.location.href = `${button.name.toLowerCase()}.html`;
+                  })
+                } else {
+                  newbutton.addEventListener("click", () => {
+                    console.log("Changing click event");
+                    if (button.type.kind == "Default") {
+                      console.log("Changing to intended location")
+                      const buttonLower = button.name.toLowerCase();
+                      window.location.href = `${button.name.toLowerCase()}.html`;
+                    } else if (button.link) {
+                      const isExternal = !button.link.startsWith(window.location.origin);
+                      const go = !isExternal || confirm(`You are about to visit an external link:\n\n${button.link}\n\nContinue?`);
+                      if (go) {
+                        window.location.href = button.link;
+                      }
+                    }
+                  });
+                }
               }
             }
 
@@ -417,6 +480,10 @@ class ServerConsole {
       console.error(`Error: ${err.message}`)
       //this.addResult("", `Error: ${err.message}`, false, true);
     }
+  }
+
+  async loadTopmostButtonsLinksWithState() {
+    await this.loadTopmostButtonsLinks("");
   }
   configureTopmostButtons(){
     const topmostDialog = document.getElementById("configureTopmostButtonDialog");
@@ -453,7 +520,7 @@ class ServerConsole {
 
       if (res.ok) {
           const text = await res.text(); 
-          await this.loadTopmostButtonsLinks();
+          await this.loadTopmostButtonsLinksWithState();
           try {
             const data = JSON.parse(text);
             //console.error(text)

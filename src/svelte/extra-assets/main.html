@@ -32,9 +32,16 @@
 			<button id="backups">Backups</button>
 			<button id="settings">Settings</button>
 
-			<span style="width: 10vh;"></span>
+			<!-- <span style="width: 10vh;"></span> -->
+			<button onclick="toggleButtons()">Manage buttons</button>
+			<div class="management-buttons" id="management-buttons">
+			<!-- <button id="configure-button-links" onclick="configureTopmostButtons()">Configure Button links</button>
+			<button id="temporarially-restore-button-defaults">Temporarially enable defaults</button>
+			<button id="restore-button-defaults">Restore defaults</button> -->
 			<button onclick="configureTopmostButtons()">Configure Button links</button>
-			<button>Temporarially enable defaults</button>
+			<button onclick="temporaryButtonReset()">Temporarially enable defaults</button>
+			<button onclick="restoreButtonDefaults()">Restore defaults</button>
+			</div>
 		</div>
 		<div class="top-bar">
 			<button class="main-buttons" onclick="createDefaultServer()">Create Server</button>
@@ -42,7 +49,7 @@
 			<button class="main-buttons" onclick="stopServer()">Stop Server</button>
             <img src="icons/12-dots-scale-rotate.svg" class="loading" id="loading">
 			<button class="main-buttons raw-toggle-button" onclick="toggleRaw()">Raw Output: OFF</button>
-			<button class="main-buttons" onclick="addMore()">Add Server</button>
+			<button class="main-buttons" onclick="addMore()">Add Node</button>
 			<button class="main-buttons" onclick="toggleNodes()">Toggle Nodes</button>
 		</div>
 		<div class="nodes-bar" id="nodes-bar">

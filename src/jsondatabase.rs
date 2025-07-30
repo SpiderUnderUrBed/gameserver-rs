@@ -344,10 +344,11 @@ impl ButtonsDatabase for Database {
                 if let Some(db_button) = database.buttons.iter_mut().find(|db_button| db_button.name.to_lowercase()  == name.to_lowercase() ) {
                     // println!("{}", db_button.link);
                     db_button.link = link.clone();
+                    db_button.r#type = CustomType::Custom; 
                     // println!("{}", db_button.link);
                 }
                 //println!("Editing button");
-                self.write_database(database).await;
+                let _ = self.write_database(database).await;
                 Ok(StatusCode::CREATED)
             } else {
                 println!("Error, failed to get the underlying items");

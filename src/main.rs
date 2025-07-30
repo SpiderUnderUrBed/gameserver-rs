@@ -279,6 +279,12 @@ struct IncomingMessage {
     authcode: String,
 }
 
+// #[derive(Debug, Deserialize, Serialize, Clone)]
+// struct AuthorizationAction {
+//     message: String,
+//     jwt: 
+// }
+
 // Some common api calls which is just what might get exchanged between the frontend and backend via api
 // this is needed rather than a bunch of structs or however else I might do it because in some cases I might not know what api call to expect
 // as it would be determined by a 'kind' flag provided by serde, and the content, be it a array or struct, be nested in json (which provides new hurdles for how to process 
@@ -738,16 +744,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let bridge_tx = multifaceted_state.read().await.ws_tx.clone();
 
     tokio::spawn(async move {
-        // let server_result = connect_to_server(
-        //     server_connection_state,
-        //     bridge_rx,
-        //     bridge_tx,
-        // ).await;
-        // if let Ok(addr) = server_result{
-
-        // } else if let Err(err) = server_result{
-        //     eprintln!("[DEBUG] Connection task failed: {}", err);
-        // }
         if let Err(e) = connect_to_server(
             server_connection_state,
             bridge_rx,
@@ -778,6 +774,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/users", get(users))
         .route("/api/ws", get(ws_handler))
         .route("/api/awaitserverstatus", get(ongoing_server_status))
+        .route("/api/buttonreset", post(button_reset))
         .route("/api/editbuttons", post(edit_buttons))
         .route("/api/addnode", post(add_node))
         .route("/api/edituser", post(edit_user))
@@ -841,6 +838,9 @@ async fn edit_buttons(State(arc_state): State<Arc<RwLock<AppState>>>, Json(reque
     let result = state.database.edit_button_in_db(request).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
     //println!("Got result");
     result
+}
+async fn button_reset(State(arc_state): State<Arc<RwLock<AppState>>>, Json(request): Json<IncomingMessage>) -> impl IntoResponse {
+    
 }
 
 async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
