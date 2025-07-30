@@ -26,14 +26,15 @@
 		</aside>
 
 		<div class="topmost-bar">
-			<button>Filebrowser</button>
-			<button>Statistics</button>
-			<button>Scedules</button>	
-			<button>Backups</button>
-			<button>Settings</button>
+			<button id="filebrowser">Filebrowser</button>
+			<button id="statistics">Statistics</button>
+			<button id="scedules">Scedules</button>	
+			<button id="backups">Backups</button>
+			<button id="settings">Settings</button>
 
 			<span style="width: 10vh;"></span>
 			<button onclick="configureTopmostButtons()">Configure Button links</button>
+			<button>Temporarially enable defaults</button>
 		</div>
 		<div class="top-bar">
 			<button class="main-buttons" onclick="createDefaultServer()">Create Server</button>
@@ -89,9 +90,18 @@
 		</dialog>
 		<dialog id="configureTopmostButtonDialog" class="user-dialog">
 			<form method="dialog">
-				<h3>Add Node</h3>
+				<h3>Configure buttons</h3>
 				<div class="form-content">
-					
+					<label for="topmost-button-option">Topmost button</label><br>
+					<select id="topmost-button-option" name="topmost-button-option">
+						<option value="filebrowser">Filebrowser</option>
+						<option value="statistics">Statistics</option>
+						<option value="scedules">Scedules</option>
+						<option value="backups">Backups</option>
+						<option value="settings">Settings</option>
+					</select><br>			
+					<label for="custom-button-link">Link for button (empty for default)</label><br>
+					<input type="text" id="custom-button-link" name="custom-button-link">
 				</div>
 				<div class="dialog-buttons">
 					<button type="submit" onclick="configuredTopmostButtons()">Confirm</button>

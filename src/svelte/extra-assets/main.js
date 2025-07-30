@@ -21,8 +21,10 @@ class ServerConsole {
     this.setupInputListener();
     this.connectWebSocket();
     this.fetchNodes();
-    this.selectedNodeType()
+    this.selectedNodeType();
+    this.loadTopmostButtonsLinks()
     
+    window.configuredTopmostButtons = () => this.configuredTopmostButtons();
     window.configureTopmostButtons = () => this.configureTopmostButtons();
     window.stopServer = () => this.stopServer();
     window.addNode = () => this.addNode();
@@ -290,7 +292,31 @@ class ServerConsole {
     }
   }
 
+  async fetchButtons(){
+    try {
+        const response = await fetch(`${this.basePath}/api/buttons`);
+        if (response.ok) {
+            const data = await response.json();
+            const nodes = data.list.data;
 
+            // const nodesBar = document.querySelector("#nodes-bar");
+            // nodesBar.innerHTML = ""; 
+
+            // nodes.forEach((node, index) => {
+            //     const button = document.createElement("button");
+            //     button.textContent = node;
+            //     button.className = "nodes-element";
+            //     button.onclick = () => alert(`Node clicked: ${node}`);
+            //     nodesBar.appendChild(button);
+            // });
+        } else {
+            // document.getElementById('message').innerText = 'Failed to get nodes from the server.';
+        }
+    } catch (error) {
+        // document.getElementById('message').innerText = 'Error connecting to the server.';
+        console.log('Error fetching nodes:', error);
+    }
+  }
   async addNode(){
       event.preventDefault()
       console.log("adding node");
@@ -338,9 +364,114 @@ class ServerConsole {
       }
   };
 
+   async loadTopmostButtonsLinks() {
+    // console.log("Latest");
+    
+    // const topmostButtonValue = document.getElementById("topmost-button-option").value;
+    // const topmostButtonLink = document.getElementById("custom-button-link").value;
+
+    // console.log(`${topmostButtonValue} ${topmostButtonLink}`);
+
+    // const params = new URLSearchParams({
+    //   name: topmostButtonValue,
+    //   link: topmostButtonLink,
+    //   type: "Custom"
+    // });
+
+    try {
+     //onst res = await fetch(`${this.basePath}/api/buttons?${params.toString()}`, {
+      const res = await fetch(`${this.basePath}/api/buttons`, {
+        method: "GET"
+      });
+
+      const text = await res.text();
+
+      if (res.ok) {
+        try {
+          const data = JSON.parse(text);
+          console.log(`Server Response: ${JSON.stringify(data)}`);
+            for (let i = 0; i < data.list.data.length; i++) {
+              const button = data.list.data[i];
+              let newbutton = document.getElementById(button.name.toLowerCase());
+              if (newbutton) {
+                newbutton.addEventListener("click", () => {
+                  if (button.link) {
+                    window.location.href = button.link;
+                  }
+                });
+                // console.log(`Set newbutton href for: ${button.name}`);
+              } else {
+                console.warn(`No element found with id: ${button.name}`);
+              }
+            }
+
+          //this.addResult("", `Server Response: ${data.response}`, false, true);
+        } catch {
+          //this.addResult("", `Success, but invalid JSON: ${text}`, false, true);
+        }
+      } else {
+        console.error(`Failed (${res.status}): ${text}`)
+        //this.addResult("", `Failed (${res.status}): ${text}`, false, true);
+      }
+    } catch (err) {
+      console.error(`Error: ${err.message}`)
+      //this.addResult("", `Error: ${err.message}`, false, true);
+    }
+  }
   configureTopmostButtons(){
     const topmostDialog = document.getElementById("configureTopmostButtonDialog");
     topmostDialog.showModal()
+  }
+
+  async configuredTopmostButtons(){
+    const topmostButtonValue = document.getElementById("topmost-button-option").value;
+    const topmostButtonLink = document.getElementById("custom-button-link").value;
+    try {
+      const res = await fetch(`${this.basePath}/api/editbuttons`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          element: { 
+            kind: "Button", 
+            data: { 
+              name: topmostButtonValue,
+              link: topmostButtonLink,
+              type: {
+                kind: "Custom",
+                // data: {
+                //   message: "create_server",
+                //   type: "command",
+                //   authcode: "0",
+                // },
+              }
+            }
+          },
+          jwt: "",
+          require_auth: false
+        }),
+      });
+
+      if (res.ok) {
+          const text = await res.text(); 
+          await this.loadTopmostButtonsLinks();
+          try {
+            const data = JSON.parse(text);
+            //console.error(text)
+            console.log(`Server Response: ${data.response}`)
+            //this.addResult("", `Server Response: ${data.response}`, false, true);
+          } catch {
+            console.error(`Success, but invalid JSON: ${text}`)
+            //this.addResult("", `Success, but invalid JSON: ${text}`, false, true);
+          }
+      } else {
+        const text = await res.text();
+        console.error(`Failed (${res.status}): ${text}`)
+        //this.addResult("", `Failed (${res.status}): ${text}`, false, true);
+      }
+    } catch (err) {
+      console.error(`Error: ${err.message}`)
+      //this.addResult("", `Error: ${err.message}`, false, true);
+    }
   }
 
   addMore() {
@@ -359,7 +490,6 @@ class ServerConsole {
     loading.style.display = "block";
     const statusEvent = new EventSource(`${this.basePath}/api/awaitserverstatus`);
     statusEvent.onmessage = (e) => {
-      console.log(e.data);
       if ((e.data == "healthy" || e.data == "up") && state == "up"){
         loading.style.display = "none";
       } else if (e.data == "down" && state == "down"){

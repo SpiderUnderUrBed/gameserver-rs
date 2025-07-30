@@ -1,3 +1,4 @@
+use mime_guess::mime::Name;
 use serde::Deserialize;
 use serde::Serialize;
 use std::error::Error;
@@ -10,8 +11,13 @@ use std::fs::OpenOptions;
 use std::fs::File;
 use std::io::Write;
 use std::io::Read;
+use std::collections::HashMap;
 
+use crate::database::databasespec::CustomType;
+use crate::database::databasespec::Button;
+use crate::database::databasespec::ButtonsDatabase;
 use crate::database::databasespec::Server;
+// use crate::database::Database;
 use crate::StatusCode;
 
 #[derive(Clone)]
@@ -19,11 +25,49 @@ pub struct JsonBackend {
     file: PathBuf
 }
 
-#[derive(Deserialize, Serialize, Default, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 pub struct JsonBackendContent {
     pub users: Vec<User>,
     pub nodes: Vec<Node>,
-    pub servers: Vec<Server>
+    pub servers: Vec<Server>,
+    pub buttons: Vec<Button>
+    //pub buttons: HashMap<String, Node>
+}
+impl Default for JsonBackendContent {
+    fn default() -> JsonBackendContent {
+        JsonBackendContent {
+            users: vec![],
+            nodes: vec![],
+            servers: vec![],
+            buttons: vec![
+                Button {
+                    name: "Filebrowser".to_string(),
+                    link: "".to_string(),
+                    r#type: CustomType::Default
+                },
+                Button {
+                    name: "Statistics".to_string(),
+                    link: "".to_string(),
+                    r#type: CustomType::Default
+                },
+                Button {
+                    name: "Scedules".to_string(),
+                    link: "".to_string(),
+                    r#type: CustomType::Default
+                },
+                Button {
+                    name: "Backups".to_string(),
+                    link: "".to_string(),
+                    r#type: CustomType::Default
+                },
+                Button {
+                    name: "Settings".to_string(),
+                    link: "".to_string(),
+                    r#type: CustomType::Default
+                }
+            ]
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -244,14 +288,16 @@ impl UserDatabase for Database {
 
 impl NodesDatabase for Database {
     async fn retrieve_nodes(&self, nodename: String) -> Option<Node> {
-        todo!()
+        let database = self.get_database().await;
+        database.unwrap().nodes.iter().find(|node| node.nodename == nodename).cloned()
     }
     async fn fetch_all_nodes(&self) -> Result<Vec<Node>, Box<dyn Error + Send + Sync>> {
         let database = self.get_database().await?;
         Ok(database.nodes)
     }
     async fn get_from_nodes_database(&self, nodename: &str) -> Result<Option<Node>, Box<dyn Error + Send + Sync>> {
-        todo!()
+        let database = self.get_database().await?;
+        Ok(database.nodes.iter().find(|node| node.nodename == nodename).cloned())
     }
     async fn create_nodes_in_db(&self, element: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         if let Element::Node(Node { nodename, ip, nodetype }) = element.element {
@@ -275,5 +321,41 @@ impl NodesDatabase for Database {
     }
     async fn edit_node_in_db(&self, node: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         todo!()
+    }
+}
+impl ButtonsDatabase for Database {
+    async fn retrieve_buttons(&self, name: String) -> Option<Button> {
+        todo!()
+    }
+    async fn fetch_all_buttons(&self) -> Result<Vec<Button>, Box<dyn Error + Send + Sync>> {
+        let database = self.get_database().await?;
+        Ok(database.buttons)
+    }
+    async fn get_from_buttons_database(&self, name: &str) -> Result<Option<Button>, Box<dyn Error + Send + Sync>> {
+        let database = self.get_database().await?;
+        //database.buttons.get(name)
+        Ok(database.buttons.iter().find(|button| button.name == name).cloned())
+    }
+    async fn edit_button_in_db(&self, element: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>{
+        if let Element::Button(button) = element.element {
+            if let Button { name, link, r#type } = button {
+                let mut database = self.get_database().await?;
+                // println!("{}", name);
+                if let Some(db_button) = database.buttons.iter_mut().find(|db_button| db_button.name.to_lowercase()  == name.to_lowercase() ) {
+                    // println!("{}", db_button.link);
+                    db_button.link = link.clone();
+                    // println!("{}", db_button.link);
+                }
+                //println!("Editing button");
+                self.write_database(database).await;
+                Ok(StatusCode::CREATED)
+            } else {
+                println!("Error, failed to get the underlying items");
+                Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+            }
+        } else {
+            println!("Error, failed to get the button element type");
+            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+        }
     }
 }

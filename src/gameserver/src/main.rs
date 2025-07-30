@@ -32,6 +32,7 @@ enum ApiCalls {
     None,
     Capabilities(Vec<String>),
     NodeList(Vec<String>),
+    //ButtonList(Vec<Button>),
     IncomingMessage(MessagePayload),
 }
 

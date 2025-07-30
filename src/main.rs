@@ -41,8 +41,10 @@ use crate::http::HeaderMap;
 
 // mod databasespec;
 // use databasespec::UserDatabase;
+use crate::database::databasespec::Button;
 use crate::database::databasespec::NodesDatabase;
 use crate::database::databasespec::UserDatabase;
+use crate::database::databasespec::ButtonsDatabase;
 use crate::database::Node;
 // miscellancious imports, future traits are used because alot of the code is asyncronus and cant fully be contained in tokio
 // mime_guess as when I am serving the files, I need to serve it with the correct mime type
@@ -289,6 +291,7 @@ enum ApiCalls {
     NodeList(Vec<String>),
     UserData(LoginData),
     UserList(Vec<User>),
+    ButtonList(Vec<Button>),
     IncomingMessage(IncomingMessage),
 }
 
@@ -770,10 +773,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let inner = Router::new()
         .route("/api/message", get(get_message))
         .route("/api/nodes", get(get_nodes))
+        .route("/api/buttons", get(get_buttons))
         .route("/api/servers", get(get_servers))
         .route("/api/users", get(users))
         .route("/api/ws", get(ws_handler))
         .route("/api/awaitserverstatus", get(ongoing_server_status))
+        .route("/api/editbuttons", post(edit_buttons))
         .route("/api/addnode", post(add_node))
         .route("/api/edituser", post(edit_user))
         .route("/api/getuser", post(get_user))
@@ -809,6 +814,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .await?;
 
     Ok(())
+}
+
+async fn get_buttons(State(state): State<Arc<RwLock<AppState>>>) -> impl IntoResponse {
+    let mut button_list = vec![];
+    match state.read().await.database.fetch_all_buttons().await {
+        Ok(buttons) => {
+            //println!("{:#?}", buttons);
+            // let buttonname_list: Vec<String> = buttons.iter().map(|button| button.name.clone()).collect();
+            // for button in buttonname_list {
+            //     if !button_list.contains(&button){
+            //         button_list.push(button);
+            //     }
+            // }
+            button_list.extend(buttons);
+        },
+        Err(err) => eprintln!("Error fetching DB buttons: {}", err),
+    }
+    //println!("{:#?}", List { list: ApiCalls::ButtonList(button_list.clone()) });
+    Json(List { list: ApiCalls::ButtonList(button_list) })
+}
+
+async fn edit_buttons(State(arc_state): State<Arc<RwLock<AppState>>>, Json(request): Json<CreateElementData>) -> impl IntoResponse {
+    //println!("Got request");
+    let state = arc_state.write().await;
+    let result = state.database.edit_button_in_db(request).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
+    //println!("Got result");
+    result
 }
 
 async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
@@ -1217,7 +1249,7 @@ async fn users(State(arc_state): State<Arc<RwLock<AppState>>>,) -> Result<impl I
 }
 
 // A list of nodes in a k8s cluster is returned, nothing is returned if there is not a client (k8s support is off)
-async fn get_nodes(State(arc_state): State<Arc<RwLock<AppState>>>,) -> impl IntoResponse {
+async fn get_nodes(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl IntoResponse {
     let state = arc_state.write().await;
     let mut node_list= vec![];
     if state.client.is_some() {

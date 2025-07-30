@@ -31,16 +31,32 @@ pub struct RemoveElementData {
     pub jwt: String
 }
 
-//, content = "data"
+#[cfg(any(feature = "full-stack", feature = "database"))]
+#[derive(Debug, Deserialize, Serialize, Clone, sqlx::FromRow)]
+#[serde(tag = "kind", content = "data")]
+pub enum CustomType {
+    Custom, 
+    Default
+}
+
+#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(tag = "kind", content = "data")]
+pub enum CustomType {
+    Custom, 
+    Default
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(tag = "kind", content = "data")]
 pub enum Element {
-    User {
+    User {  
         password: String,
         user: String,
         user_perms: Vec<String>
     },
     Node(Node),
+    Button(Button),
     Server
 }
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -73,6 +89,7 @@ pub struct User {
 pub struct Node {
     pub nodename: String,
     pub ip: String,
+    pub nodetype: String
 }
 
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
@@ -82,6 +99,24 @@ pub struct Node {
     pub ip: String,
     pub nodetype: String
 }
+
+#[cfg(any(feature = "full-stack", feature = "database"))]
+#[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize, PartialEq)]
+pub struct Button {
+    pub name: String,
+    pub link: String,
+    pub r#type: CustomType
+}
+
+
+#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Button {
+    pub name: String,
+    pub link: String,
+    pub r#type: CustomType
+}
+
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
 #[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize)]
@@ -121,4 +156,10 @@ pub trait NodesDatabase {
     async fn create_nodes_in_db(&self, node: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
     async fn remove_node_in_db(&self, node: RemoveElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
     async fn edit_node_in_db(&self, node: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+}
+pub trait ButtonsDatabase {
+    async fn retrieve_buttons(&self, name: String) -> Option<Button>;
+    async fn fetch_all_buttons(&self) -> Result<Vec<Button>, Box<dyn Error + Send + Sync>>;
+    async fn get_from_buttons_database(&self, name: &str) -> Result<Option<Button>, Box<dyn Error + Send + Sync>>;
+    async fn edit_button_in_db(&self, button: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
 }
