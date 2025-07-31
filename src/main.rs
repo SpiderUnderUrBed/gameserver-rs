@@ -775,6 +775,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/ws", get(ws_handler))
         // .route("getfiles", get(get_files))
         .route("/api/awaitserverstatus", get(ongoing_server_status))
+        .route("/api/getfiles", post(get_files))
         .route("/api/buttonreset", post(button_reset))
         .route("/api/editbuttons", post(edit_buttons))
         .route("/api/addnode", post(add_node))
@@ -1501,52 +1502,48 @@ async fn handle_static_request(
     let state = arc_state.read().await; 
     let path = req.uri().path();
 
-    let query = req.uri().query().unwrap_or("");
-    let params: FileParams = match serde_urlencoded::from_str(query) {
-        Ok(p) => p,
-        Err(_) => return Err(StatusCode::BAD_REQUEST),
-    };
+    // let query = req.uri().query().unwrap_or("");
+    // let params: FileParams = match serde_urlencoded::from_str(query) {
+    //     Ok(p) => p,
+    //     Err(_) => return Err(StatusCode::BAD_REQUEST),
+    // };
+    // let response = get_files(
+    //     State(arc_state.clone()),
+    //     Query(params),
+    // )
+    // .await
+    // .into_response();
 
-    println!("{}", path);
     let file = if path == "/" || path.is_empty() {
         "index.html"
-    } else if path == "filebrowser" {
-        "filebrowser.html"
     } else {
         &path[1..]
     };
     
 
-    let response: Result<Response<Body>, Response<Body>> = match serve_html_with_replacement(file, &state).await {
+    match serve_html_with_replacement(file, &state).await {
         Ok(res) => Ok(res),
         Err(status) => Ok(Response::builder()
             .status(status)
             .header("content-type", "text/plain")
             .body(format!("Error serving `{}`", file).into())
             .unwrap()),
-    };
-    if response.is_ok(){
-        let file_response = get_files(
-            State(arc_state.clone()),
-            Query(params),
-        )
-        .await
-        .into_response();
-        Ok(response.unwrap())
-    } else {
-        Ok(response.unwrap())
     }
 }
-async fn get_files(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
-    Query(params): Query<FileParams>
-) -> impl IntoResponse {
+
+async fn get_files(State(arc_state): State<Arc<RwLock<AppState>>>, Json(request): Json<IncomingMessage>) -> impl IntoResponse {
+
+}
+// async fn get_files(
+//     State(arc_state): State<Arc<RwLock<AppState>>>,
+//     Query(params): Query<FileParams>
+// ){
     
-}
-#[derive(Deserialize)]
-pub struct FileParams {
-    file: String,
-}
+// }
+// #[derive(Deserialize)]
+// pub struct FileParams {
+//     file: String,
+// }
 
 // This is crucial for authentication, it will take a next for redirects, and a jwk to verify the claim with, then it grants the claim for the current session 
 // and redirects the user to their original destination
