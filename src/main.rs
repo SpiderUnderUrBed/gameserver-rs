@@ -840,7 +840,24 @@ async fn edit_buttons(State(arc_state): State<Arc<RwLock<AppState>>>, Json(reque
     result
 }
 async fn button_reset(State(arc_state): State<Arc<RwLock<AppState>>>, Json(request): Json<IncomingMessage>) -> impl IntoResponse {
-    
+    let state = arc_state.write().await;
+    if request.message == "toggle" {
+        let result = state.database.toggle_default_buttons().await;
+        if result.is_ok(){
+            StatusCode::CREATED
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    } else if request.message == "restore" {
+        let result = state.database.reset_buttons().await;
+        if result.is_ok(){
+            StatusCode::CREATED
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        } 
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    }
 }
 
 async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {

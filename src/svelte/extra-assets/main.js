@@ -24,7 +24,6 @@ class ServerConsole {
     this.selectedNodeType();
     this.loadTopmostButtonsLinks();
     
-    window.loadTopmostButtonsLinks = () => this.loadTopmostButtonsLinks();
     window.restoreButtonDefaults = () => this.restoreButtonDefaults();
     window.temporaryButtonReset = () => this.temporaryButtonReset();
     window.toggleButtons = () => this.toggleButtons();
@@ -304,20 +303,47 @@ class ServerConsole {
         // }
     }
   }
-
-  async restoreButtonDefaults(){
+  async temporaryButtonReset(){
     try {
       const res = await fetch(`${this.basePath}/api/buttonreset`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          kind: "IncomingMessage",
-          data: { type: "command", message: "restore", authcode: "0" },
+          type: "command", message: "toggle", authcode: "0",
         }),
       });
 
       const text = await res.text();
       if (res.ok) {
+        await this.loadTopmostButtonsLinks();
+        try {
+          const data = JSON.parse(text);
+          console.log(`Server Response: ${data.response}`)
+          //this.addResult("", `Server Response: ${data.response}`, false, true);
+        } catch {
+          console.log(`Invalid JSON response: ${text}`)
+          //this.addResult("", `Invalid JSON response: ${text}`, false, true);
+        }
+      } else {
+        console.log(`Failed (${res.status}): ${text}`)
+        //this.addResult("", `Failed (${res.status}): ${text}`, false, true);
+      }
+    } catch (err) {
+      console.log(`Error: ${err.message}`)
+      //this.addResult("", `Error: ${err.message}`, false, true);
+    }   
+  }
+  async restoreButtonDefaults(){
+    try {
+      const res = await fetch(`${this.basePath}/api/buttonreset`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({type: "command", message: "restore", authcode: "0"}),
+      });
+
+      const text = await res.text();
+      if (res.ok) {
+        await this.loadTopmostButtonsLinks();
         try {
           const data = JSON.parse(text);
           console.log(`Server Response: ${data.response}`)
@@ -407,11 +433,8 @@ class ServerConsole {
           alert('An error occurred while creating the node.');
       }
   };
-  
-  async temporaryButtonReset(){
-    await window.loadTopmostButtonsLinks("default")
-  }
-  async loadTopmostButtonsLinks(type){
+
+   async loadTopmostButtonsLinks() {
     // console.log("Latest");
     
     // const topmostButtonValue = document.getElementById("topmost-button-option").value;
@@ -444,27 +467,18 @@ class ServerConsole {
                 const newbutton = originalButton.cloneNode(true);
                 originalButton.replaceWith(newbutton);
 
-                if (type == "default") {
-                  newbutton.addEventListener("click", () => {
-                      const buttonLower = button.name.toLowerCase();
-                      window.location.href = `${button.name.toLowerCase()}.html`;
-                  })
-                } else {
-                  newbutton.addEventListener("click", () => {
-                    console.log("Changing click event");
-                    if (button.type.kind == "Default") {
-                      console.log("Changing to intended location")
-                      const buttonLower = button.name.toLowerCase();
-                      window.location.href = `${button.name.toLowerCase()}.html`;
-                    } else if (button.link) {
-                      const isExternal = !button.link.startsWith(window.location.origin);
-                      const go = !isExternal || confirm(`You are about to visit an external link:\n\n${button.link}\n\nContinue?`);
-                      if (go) {
-                        window.location.href = button.link;
-                      }
+                newbutton.addEventListener("click", () => {
+                  if (button.type.kind == "Default") {
+                    const buttonLower = button.name.toLowerCase();
+                    window.location.href = `${button.name.toLowerCase()}.html`;
+                  } else if (button.link) {
+                    const isExternal = !button.link.startsWith(window.location.origin);
+                    const go = !isExternal || confirm(`You are about to visit an external link:\n\n${button.link}\n\nContinue?`);
+                    if (go) {
+                      window.location.href = button.link;
                     }
-                  });
-                }
+                  }
+                });
               }
             }
 
@@ -480,10 +494,6 @@ class ServerConsole {
       console.error(`Error: ${err.message}`)
       //this.addResult("", `Error: ${err.message}`, false, true);
     }
-  }
-
-  async loadTopmostButtonsLinksWithState() {
-    await this.loadTopmostButtonsLinks("");
   }
   configureTopmostButtons(){
     const topmostDialog = document.getElementById("configureTopmostButtonDialog");
@@ -520,7 +530,7 @@ class ServerConsole {
 
       if (res.ok) {
           const text = await res.text(); 
-          await this.loadTopmostButtonsLinksWithState();
+          await this.loadTopmostButtonsLinks();
           try {
             const data = JSON.parse(text);
             //console.error(text)
@@ -583,15 +593,19 @@ class ServerConsole {
       if (res.ok) {
         try {
           const data = JSON.parse(text);
-          this.addResult("", `Server Response: ${data.response}`, false, true);
+          console.log( `Server Response: ${data.response}`);
+          //this.addResult("", `Server Response: ${data.response}`, false, true);
         } catch {
-          this.addResult("", `Invalid JSON response: ${text}`, false, true);
+          console.log(`Invalid JSON response: ${text}`);
+          //this.addResult("", `Invalid JSON response: ${text}`, false, true);
         }
       } else {
-        this.addResult("", `Failed (${res.status}): ${text}`, false, true);
+        console.log(`Failed (${res.status}): ${text}`)
+        //this.addResult("", `Failed (${res.status}): ${text}`, false, true);
       }
     } catch (err) {
-      this.addResult("", `Error: ${err.message}`, false, true);
+      console.log(`Error: ${err.message}`)
+      //this.addResult("", `Error: ${err.message}`, false, true);
     }
   }
   async startServer() {

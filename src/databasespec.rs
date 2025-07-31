@@ -68,6 +68,18 @@ pub struct CreateElementData {
 //     pub user_perms: Vec<String>
 }
 
+#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct Settings {
+    pub(crate) toggled_default_buttons: bool
+}
+
+#[cfg(any(feature = "full-stack", feature = "database"))]
+#[derive(Debug, Deserialize, Serialize, Clone, sqlx::FromRow, Default)]
+pub struct Settings {
+    pub toggled_default_buttons: bool
+}
+
 #[cfg(any(feature = "full-stack", feature = "database"))]
 #[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize)]
 pub struct User {
@@ -160,6 +172,8 @@ pub trait NodesDatabase {
 pub trait ButtonsDatabase {
     async fn retrieve_buttons(&self, name: String) -> Option<Button>;
     async fn fetch_all_buttons(&self) -> Result<Vec<Button>, Box<dyn Error + Send + Sync>>;
+    async fn toggle_default_buttons(&self) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn reset_buttons(&self) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
     async fn get_from_buttons_database(&self, name: &str) -> Result<Option<Button>, Box<dyn Error + Send + Sync>>;
     async fn edit_button_in_db(&self, button: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
 }

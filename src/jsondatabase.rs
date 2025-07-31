@@ -13,10 +13,12 @@ use std::io::Write;
 use std::io::Read;
 use std::collections::HashMap;
 
+use crate::database::databasespec::Settings;
 use crate::database::databasespec::CustomType;
 use crate::database::databasespec::Button;
 use crate::database::databasespec::ButtonsDatabase;
 use crate::database::databasespec::Server;
+
 // use crate::database::Database;
 use crate::StatusCode;
 
@@ -30,42 +32,47 @@ pub struct JsonBackendContent {
     pub users: Vec<User>,
     pub nodes: Vec<Node>,
     pub servers: Vec<Server>,
-    pub buttons: Vec<Button>
+    pub buttons: Vec<Button>,
+    pub toggled_buttons: Vec<Button>,
+    pub settings: Settings
     //pub buttons: HashMap<String, Node>
 }
 impl Default for JsonBackendContent {
     fn default() -> JsonBackendContent {
+        let default_button_list = vec![
+            Button {
+                name: "Filebrowser".to_string(),
+                link: "".to_string(),
+                r#type: CustomType::Default
+            },
+            Button {
+                name: "Statistics".to_string(),
+                link: "".to_string(),
+                r#type: CustomType::Default
+            },
+            Button {
+                name: "Scedules".to_string(),
+                link: "".to_string(),
+                r#type: CustomType::Default
+            },
+            Button {
+                name: "Backups".to_string(),
+                link: "".to_string(),
+                r#type: CustomType::Default
+            },
+            Button {
+                name: "Settings".to_string(),
+                link: "".to_string(),
+                r#type: CustomType::Default
+            }
+        ];
         JsonBackendContent {
             users: vec![],
             nodes: vec![],
             servers: vec![],
-            buttons: vec![
-                Button {
-                    name: "Filebrowser".to_string(),
-                    link: "".to_string(),
-                    r#type: CustomType::Default
-                },
-                Button {
-                    name: "Statistics".to_string(),
-                    link: "".to_string(),
-                    r#type: CustomType::Default
-                },
-                Button {
-                    name: "Scedules".to_string(),
-                    link: "".to_string(),
-                    r#type: CustomType::Default
-                },
-                Button {
-                    name: "Backups".to_string(),
-                    link: "".to_string(),
-                    r#type: CustomType::Default
-                },
-                Button {
-                    name: "Settings".to_string(),
-                    link: "".to_string(),
-                    r#type: CustomType::Default
-                }
-            ]
+            buttons: default_button_list.clone(),
+            toggled_buttons: default_button_list,
+            settings: Settings::default()
         }
     }
 }
@@ -336,6 +343,24 @@ impl ButtonsDatabase for Database {
         //database.buttons.get(name)
         Ok(database.buttons.iter().find(|button| button.name == name).cloned())
     }
+    async fn toggle_default_buttons(&self) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+        let mut database: JsonBackendContent = self.get_database().await?;
+        if database.settings.toggled_default_buttons == false {
+            database.toggled_buttons = JsonBackendContent::default().buttons;
+        }
+        std::mem::swap(&mut database.buttons, &mut database.toggled_buttons);
+        database.settings.toggled_default_buttons = !database.settings.toggled_default_buttons;
+        self.write_database(database).await?;
+        Ok(StatusCode::CREATED)
+    }
+    async fn reset_buttons(&self) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+        let mut database: JsonBackendContent = self.get_database().await?;
+        database.buttons = JsonBackendContent::default().buttons;
+        database.toggled_buttons = JsonBackendContent::default().buttons;
+        self.write_database(database).await?;
+        Ok(StatusCode::CREATED)
+    }
+
     async fn edit_button_in_db(&self, element: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>{
         if let Element::Button(button) = element.element {
             if let Button { name, link, r#type } = button {
@@ -348,7 +373,7 @@ impl ButtonsDatabase for Database {
                     // println!("{}", db_button.link);
                 }
                 //println!("Editing button");
-                let _ = self.write_database(database).await;
+                self.write_database(database).await?;
                 Ok(StatusCode::CREATED)
             } else {
                 println!("Error, failed to get the underlying items");
