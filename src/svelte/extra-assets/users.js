@@ -121,23 +121,21 @@ async function togglePassword(button){
 async function addPerms(button){
     let root = button.closest("[data-user-container]");
     const perms_div = root.querySelector("#perms-selector");
-    console.log(root.dataset.value);
-    // if (root.value != "edit-perms"){
-        console.log("e");
-        const permission = perms_div.value;
-        const permission_text = perms_div.options[perms_div.selectedIndex].text;
 
-        const display_perms_div = root.querySelector("#perms");
+    const permission = perms_div.value;
+    const permission_text = perms_div.options[perms_div.selectedIndex].text;
 
-        const btn = document.createElement("button");
-        btn.className = "perm-item";
-        btn.dataset.value = permission;
-        btn.textContent = permission_text;
-        btn.onclick = function () {
-            deletePerm(btn);
-        };
+    const display_perms_div = root.querySelector("#perms");
 
-        display_perms_div.appendChild(btn);
+    const btn = document.createElement("button");
+    btn.className = "perm-item";
+    btn.dataset.value = permission;
+    btn.textContent = permission_text;
+    btn.onclick = function () {
+        deletePerm(btn);
+    };
+
+    display_perms_div.appendChild(btn);
     //}
 }
 
@@ -210,7 +208,6 @@ async function editPermissions(button){
             user_perms.push(child.dataset.value);
         }
     }
-    console.log(user_perms);
     
     try {
         const response = await fetch(`${basePath}/api/edituser`, {
@@ -225,6 +222,10 @@ async function editPermissions(button){
                     }, 
                     kind: "User" 
                 },
+                // To be clear, just because its set to true at this point in the code, does not mean it gets to 
+                // demand the server to not require auth to prevent spoofing, the only time it respects that request is if its
+                // made internally
+                require_auth: true,
                 jwt
             })
         });
