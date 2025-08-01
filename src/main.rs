@@ -338,7 +338,7 @@ struct AppState {
 }
 trait FsType {}
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct TcpFs{}
 impl FsType for TcpFs {}
 
@@ -348,16 +348,16 @@ pub struct RemoteFileSystem<S>
 where S: FsType
 {
     path: String,
-    state: S
+    state: Option<S>
 }
 
 impl RemoteFileSystem<TcpFs>
 // where S: FsType
  {
-    pub fn new(path: &str) -> Self {
+    pub fn new(path: &str, state: Option<TcpFs>) -> Self {
         Self {
             path: path.to_string(),
-            state: TcpFs::default(),
+            state,
         }
     }
 
@@ -374,7 +374,7 @@ impl RemoteFileSystem<TcpFs>
         }
         
         new_path.push_str(path_str);
-        Self::new(&new_path)
+        Self::new(&new_path, self.state.clone())
     }
 
     pub fn starts_with<P: AsRef<Path>>(&self, base: P) -> bool {
@@ -399,7 +399,7 @@ impl RemoteFileSystem<TcpFs>
                 acc
             });
         
-        Ok(Self::new(&normalized))
+        Ok(Self::new(&normalized, self.state.clone()))
     }
 
     pub fn is_dir(&self) -> bool {
@@ -413,17 +413,21 @@ impl RemoteFileSystem<TcpFs>
     pub fn file_name(&self) -> Option<&OsStr> {
         Path::new(&self.path).file_name()
     }
+
+    pub fn add_state(&mut self, state: TcpFs){
+        self.state = Some(state);
+    }
 }
 
 impl From<&str> for RemoteFileSystem<TcpFs> {
     fn from(s: &str) -> Self {
-        Self::new(s)
+        Self::new(s, None)
     }
 }
 
 impl From<String> for RemoteFileSystem<TcpFs> {
     fn from(s: String) -> Self {
-        Self::new(&s)
+        Self::new(&s, None)
     }
 }
 
@@ -456,8 +460,8 @@ pub struct RemoteMetadata {
 impl RemoteFs for RemoteFileSystem<TcpFs> {
     async fn read_dir(&self) -> std::io::Result<Vec<RemoteFileSystem<TcpFs>>> {
         Ok(vec![
-            RemoteFileSystem::new("file1.txt"),
-            RemoteFileSystem::new("folder1/"),
+            RemoteFileSystem::new("file1.txt", self.state.clone()),
+            RemoteFileSystem::new("folder1/", self.state.clone()),
         ])
     }
 
@@ -1679,7 +1683,7 @@ async fn get_files(
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
 
-    let base_path: RemoteFileSystem<TcpFs> = RemoteFileSystem::from("src/gameserver/server");
+    let base_path: RemoteFileSystem<TcpFs> = RemoteFileSystem::new("src/gameserver/server", None);
     let base_path: RemoteFileSystem<TcpFs> = match base_path.canonicalize() {
         Ok(path) => path,
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Server misconfiguration").into_response(),
