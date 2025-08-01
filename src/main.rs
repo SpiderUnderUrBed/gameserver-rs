@@ -11,7 +11,7 @@ use std::fmt::{self, Debug};
 use std::ops::Deref;
 use std::borrow::BorrowMut;
 use std::fs;
-use std::path::{Component, PathBuf};
+use std::path::{Component, Components, PathBuf};
 use std::{net::SocketAddr, path::Path, sync::Arc};
 
 // Axum is the routing framework, and the backbone to this project helping intergrate the backend with the frontend
@@ -336,28 +336,77 @@ struct AppState {
     client: Option<Client>,
     database: database::Database
 }
-trait FsType {}
-
-#[derive(Default, Clone)]
-struct TcpFs{}
-impl FsType for TcpFs {}
-
-// trait FsTraits: Any + Clone + Eq + PartialEq + Debug{}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RemoteFileSystem<S>
-where S: FsType
-{
-    path: String,
-    state: Option<S>
+#[async_trait::async_trait]
+pub trait FsType: Clone + Send + Sync {
+    async fn get_metadata(&self, path: &str) -> std::io::Result<FsMetadata>;
+    async fn list_directory(&self, path: &str) -> std::io::Result<Vec<FsEntry>>;
 }
 
-impl RemoteFileSystem<TcpFs>
-// where S: FsType
- {
-    pub fn new(path: &str, state: Option<TcpFs>) -> Self {
+#[derive(Debug, Clone, Deserialize)]
+pub struct FsMetadata {
+    pub is_file: bool,
+    pub is_dir: bool,
+    pub canonical_path: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct FsEntry {
+    pub name: String,
+    pub is_file: bool,
+    pub is_dir: bool,
+}
+
+// TCP Filesystem implementation - just 2 essential requests
+#[derive(Clone)]
+pub struct TcpFs {
+    tcp_tx: Arc<Mutex<mpsc::Sender<Vec<u8>>>>,
+    tcp_rx: Arc<Mutex<mpsc::Receiver<Vec<u8>>>>,
+}
+
+impl TcpFs {
+    pub fn new(tx: mpsc::Sender<Vec<u8>>, rx: mpsc::Receiver<Vec<u8>>) -> Self {
+        Self {
+            tcp_tx: Arc::new(Mutex::new(tx)),
+            tcp_rx: Arc::new(Mutex::new(rx)),
+        }
+    }
+
+    async fn send_request(&self, command: &[u8]) -> std::io::Result<Vec<u8>> {
+        // You'll implement the actual TCP communication here
+        todo!("Implement TCP request/response")
+    }
+}
+
+#[async_trait::async_trait]
+impl FsType for TcpFs {
+    async fn get_metadata(&self, path: &str) -> std::io::Result<FsMetadata> {
+        let request = format!("METADATA:{}", path).into_bytes();
+        let response = self.send_request(&request).await?;
+        Ok(serde_json::from_slice(&response)?)
+    }
+
+    async fn list_directory(&self, path: &str) -> std::io::Result<Vec<FsEntry>> {
+        let request = format!("LIST:{}", path).into_bytes();
+        let response = self.send_request(&request).await?;
+        Ok(serde_json::from_slice(&response)?)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RemoteFileSystem<S: FsType> {
+    path: String,
+    state: Option<S>,
+    cached_metadata: Option<FsMetadata>,
+    cached_entries: Option<Vec<FsEntry>>,
+}
+
+impl<S: FsType> RemoteFileSystem<S> {
+    pub fn new(path: &str, state: Option<S>) -> Self {
         Self {
             path: path.to_string(),
             state,
+            cached_metadata: None,
+            cached_entries: None,
         }
     }
 
@@ -382,56 +431,53 @@ impl RemoteFileSystem<TcpFs>
         self.path.starts_with(base_path)
     }
 
-    pub fn canonicalize(&self) -> std::io::Result<Self> {
-        let normalized = Path::new(&self.path)
-            .components()
-            .fold(String::new(), |mut acc, comp| {
-                match comp {
-                    Component::Normal(name) => {
-                        if !acc.is_empty() && !acc.ends_with('/') {
-                            acc.push('/');
-                        }
-                        acc.push_str(name.to_str().unwrap());
-                    }
-                    Component::RootDir => acc.push('/'),
-                    _ => {}
-                }
-                acc
-            });
+    pub async fn ensure_metadata(&mut self) -> std::io::Result<()> {
+        if self.cached_metadata.is_none() {
+            if let Some(state) = &self.state {
+                self.cached_metadata = Some(state.get_metadata(&self.path).await?);
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn ensure_entries(&mut self) -> std::io::Result<()> {
+        if self.cached_entries.is_none() {
+            if let Some(state) = &self.state {
+                self.cached_entries = Some(state.list_directory(&self.path).await?);
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn is_dir(&mut self) -> std::io::Result<bool> {
+        self.ensure_metadata().await?;
+        Ok(self.cached_metadata.as_ref().map(|m| m.is_dir).unwrap_or(false))
+    }
+
+    pub async fn is_file(&mut self) -> std::io::Result<bool> {
+        self.ensure_metadata().await?;
+        Ok(self.cached_metadata.as_ref().map(|m| m.is_file).unwrap_or(false))
+    }
+
+    pub async fn canonicalize(&mut self) -> std::io::Result<Self> {
+        self.ensure_metadata().await?;
+        let canonical_path = self.cached_metadata.as_ref()
+            .map(|m| m.canonical_path.clone())
+            .unwrap_or_else(|| self.path.clone());
         
-        Ok(Self::new(&normalized, self.state.clone()))
+        Ok(Self::new(&canonical_path, self.state.clone()))
     }
 
-    pub fn is_dir(&self) -> bool {
-        self.path.ends_with('/') || self.path.is_empty()
-    }
-
-    pub fn is_file(&self) -> bool {
-        !self.path.ends_with('/') && !self.path.is_empty()
-    }
-
-    pub fn file_name(&self) -> Option<&OsStr> {
-        Path::new(&self.path).file_name()
-    }
-
-    pub fn add_state(&mut self, state: TcpFs){
-        self.state = Some(state);
+    pub async fn read_dir(&mut self) -> std::io::Result<Vec<String>> {
+        self.ensure_entries().await?;
+        Ok(self.cached_entries.as_ref()
+            .map(|entries| entries.iter().map(|e| e.name.clone()).collect())
+            .unwrap_or_default())
     }
 }
 
-impl From<&str> for RemoteFileSystem<TcpFs> {
-    fn from(s: &str) -> Self {
-        Self::new(s, None)
-    }
-}
-
-impl From<String> for RemoteFileSystem<TcpFs> {
-    fn from(s: String) -> Self {
-        Self::new(&s, None)
-    }
-}
-
-impl Deref for RemoteFileSystem<TcpFs> {
+// Common trait implementations
+impl<S: FsType> Deref for RemoteFileSystem<S> {
     type Target = Path;
 
     fn deref(&self) -> &Self::Target {
@@ -439,16 +485,15 @@ impl Deref for RemoteFileSystem<TcpFs> {
     }
 }
 
-impl fmt::Display for RemoteFileSystem<TcpFs> {
+impl<S: FsType> fmt::Display for RemoteFileSystem<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.path)
     }
 }
-
 #[async_trait]
 pub trait RemoteFs {
     async fn read_dir(&self) -> std::io::Result<Vec<RemoteFileSystem<TcpFs>>>;
-    async fn metadata(&self) -> std::io::Result<RemoteMetadata>;
+    async fn metadata(&mut self) -> std::io::Result<RemoteMetadata>;
 }
 
 pub struct RemoteMetadata {
@@ -465,14 +510,14 @@ impl RemoteFs for RemoteFileSystem<TcpFs> {
         ])
     }
 
-    async fn metadata(&self) -> std::io::Result<RemoteMetadata> {
+    async fn metadata(&mut self) -> std::io::Result<RemoteMetadata> {
         Ok(RemoteMetadata {
-            is_file: self.is_file(),
-            is_dir: self.is_dir(),
+            is_file: self.is_file().await?,
+            is_dir: self.is_dir().await?,
         })
     }
 }
-
+ 
 // for the initial connection attempt, which will determine if possibly I would need to create the container and deployment upon failure
 // i will use rusts 'timeout' for x interval determined with CONNECTION_TIMEOUT
 async fn attempt_connection() -> Result<TcpStream, Box<dyn std::error::Error + Send + Sync>> {
@@ -1683,17 +1728,17 @@ async fn get_files(
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
 
-    let base_path: RemoteFileSystem<TcpFs> = RemoteFileSystem::new("src/gameserver/server", None);
-    let base_path: RemoteFileSystem<TcpFs> = match base_path.canonicalize() {
+    let mut base_path: RemoteFileSystem<TcpFs> = RemoteFileSystem::new("src/gameserver/server", None);
+    let base_path: RemoteFileSystem<TcpFs> = match base_path.canonicalize().await {
         Ok(path) => path,
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Server misconfiguration").into_response(),
     };
 
     let user_input = request.message.trim_start_matches('/');
 
-    let requested_path: RemoteFileSystem<TcpFs> = base_path.join(user_input);
+    let mut requested_path: RemoteFileSystem<TcpFs> = base_path.join(user_input);
 
-    let canonical_path: RemoteFileSystem<TcpFs> = match requested_path.canonicalize() {
+    let canonical_path: RemoteFileSystem<TcpFs> = match requested_path.canonicalize().await {
         Ok(path) => path,
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid path").into_response(),
     };
@@ -1706,12 +1751,12 @@ async fn get_files(
         Ok(entries) => {
             let mut items: Vec<FsItem> = Vec::new();
 
-            for entry in entries {
+            for mut entry in entries {
                 let name = entry.file_name().unwrap_or_default().to_string_lossy().into_owned();
 
-                if entry.is_dir() {
+                if entry.is_dir().await.unwrap() {
                     items.push(FsItem::Folder(name));
-                } else if entry.is_file() {
+                } else if entry.is_file().await.unwrap() {
                     items.push(FsItem::File(name));
                 }
             }
