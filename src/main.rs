@@ -4,10 +4,14 @@ use std::cell::RefCell;
 // first imports are std ones
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::fmt::Debug;
+use std::ffi::OsStr;
+use std::fmt::{self, Debug};
 // use std::fs;
 // use std::rc::Rc;
+use std::ops::Deref;
 use std::borrow::BorrowMut;
+use std::fs;
+use std::path::{Component, PathBuf};
 use std::{net::SocketAddr, path::Path, sync::Arc};
 
 // Axum is the routing framework, and the backbone to this project helping intergrate the backend with the frontend
@@ -279,11 +283,16 @@ struct IncomingMessage {
     authcode: String,
 }
 
-// #[derive(Debug, Deserialize, Serialize, Clone)]
-// struct AuthorizationAction {
-//     message: String,
-//     jwt: 
+// struct FsItem {
+//     name: 
 // }
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(tag = "kind", content = "data")]
+enum FsItem {
+    File(String),
+    Folder(String)
+}
 
 // Some common api calls which is just what might get exchanged between the frontend and backend via api
 // this is needed rather than a bunch of structs or however else I might do it because in some cases I might not know what api call to expect
@@ -299,6 +308,7 @@ enum ApiCalls {
     UserList(Vec<User>),
     ButtonList(Vec<Button>),
     IncomingMessage(IncomingMessage),
+    FileList(Vec<FsItem>)
 }
 
 #[derive(Clone)]
@@ -326,7 +336,138 @@ struct AppState {
     client: Option<Client>,
     database: database::Database
 }
+trait FsType {}
 
+#[derive(Default)]
+struct TcpFs{}
+impl FsType for TcpFs {}
+
+// trait FsTraits: Any + Clone + Eq + PartialEq + Debug{}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteFileSystem<S>
+where S: FsType
+{
+    path: String,
+    state: S
+}
+
+impl RemoteFileSystem<TcpFs>
+// where S: FsType
+ {
+    pub fn new(path: &str) -> Self {
+        Self {
+            path: path.to_string(),
+            state: TcpFs::default(),
+        }
+    }
+
+    pub fn as_path(&self) -> &Path {
+        Path::new(&self.path)
+    }
+
+    pub fn join<P: AsRef<Path>>(&self, path: P) -> Self {
+        let mut new_path = self.path.clone();
+        let path_str = path.as_ref().to_str().unwrap_or("");
+        
+        if !new_path.ends_with('/') && !path_str.starts_with('/') {
+            new_path.push('/');
+        }
+        
+        new_path.push_str(path_str);
+        Self::new(&new_path)
+    }
+
+    pub fn starts_with<P: AsRef<Path>>(&self, base: P) -> bool {
+        let base_path = base.as_ref().to_str().unwrap_or("");
+        self.path.starts_with(base_path)
+    }
+
+    pub fn canonicalize(&self) -> std::io::Result<Self> {
+        let normalized = Path::new(&self.path)
+            .components()
+            .fold(String::new(), |mut acc, comp| {
+                match comp {
+                    Component::Normal(name) => {
+                        if !acc.is_empty() && !acc.ends_with('/') {
+                            acc.push('/');
+                        }
+                        acc.push_str(name.to_str().unwrap());
+                    }
+                    Component::RootDir => acc.push('/'),
+                    _ => {}
+                }
+                acc
+            });
+        
+        Ok(Self::new(&normalized))
+    }
+
+    pub fn is_dir(&self) -> bool {
+        self.path.ends_with('/') || self.path.is_empty()
+    }
+
+    pub fn is_file(&self) -> bool {
+        !self.path.ends_with('/') && !self.path.is_empty()
+    }
+
+    pub fn file_name(&self) -> Option<&OsStr> {
+        Path::new(&self.path).file_name()
+    }
+}
+
+impl From<&str> for RemoteFileSystem<TcpFs> {
+    fn from(s: &str) -> Self {
+        Self::new(s)
+    }
+}
+
+impl From<String> for RemoteFileSystem<TcpFs> {
+    fn from(s: String) -> Self {
+        Self::new(&s)
+    }
+}
+
+impl Deref for RemoteFileSystem<TcpFs> {
+    type Target = Path;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_path()
+    }
+}
+
+impl fmt::Display for RemoteFileSystem<TcpFs> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.path)
+    }
+}
+
+#[async_trait]
+pub trait RemoteFs {
+    async fn read_dir(&self) -> std::io::Result<Vec<RemoteFileSystem<TcpFs>>>;
+    async fn metadata(&self) -> std::io::Result<RemoteMetadata>;
+}
+
+pub struct RemoteMetadata {
+    pub is_file: bool,
+    pub is_dir: bool,
+}
+
+#[async_trait]
+impl RemoteFs for RemoteFileSystem<TcpFs> {
+    async fn read_dir(&self) -> std::io::Result<Vec<RemoteFileSystem<TcpFs>>> {
+        Ok(vec![
+            RemoteFileSystem::new("file1.txt"),
+            RemoteFileSystem::new("folder1/"),
+        ])
+    }
+
+    async fn metadata(&self) -> std::io::Result<RemoteMetadata> {
+        Ok(RemoteMetadata {
+            is_file: self.is_file(),
+            is_dir: self.is_dir(),
+        })
+    }
+}
 
 // for the initial connection attempt, which will determine if possibly I would need to create the container and deployment upon failure
 // i will use rusts 'timeout' for x interval determined with CONNECTION_TIMEOUT
@@ -1531,9 +1672,55 @@ async fn handle_static_request(
     }
 }
 
-async fn get_files(State(arc_state): State<Arc<RwLock<AppState>>>, Json(request): Json<IncomingMessage>) -> impl IntoResponse {
+async fn get_files(
+    State(_arc_state): State<Arc<RwLock<AppState>>>,
+    Json(request): Json<IncomingMessage>,
+) -> impl IntoResponse {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
 
+    let base_path: RemoteFileSystem<TcpFs> = RemoteFileSystem::from("src/gameserver/server");
+    let base_path: RemoteFileSystem<TcpFs> = match base_path.canonicalize() {
+        Ok(path) => path,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Server misconfiguration").into_response(),
+    };
+
+    let user_input = request.message.trim_start_matches('/');
+
+    let requested_path: RemoteFileSystem<TcpFs> = base_path.join(user_input);
+
+    let canonical_path: RemoteFileSystem<TcpFs> = match requested_path.canonicalize() {
+        Ok(path) => path,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid path").into_response(),
+    };
+
+    if !canonical_path.starts_with(&*base_path) {
+        return (StatusCode::FORBIDDEN, "Forbidden: escape attempt").into_response();
+    }
+
+    match canonical_path.read_dir().await {
+        Ok(entries) => {
+            let mut items: Vec<FsItem> = Vec::new();
+
+            for entry in entries {
+                let name = entry.file_name().unwrap_or_default().to_string_lossy().into_owned();
+
+                if entry.is_dir() {
+                    items.push(FsItem::Folder(name));
+                } else if entry.is_file() {
+                    items.push(FsItem::File(name));
+                }
+            }
+
+            Json(List {
+                list: ApiCalls::FileList(items),
+            })
+            .into_response()
+        }
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read dir").into_response(),
+    }
 }
+
 // async fn get_files(
 //     State(arc_state): State<Arc<RwLock<AppState>>>,
 //     Query(params): Query<FileParams>
