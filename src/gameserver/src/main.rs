@@ -14,26 +14,6 @@ const SERVER_DIR: &str = "server";
 
 struct Minecraft;
 
-#[derive(Serialize, Deserialize)]
-struct FileRequestMessage {
-    id: u64,
-    #[serde(flatten)]
-    payload: FileRequestPayload,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "type", content = "data")]
-enum FileRequestPayload {
-    Metadata { path: String },
-    ListDir { path: String },
-}
-
-#[derive(Serialize, Deserialize)]
-struct FileResponseMessage {
-    in_response_to: u64,
-    data: Vec<u8>,
-}
-
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct List {
     list: Vec<String>,
@@ -223,9 +203,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let verbose = std::env::var("VERBOSE").is_ok();
     let shared_stdin: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
-    let hostname: Arc<Result<OsString, String>> = Arc::new(match hostname::get() {
+    let hostname: Arc<Result<OsString, String>> =  Arc::new(match get(){
         Ok(hostname) => Ok(hostname),
-        Err(err) => Err(err.to_string()),
+        Err(err) => Err(err.to_string())
     });
 
     loop {
@@ -234,94 +214,147 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let stdin_ref = shared_stdin.clone();
 
         tokio::spawn(async move {
-            let (read_half, write_half) = socket.into_split();
+            
+            let (read_half, write_half) = split(socket);
             let mut reader = BufReader::new(read_half);
-            let mut writer = write_half;
             let mut buf = String::new();
 
-            let (cmd_tx, mut cmd_rx) = mpsc::channel::<FileResponseMessage>(32);
+            let (out_tx, mut out_rx) = mpsc::channel::<String>(32);
+            let (cmd_tx, mut cmd_rx) = mpsc::channel::<String>(32);
 
-            // Response handler task
-            tokio::spawn(async move {
-                while let Some(response) = cmd_rx.recv().await {
-                    if let Ok(json) = serde_json::to_string(&response) {
-                        let _ = writer.write_all((json + "\n").as_bytes()).await;
+                tokio::spawn(async move {
+                    let mut writer = write_half;
+                    loop {
+                        tokio::select! {
+                            Some(msg) = cmd_rx.recv() => {
+                                let payload = json!({"type":"info","data":msg,"authcode": "0"}).to_string() + "\n";
+                                let _ = writer.write_all(payload.as_bytes()).await;
+                            }
+                            Some(out) = out_rx.recv() => {
+                                // println!("{}", out);
+                                let _ = writer.write_all((out + "\n").as_bytes()).await;
+                            }
+                            else => break,
+                        }
                     }
-                }
-            });
+                    
+                });
 
-            loop {
-                buf.clear();
-                let n = reader.read_line(&mut buf).await;
-                if let Ok(0) = n {
-                    break;
-                }
-                if let Err(e) = n {
-                    eprintln!("Read error: {}", e);
-                    break;
-                }
+                loop {
+                    buf.clear();
+                    let n = reader.read_line(&mut buf).await;
+                    if let Ok(0) = n { break; }
+                    if let Err(e) = n { 
+                        eprintln!("Read error: {}", e);
+                    break; }
 
-                let line = buf.trim_end();
-                if line.starts_with('{') {
-                    match serde_json::from_str::<FileRequestMessage>(line) {
-                        Ok(request) => {
-                            let response = match request.payload {
-                                FileRequestPayload::Metadata { path } => {
-                                    // Handle metadata request
-                                    FileResponseMessage {
-                                        in_response_to: request.id,
-                                        data: serde_json::to_vec(&FsMetadata {
-                                            is_file: false,
-                                            is_dir: true,
-                                            canonical_path: path,
-                                        })?,
+                    let line = buf.trim_end();
+                    println!("{:#?}", line);
+                    if line.starts_with('{') {
+                            if let Ok(json_line) = serde_json::from_str::<Value>(&line) {
+                                if let Ok(val) =  serde_json::from_value::<MessagePayload>(json_line.clone()) {
+                                    let typ = val.r#type;
+                                    if typ == "command" {
+                                        let cmd_str = val.message;
+                                        if cmd_str == "create_server" {
+                                            if let Some(prov) = get_provider("minecraft") {
+                                                if let Some(cmd) = prov.pre_hook() {
+                                                    let _ = run_command_live_output(cmd, "Pre-hook".into(), Some(cmd_tx.clone()), None).await;
+                                                }
+                                                if let Some(cmd) = prov.install() {
+                                                    let _ = run_command_live_output(cmd, "Install".into(), Some(cmd_tx.clone()), None).await;
+                                                }
+                                                if let Some(cmd) = prov.post_hook() {
+                                                    let _ = run_command_live_output(cmd, "Post-hook".into(), Some(cmd_tx.clone()), None).await;
+                                                }
+                                                if let Some(cmd) = prov.start() {
+                                                    println!("starting");
+                                                    let tx = cmd_tx.clone();
+                                                    let stdin_clone = stdin_ref.clone();
+                                                    tokio::spawn(async move {
+                                                        let _ = run_command_live_output(cmd, "Server".into(), Some(tx), Some(stdin_clone)).await;
+                                                    });
+                                                    let _ = cmd_tx.send("Server started".into()).await;
+                                                }
+                                            }
+                                        } else if cmd_str == "stop_server" {
+                                            let input = "stop";
+                                            let mut guard = stdin_ref.lock().await;
+                                            if let Some(stdin) = guard.as_mut() {
+                                                let _ = stdin.write_all(format!("{}\n", input).as_bytes()).await;
+                                                let _ = stdin.flush().await;
+                                                let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
+                                            }
+                                        } else if cmd_str == "start_server" { 
+                                            if let Some(prov) = get_provider("minecraft") {
+                                                if let Some(cmd) = prov.start() {
+                                                    println!("starting");
+                                                    let tx = cmd_tx.clone();
+                                                    let stdin_clone = stdin_ref.clone();
+                                                    tokio::spawn(async move {
+                                                        let _ = run_command_live_output(cmd, "Server".into(), Some(tx), Some(stdin_clone)).await;
+                                                    });
+                                                    let _ = cmd_tx.send("Server started".into()).await;
+                                                }
+                                            }
+                                        } else if cmd_str == "server_data" {
+                                            let _ = cmd_tx.send(
+                                                serde_json::to_string(
+                                                    &GetState {
+                                                        start_keyword: "help".to_string(),
+                                                        stop_keyword: "All dimensions are saved".to_string()
+                                                    }
+                                                ).expect("Failed, not json")
+                                            ).await;                                 
+                                        } else if cmd_str == "server_name" { 
+                                            let hostname_str = match hostname.as_ref() {
+                                                Ok(os) => os.to_string_lossy().to_string(),
+                                                Err(e) => e.clone(), 
+                                            };
+                                            let _ = cmd_tx.send(
+                                                serde_json::to_string(
+                                                    &MessagePayload {
+                                                        r#type: "command".to_string(),
+                                                        message: hostname_str,
+                                                        authcode: "0".to_string(),
+                                                    }
+                                                ).expect("Failed, not json")
+                                            ).await;                  
+                                        } else {
+                                            let _ = cmd_tx.send(format!("Unknown command: {}", cmd_str)).await;
+                                        }
+                                    } else if typ == "console" {
+                                        let input = val.message;
+                                        let mut guard = stdin_ref.lock().await;
+                                        if let Some(stdin) = guard.as_mut() {
+                                            let _ = stdin.write_all(format!("{}\n", input).as_bytes()).await;
+                                            let _ = stdin.flush().await;
+                                            let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
+                                        }
                                     }
-                                }
-                                FileRequestPayload::ListDir { path } => {
-                                    // Handle directory listing
-                                    FileResponseMessage {
-                                        in_response_to: request.id,
-                                        data: serde_json::to_vec(&vec![
-                                            FsEntry {
-                                                name: "file1.txt".to_string(),
-                                                is_file: true,
-                                                is_dir: false,
-                                            },
-                                            FsEntry {
-                                                name: "folder1".to_string(),
-                                                is_file: false,
-                                                is_dir: true,
-                                            },
-                                        ])?,
-                                    }
-                                }
-                            };
-
-                            if let Err(e) = cmd_tx.send(response).await {
-                                eprintln!("Failed to send response: {}", e);
+                                } 
+                            else if let Ok(val) = json_line.clone().try_into() as Result<List, _> {
+                                println!("Recived capabilities");
+                                let _ = out_tx.send(
+                                    serde_json::to_string(
+                                        &List {
+                                            list: vec!["all".to_string()]
+                                        }
+                                    )
+                                    .unwrap()
+                                ).await;
+                            } else {
+                                println!("{:#?}", json_line);
                             }
                         }
-                        Err(e) => {
-                            eprintln!("Failed to parse request: {}", e);
-                        }
-                    }
                 } else if !line.is_empty() {
-                    // Handle legacy commands
-                    let response = if line == "create_server" {
-                        // Server creation logic...
-                        FileResponseMessage {
-                            in_response_to: 0, // No ID for legacy commands
-                            data: serde_json::to_vec("Server created")?,
-                        }
+                    let mut guard = stdin_ref.lock().await;
+                    if let Some(stdin) = guard.as_mut() {
+                        let _ = stdin.write_all(format!("{}\n", line).as_bytes()).await;
+                        let _ = stdin.flush().await;
+                        let _ = cmd_tx.send(format!("Sent to server: {}", line)).await;
                     } else {
-                        FileResponseMessage {
-                            in_response_to: 0,
-                            data: serde_json::to_vec("Unknown command")?,
-                        }
-                    };
-
-                    if let Err(e) = cmd_tx.send(response).await {
-                        eprintln!("Failed to send response: {}", e);
+                        let _ = cmd_tx.send("Server not running".into()).await;
                     }
                 }
             }

@@ -1,6 +1,53 @@
 const basePath = document.querySelector('meta[name="site-url"]').content.replace(/\/$/, '');
 let previous_path = "";
 
+let globalWs = null;
+function connectWebSocket(){
+  globalWs = new WebSocket(`${basePath}/api/ws`);
+
+  globalWs.addEventListener("open", () => {
+    console.log("WebSocket connected");
+  //   reconnectAttempts = 0;
+  });
+
+  // globalWs.addEventListener("message", (e) => {
+  //   const lines = e.data.split("\n");
+  //   lines.forEach((line) => {
+  //     if (line.trim() === "") return;
+
+  //     if (rawOutputEnabled) {
+  //       addResult("", line, false, true);
+  //       return;
+  //     }
+
+  //     try {
+  //       const parsed = JSON.parse(line);
+  //       processMessage(parsed);
+  //     } catch {
+  //       const cleaned = cleanOutput(line);
+  //       if (cleaned) {
+  //         addResult("", cleaned, false, true);
+  //       }
+  //     }
+  //   });
+  // });
+
+  globalWs.addEventListener("close", (event) => {
+    console.log("WebSocket disconnected", event.code, event.reason);
+    // addResult("", "Disconnected from server", false, true);
+    connectWebSocket()
+  //   reconnectAttempts++;
+  //   const retryIn = Math.min(30000, 1000 * 2 ** reconnectAttempts);
+  //   setTimeout(() => connectWebSocket(), retryIn);
+  });
+
+  globalWs.addEventListener("error", (err) => {
+    console.error("WebSocket error:", err);
+    //addResult("", `WebSocket error: ${err.message}`, false, true);
+  });
+}
+connectWebSocket()
+
 async function get_files(path) {
   let fileview = document.getElementById("center");
   fileview.innerHTML = "";

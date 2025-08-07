@@ -50,6 +50,7 @@ use crate::database::databasespec::NodesDatabase;
 use crate::database::databasespec::UserDatabase;
 use crate::database::databasespec::ButtonsDatabase;
 use crate::database::Node;
+use crate::broadcast::Receiver;
 // miscellancious imports, future traits are used because alot of the code is asyncronus and cant fully be contained in tokio
 // mime_guess as when I am serving the files, I need to serve it with the correct mime type
 // serde_json because I exchange alot of json data between the backend and frontend and to the gameserver
@@ -323,11 +324,12 @@ enum Status {
 // which includes the sender and reciver to the tcp connection for gameserver, the websocket sender (receiver only needs to be managed by its own handler)
 // the base path like if all the routes are prefixed with something like /gameserver-rs which is the default for my testing deployment, and database as its needed frequently 
 // for user information and etc
-#[derive(Clone)]
+// #[derive(Clone)]
 struct AppState {
-    tcp_tx: Arc<Mutex<mpsc::Sender<Vec<u8>>>>,
-    tcp_rx: Arc<Mutex<mpsc::Receiver<Vec<u8>>>>,
-    
+    // tcp_tx: Arc<Mutex<mpsc::Sender<Vec<u8>>>>,
+    tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
+    tcp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
+    // tcp_rx: Arc<Mutex<mpsc::Receiver<Vec<u8>>>>,
     gameserver: Value,
     status: Status,
     ws_tx: broadcast::Sender<String>,
@@ -336,10 +338,25 @@ struct AppState {
     client: Option<Client>,
     database: database::Database
 }
+impl Clone for AppState {
+    fn clone(&self) -> Self {
+        AppState {
+            tcp_tx: self.tcp_tx.clone(),
+            tcp_rx: self.tcp_rx.resubscribe(),
+            gameserver: self.gameserver.clone(),
+            status: self.status.clone(),
+            ws_tx: self.ws_tx.clone(),
+            base_path: self.base_path.clone(),
+            client: self.client.clone(),
+            database: self.database.clone(),
+        }
+    }
+}
+
 #[async_trait::async_trait]
 pub trait FsType: Clone + Send + Sync {
-    async fn get_metadata(&self, path: &str) -> std::io::Result<FsMetadata>;
-    async fn list_directory(&self, path: &str) -> std::io::Result<Vec<FsEntry>>;
+    async fn get_metadata(&mut self, path: &str) -> std::io::Result<FsMetadata>;
+    async fn list_directory(&mut self, path: &str) -> std::io::Result<Vec<FsEntry>>;
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -380,23 +397,33 @@ struct FileResponseMessage {
 }
 
 // TCP Filesystem implementation
-#[derive(Clone)]
+#[derive(Debug)]
 pub struct TcpFs {
-    tcp_tx: Arc<Mutex<mpsc::Sender<Vec<u8>>>>,
-    tcp_rx: Arc<Mutex<mpsc::Receiver<Vec<u8>>>>,
+    tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
+    tcp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
     request_id: Arc<AtomicU64>,
 }
+impl Clone for TcpFs {
+    fn clone(&self) -> Self {
+        TcpFs {
+            tcp_tx: self.tcp_tx.clone(),
+            tcp_rx: self.tcp_tx.subscribe(),
+            request_id: self.request_id.clone(),
+        }
+    }
+}
+
 
 impl TcpFs {
-    pub fn new(tx: mpsc::Sender<Vec<u8>>, rx: mpsc::Receiver<Vec<u8>>) -> Self {
+    pub fn new(tx: tokio::sync::broadcast::Sender<Vec<u8>>, rx: tokio::sync::broadcast::Receiver<Vec<u8>>) -> Self {
         Self {
-            tcp_tx: Arc::new(Mutex::new(tx)),
-            tcp_rx: Arc::new(Mutex::new(rx)),
+            tcp_tx: tx,
+            tcp_rx: rx,
             request_id: Arc::new(AtomicU64::new(0)),
         }
     }
 
-    async fn send_request(&self, payload: FileRequestPayload) -> std::io::Result<Vec<u8>> {
+    async fn send_request(&mut self, payload: FileRequestPayload) -> std::io::Result<Vec<u8>> {
         let id = self.request_id.fetch_add(1, Ordering::SeqCst);
         println!("[Request {}] Creating new request", id);
 
@@ -408,10 +435,10 @@ impl TcpFs {
 
         // Send request
         println!("[Request {}] Acquiring TX lock...", id);
-        let mut tx = self.tcp_tx.lock().await;
+        let mut tx = self.tcp_tx.clone();
         println!("[Request {}] TX lock acquired, sending {} bytes", id, serialized.len());
         
-        tx.send(serialized).await.map_err(|e| {
+        tx.send(serialized).map_err(|e| {
             println!("[Request {}] ERROR: Send failed: {}", id, e);
             std::io::Error::new(std::io::ErrorKind::ConnectionAborted, e)
         })?;
@@ -420,7 +447,7 @@ impl TcpFs {
 
         // Wait for response
         println!("[Request {}] Acquiring RX lock...", id);
-        let mut rx = self.tcp_rx.lock().await;
+        let mut rx = &mut self.tcp_rx;
         println!("[Request {}] RX lock acquired, waiting for response...", id);
         
         let start_time = std::time::Instant::now();
@@ -440,9 +467,10 @@ impl TcpFs {
                 last_print = std::time::Instant::now();
             }
 
-            let response = rx.recv().await.ok_or_else(|| {
+            let response = rx.recv().await.or_else(|_| {
                 println!("[Request {}] ERROR: Channel closed while waiting", id);
-                std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "Channel closed")
+                Err(std::io::ErrorKind::ConnectionAborted)
+                //, "Channel closed"
             })?;
 
             println!("[Request {}] Received {} bytes", id, response.len());
@@ -472,7 +500,7 @@ impl TcpFs {
 }
 #[async_trait::async_trait]
 impl FsType for TcpFs {
-    async fn get_metadata(&self, path: &str) -> std::io::Result<FsMetadata> {
+    async fn get_metadata(&mut self, path: &str) -> std::io::Result<FsMetadata> {
         let response = self.send_request(FileRequestPayload::Metadata {
             path: path.to_string()
         }).await?;
@@ -480,7 +508,7 @@ impl FsType for TcpFs {
         Ok(serde_json::from_slice(&response)?)
     }
 
-    async fn list_directory(&self, path: &str) -> std::io::Result<Vec<FsEntry>> {
+    async fn list_directory(&mut self, path: &str) -> std::io::Result<Vec<FsEntry>> {
         let response = self.send_request(FileRequestPayload::ListDir {
             path: path.to_string()
         }).await?;
@@ -530,7 +558,7 @@ impl<S: FsType> RemoteFileSystem<S> {
 
     pub async fn ensure_metadata(&mut self) -> std::io::Result<()> {
         if self.cached_metadata.is_none() {
-            if let Some(state) = &self.state {
+            if let Some(state) = &mut self.state {
                 self.cached_metadata = Some(state.get_metadata(&self.path).await?);
             }
         }
@@ -539,7 +567,7 @@ impl<S: FsType> RemoteFileSystem<S> {
 
     pub async fn ensure_entries(&mut self) -> std::io::Result<()> {
         if self.cached_entries.is_none() {
-            if let Some(state) = &self.state {
+            if let Some(state) = &mut self.state {
                 self.cached_entries = Some(state.list_directory(&self.path).await?);
             }
         }
@@ -755,7 +783,7 @@ async fn handle_server_data(
 // `tokio::select!` is used to concurrently wait for either incoming TCP data or messages from the channel to send.
 async fn handle_stream(
     state: Arc<RwLock<AppState>>,
-    rx: Arc<Mutex<mpsc::Receiver<Vec<u8>>>>,
+    rx: &mut tokio::sync::broadcast::Receiver<Vec<u8>>,
     stream: &mut TcpStream,
     ws_tx: broadcast::Sender<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -878,36 +906,52 @@ async fn handle_stream(
 
     reader = buf_reader.into_inner();
 
-    loop {
-        let mut rx_guard = rx.lock().await;
-        tokio::select! {
-            result = reader.read(&mut buf) => match result {
-                Ok(0) => return Ok(()),
-                Ok(n) => handle_server_data(state.clone(), &buf[..n], &ws_tx).await?,
-                Err(e) => return Err(e.into()),
-            },
-            result = rx_guard.recv() => if let Some(data) = result {
-                writer.write_all(&data).await?;
-                writer.write_all(b"\n").await?;
-                writer.flush().await?;
-            } else {
-                return Ok(());
+loop {
+    let res: Result<(), Box<dyn std::error::Error + Send + Sync>> = tokio::select! {
+        result = reader.read(&mut buf) => {
+            match result {
+                Ok(0) => break Ok(()),
+                Ok(n) => {
+                    handle_server_data(state.clone(), &buf[..n], &ws_tx).await?;
+                    Ok(())
+                }
+                Err(e) => break Err(e.into()),
             }
         }
-    }
+        result = rx.recv() => {
+            match result {
+                Ok(data) => {
+                    writer.write_all(&data).await?;
+                    writer.write_all(b"\n").await?;
+                    writer.flush().await?;
+                    Ok(())
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    eprintln!("Lagged: missed {} messages", skipped);
+                    Ok(())
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    break Ok(()); 
+                }
+            }
+        }
+    };
+    res?;
+}
+
 }
 
 // does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
 async fn connect_to_server(
     state: Arc<RwLock<AppState>>,
-    rx: Arc<Mutex<mpsc::Receiver<Vec<u8>>>>,
+    mut rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
     ws_tx: broadcast::Sender<String>,
 ) -> Result<SocketAddr, Box<dyn std::error::Error + Send + Sync>> {
 
     loop {
         match timeout(CONNECTION_TIMEOUT, TcpStream::connect(TcpUrl)).await {
             Ok(Ok(mut stream)) => {
-                let stream_result = handle_stream(state.clone(), rx.clone(), &mut stream, ws_tx.clone()).await;
+                let stream_result = handle_stream(state.clone(), &mut rx, &mut stream, ws_tx.clone()).await;
                 if stream_result.is_ok() {
                     return Ok(stream.peer_addr()?);
                     // Node {
@@ -933,19 +977,21 @@ async fn connect_to_server(
 async fn try_initial_connection(
     state: Arc<RwLock<AppState>>,
     ws_tx: broadcast::Sender<String>,
-    tcp_tx: Arc<Mutex<mpsc::Sender<Vec<u8>>>>,
+    tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match attempt_connection().await {
         Ok(mut stream) => {
             println!("Initial connection succeeded!");
 
-            let (temp_tx, temp_rx) = mpsc::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+            let (temp_tx, temp_rx) = tokio::sync::broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
 
-            {
-                let mut guard = tcp_tx.lock().await;
-                *guard = temp_tx;
-            }
-            handle_stream(state,Arc::new(Mutex::new(temp_rx)), &mut stream, ws_tx).await
+            // {
+            //     let mut guard = tcp_tx;
+            //     *guard = temp_tx;
+            // }
+
+            let mut temp_rx = temp_rx; // make receiver mutable
+            handle_stream(state, &mut temp_rx, &mut stream, ws_tx).await
         }
         Err(e) => {
             eprintln!("Initial connection failed: {}", e);
@@ -986,7 +1032,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // creates a websocket broadcase and tcp channels
     let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
-    let (tcp_tx, tcp_rx) = mpsc::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+    let (tcp_tx, tcp_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+
 
     // sets the client to be none by default unless this is ran the stanard way which will be ran with the appropriate feature-flag
     // which will set the k8s client
@@ -999,8 +1046,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let state = AppState {
         gameserver: json!({}),
         status: Status::Down,
-        tcp_tx: Arc::new(Mutex::new(tcp_tx)),
-        tcp_rx: Arc::new(Mutex::new(tcp_rx)),
+        tcp_tx: tcp_tx,
+        // tcp_rx: Arc::new(Mutex::new(tcp_rx)),
+        tcp_rx: tcp_rx,
         ws_tx: ws_tx.clone(),
         base_path: base_path.clone(),
         database,
@@ -1027,7 +1075,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // takes the tcp connection out of the arc mutex and gets a connection to the 
     // websocket to send to connect_to_server to establish the date pipeline
     let server_connection_state = multifaceted_state.clone();
-    let bridge_rx = multifaceted_state.read().await.tcp_rx.clone();
+    let bridge_rx = multifaceted_state.read().await.tcp_rx.resubscribe();
     let bridge_tx = multifaceted_state.read().await.ws_tx.clone();
 
     tokio::spawn(async move {
@@ -1201,8 +1249,9 @@ async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
                     state.tcp_tx.clone()
                 };
 
-                let mut lock = tcp_tx.lock().await;
-                let _ = lock.send(bytes).await;
+                // let mut lock = tcp_tx.lock().await;
+                let mut lock = tcp_tx;
+                let _ = lock.send(bytes);
 
             }
         }
@@ -1283,7 +1332,7 @@ async fn ws_debug(conn_id: usize, arc_state: Arc<RwLock<AppState>>, sender: Arc<
                                 bytes.push(b'\n');
                                 println!("[Conn {}] SERIALIZED TO {} BYTES", conn_id, bytes.len());
                                 
-                                match state.tcp_tx.lock().await.send(bytes).await {
+                                match state.tcp_tx.send(bytes) {
                                     Ok(_) => println!("[Conn {}] SENT TO TCP", conn_id),
                                     Err(e) => println!("[Conn {}] TCP SEND FAILED: {}", conn_id, e),
                                 }
@@ -1514,9 +1563,9 @@ async fn process_general(
                 json_bytes.push(b'\n');
     
                 let tx = state.tcp_tx.clone();
-                let tx_guard = tx.lock().await;
+                let tx_guard = tx;
                 
-                match tx_guard.send(json_bytes).await {
+                match tx_guard.send(json_bytes) {
                     Ok(_) => {
                         println!("Successfully forwarded message to TCP server");
                         Ok(Json(ResponseMessage {
@@ -1601,8 +1650,8 @@ async fn receive_message(
             Ok(mut json_bytes) => {
                 json_bytes.push(b'\n'); 
                 
-                let tx_guard = state.tcp_tx.lock().await;
-                match tx_guard.send(json_bytes).await {
+                let tx_guard = &state.tcp_tx;
+                match tx_guard.send(json_bytes) {
                     Ok(_) => Ok(Json(ResponseMessage {
                         response: format!("Successfully sent message: {}", payload.message),
                     })),
@@ -1817,81 +1866,106 @@ async fn handle_static_request(
             .unwrap()),
     }
 }
+use tracing::{debug, error};
 
-async fn get_files(
+pub async fn get_files(
     State(state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<IncomingMessage>,
 ) -> impl IntoResponse {
-    use axum::http::StatusCode;
-    use axum::response::IntoResponse;
+    println!("Received get_files request: {:?}", request);
 
-    // Get state
-    let state = state.read().await;
-    
+    // Clone tcp_tx (Arc<Mutex<Sender>>) and tcp_rx (broadcast::Receiver)
+    let (tcp_tx, tcp_rx_original) = {
+        let state = state.read().await;
+        println!("Acquired state read lock");
+        (state.tcp_tx.clone(), state.tcp_rx.resubscribe())
+    };
+
+    // Create a fresh broadcast receiver (subscription)
+    let tcp_rx = tcp_rx_original.resubscribe();
+    println!("Created new broadcast receiver via resubscribe()");
+
     // Create TcpFs instance
     let tcp_fs = {
-        let tx = state.tcp_tx.lock().await.clone(); // Sender can be cloned
-        
-        // Create a new channel pair for the receiver side
-        let (proxy_tx, proxy_rx) = mpsc::channel(32);
-        
-        // Spawn a task to forward messages from the original receiver
-        {
-            let mut rx_guard = state.tcp_rx.lock().await;
-            let original_rx = std::mem::replace(&mut *rx_guard, mpsc::channel(32).1); // Replace with dummy receiver
-            
-            tokio::spawn(async move {
-                let mut rx = original_rx;
-                while let Some(msg) = rx.recv().await {
-                    if proxy_tx.send(msg).await.is_err() {
-                        break;
-                    }
+        let tx = tcp_tx; // Clone sender from mutex lock
+        println!("Cloned TCP sender");
+
+        let (proxy_tx, proxy_rx) = tokio::sync::broadcast::channel(32);
+        println!("Created proxy channel");
+
+        // Spawn proxy forwarding task
+        tokio::spawn(async move {
+            println!("Spawned proxy forwarding task");
+            let mut rx = tcp_rx;
+            while let Ok(msg) = rx.recv().await {
+                println!("Proxy received message: {:?}", msg);
+                if proxy_tx.send(msg).is_err() {
+                    eprintln!("Failed to forward message to proxy_tx");
+                    break;
                 }
-            });
-        }
-        
+            }
+        });
+
         TcpFs::new(tx, proxy_rx)
     };
 
     // Initialize filesystem
     let mut base_path = RemoteFileSystem::new("src/gameserver/server", Some(tcp_fs));
-    
+    println!("Initialized remote filesystem at {:#?}", base_path);
+
     let user_input = request.message.trim_start_matches('/');
+    println!("User input after trim: {}", user_input);
+
     let requested_path = match base_path.join(user_input).canonicalize().await {
-        Ok(path) => path,
+        Ok(path) => {
+            println!("Canonicalized requested path: {:#?}", path);
+            path
+        }
         Err(e) => {
-            println!("Invalid path: {}", e);
+            eprintln!("Invalid path: {}", e);
             return (StatusCode::BAD_REQUEST, "Invalid path").into_response();
-        },
+        }
     };
 
     // Security check using string comparison
     if !requested_path.to_string().starts_with(&base_path.to_string()) {
+        eprintln!(
+            "Security check failed: {} not in {}",
+            requested_path.to_string(),
+            base_path.to_string()
+        );
         return (StatusCode::FORBIDDEN, "Forbidden: escape attempt").into_response();
     }
 
     // Read directory
     match requested_path.read_dir().await {
         Ok(entries) => {
+            println!("Successfully read directory: {:#?}", requested_path);
             let mut items = Vec::new();
+
             for mut entry in entries {
                 if let Some(name) = entry.file_name() {
                     let name = name.to_string_lossy().into_owned();
                     if entry.is_dir().await.unwrap_or(false) {
+                        println!("Found folder: {}", name);
                         items.push(FsItem::Folder(name));
                     } else if entry.is_file().await.unwrap_or(false) {
+                        println!("Found file: {}", name);
                         items.push(FsItem::File(name));
                     }
                 }
             }
+
+            println!("Returning file list response with {} items", items.len());
             Json(List {
                 list: ApiCalls::FileList(items),
-            }).into_response()
+            })
+            .into_response()
         }
         Err(e) => {
-            println!("Read dir error: {}", e);
+            eprintln!("Failed to read directory: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read directory").into_response()
-        },
+        }
     }
 }
 
@@ -1953,7 +2027,7 @@ async fn authenticate_route(
 async fn get_message(
     State(arc_state): State<Arc<RwLock<AppState>>>,
 ) -> Result<Json<MessagePayload>, (StatusCode, String)> {
-    let state = arc_state.write().await;
+    let mut state = arc_state.write().await;
     let request = MessagePayload {
         r#type: "request".to_string(),
         message: "get_message".to_string(),
@@ -1971,8 +2045,8 @@ async fn get_message(
         }
     };
 
-    let tx_guard = state.tcp_tx.lock().await;
-    if let Err(e) = tx_guard.send(json_bytes).await {
+    let tx_guard = &state.tcp_tx;
+    if let Err(e) = tx_guard.send(json_bytes) {
         eprintln!("Failed to send request: {}", e);
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1981,9 +2055,9 @@ async fn get_message(
     }
     drop(tx_guard);
 
-    let mut rx_guard = state.tcp_rx.lock().await;
+    let mut rx_guard = &mut state.tcp_rx;
     match rx_guard.recv().await {
-        Some(response_bytes) => {
+        Ok(response_bytes) => {
             match serde_json::from_slice::<MessagePayload>(&response_bytes) {
                 Ok(msg) => Ok(Json(msg)),
                 Err(e) => {
@@ -1995,14 +2069,15 @@ async fn get_message(
                 }
             }
         }
-        None => {
-            eprintln!("No response received");
+        Err(e) => {
+            eprintln!("Failed to receive from broadcast: {e}");
             Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "No response from server".into(),
             ))
         }
     }
+
 }
 
 // Unit tests
