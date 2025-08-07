@@ -356,11 +356,35 @@ pub struct FsEntry {
     pub is_dir: bool,
 }
 
-// TCP Filesystem implementation - just 2 essential requests
+use std::sync::atomic::{AtomicU64};
+
+// Request/Response message structures
+#[derive(Serialize, Deserialize)]
+struct FileRequestMessage {
+    id: u64,
+    #[serde(flatten)]
+    payload: FileRequestPayload,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
+enum FileRequestPayload {
+    Metadata { path: String },
+    ListDir { path: String },
+}
+
+#[derive(Serialize, Deserialize)]
+struct FileResponseMessage {
+    in_response_to: u64,
+    data: Vec<u8>,
+}
+
+// TCP Filesystem implementation
 #[derive(Clone)]
 pub struct TcpFs {
     tcp_tx: Arc<Mutex<mpsc::Sender<Vec<u8>>>>,
     tcp_rx: Arc<Mutex<mpsc::Receiver<Vec<u8>>>>,
+    request_id: Arc<AtomicU64>,
 }
 
 impl TcpFs {
@@ -368,26 +392,99 @@ impl TcpFs {
         Self {
             tcp_tx: Arc::new(Mutex::new(tx)),
             tcp_rx: Arc::new(Mutex::new(rx)),
+            request_id: Arc::new(AtomicU64::new(0)),
         }
     }
 
-    async fn send_request(&self, command: &[u8]) -> std::io::Result<Vec<u8>> {
-        // You'll implement the actual TCP communication here
-        todo!("Implement TCP request/response")
+    async fn send_request(&self, payload: FileRequestPayload) -> std::io::Result<Vec<u8>> {
+        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
+        println!("[Request {}] Creating new request", id);
+
+        let request = FileRequestMessage { id, payload };
+        let serialized = serde_json::to_vec(&request).map_err(|e| {
+            println!("[Request {}] ERROR: Serialization failed: {}", id, e);
+            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+        })?;
+
+        // Send request
+        println!("[Request {}] Acquiring TX lock...", id);
+        let mut tx = self.tcp_tx.lock().await;
+        println!("[Request {}] TX lock acquired, sending {} bytes", id, serialized.len());
+        
+        tx.send(serialized).await.map_err(|e| {
+            println!("[Request {}] ERROR: Send failed: {}", id, e);
+            std::io::Error::new(std::io::ErrorKind::ConnectionAborted, e)
+        })?;
+        drop(tx);
+        println!("[Request {}] Request sent, released TX lock", id);
+
+        // Wait for response
+        println!("[Request {}] Acquiring RX lock...", id);
+        let mut rx = self.tcp_rx.lock().await;
+        println!("[Request {}] RX lock acquired, waiting for response...", id);
+        
+        let start_time = std::time::Instant::now();
+        let mut last_print = std::time::Instant::now();
+        let mut attempts = 0;
+
+        loop {
+            attempts += 1;
+            // Print waiting status every 5 seconds
+            if last_print.elapsed().as_secs() >= 5 {
+                println!(
+                    "[Request {}] Still waiting for response ({}s elapsed, {} attempts)...",
+                    id,
+                    start_time.elapsed().as_secs(),
+                    attempts
+                );
+                last_print = std::time::Instant::now();
+            }
+
+            let response = rx.recv().await.ok_or_else(|| {
+                println!("[Request {}] ERROR: Channel closed while waiting", id);
+                std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "Channel closed")
+            })?;
+
+            println!("[Request {}] Received {} bytes", id, response.len());
+            
+            match serde_json::from_slice::<FileResponseMessage>(&response) {
+                Ok(response) => {
+                    if response.in_response_to == id {
+                        println!("[Request {}] Received echo of our own message, skipping", id);
+                        continue;
+                    }
+                    
+                    println!(
+                        "[Request {}] SUCCESS: Received response ({} bytes) after {}ms",
+                        id,
+                        response.data.len(),
+                        start_time.elapsed().as_millis()
+                    );
+                    return Ok(response.data);
+                }
+                Err(e) => {
+                    println!("[Request {}] WARNING: Invalid response format: {}", id, e);
+                    continue;
+                }
+            }
+        }
     }
 }
-
 #[async_trait::async_trait]
 impl FsType for TcpFs {
     async fn get_metadata(&self, path: &str) -> std::io::Result<FsMetadata> {
-        let request = format!("METADATA:{}", path).into_bytes();
-        let response = self.send_request(&request).await?;
+        let response = self.send_request(FileRequestPayload::Metadata {
+            path: path.to_string()
+        }).await?;
+        
         Ok(serde_json::from_slice(&response)?)
     }
 
     async fn list_directory(&self, path: &str) -> std::io::Result<Vec<FsEntry>> {
-        let request = format!("LIST:{}", path).into_bytes();
-        let response = self.send_request(&request).await?;
+        let response = self.send_request(FileRequestPayload::ListDir {
+            path: path.to_string()
+        }).await?;
+        
         Ok(serde_json::from_slice(&response)?)
     }
 }
@@ -1722,51 +1819,79 @@ async fn handle_static_request(
 }
 
 async fn get_files(
-    State(_arc_state): State<Arc<RwLock<AppState>>>,
+    State(state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<IncomingMessage>,
 ) -> impl IntoResponse {
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
 
-    let mut base_path: RemoteFileSystem<TcpFs> = RemoteFileSystem::new("src/gameserver/server", None);
-    let base_path: RemoteFileSystem<TcpFs> = match base_path.canonicalize().await {
-        Ok(path) => path,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Server misconfiguration").into_response(),
+    // Get state
+    let state = state.read().await;
+    
+    // Create TcpFs instance
+    let tcp_fs = {
+        let tx = state.tcp_tx.lock().await.clone(); // Sender can be cloned
+        
+        // Create a new channel pair for the receiver side
+        let (proxy_tx, proxy_rx) = mpsc::channel(32);
+        
+        // Spawn a task to forward messages from the original receiver
+        {
+            let mut rx_guard = state.tcp_rx.lock().await;
+            let original_rx = std::mem::replace(&mut *rx_guard, mpsc::channel(32).1); // Replace with dummy receiver
+            
+            tokio::spawn(async move {
+                let mut rx = original_rx;
+                while let Some(msg) = rx.recv().await {
+                    if proxy_tx.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        
+        TcpFs::new(tx, proxy_rx)
     };
 
+    // Initialize filesystem
+    let mut base_path = RemoteFileSystem::new("src/gameserver/server", Some(tcp_fs));
+    
     let user_input = request.message.trim_start_matches('/');
-
-    let mut requested_path: RemoteFileSystem<TcpFs> = base_path.join(user_input);
-
-    let canonical_path: RemoteFileSystem<TcpFs> = match requested_path.canonicalize().await {
+    let requested_path = match base_path.join(user_input).canonicalize().await {
         Ok(path) => path,
-        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid path").into_response(),
+        Err(e) => {
+            println!("Invalid path: {}", e);
+            return (StatusCode::BAD_REQUEST, "Invalid path").into_response();
+        },
     };
 
-    if !canonical_path.starts_with(&*base_path) {
+    // Security check using string comparison
+    if !requested_path.to_string().starts_with(&base_path.to_string()) {
         return (StatusCode::FORBIDDEN, "Forbidden: escape attempt").into_response();
     }
 
-    match canonical_path.read_dir().await {
+    // Read directory
+    match requested_path.read_dir().await {
         Ok(entries) => {
-            let mut items: Vec<FsItem> = Vec::new();
-
+            let mut items = Vec::new();
             for mut entry in entries {
-                let name = entry.file_name().unwrap_or_default().to_string_lossy().into_owned();
-
-                if entry.is_dir().await.unwrap() {
-                    items.push(FsItem::Folder(name));
-                } else if entry.is_file().await.unwrap() {
-                    items.push(FsItem::File(name));
+                if let Some(name) = entry.file_name() {
+                    let name = name.to_string_lossy().into_owned();
+                    if entry.is_dir().await.unwrap_or(false) {
+                        items.push(FsItem::Folder(name));
+                    } else if entry.is_file().await.unwrap_or(false) {
+                        items.push(FsItem::File(name));
+                    }
                 }
             }
-
             Json(List {
                 list: ApiCalls::FileList(items),
-            })
-            .into_response()
+            }).into_response()
         }
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read dir").into_response(),
+        Err(e) => {
+            println!("Read dir error: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read directory").into_response()
+        },
     }
 }
 
