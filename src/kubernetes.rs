@@ -2,11 +2,11 @@ use std::error::Error;
 use std::fs;
 
 use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::{Service, PersistentVolume, PersistentVolumeClaim};
 use k8s_openapi::api::core::v1::Node;
-use kube::{Api, Client};
+use k8s_openapi::api::core::v1::{PersistentVolume, PersistentVolumeClaim, Service};
 use kube::api::PostParams;
 use kube::Error::Api as ErrorApi;
+use kube::{Api, Client};
 
 //
 pub async fn list_node_names(client: Client) -> Result<Vec<String>, Box<dyn std::error::Error>> {
@@ -19,17 +19,20 @@ pub async fn list_node_names(client: Client) -> Result<Vec<String>, Box<dyn std:
         .collect();
     Ok(names)
 }
-pub async fn create_k8s_deployment(client: &Client) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub async fn create_k8s_deployment(
+    client: &Client,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     //let testing_deployment = !std::env::var("TESTING_DEPLOYMENT").unwrap_or("").is_empty();
-    let deployment = if std::env::var("TESTING").is_ok(){
+    let deployment = if std::env::var("TESTING").is_ok() {
         println!("Using dev deployment");
         "deployment-dev.yaml"
     } else {
         "deployment.yaml"
     };
 
-    let deployment_yaml = fs::read_to_string(format!("/usr/src/app/src/gameserver/{}", deployment))?;
-    
+    let deployment_yaml =
+        fs::read_to_string(format!("/usr/src/app/src/gameserver/{}", deployment))?;
+
     for doc in deployment_yaml.split("---") {
         let trimmed = doc.trim();
         if trimmed.is_empty() {

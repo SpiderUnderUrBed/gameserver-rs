@@ -17,7 +17,8 @@ spec:
         nameservers:
               - 8.8.8.8
       nodeSelector:
-        kubernetes.io/hostname: extranuc
+        #kubernetes.io/hostname: extranuc
+        kubernetes.io/hostname: hostnuc
       containers:
         - name: gameserver
           image: localhost:5000/gameserver:latest

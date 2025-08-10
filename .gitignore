@@ -2,7 +2,7 @@
 /src/gameserver/target
 app.tar.gz
 /src/gameserver/server/*
-
+/src/credentials.json
 
 /src/gameserver/svelte.old/*
 /src/gameserver/svelte/node_modules/*

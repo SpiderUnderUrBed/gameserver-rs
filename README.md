@@ -40,3 +40,8 @@ cargo run . --features backend
 **For kubernetes testing:** \
 As for other stuff to use for the testing environment, look to the deployment-dev.yaml, you might want to adjust the settings with this too but it provides better defaults, and the deployment in src/gameserver, if you enable TESTING="true" in the deployment (which is the default in deployment-dev.yaml at the root of the project), it would run the equivalent deployment-dev.yaml in src/gameserver, which I use for my own personal testing, so i recommend editing that, and adding it to your .gitignore (I added a nodeSelector to one of my nodes, so you'll HAVE to edit it)
 
+**NOTES**
+For nixos users this command might be useful:
+```
+ nix-shell -p cargo rustc openssl pkg-config
+```
