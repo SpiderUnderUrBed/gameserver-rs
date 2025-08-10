@@ -336,7 +336,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 let line = buf.trim_end();
-                println!("{:#?}", line);
                 if line.starts_with('{') {
                     if let Ok(json_line) = serde_json::from_str::<Value>(&line) {
         
@@ -548,9 +547,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     .unwrap(),
                                 )
                                 .await;
-                        } else {
-                            println!("{:#?}", json_line);
-                        }
+                            }
                     }
                 } else if !line.is_empty() {
                     let mut guard = stdin_ref.lock().await;
