@@ -173,6 +173,7 @@ pub trait ButtonsDatabase {
     async fn retrieve_buttons(&self, name: String) -> Option<Button>;
     async fn fetch_all_buttons(&self) -> Result<Vec<Button>, Box<dyn Error + Send + Sync>>;
     async fn toggle_default_buttons(&self) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn toggle_button_state(&self) -> Result<bool, Box<dyn Error + Send + Sync>>;
     async fn reset_buttons(&self) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
     async fn get_from_buttons_database(&self, name: &str) -> Result<Option<Button>, Box<dyn Error + Send + Sync>>;
     async fn edit_button_in_db(&self, button: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;

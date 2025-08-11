@@ -975,6 +975,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/ws", get(ws_handler))
         // .route("getfiles", get(get_files))
         .route("/api/awaitserverstatus", get(ongoing_server_status))
+        .route("/api/getstatus", post(get_status))
         .route("/api/getfiles", post(get_files))
         .route("/api/buttonreset", post(button_reset))
         .route("/api/editbuttons", post(edit_buttons))
@@ -1011,6 +1012,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     Ok(())
 }
+// TODO: maybe split this function and route into several routes with statuses for diffrent states/nodes/settings?
+async fn get_status(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    Json(request): Json<IncomingMessage>,
+) -> impl IntoResponse {
+    let state = arc_state.write().await;
+
+    let mut message = IncomingMessage {
+        message: String::new(),
+        message_type: "status".to_string(),
+        authcode: "0".to_string(),
+    };
+
+    if request.message_type == "buttons" {
+        match state.database.toggle_button_state().await {
+            Ok(status) => {
+                message.message = status.to_string();
+            }
+            Err(_) => {
+                message.message = "error".to_string();
+            }
+        }
+        Json(message)
+    } else if request.message_type == "node" {
+        Json(message)
+    } else {
+        Json(message)
+    }
+}
+
 
 async fn get_buttons(State(state): State<Arc<RwLock<AppState>>>) -> impl IntoResponse {
     let mut button_list = vec![];
@@ -1826,48 +1857,25 @@ pub async fn get_files(
     State(state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<IncomingMessage>,
 ) -> impl IntoResponse {
-    println!("Received get_files request: {:?}", request);
-
     // Acquire read lock on state
     let (tcp_tx, tcp_rx) = {
         let state = state.read().await;
-        println!(
-            "[get_files] Acquired state read lock. tcp_tx subscribers: {}, tcp_rx receivers: {}",
-            state.tcp_tx.receiver_count(),
-            // You can't easily get receiver_count from tcp_rx because it's a Receiver, so:
-            // Just log that the receiver exists
-            "1 (single receiver)"
-        );
 
         // IMPORTANT: create fresh receiver from sender (not from existing receiver)
         (state.tcp_tx.clone(), state.tcp_tx.subscribe())
     };
 
-    println!(
-        "[get_files] Cloned tcp_tx with {} subscribers, created new tcp_rx subscriber",
-        tcp_tx.receiver_count()
-    );
 
     // Create TcpFs instance directly with the broadcast sender and receiver
     let tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
 
     // Initialize RemoteFileSystem
     let mut base_path = RemoteFileSystem::new("server", Some(tcp_fs));
-    println!(
-        "[get_files] Initialized RemoteFileSystem at path: {}",
-        base_path.to_string()
-    );
 
     let user_input = request.message.trim_start_matches('/');
-    println!("[get_files] User input after trim: '{}'", user_input);
-
     // Canonicalize requested path with logging
     let mut requested_path = match base_path.join(user_input).canonicalize().await {
         Ok(path) => {
-            println!(
-                "[get_files] Canonicalized requested path: {}",
-                path.to_string()
-            );
             path
         }
         Err(e) => {
@@ -1889,34 +1897,21 @@ pub async fn get_files(
     // Read directory with detailed logging
     match requested_path.read_dir().await {
         Ok(entries) => {
-            println!(
-                "[get_files] Successfully read directory: {} with {} entries",
-                requested_path.to_string(),
-                entries.len()
-            );
+
 
             let mut items = Vec::new();
             for mut entry in entries {
                 if let Some(name) = entry.file_name() {
                     let name_str = name.to_string_lossy().into_owned();
                     if entry.is_dir().await.unwrap_or(false) {
-                        println!("[get_files] Found folder: {}", name_str);
                         items.push(FsItem::Folder(name_str));
                     } else if entry.is_file().await.unwrap_or(false) {
-                        println!("[get_files] Found file: {}", name_str);
                         items.push(FsItem::File(name_str));
                     } else {
-                        println!("[get_files] Found unknown entry type: {}", name_str);
                     }
-                } else {
-                    println!("[get_files] Entry without filename found");
-                }
+                } 
             }
 
-            println!(
-                "[get_files] Returning file list response with {} items",
-                items.len()
-            );
             Json(List {
                 list: ApiCalls::FileList(items),
             })

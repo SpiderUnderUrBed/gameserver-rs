@@ -70,19 +70,11 @@ pub struct TcpFs {
 
 impl Clone for TcpFs {
     fn clone(&self) -> Self {
-        println!(
-            "[TcpFs] Cloning TcpFs. Receiver count before clone: {}",
-            self.tcp_tx.receiver_count()
-        );
         let cloned = TcpFs {
             tcp_tx: self.tcp_tx.clone(),
             tcp_rx: self.tcp_tx.subscribe(),
             request_id: self.request_id.clone(),
         };
-        println!(
-            "[TcpFs] Cloned TcpFs. Receiver count after clone: {}",
-            cloned.tcp_tx.receiver_count()
-        );
         cloned
     }
 }
@@ -140,10 +132,6 @@ impl TcpFs {
             }
 
             let response_str = String::from_utf8_lossy(&response);
-            println!(
-                "[TcpFs][recv_response] Raw response for id {}: {}",
-                id, response_str
-            );
 
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&response_str) {
                 // Accept both "in_response_to" and "id"
@@ -163,10 +151,6 @@ impl TcpFs {
                             if obj.contains_key("is_file") && obj.contains_key("is_dir") {
                                 return Ok(serde_json::to_vec(data)?);
                             } else {
-                                println!(
-                                    "[TcpFs][recv_response] Skipping incomplete metadata: {:?}",
-                                    obj
-                                );
                                 continue;
                             }
                         }
