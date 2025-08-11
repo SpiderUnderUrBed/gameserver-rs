@@ -23,6 +23,7 @@ class ServerConsole {
     this.fetchNodes();
     this.selectedNodeType();
     this.loadTopmostButtonsLinks();
+    this.setStatuses();
     
     window.restoreButtonDefaults = () => this.restoreButtonDefaults();
     window.temporaryButtonReset = () => this.temporaryButtonReset();
@@ -39,6 +40,40 @@ class ServerConsole {
     window.enableDeveloperOptions = () => this.enableDeveloperOptions();
   }
   
+  async setStatuses(){
+    let button_status = document.getElementById("temp-enable-defaults");
+      try {
+        const res = await fetch(`${this.basePath}/api/getstatus`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            type: "buttons", message: "", authcode: "0",
+          }),
+        });
+
+      const text = await res.text();
+      if (res.ok) {
+        try {
+          const data = JSON.parse(text);
+          console.log(`Server Response: ${data.response}`)
+          if (data.message == "true") {
+            button_status.style.backgroundColor = "green";
+          } else {
+            button_status.style.backgroundColor = "red";
+          }
+        } catch {
+          console.log(`Invalid JSON response: ${text}`)
+          //this.addResult("", `Invalid JSON response: ${text}`, false, true);
+        }
+      } else {
+        console.log(`Failed (${res.status}): ${text}`)
+        //this.addResult("", `Failed (${res.status}): ${text}`, false, true);
+      }
+    } catch (err) {
+      console.log(`Error: ${err.message}`)
+      //this.addResult("", `Error: ${err.message}`, false, true);
+    }   
+  }
   selectedNodeType(){
     const selector = document.getElementById("nodetype-selector");
     const ip = document.getElementById("nodeip");
@@ -304,6 +339,7 @@ class ServerConsole {
     }
   }
   async temporaryButtonReset(){
+    let button_status = document.getElementById("temp-enable-defaults");
     try {
       const res = await fetch(`${this.basePath}/api/buttonreset`, {
         method: "POST",
@@ -316,6 +352,11 @@ class ServerConsole {
       const text = await res.text();
       if (res.ok) {
         await this.loadTopmostButtonsLinks();
+        if (button_status.style.backgroundColor == "green") {
+          button_status.style.backgroundColor = "red"
+        } else {
+          button_status.style.backgroundColor = "green"
+        }
         try {
           const data = JSON.parse(text);
           console.log(`Server Response: ${data.response}`)

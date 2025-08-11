@@ -343,6 +343,10 @@ impl ButtonsDatabase for Database {
         //database.buttons.get(name)
         Ok(database.buttons.iter().find(|button| button.name == name).cloned())
     }
+    async fn toggle_button_state(&self) -> Result<bool, Box<dyn Error + Send + Sync>> {
+        let database = self.get_database().await?;
+        Ok(database.settings.toggled_default_buttons)
+    }
     async fn toggle_default_buttons(&self) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         let mut database: JsonBackendContent = self.get_database().await?;
         if database.settings.toggled_default_buttons == false {
