@@ -12,6 +12,11 @@ use tokio::net::TcpListener;
 use tokio::process::{ChildStdin, Command as TokioCommand};
 use tokio::sync::{mpsc, Mutex};
 
+use tokio::fs::File;
+use tokio::io::AsyncRead;
+use tokio::net::TcpStream;
+use uuid::Uuid;
+
 const SERVER_DIR: &str = "server";
 
 struct Minecraft;
@@ -279,76 +284,8 @@ async fn list_directory(path: &str) -> std::io::Result<Vec<FsEntry>> {
 
     Ok(entries)
 }
-use tokio::fs::File;
-use tokio::io::AsyncRead;
-use tokio::net::TcpStream;
-use uuid::Uuid;
 
-pub async fn receive_multipart_over_tcp<R>(stream: &mut R) -> std::io::Result<()>
-where
-    R: AsyncRead + Unpin,
-{
-    let mut reader = BufReader::new(stream);
-    let mut current_file: Option<File> = None;
 
-    println!("[receive_multipart_over_tcp] Started reading from stream");
-
-    loop {
-        let mut line = String::new();
-        let bytes_read = reader.read_line(&mut line).await?;
-        if bytes_read == 0 {
-            println!("[receive_multipart_over_tcp] End of stream reached");
-            break;
-        }
-
-        let trimmed = line.trim();
-        if let Ok(payload) = serde_json::from_str::<MessagePayload>(trimmed) {
-            println!(
-                "[receive_multipart_over_tcp] Received JSON message: {:?}",
-                payload
-            );
-
-            match payload.r#type.as_str() {
-                "start_file" => {
-                    let file_name = format!("server/received_file_{}.bin", Uuid::new_v4());
-                    println!(
-                        "[receive_multipart_over_tcp] Starting new file: {}",
-                        file_name
-                    );
-                    let file = File::create(&file_name).await?;
-                    current_file = Some(file);
-                }
-                "end_file" => {
-                    if let Some(mut file) = current_file.take() {
-                        file.flush().await?;
-                        println!("[receive_multipart_over_tcp] Finished writing file");
-                    } else {
-                       println!("[receive_multipart_over_tcp] Received 'end' but no file is open");
-                    }
-                }
-                other => {
-                    println!("[receive_multipart_over_tcp] Unhandled message: {}", other);
-                }
-            }
-        } else {
-            if let Some(file) = &mut current_file {
-                file.write_all(line.as_bytes()).await?;
-                println!(
-                    "[receive_multipart_over_tcp] Writing {} bytes to current file",
-                    line.len()
-                );
-            } else {
-                println!(
-                    "[receive_multipart_over_tcp] Received non-JSON line but no file open: {}",
-                    trimmed
-                );
-            }
-        }
-    }
-
-    // println!("[receive_multipart_over_tcp] Stream handling complete");
-    Ok(())
-}
 pub async fn handle_multipart_message(
     payload: &MessagePayload,
     current_file: &mut Option<File>,
@@ -357,10 +294,6 @@ pub async fn handle_multipart_message(
         "start_file" => {
             //Uuid::new_v4()
             let file_name = format!("server/{}", payload.message);
-            println!(
-                "[handle_multipart_message] Starting new file: {}",
-                file_name
-            );
 
             if let Err(e) = tokio::fs::create_dir_all("server").await {
                 eprintln!("Failed to create server directory: {}", e);
@@ -373,13 +306,9 @@ pub async fn handle_multipart_message(
             if let Some(mut file) = current_file.take() {
                 file.flush().await?;
                 println!("[handle_multipart_message] Finished writing file");
-            } else {
-                println!("[handle_multipart_message] Received 'end' but no file is open");
-            }
+            } 
         }
-        other => {
-            println!("[handle_multipart_message] Unhandled message: {}", other);
-        }
+        _ => {}
     }
     Ok(())
 }

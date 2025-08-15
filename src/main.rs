@@ -972,53 +972,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
-pub async fn send_multipart_over_tcp(
-    mut multipart: Multipart,
-    mut stream: TcpStream,
-) -> std::io::Result<()> {
-    while let Some(mut field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
-    {
-        let file_name = field.file_name().unwrap_or("file.bin").to_string();
-
-        let start_json = MessagePayload {
-            r#type: "file".into(),
-            message: "start".into(),
-            authcode: "0".into(),
-        };
-        let start_str = serde_json::to_string(&start_json)?;
-        stream.write_all(start_str.as_bytes()).await?;
-        stream.write_all(b"\n").await?;
-
-        while let Some(chunk) = field
-            .chunk()
-            .await
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
-        {
-            stream.write_all(&chunk).await?;
-        }
-
-        let end_json = MessagePayload {
-            r#type: "file".into(),
-            message: "end".into(),
-            authcode: "0".into(),
-        };
-        let end_str = serde_json::to_string(&end_json)?;
-        stream.write_all(end_str.as_bytes()).await?;
-        stream.write_all(b"\n").await?;
-    }
-
-    Ok(())
-}
 
 
 pub async fn send_multipart_over_broadcast(
     mut multipart: Multipart,
     tx: broadcast::Sender<Vec<u8>>,
 ) -> std::io::Result<()> {
-    println!("[send_multipart_over_broadcast] Starting broadcast of multipart data");
 
     while let Some(mut field) = multipart
         .next_field()
@@ -1026,7 +985,6 @@ pub async fn send_multipart_over_broadcast(
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
     {
         let file_name = field.file_name().unwrap_or("file.bin").to_string();
-        println!("[send_multipart_over_broadcast] Processing file: {}", file_name);
 
         // Send start message
         let start_json = MessagePayload {
@@ -1036,8 +994,6 @@ pub async fn send_multipart_over_broadcast(
         };
         tx.send(serde_json::to_vec(&start_json)?)
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed"))?;
-        println!("[send_multipart_over_broadcast] Sent start message for {}", file_name);
-
         // Send chunks
         while let Some(chunk) = field
             .chunk()
@@ -1046,7 +1002,6 @@ pub async fn send_multipart_over_broadcast(
         {
             tx.send(chunk.to_vec())
                 .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed"))?;
-            println!("[send_multipart_over_broadcast] Sent chunk of {} bytes for {}", chunk.len(), file_name);
         }
 
         // Send end message
@@ -1057,10 +1012,8 @@ pub async fn send_multipart_over_broadcast(
         };
         tx.send(serde_json::to_vec(&end_json)?)
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed"))?;
-        println!("[send_multipart_over_broadcast] Sent end message for {}", file_name);
-    }
+        }
 
-    println!("[send_multipart_over_broadcast] Finished broadcasting all files");
     Ok(())
 }
 
