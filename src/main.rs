@@ -482,7 +482,6 @@ async fn handle_server_data(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let text = String::from_utf8_lossy(data);
 
-    println!("{:#?}", text);
 
     let bytes: Vec<u8> = text
         .split(|c: char| !c.is_ascii_digit())
@@ -670,7 +669,6 @@ async fn handle_stream(
             return Err(e.into());
         }
     }
-    println!("State: {:#?}", state.read().await.gameserver);
 
     let server_node_name_msg = serde_json::to_string(&MessagePayload {
         r#type: "command".to_string(),
@@ -684,18 +682,15 @@ async fn handle_stream(
             println!("Error, possibly connection closed");
         }
         Ok(_) => {
-            println!("Received line: {}", line.trim_end());
             for value in value_from_line::<ConsoleMessage, _>(&line, |_| true).await {
                 if let Ok(potential_name_struct) = value {
                     if let Ok(name_struct) =
                         serde_json::from_str::<MessagePayload>(&potential_name_struct.data)
                     {
-                        println!("Got the name");
                         let db_state = &state.write().await.database;
 
                         if let Ok(nodes) = db_state.fetch_all_nodes().await {
-                            println!("{:#?}", name_struct.message);
-                            println!("Got nodes");
+                       
 
                             let node = Node {
                                 ip: ip.clone(),
@@ -707,7 +702,6 @@ async fn handle_stream(
                                 .iter()
                                 .any(|n| n.ip == node.ip && n.nodename == node.nodename)
                             {
-                                println!("Making node");
                                 let _ = db_state
                                     .create_nodes_in_db(CreateElementData {
                                         element: Element::Node(node),
@@ -717,11 +711,7 @@ async fn handle_stream(
                                     .await;
                             }
                         }
-                    } else {
-                        println!("No nodes");
-                    }
-                } else {
-                    println!("No options");
+                    } 
                 }
             }
         }
@@ -2168,7 +2158,7 @@ mod tests {
                 jwt: "".to_owned(),
             };
             let create_user_result = database.create_user_in_db(user).await;
-            println!("{:#?}", create_user_result);
+    
             let edit_user = CreateElementData {
                 element: Element::User {
                     user: "b".to_owned(),
