@@ -31,21 +31,21 @@ pub struct RemoveElementData {
     pub jwt: String
 }
 
-#[cfg(any(feature = "full-stack", feature = "database"))]
-#[derive(Debug, Deserialize, Serialize, Clone, sqlx::FromRow)]
-#[serde(tag = "kind", content = "data")]
-pub enum CustomType {
-    Custom, 
-    Default
-}
+// #[cfg(any(feature = "full-stack", feature = "database"))]
+// #[derive(Debug, Deserialize, Serialize, Clone, sqlx::FromRow)]
+// #[serde(tag = "kind", content = "data")]
+// pub enum CustomType {
+//     Custom, 
+//     Default
+// }
 
-#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(tag = "kind", content = "data")]
-pub enum CustomType {
-    Custom, 
-    Default
-}
+// #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
+// #[derive(Debug, Deserialize, Serialize, Clone)]
+// #[serde(tag = "kind", content = "data")]
+// pub enum CustomType {
+//     Custom, 
+//     Default
+// }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(tag = "kind", content = "data")]
@@ -117,7 +117,8 @@ pub struct Node {
 pub struct Button {
     pub name: String,
     pub link: String,
-    pub r#type: CustomType
+    pub r#type: String
+    //CustomType
 }
 
 
@@ -126,7 +127,7 @@ pub struct Button {
 pub struct Button {
     pub name: String,
     pub link: String,
-    pub r#type: CustomType
+    pub r#type: String
 }
 
 

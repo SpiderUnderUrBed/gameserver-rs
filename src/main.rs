@@ -1,20 +1,10 @@
-use std::any::Any;
-use std::cell::RefCell;
 // ALOT of imports, needed given the size of this project in what it covers
 // first imports are std ones
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::ffi::OsStr;
-use std::fmt::{self, Debug};
-// use std::fs;
-// use std::rc::Rc;
-use std::borrow::BorrowMut;
-use std::fs;
-use std::ops::Deref;
-use std::path::{Component, Components, PathBuf};
+use std::fmt::{Debug};
 use std::{net::SocketAddr, path::Path, sync::Arc};
 
-use tracing::{debug, error};
 
 // Axum is the routing framework, and the backbone to this project helping intergrate the backend with the frontend
 // and the general api, redirections, it will take form data and queries and make it easily accessible
@@ -23,9 +13,9 @@ use crate::database::Element;
 use crate::http::HeaderMap;
 use crate::middleware::from_fn;
 use axum::extract::ws::Message as WsMessage;
-use axum::extract::FromRequest;
+use axum::extract::Multipart;
+use tokio::fs::File;
 use axum::extract::Query;
-use axum::http::header::AUTHORIZATION;
 use axum::http::Uri;
 use axum::middleware::{self, Next};
 use axum::response::Redirect;
@@ -43,17 +33,15 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use axum::{Extension, Form};
+use axum::{Form};
 use axum_login::tower_sessions::{MemoryStore, SessionManagerLayer};
 use axum_login::AuthUser;
-use axum_login::{login_required, AuthManagerLayerBuilder, AuthnBackend, UserId};
-use futures_util::stream::once;
+use axum_login::{AuthManagerLayerBuilder, AuthnBackend};
 use serde::de::DeserializeOwned;
 use tokio::sync::RwLock;
 
 // mod databasespec;
 // use databasespec::UserDatabase;
-use crate::broadcast::Receiver;
 use crate::database::databasespec::Button;
 use crate::database::databasespec::ButtonsDatabase;
 use crate::database::databasespec::NodesDatabase;
@@ -66,8 +54,6 @@ use crate::database::Node;
 // chrono for time, tower for cors (TODO:: use less permissive CORS due to potential security risks)
 // jsonwebtokens is standard when working with authentication, and bcrypt so I can use password hashs, I explain the authentication methods later
 use async_trait::async_trait;
-use bcrypt::BcryptError;
-use bcrypt::{hash, verify, DEFAULT_COST};
 use chrono::{Duration as OtherDuration, Utc};
 use futures_util::{sink::SinkExt, stream::StreamExt};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, TokenData, Validation};
@@ -80,19 +66,17 @@ use tokio::{
     fs as tokio_fs,
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    sync::{broadcast, mpsc, Mutex},
+    sync::{broadcast, Mutex},
     time::{timeout, Duration},
 };
-use tower_http::add_extension::AddExtensionLayer;
 use tower_http::cors::{Any as CorsAny, CorsLayer};
 
-use futures_util::{stream, Stream};
+use futures_util::{stream, Stream, TryFutureExt};
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio_util::bytes::Bytes;
 static CONNECTION_COUNTER: AtomicUsize = AtomicUsize::new(0);
 use tokio::time::interval;
-use tokio::time::Instant;
 
 // For now I only restrict the json backend for running this without kubernetes
 // the json backend is only for testing in most cases, simple deployments would use full-stack feature flag
@@ -116,7 +100,6 @@ use database::CreateElementData;
 use database::RemoveElementData;
 use database::RetrieveUser;
 use database::User;
-// use databasespec::{User, CreateUserData, RemoveUserData};
 
 mod filesystem;
 use filesystem::{FsItem, RemoteFileSystem, TcpFs, FsEntry, FileResponseMessage, FsMetadata};
@@ -337,14 +320,11 @@ enum Status {
 // for user information and etc
 // #[derive(Clone)]
 struct AppState {
-    // tcp_tx: Arc<Mutex<mpsc::Sender<Vec<u8>>>>,
     tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
     tcp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
-    // tcp_rx: Arc<Mutex<mpsc::Receiver<Vec<u8>>>>,
     gameserver: Value,
     status: Status,
     ws_tx: broadcast::Sender<String>,
-    // peer_addr: Option<String>,
     base_path: String,
     client: Option<Client>,
     database: database::Database,
@@ -363,7 +343,6 @@ impl Clone for AppState {
         }
     }
 }
-// static ACCEPT_NON_ID_MESSAGE: bool = false;
 
 // for the initial connection attempt, which will determine if possibly I would need to create the container and deployment upon failure
 // i will use rusts 'timeout' for x interval determined with CONNECTION_TIMEOUT
@@ -495,12 +474,15 @@ where
 
     final_values
 }
+
 async fn handle_server_data(
     state: Arc<RwLock<AppState>>,
     data: &[u8],
     ws_tx: &broadcast::Sender<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let text = String::from_utf8_lossy(data);
+
+    println!("{:#?}", text);
 
     let bytes: Vec<u8> = text
         .split(|c: char| !c.is_ascii_digit())
@@ -703,9 +685,6 @@ async fn handle_stream(
         }
         Ok(_) => {
             println!("Received line: {}", line.trim_end());
-            //let outer: ConsoleMessage = serde_json::from_str(&line)?;
-            //let nodename_result = serde_json::from_str::<MessagePayload>(&outer.data);
-            //if let Ok(name_struct_option) = value_from_line::<ConsoleMessage>(&line).await {
             for value in value_from_line::<ConsoleMessage, _>(&line, |_| true).await {
                 if let Ok(potential_name_struct) = value {
                     if let Ok(name_struct) =
@@ -728,7 +707,6 @@ async fn handle_stream(
                                 .iter()
                                 .any(|n| n.ip == node.ip && n.nodename == node.nodename)
                             {
-                                //.contains(&node) {
                                 println!("Making node");
                                 let _ = db_state
                                     .create_nodes_in_db(CreateElementData {
@@ -744,15 +722,8 @@ async fn handle_stream(
                     }
                 } else {
                     println!("No options");
-                    // optional: log error
                 }
             }
-            // else if let Err(errs) = value_from_line::<MessagePayload>(&line).await {
-            //     for err in errs {
-            //         println!("{:#?}", err);
-            //     }
-            // }
-            //state.write().await.gameserver = serde_json::Value::String(line.clone());
         }
         Err(e) => {
             println!("Error reading line: {:?}", e);
@@ -809,10 +780,6 @@ async fn connect_to_server(
                     handle_stream(state.clone(), &mut rx, &mut stream, ws_tx.clone()).await;
                 if stream_result.is_ok() {
                     return Ok(stream.peer_addr()?);
-                    // Node {
-                    //     nodename: "".to_string(),
-                    //     ip: stream.peer_addr(),
-                    // }
                 } else if let Err(error) = stream_result {
                     return Err(error);
                 }
@@ -840,11 +807,6 @@ async fn try_initial_connection(
 
             let (temp_tx, temp_rx) =
                 tokio::sync::broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
-
-            // {
-            //     let mut guard = tcp_tx;
-            //     *guard = temp_tx;
-            // }
 
             let mut temp_rx = temp_rx; // make receiver mutable
             handle_stream(state, &mut temp_rx, &mut stream, ws_tx).await
@@ -974,6 +936,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/users", get(users))
         .route("/api/ws", get(ws_handler))
         // .route("getfiles", get(get_files))
+        .route("/api/upload", post(upload))
         .route("/api/awaitserverstatus", get(ongoing_server_status))
         .route("/api/getstatus", post(get_status))
         .route("/api/getfiles", post(get_files))
@@ -988,13 +951,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/createuser", post(create_user))
         .route("/api/deleteuser", post(delete_user))
         .merge(fallback_router)
-        .with_state(multifaceted_state.clone());
-    // let inner_async = Router::new()
-    //    .route("/api/ws", get(ws_handler))
-    //    .with_state(Arc::new(state.clone()));
+        .with_state(multifaceted_state.clone());;
 
     let normal_routes = Router::new().merge(inner);
-    // .merge(inner_async);
 
     // Does nesting of routes behind a base path if configured, otherwise use defaults
     let app = if base_path.is_empty() || base_path == "/" {
@@ -1012,6 +971,113 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     Ok(())
 }
+
+pub async fn send_multipart_over_tcp(
+    mut multipart: Multipart,
+    mut stream: TcpStream,
+) -> std::io::Result<()> {
+    while let Some(mut field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+    {
+        let file_name = field.file_name().unwrap_or("file.bin").to_string();
+
+        let start_json = MessagePayload {
+            r#type: "file".into(),
+            message: "start".into(),
+            authcode: "0".into(),
+        };
+        let start_str = serde_json::to_string(&start_json)?;
+        stream.write_all(start_str.as_bytes()).await?;
+        stream.write_all(b"\n").await?;
+
+        while let Some(chunk) = field
+            .chunk()
+            .await
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+        {
+            stream.write_all(&chunk).await?;
+        }
+
+        let end_json = MessagePayload {
+            r#type: "file".into(),
+            message: "end".into(),
+            authcode: "0".into(),
+        };
+        let end_str = serde_json::to_string(&end_json)?;
+        stream.write_all(end_str.as_bytes()).await?;
+        stream.write_all(b"\n").await?;
+    }
+
+    Ok(())
+}
+
+
+pub async fn send_multipart_over_broadcast(
+    mut multipart: Multipart,
+    tx: broadcast::Sender<Vec<u8>>,
+) -> std::io::Result<()> {
+    println!("[send_multipart_over_broadcast] Starting broadcast of multipart data");
+
+    while let Some(mut field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+    {
+        let file_name = field.file_name().unwrap_or("file.bin").to_string();
+        println!("[send_multipart_over_broadcast] Processing file: {}", file_name);
+
+        // Send start message
+        let start_json = MessagePayload {
+            r#type: "start_file".into(),
+            message: format!("{}", file_name),
+            authcode: "0".into(),
+        };
+        tx.send(serde_json::to_vec(&start_json)?)
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed"))?;
+        println!("[send_multipart_over_broadcast] Sent start message for {}", file_name);
+
+        // Send chunks
+        while let Some(chunk) = field
+            .chunk()
+            .await
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+        {
+            tx.send(chunk.to_vec())
+                .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed"))?;
+            println!("[send_multipart_over_broadcast] Sent chunk of {} bytes for {}", chunk.len(), file_name);
+        }
+
+        // Send end message
+        let end_json = MessagePayload {
+            r#type: "end_file".into(),
+            message: "".to_string(),
+            authcode: "0".into(),
+        };
+        tx.send(serde_json::to_vec(&end_json)?)
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed"))?;
+        println!("[send_multipart_over_broadcast] Sent end message for {}", file_name);
+    }
+
+    println!("[send_multipart_over_broadcast] Finished broadcasting all files");
+    Ok(())
+}
+
+async fn upload(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    multipart: Multipart,
+) -> StatusCode {
+    let state = arc_state.read().await;
+    let tcp_tx = state.tcp_tx.clone();
+
+    match send_multipart_over_broadcast(multipart, tcp_tx).await {
+        Ok(_) => StatusCode::OK,
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+
 // TODO: maybe split this function and route into several routes with statuses for diffrent states/nodes/settings?
 async fn get_status(
     State(arc_state): State<Arc<RwLock<AppState>>>,
@@ -1047,18 +1113,10 @@ async fn get_buttons(State(state): State<Arc<RwLock<AppState>>>) -> impl IntoRes
     let mut button_list = vec![];
     match state.read().await.database.fetch_all_buttons().await {
         Ok(buttons) => {
-            //println!("{:#?}", buttons);
-            // let buttonname_list: Vec<String> = buttons.iter().map(|button| button.name.clone()).collect();
-            // for button in buttonname_list {
-            //     if !button_list.contains(&button){
-            //         button_list.push(button);
-            //     }
-            // }
             button_list.extend(buttons);
         }
         Err(err) => eprintln!("Error fetching DB buttons: {}", err),
     }
-    //println!("{:#?}", List { list: ApiCalls::ButtonList(button_list.clone()) });
     Json(List {
         list: ApiCalls::ButtonList(button_list),
     })

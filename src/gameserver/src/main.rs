@@ -29,12 +29,10 @@ struct MessagePayload {
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
-// #[serde(tag = "kind", content = "data")]
 enum ApiCalls {
     None,
     Capabilities(Vec<String>),
     NodeList(Vec<String>),
-    //ButtonList(Vec<Button>),
     IncomingMessage(MessagePayload),
 }
 
@@ -236,7 +234,6 @@ enum FileRequestPayload {
 #[derive(serde::Serialize, serde::Deserialize)]
 struct FileResponseMessage {
     in_response_to: u64,
-    // data: Vec<u8>,
     data: String,
 }
 
@@ -282,6 +279,110 @@ async fn list_directory(path: &str) -> std::io::Result<Vec<FsEntry>> {
 
     Ok(entries)
 }
+use tokio::fs::File;
+use tokio::io::AsyncRead;
+use tokio::net::TcpStream;
+use uuid::Uuid;
+
+pub async fn receive_multipart_over_tcp<R>(stream: &mut R) -> std::io::Result<()>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut reader = BufReader::new(stream);
+    let mut current_file: Option<File> = None;
+
+    println!("[receive_multipart_over_tcp] Started reading from stream");
+
+    loop {
+        let mut line = String::new();
+        let bytes_read = reader.read_line(&mut line).await?;
+        if bytes_read == 0 {
+            println!("[receive_multipart_over_tcp] End of stream reached");
+            break;
+        }
+
+        let trimmed = line.trim();
+        if let Ok(payload) = serde_json::from_str::<MessagePayload>(trimmed) {
+            println!(
+                "[receive_multipart_over_tcp] Received JSON message: {:?}",
+                payload
+            );
+
+            match payload.r#type.as_str() {
+                "start_file" => {
+                    let file_name = format!("server/received_file_{}.bin", Uuid::new_v4());
+                    println!(
+                        "[receive_multipart_over_tcp] Starting new file: {}",
+                        file_name
+                    );
+                    let file = File::create(&file_name).await?;
+                    current_file = Some(file);
+                }
+                "end_file" => {
+                    if let Some(mut file) = current_file.take() {
+                        file.flush().await?;
+                        println!("[receive_multipart_over_tcp] Finished writing file");
+                    } else {
+                       println!("[receive_multipart_over_tcp] Received 'end' but no file is open");
+                    }
+                }
+                other => {
+                    println!("[receive_multipart_over_tcp] Unhandled message: {}", other);
+                }
+            }
+        } else {
+            if let Some(file) = &mut current_file {
+                file.write_all(line.as_bytes()).await?;
+                println!(
+                    "[receive_multipart_over_tcp] Writing {} bytes to current file",
+                    line.len()
+                );
+            } else {
+                println!(
+                    "[receive_multipart_over_tcp] Received non-JSON line but no file open: {}",
+                    trimmed
+                );
+            }
+        }
+    }
+
+    // println!("[receive_multipart_over_tcp] Stream handling complete");
+    Ok(())
+}
+pub async fn handle_multipart_message(
+    payload: &MessagePayload,
+    current_file: &mut Option<File>,
+) -> std::io::Result<()> {
+    match payload.r#type.as_str() {
+        "start_file" => {
+            //Uuid::new_v4()
+            let file_name = format!("server/{}", payload.message);
+            println!(
+                "[handle_multipart_message] Starting new file: {}",
+                file_name
+            );
+
+            if let Err(e) = tokio::fs::create_dir_all("server").await {
+                eprintln!("Failed to create server directory: {}", e);
+            }
+
+            let file = File::create(&file_name).await?;
+            *current_file = Some(file);
+        }
+        "end_file" => {
+            if let Some(mut file) = current_file.take() {
+                file.flush().await?;
+                println!("[handle_multipart_message] Finished writing file");
+            } else {
+                println!("[handle_multipart_message] Received 'end' but no file is open");
+            }
+        }
+        other => {
+            println!("[handle_multipart_message] Unhandled message: {}", other);
+        }
+    }
+    Ok(())
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -300,10 +401,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (socket, addr) = listener.accept().await?;
         let stdin_ref = shared_stdin.clone();
 
+        println!("New connection from: {}", addr);
+
         tokio::spawn(async move {
-            let (read_half, write_half) = split(socket);
+            let (read_half, write_half) = socket.into_split();
             let mut reader = BufReader::new(read_half);
             let mut buf = String::new();
+            let mut current_file: Option<File> = None;
 
             let (out_tx, mut out_rx) = mpsc::channel::<String>(32);
             let (cmd_tx, mut cmd_rx) = mpsc::channel::<String>(32);
@@ -314,10 +418,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tokio::select! {
                         Some(msg) = cmd_rx.recv() => {
                             let payload = json!({"type":"info","data":msg,"authcode": "0"}).to_string() + "\n";
-                            let _ = writer.write_all(payload.as_bytes()).await;
+                            if let Err(e) = writer.write_all(payload.as_bytes()).await {
+                                eprintln!("Write error: {}", e);
+                                break;
+                            }
                         }
                         Some(out) = out_rx.recv() => {
-                            let _ = writer.write_all((out + "\n").as_bytes()).await;
+                            if let Err(e) = writer.write_all((out + "\n").as_bytes()).await {
+                                eprintln!("Write error: {}", e);
+                                break;
+                            }
                         }
                         else => break,
                     }
@@ -328,17 +438,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 buf.clear();
                 let n = reader.read_line(&mut buf).await;
                 if let Ok(0) = n {
+                    println!("Connection closed by client: {}", addr);
                     break;
                 }
                 if let Err(e) = n {
-                    eprintln!("Read error: {}", e);
+                    eprintln!("Read error from {}: {}", addr, e);
                     break;
                 }
 
                 let line = buf.trim_end();
+
                 if line.starts_with('{') {
                     if let Ok(json_line) = serde_json::from_str::<Value>(&line) {
-        
+                        if let Ok(payload) =
+                            serde_json::from_value::<MessagePayload>(json_line.clone())
+                        {
+                            if payload.r#type == "start_file" {
+                                println!("Processing file message: {:?}", payload);
+                                if let Err(e) =
+                                    handle_multipart_message(&payload, &mut current_file).await
+                                {
+                                    eprintln!("Error handling multipart message: {}", e);
+                                }
+                                continue;
+                            }
+                        }
+
                         if let Ok(request) =
                             serde_json::from_value::<FileRequestMessage>(json_line.clone())
                         {
@@ -354,7 +479,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                                 let response_msg = FileResponseMessage {
                                                     in_response_to: request.id,
-                                                    data: metadata_json, 
+                                                    data: metadata_json,
                                                 };
 
                                                 serde_json::to_string(&response_msg).unwrap_or_else(
@@ -368,7 +493,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 eprintln!("TcpFs get_metadata error: {}", e);
                                                 let error_response = FileResponseMessage {
                                                     in_response_to: request.id,
-                                                    data: format!(r#"{{"error":"{}"}}"#, e), 
+                                                    data: format!(r#"{{"error":"{}"}}"#, e),
                                                 };
                                                 serde_json::to_string(&error_response)
                                                     .unwrap_or_else(|_| {
@@ -386,7 +511,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                                 let response_msg = FileResponseMessage {
                                                     in_response_to: request.id,
-                                                    data: entries_json, 
+                                                    data: entries_json,
                                                 };
 
                                                 serde_json::to_string(&response_msg).unwrap_or_else(
@@ -400,7 +525,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 eprintln!("TcpFs list_directory error: {}", e);
                                                 let error_response = FileResponseMessage {
                                                     in_response_to: request.id,
-                                                    data: format!(r#"{{"error":"{}"}}"#, e), 
+                                                    data: format!(r#"{{"error":"{}"}}"#, e),
                                                 };
                                                 serde_json::to_string(&error_response)
                                                     .unwrap_or_else(|_| {
@@ -418,11 +543,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             });
                             continue;
                         }
+
                         if let Ok(val) = serde_json::from_value::<MessagePayload>(json_line.clone())
                         {
-                            let typ = val.r#type;
+                            let typ = val.r#type.clone();
                             if typ == "command" {
-                                let cmd_str = val.message;
+                                let cmd_str = val.message.clone();
                                 if cmd_str == "create_server" {
                                     if let Some(prov) = get_provider("minecraft") {
                                         if let Some(cmd) = prov.pre_hook() {
@@ -537,8 +663,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
                                 }
                             }
-                        } else if let Ok(val) = json_line.clone().try_into() as Result<List, _> {
-                            println!("Recived capabilities");
+                        } else if let Ok(_val) = json_line.clone().try_into() as Result<List, _> {
+                            println!("Received capabilities");
                             let _ = out_tx
                                 .send(
                                     serde_json::to_string(&List {
@@ -547,18 +673,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     .unwrap(),
                                 )
                                 .await;
-                            }
+                        }
                     }
                 } else if !line.is_empty() {
-                    let mut guard = stdin_ref.lock().await;
-                    if let Some(stdin) = guard.as_mut() {
-                        let _ = stdin.write_all(format!("{}\n", line).as_bytes()).await;
-                        let _ = stdin.flush().await;
-                        let _ = cmd_tx.send(format!("Sent to server: {}", line)).await;
+                    if let Some(file) = &mut current_file {
+                        if let Err(e) = file.write_all(line.as_bytes()).await {
+                            eprintln!("Error writing to file: {}", e);
+                        } else {
+                            println!("[file_upload] Writing {} bytes to current file", line.len());
+                        }
+                        if let Err(e) = file.write_all(b"\n").await {
+                            eprintln!("Error writing newline to file: {}", e);
+                        }
                     } else {
-                        let _ = cmd_tx.send("Server not running".into()).await;
+                        let mut guard = stdin_ref.lock().await;
+                        if let Some(stdin) = guard.as_mut() {
+                            let _ = stdin.write_all(format!("{}\n", line).as_bytes()).await;
+                            let _ = stdin.flush().await;
+                            let _ = cmd_tx.send(format!("Sent to server: {}", line)).await;
+                        } else {
+                            let _ = cmd_tx.send("Server not running".into()).await;
+                        }
                     }
                 }
+            }
+
+            if let Some(mut file) = current_file.take() {
+                let _ = file.flush().await;
+                println!("Connection closed, flushed any open file");
             }
         });
     }

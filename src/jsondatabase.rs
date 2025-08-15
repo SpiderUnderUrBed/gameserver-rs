@@ -14,7 +14,7 @@ use std::io::Read;
 use std::collections::HashMap;
 
 use crate::database::databasespec::Settings;
-use crate::database::databasespec::CustomType;
+// use crate::database::databasespec::CustomType;
 use crate::database::databasespec::Button;
 use crate::database::databasespec::ButtonsDatabase;
 use crate::database::databasespec::Server;
@@ -43,27 +43,41 @@ impl Default for JsonBackendContent {
             Button {
                 name: "Filebrowser".to_string(),
                 link: "".to_string(),
-                r#type: CustomType::Default
+                r#type: "default".to_string()
+                //CustomType::Default
             },
             Button {
                 name: "Statistics".to_string(),
                 link: "".to_string(),
-                r#type: CustomType::Default
+                r#type: "default".to_string()
+            },
+            // Button {
+            //     name: "Scedules".to_string(),
+            //     link: "".to_string(),
+            //     r#type: "default".to_string()
+            //     //CustomType::Default
+            // },
+            Button {
+                name: "Workflows".to_string(),
+                link: "".to_string(),
+                r#type: "default".to_string()
+                //CustomType::Default
             },
             Button {
-                name: "Scedules".to_string(),
+                name: "Intergrations".to_string(),
                 link: "".to_string(),
-                r#type: CustomType::Default
+                r#type: "default".to_string()
+                //CustomType::Default
             },
             Button {
                 name: "Backups".to_string(),
                 link: "".to_string(),
-                r#type: CustomType::Default
+                r#type: "default".to_string()
             },
             Button {
                 name: "Settings".to_string(),
                 link: "".to_string(),
-                r#type: CustomType::Default
+                r#type:  "default".to_string()
             }
         ];
         JsonBackendContent {
@@ -310,7 +324,7 @@ impl NodesDatabase for Database {
         if let Element::Node(Node { nodename, ip, nodetype }) = element.element {
             let mut database = self.get_database().await?;
     
-            if database.nodes.iter().any(|node| node.nodename == nodename){
+            if database.nodes.iter().any(|node| node.nodename == nodename) || (nodetype == "custom" && ip.is_empty()){
                 return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
             } else {
                 let final_node = Node { nodename,ip, nodetype };
@@ -373,7 +387,8 @@ impl ButtonsDatabase for Database {
                 if let Some(db_button) = database.buttons.iter_mut().find(|db_button| db_button.name.to_lowercase()  == name.to_lowercase() ) {
                     // println!("{}", db_button.link);
                     db_button.link = link.clone();
-                    db_button.r#type = CustomType::Custom; 
+                    db_button.r#type = "custom".to_string(); 
+                    //CustomType::Custom; 
                     // println!("{}", db_button.link);
                 }
                 //println!("Editing button");

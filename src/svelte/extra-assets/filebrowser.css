@@ -9,6 +9,7 @@
 }
 .main-body {
     display: flex;
+    flex-direction: column;
     justify-content: center; 
     align-items: center;     
     height: 90svh;
@@ -26,7 +27,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 90%;
+    width: 95%;
     height: 5svh;
     padding: 0 1em;
 }

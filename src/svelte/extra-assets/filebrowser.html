@@ -1,22 +1,25 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
+<!DOCTYPE html><html lang="en"><head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<meta name="site-url" content="[[SITE_URL]]" />
+	<meta name="site-url" content="[[SITE_URL]]">
     <title>Document</title>
-    <link rel="stylesheet" href="filebrowser.css" />
-    <script src="filebrowser.js" defer></script>
+    <link rel="stylesheet" href="filebrowser.css">
+    <link rel="stylesheet" href="https://unpkg.com/dropzone@6.0.0-beta.2/dist/dropzone.css" />
+    <script src="https://unpkg.com/dropzone@6.0.0-beta.2/dist/dropzone-min.js"></script>
+    <script src="filebrowser.js" defer=""></script>
 </head>
 <body>
     <div class="header-bar">
         test
     </div>
     <div class="main-body">
+        <div class="top-buttons">
+            <form action="" class="dropzone" id="myDropzone"></form>
+        </div>
         <div class="center" id="center"></div>
     </div>
     <!-- <div>
         <p>Hello</p>
     </div> -->
-</body>
-</html>
+
+</body></html>

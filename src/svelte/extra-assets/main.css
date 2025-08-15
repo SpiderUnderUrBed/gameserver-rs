@@ -37,6 +37,12 @@ aside button {
   cursor: pointer;
 }
 
+.server-status-indicator {
+  background-color: grey;
+  width: 2svw;
+  height: 3svh;
+}
+
 .management-buttons {
   display: none;
 }

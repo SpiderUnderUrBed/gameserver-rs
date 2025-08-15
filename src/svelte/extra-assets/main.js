@@ -25,6 +25,8 @@ class ServerConsole {
     this.loadTopmostButtonsLinks();
     this.setStatuses();
     
+    window.updateServer = () => this.updateServer();
+    window.configureServer = () => this.configureServer();
     window.restoreButtonDefaults = () => this.restoreButtonDefaults();
     window.temporaryButtonReset = () => this.temporaryButtonReset();
     window.toggleButtons = () => this.toggleButtons();
@@ -73,6 +75,8 @@ class ServerConsole {
       console.log(`Error: ${err.message}`)
       //this.addResult("", `Error: ${err.message}`, false, true);
     }   
+    // let server_status = document.getElementById("server-status-indicator");
+    this.updateStatus("none");
   }
   selectedNodeType(){
     const selector = document.getElementById("nodetype-selector");
@@ -375,6 +379,7 @@ class ServerConsole {
     }   
   }
   async restoreButtonDefaults(){
+    let button_status = document.getElementById("temp-enable-defaults");
     try {
       const res = await fetch(`${this.basePath}/api/buttonreset`, {
         method: "POST",
@@ -382,8 +387,10 @@ class ServerConsole {
         body: JSON.stringify({type: "command", message: "restore", authcode: "0"}),
       });
 
+      
       const text = await res.text();
       if (res.ok) {
+        button_status.style.backgroundColor = "red"
         await this.loadTopmostButtonsLinks();
         try {
           const data = JSON.parse(text);
@@ -509,7 +516,7 @@ class ServerConsole {
                 originalButton.replaceWith(newbutton);
 
                 newbutton.addEventListener("click", () => {
-                  if (button.type.kind == "Default") {
+                  if (button.type.toLowerCase() == "default") {
                     const buttonLower = button.name.toLowerCase();
                     window.location.href = `${button.name.toLowerCase()}.html`;
                   } else if (button.link) {
@@ -554,14 +561,15 @@ class ServerConsole {
             data: { 
               name: topmostButtonValue,
               link: topmostButtonLink,
-              type: {
-                kind: "Custom",
-                // data: {
-                //   message: "create_server",
-                //   type: "command",
-                //   authcode: "0",
-                // },
-              }
+              type: "custom"
+              // type: {
+              //   kind: "Custom",
+              //   // data: {
+              //   //   message: "create_server",
+              //   //   type: "command",
+              //   //   authcode: "0",
+              //   // },
+              // }
             }
           },
           jwt: "",
@@ -605,15 +613,21 @@ class ServerConsole {
   }
   updateStatus(state) {
     const loading = document.getElementById("loading");
-    loading.style.display = "block";
+    let server_status = document.getElementById("server-status-indicator");
+    if (state != "none") {
+      loading.style.display = "block";
+    }
     const statusEvent = new EventSource(`${this.basePath}/api/awaitserverstatus`);
     statusEvent.onmessage = (e) => {
       if ((e.data == "healthy" || e.data == "up") && state == "up"){
         loading.style.display = "none";
       } else if (e.data == "down" && state == "down"){
         loading.style.display = "none";
-      } else {
-       // console.error("error");
+      }
+      if ((e.data == "healthy" || e.data == "up")) {
+        server_status.style.backgroundColor = "green";
+      } else if (e.data == "down") {
+        server_status.style.backgroundColor = "red";
       }
     };
   }
@@ -648,6 +662,13 @@ class ServerConsole {
       console.log(`Error: ${err.message}`)
       //this.addResult("", `Error: ${err.message}`, false, true);
     }
+  }
+  async updateServer(){
+    
+  }
+  configureServer(){
+    const serverDialog = document.getElementById("configureServerDialog");
+    serverDialog.showModal()
   }
   async startServer() {
     this.updateStatus("up")

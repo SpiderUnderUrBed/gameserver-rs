@@ -28,7 +28,9 @@
 		<div class="topmost-bar">
 			<button id="filebrowser">Filebrowser</button>
 			<button id="statistics">Statistics</button>
-			<button id="scedules">Scedules</button>	
+			<!-- <button id="scedules">Scedules</button>	 -->
+			<button id="workflows">Workflows</button>	
+			<button id="intergrations">Intergrations</button>	
 			<button id="backups">Backups</button>
 			<button id="settings">Settings</button>
 
@@ -44,9 +46,11 @@
 			</div>
 		</div>
 		<div class="top-bar">
+			<div class="server-status-indicator" id="server-status-indicator"></div>
 			<button class="main-buttons" onclick="createDefaultServer()">Create Server</button>
 			<button class="main-buttons" onclick="startServer()">Start Server</button>
 			<button class="main-buttons" onclick="stopServer()">Stop Server</button>
+			<button class="main-buttons" onclick="configureServer()">Configure Server</button>
             <img src="icons/12-dots-scale-rotate.svg" class="loading" id="loading">
 			<button class="main-buttons raw-toggle-button" onclick="toggleRaw()">Raw Output: OFF</button>
 			<button class="main-buttons" onclick="addMore()">Add Node</button>
@@ -73,6 +77,15 @@
 		</button>
 
 		<footer></footer>
+		<dialog id="configureServerDialog" class="user-dialog">
+			<form method="dialog">
+				<h1>Test</h1>
+				<div class="dialog-buttons">
+					<button type="submit" onclick="updateServer()">Confirm</button>
+					<button type="button" onclick="this.closest('dialog').close()">Cancel</button>
+				</div>
+			</form>
+		</dialog>
 		<dialog id="addNodeDialog" class="user-dialog">
 			<form method="dialog">
 				<h3>Add Node</h3>
@@ -103,9 +116,11 @@
 					<select id="topmost-button-option" name="topmost-button-option">
 						<option value="filebrowser">Filebrowser</option>
 						<option value="statistics">Statistics</option>
-						<option value="scedules">Scedules</option>
+						<!-- <option value="scedules">Scedules</option> -->
 						<option value="backups">Backups</option>
 						<option value="settings">Settings</option>
+						<option value="intergrations">Intergrations</option>
+						<option value="workflows">Workflows</option>
 					</select><br>			
 					<label for="custom-button-link">Link for button (empty for default)</label><br>
 					<input type="text" id="custom-button-link" name="custom-button-link">
