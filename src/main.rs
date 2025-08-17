@@ -101,6 +101,9 @@ use database::RemoveElementData;
 use database::RetrieveUser;
 use database::User;
 
+mod extra;
+use extra::{value_from_line};
+
 mod filesystem;
 use filesystem::{
     FileChunk, FileResponseMessage, FsEntry, FsItem, FsMetadata, RemoteFileSystem, TcpFs,
@@ -352,129 +355,7 @@ async fn attempt_connection() -> Result<TcpStream, Box<dyn std::error::Error + S
         .await?
         .map_err(Into::into)
 }
-fn parse_json_objects_in_str<T>(input: &str) -> Vec<Result<T, serde_json::Error>>
-where
-    T: DeserializeOwned + Debug,
-{
-    let mut results = Vec::new();
-    let mut remaining = input;
 
-    while let Some(start) = remaining.find('{') {
-        let mut open_braces = 0usize;
-        let mut end_index = None;
-
-        for (i, c) in remaining[start..].chars().enumerate() {
-            if c == '{' {
-                open_braces += 1;
-            } else if c == '}' {
-                open_braces -= 1;
-                if open_braces == 0 {
-                    end_index = Some(start + i + 1);
-                    break;
-                }
-            }
-        }
-
-        if let Some(end) = end_index {
-            let candidate = &remaining[start..end];
-            match serde_json::from_str::<Value>(candidate) {
-                Ok(val) => {
-                    if let Ok(inner_data) = serde_json::from_value::<InnerData>(val.clone()) {
-                        match serde_json::from_str::<T>(&inner_data.data) {
-                            Ok(parsed) => results.push(Ok(parsed)),
-                            Err(e) => results.push(Err(e)),
-                        }
-                    } else {
-                        match serde_json::from_value::<T>(val) {
-                            Ok(parsed) => results.push(Ok(parsed)),
-                            Err(e) => results.push(Err(e)),
-                        }
-                    }
-                }
-                Err(e) => {
-                    results.push(Err(e));
-                }
-            }
-
-            remaining = &remaining[end..];
-        } else {
-            break;
-        }
-    }
-
-    results
-}
-
-async fn value_from_line<T, F>(gameserver_str: &str, filter: F) -> Vec<Result<T, serde_json::Error>>
-where
-    T: DeserializeOwned + Debug,
-    F: Fn(&str) -> bool,
-{
-    let mut final_values = vec![];
-
-    for line in gameserver_str.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if !filter(line) {
-            continue;
-        }
-
-        match serde_json::from_str::<Value>(line) {
-            Ok(line_val) => {
-                if let Ok(resp_msg) =
-                    serde_json::from_value::<FileResponseMessage>(line_val.clone())
-                {
-                    match String::from_utf8(resp_msg.data) {
-                        Ok(data_str) => match serde_json::from_str::<T>(&data_str) {
-                            Ok(result) => {
-                                final_values.push(Ok(result));
-                            }
-                            Err(e) => {
-                                final_values.push(Err(e));
-                            }
-                        },
-                        Err(e) => {
-                            final_values.push(Err(serde_json::from_str::<T>("").unwrap_err()));
-                        }
-                    }
-                } else if let Ok(inner_data) = serde_json::from_value::<InnerData>(line_val.clone())
-                {
-                    match serde_json::from_str::<T>(&inner_data.data) {
-                        Ok(result) => {
-                            final_values.push(Ok(result));
-                        }
-                        Err(e) => {
-                            final_values.push(Err(e));
-                        }
-                    }
-                } else {
-                    match serde_json::from_value::<T>(line_val) {
-                        Ok(result) => {
-                            final_values.push(Ok(result));
-                        }
-                        Err(e) => {
-                            final_values.push(Err(e));
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                println!("Failed to parse line as JSON: {}", e);
-                let partials = parse_json_objects_in_str::<T>(line);
-                if partials.is_empty() {
-                    println!(
-                        "Failed to parse line as JSON and no valid JSON objects found inside."
-                    );
-                }
-                final_values.extend(partials);
-            }
-        }
-    }
-
-    final_values
-}
 
 async fn handle_server_data(
     state: Arc<RwLock<AppState>>,
