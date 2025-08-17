@@ -14,10 +14,15 @@
 		<div class="header-bar">test</div>
 
 		<div class="full-filebrowser">
-			<div class="file-editor" id="file-editor">
-				<pre id="editor"></pre>
-                <div id="editor-sentinel"></div>
+		<div class="file-editor" id="file-editor">
+			<div id="editor" contenteditable="true" style="height:300px; overflow:auto; background:black; color:green; font-family:monospace;">
+				<div id="editor-sentinel"></div>
 			</div>
+			<button id="saveBtn">Save</button>
+			<pre id="output"></pre>
+		</div>
+
+
 
 			<div class="main-body">
 				<div class="navigate-buttons">

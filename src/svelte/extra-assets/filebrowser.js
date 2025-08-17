@@ -34,21 +34,15 @@ let loadingChunk = false;
 let currentOffset = 0;
 let currentFilePath = '';
 const CHUNK_SIZE = 1024;
-
 let fileTypeMap = {};
 
 async function load_chunk(path, offset) {
-	if (!path || path === '' || fileTypeMap[path] === 'folder') {
-		console.warn('[load_chunk] Invalid path or directory, skipping:', path);
-		return false;
-	}
-
+	if (!path || path === '' || fileTypeMap[path] === 'folder') return false;
 	if (loadingChunk) return false;
 	loadingChunk = true;
 
 	try {
 		const fullFilePath = current_path ? `${current_path}/${path}` : path;
-
 		const response = await fetch(`${basePath}/api/getfilescontent`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
@@ -58,46 +52,26 @@ async function load_chunk(path, offset) {
 				file_chunk_size: CHUNK_SIZE.toString()
 			})
 		});
-
 		if (!response.ok) {
-			console.error('Error fetching file:', response.status, response.statusText);
 			loadingChunk = false;
 			return false;
 		}
 
 		const data = await response.json();
-		console.log('[load_chunk] Raw chunk response:', data);
-
-		if (!data || !data.message) {
-			console.warn('Empty or invalid file content', data);
-			loadingChunk = false;
-			return false;
-		}
-
-		let fileContent;
-		fileContent = extractMessage(data);
-
+		const fileContent = extractMessage(data);
 		if (!fileContent) {
-			console.warn('File content is empty or undefined', data);
 			loadingChunk = false;
 			return false;
 		}
 
 		const editor = document.getElementById('editor');
-		if (!editor) {
-			console.error('Editor element not found');
-			loadingChunk = false;
-			return false;
-		}
-
+		const sentinel = document.getElementById('editor-sentinel');
 		const lines = fileContent.split(/\r?\n/);
-		for (let line of lines) {
-			const lineEl = document.createElement('div');
-			lineEl.textContent = line;
-			lineEl.style.fontFamily = 'monospace';
-			lineEl.style.whiteSpace = 'pre-wrap';
-			editor.appendChild(lineEl);
-		}
+		lines.forEach(line => {
+			const div = document.createElement('div');
+			div.textContent = line;
+			editor.insertBefore(div, sentinel);
+		});
 
 		currentOffset += CHUNK_SIZE;
 		loadingChunk = false;
@@ -108,81 +82,42 @@ async function load_chunk(path, offset) {
 		return false;
 	}
 }
-let fileContent = null;
 
 function extractMessage(obj) {
 	if (!obj) return null;
-
 	if (typeof obj === 'string') {
-		try {
-			const parsed = JSON.parse(obj);
-			return extractMessage(parsed);
-		} catch {
-			return obj;
-		}
+		try { return extractMessage(JSON.parse(obj)); } catch { return obj; }
 	}
-
-	if (typeof obj.message === 'string') {
-		return extractMessage(obj.message);
-	}
-
-	if (obj.data) {
-		return extractMessage(obj.data);
-	}
-
+	if (typeof obj.message === 'string') return extractMessage(obj.message);
+	if (obj.data) return extractMessage(obj.data);
 	return null;
 }
 
 async function open_editor(filename) {
-	if (!filename || filename === '' || fileTypeMap[filename] === 'folder') {
-		console.warn('[open_editor] Attempted to open invalid file path or directory:', filename);
-		return;
-	}
-
+	if (!filename || filename === '' || fileTypeMap[filename] === 'folder') return;
 	const editor = document.getElementById('editor');
-	if (!editor) return;
-
-	editor.innerHTML = '';
+	editor.querySelectorAll('div:not(#editor-sentinel)').forEach(n => n.remove());
 	currentOffset = 0;
 	currentFilePath = filename;
-
-	const more = await load_chunk(currentFilePath, currentOffset);
-	if (!more) console.warn('[open_editor] No initial content loaded for', currentFilePath);
+	await load_chunk(currentFilePath, currentOffset);
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+	const editor = document.getElementById('editor');
 	const sentinel = document.getElementById('editor-sentinel');
-	if (!sentinel) {
-		console.error('Sentinel element not found!');
-		return;
-	}
-
-	const observer = new IntersectionObserver(
-		(entries) => {
-			entries.forEach((entry) => {
-				if (entry.isIntersecting) {
-					load_chunk(currentFilePath, currentOffset);
-				}
-			});
-		},
-		{
-			root: document.querySelector('#file-editor'),
-			threshold: 1.0
-		}
-	);
-
+	const observer = new IntersectionObserver((entries) => {
+		entries.forEach((entry) => {
+			if (entry.isIntersecting) load_chunk(currentFilePath, currentOffset);
+		});
+	}, { root: editor, threshold: 1.0 });
 	observer.observe(sentinel);
 });
 
 async function get_files(path) {
-	let fileview = document.getElementById('center');
+	const fileview = document.getElementById('center');
 	fileview.innerHTML = '';
-
 	if (!path) path = '';
-
-	console.log('[get_files] Requesting path:', path);
 	current_path = path;
-
 	try {
 		const res = await fetch(`${basePath}/api/getfiles`, {
 			method: 'POST',
@@ -190,57 +125,38 @@ async function get_files(path) {
 			body: JSON.stringify({ type: 'command', message: path, authcode: '0' })
 		});
 		const text = await res.text();
-		console.log('[get_files] raw response:', text);
-
 		if (res.ok) {
 			try {
 				const data = JSON.parse(text);
 				let filelist = data.list.data;
-
-				if (path !== '') {
-					filelist.unshift({ kind: 'Folder', data: '..' });
-				}
-
-				filelist.forEach((item) => {
-					let filename = item.data;
-					let newelement = document.createElement('div');
+				if (path !== '') filelist.unshift({ kind: 'Folder', data: '..' });
+				filelist.forEach(item => {
+					const filename = item.data;
+					const newelement = document.createElement('div');
 					newelement.className = 'file-item';
-					let button = document.createElement('button');
-
+					const button = document.createElement('button');
 					fileTypeMap[filename] = item.kind.toLowerCase() === 'folder' ? 'folder' : 'file';
-
 					if (item.kind.toLowerCase() === 'folder') {
 						button.className = 'folder-button';
 						button.onclick = () => {
 							if (filename === '..') {
-								const pathParts = path.split('/').filter((p) => p !== '');
+								const pathParts = path.split('/').filter(p => p !== '');
 								pathParts.pop();
-								const parentPath = pathParts.join('/');
-								previous_path = parentPath;
-								get_files(parentPath);
+								get_files(pathParts.join('/'));
 							} else {
-								const newPath = path ? `${path}/${filename}` : filename;
-								previous_path = path;
-								get_files(newPath);
+								get_files(path ? `${path}/${filename}` : filename);
 							}
 						};
 					} else {
 						button.onclick = () => open_editor(filename);
 					}
-
-					newelement.appendChild(button);
 					button.textContent = filename;
+					newelement.appendChild(button);
 					fileview.appendChild(newelement);
 				});
-			} catch (err) {
-				console.warn('[get_files] Invalid JSON response:', err, text);
-			}
-		} else {
-			console.warn(`[get_files] Failed (${res.status}): ${text}`);
+			} catch { }
 		}
-	} catch (err) {
-		console.error('[get_files] Error fetching files:', err);
-	}
+	} catch (err) { console.error(err); }
 }
 
 get_files('');
@@ -255,11 +171,16 @@ const dz = new Dropzone('#myDropzone', {
 	addRemoveLinks: true,
 	dictDefaultMessage: 'Drop files or folders here to upload',
 	init: function () {
-		this.on('success', (file, response) => {
-			console.log('Uploaded:', file.name, response);
-			get_files(current_path);
-		});
-		this.on('error', (file, err) => console.error('Upload error:', err));
+		this.on('success', () => get_files(current_path));
 	}
 });
 dz.hiddenFileInput.setAttribute('webkitdirectory', true);
+
+document.getElementById('saveBtn').addEventListener('click', () => {
+	const editor = document.getElementById('editor');
+	const text = Array.from(editor.children)
+		.filter(c => c.id !== 'editor-sentinel')
+		.map(c => c.textContent).join('\n');
+	document.getElementById('output').textContent = text;
+	console.log('Saved text:', text);
+});
