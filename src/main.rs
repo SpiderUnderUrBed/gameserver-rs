@@ -10,6 +10,7 @@ use std::{net::SocketAddr, path::Path, sync::Arc};
 // and the general api, redirections, it will take form data and queries and make it easily accessible
 // I also use axum_login to take off alot of effort that would be required for authentication
 use crate::database::Element;
+use crate::filesystem::FsType;
 use crate::http::HeaderMap;
 use crate::middleware::from_fn;
 use axum::extract::ws::Message as WsMessage;
@@ -102,7 +103,7 @@ use database::RetrieveUser;
 use database::User;
 
 mod filesystem;
-use filesystem::{FsItem, RemoteFileSystem, TcpFs, FsEntry, FileResponseMessage, FsMetadata};
+use filesystem::{FsItem, RemoteFileSystem, TcpFs, FsEntry, FileResponseMessage, FsMetadata, FileChunk};
 
 // Docker AND kubernetes would be enabled with a standard deployment
 // as you wouldnt need the docker module (or the k8s module) for barebones testing
@@ -287,7 +288,6 @@ struct IncomingMessage {
     message_type: String,
     authcode: String,
 }
-
 
 // Some common api calls which is just what might get exchanged between the frontend and backend via api
 // this is needed rather than a bunch of structs or however else I might do it because in some cases I might not know what api call to expect
@@ -481,69 +481,18 @@ async fn handle_server_data(
     ws_tx: &broadcast::Sender<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let text = String::from_utf8_lossy(data);
-
-
-    let bytes: Vec<u8> = text
-        .split(|c: char| !c.is_ascii_digit())
-        .filter_map(|s| {
-            s.parse::<u64>()
-                .ok()
-                .and_then(|n| if n <= 255 { Some(n as u8) } else { None })
-        })
-        .collect();
-
-    if let Ok(resp_msg) = serde_json::from_str::<FileResponseMessage>(&text) {
-        let state_guard = state.read().await;
-        if let Err(e) = state_guard.tcp_tx.send(serde_json::to_vec(&resp_msg)?) {
-            println!("Failed to forward FileResponseMessage: {}", e);
-        }
-        return Ok(());
+  
+    let state_guard = state.read().await;
+    if let Err(e) = state_guard.tcp_tx.send(data.to_vec()) {
+        println!("Failed to forward raw TCP data: {}", e);
     }
-
-    if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&text) {
-        if let Some(in_response_to) = json_value.get("in_response_to") {
-            let resp_msg = FileResponseMessage {
-                in_response_to: in_response_to.as_u64().unwrap_or(0),
-                data: if let Some(data) = json_value.get("data") {
-                    serde_json::to_vec(data)?
-                } else {
-                    serde_json::to_vec(&json_value)?
-                },
-            };
-            let state_guard = state.read().await;
-            if let Err(e) = state_guard.tcp_tx.send(serde_json::to_vec(&resp_msg)?) {
-                println!("Failed to forward wrapped response: {}", e);
-            }
-            return Ok(());
-        }
-    }
-
-    // Handle raw metadata or entries
-    if let Ok(metadata) = serde_json::from_slice::<FsMetadata>(data) {
-        let resp_msg = FileResponseMessage {
-            in_response_to: 0, // Assuming 0 is metadata request ID
-            data: serde_json::to_vec(&metadata)?,
-        };
-        let state_guard = state.read().await;
-        if let Err(e) = state_guard.tcp_tx.send(serde_json::to_vec(&resp_msg)?) {
-            println!("Failed to forward metadata: {}", e);
-        }
-    } else if let Ok(entries) = serde_json::from_slice::<Vec<FsEntry>>(data) {
-        let resp_msg = FileResponseMessage {
-            in_response_to: 1, // Assuming 1 is list directory request ID
-            data: serde_json::to_vec(&entries)?,
-        };
-        let state_guard = state.read().await;
-        if let Err(e) = state_guard.tcp_tx.send(serde_json::to_vec(&resp_msg)?) {
-            println!("Failed to forward entries: {}", e);
-        }
-    }
+    drop(state_guard);
 
     if let Ok(outer_msg) = serde_json::from_str::<InnerData>(&text) {
         let inner_data_str = outer_msg.data.as_str();
         let mut borrowed_state = state.write().await;
-
         let mut keyword_detected = false;
+        
         if let Ok(keyword_payload) = serde_json::from_str::<KeywordPayload>(inner_data_str) {
             if let Some(start_keyword) = &keyword_payload.start_keyword {
                 if inner_data_str.contains(start_keyword) {
@@ -552,7 +501,6 @@ async fn handle_server_data(
                     keyword_detected = true;
                 }
             }
-
             if let Some(stop_keyword) = &keyword_payload.stop_keyword {
                 if inner_data_str.contains(stop_keyword) {
                     println!("Changed state to Down (current line)");
@@ -561,56 +509,11 @@ async fn handle_server_data(
                 }
             }
         }
-
-        let filter = |line: &str| line.contains("start_keyword") || line.contains("stop_keyword");
-        if !keyword_detected {
-            if let Some(gameserver_str) = borrowed_state.gameserver.as_str() {
-                if let Some(last_keyword_line) = gameserver_str
-                    .lines()
-                    .rev()
-                    .find(|l| l.contains("start_keyword") || l.contains("stop_keyword"))
-                {
-                    let values =
-                        value_from_line::<KeywordPayload, _>(last_keyword_line, filter).await;
-                    for value in values {
-                        if let Ok(parsed_data) = value {
-                            if let Some(start_keyword) = &parsed_data.start_keyword {
-                                if inner_data_str.contains(start_keyword) {
-                                    println!("Changed state to Up (from log)");
-                                    borrowed_state.status = Status::Up;
-                                }
-                            }
-                            if let Some(stop_keyword) = &parsed_data.stop_keyword {
-                                if inner_data_str.contains(stop_keyword) {
-                                    println!("Changed state to Down (from log)");
-                                    borrowed_state.status = Status::Down;
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                eprintln!("gameserver is not a string");
-            }
+        
+        // Send to WebSocket clients if needed
+        if let Err(e) = ws_tx.send(text.to_string()) {
+            println!("Failed to send to WebSocket: {}", e);
         }
-
-        if let Ok(inner_data) = serde_json::from_str::<serde_json::Value>(inner_data_str) {
-            if ALLOW_NONJSON_DATA {
-                if let Some(message_content) = inner_data["data"].as_str() {
-                    println!("Extracted message: {}", message_content);
-                    let _ = ws_tx.send(message_content.to_string());
-                }
-            } else {
-                println!("Sending raw inner data: {}", inner_data_str);
-                let _ = ws_tx.send(inner_data_str.to_string());
-            }
-        } else {
-            println!("Sending raw inner data: {}", inner_data_str);
-            let _ = ws_tx.send(inner_data_str.to_string());
-        }
-    } else {
-        println!("Sending raw text: {}", text);
-        let _ = ws_tx.send(text.to_string());
     }
 
     Ok(())
@@ -930,11 +833,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/awaitserverstatus", get(ongoing_server_status))
         .route("/api/getstatus", post(get_status))
         .route("/api/getfiles", post(get_files))
+        .route("/api/getfilescontent", post(get_files_content))
         .route("/api/buttonreset", post(button_reset))
         .route("/api/editbuttons", post(edit_buttons))
         .route("/api/addnode", post(add_node))
         .route("/api/edituser", post(edit_user))
         .route("/api/getuser", post(get_user))
+        .route("/api/getserver", post(get_server))
         .route("/api/send", post(receive_message))
         .route("/api/general", post(process_general))
         .route("/api/signin", post(sign_in))
@@ -1467,6 +1372,12 @@ async fn edit_user(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
     result
 }
+async fn get_server(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    Json(request): Json<RetrieveUser>,
+) -> impl IntoResponse {
+    Json({})
+}
 
 // get the user from the db
 async fn get_user(
@@ -1854,81 +1765,131 @@ async fn handle_static_request(
             .unwrap()),
     }
 }
+async fn get_files_content(
+    State(state): State<Arc<RwLock<AppState>>>,
+    Json(request): Json<FileChunk>,
+) -> Result<impl IntoResponse, impl IntoResponse> {
+    let (tcp_tx, tcp_rx) = {
+        let state = state.read().await;
+        (state.tcp_tx.clone(), state.tcp_tx.subscribe())
+    };
+
+    let mut tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
+    let mut base_path = RemoteFileSystem::new("server", Some(tcp_fs.clone()));
+
+    let user_input = request.file_name.trim_start_matches('/');
+
+    let requested_path = base_path.join(user_input).canonicalize().await.map_err(|e| {
+        eprintln!("[get_files] Invalid path: {}", e);
+        (StatusCode::BAD_REQUEST, "Invalid path").into_response()
+    })?;
+
+    let (dir_path, file_name) = match (requested_path.parent(), requested_path.file_name()) {
+        (Some(dir), Some(file)) => (dir.to_path_buf(), file.to_os_string()),
+        _ => {
+            eprintln!("[get_files] Could not split path into directory and file");
+            return Err((StatusCode::BAD_REQUEST, "Invalid path structure").into_response());
+        }
+    };
+
+    let full_path = dir_path.join(&file_name);
+    let file_chunk = FileChunk {
+        file_name: full_path.to_string_lossy().to_string(),
+        file_chunk_offet: request.file_chunk_offet,
+        file_chunk_size: request.file_chunk_size,
+    };
+
+    let content = tcp_fs.get_files_content(file_chunk).await.map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read file").into_response()
+    })?;
+
+    Ok(Json(content))
+}
 pub async fn get_files(
     State(state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<IncomingMessage>,
 ) -> impl IntoResponse {
-    // Acquire read lock on state
     let (tcp_tx, tcp_rx) = {
         let state = state.read().await;
-
-        // IMPORTANT: create fresh receiver from sender (not from existing receiver)
         (state.tcp_tx.clone(), state.tcp_tx.subscribe())
     };
-
-
-    // Create TcpFs instance directly with the broadcast sender and receiver
     let tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
 
-    // Initialize RemoteFileSystem
-    let mut base_path = RemoteFileSystem::new("server", Some(tcp_fs));
-
     let user_input = request.message.trim_start_matches('/');
-    // Canonicalize requested path with logging
-    let mut requested_path = match base_path.join(user_input).canonicalize().await {
-        Ok(path) => {
-            path
-        }
-        Err(e) => {
-            eprintln!("[get_files] Invalid path: {}", e);
+
+    let fs_path = if user_input.is_empty() {
+        "server".to_string()
+    } else if user_input == "server" {
+        "server".to_string()
+    } else if user_input.starts_with("server/") {
+        user_input.to_string()
+    } else {
+        format!("server/{}", user_input)
+    };
+
+
+    let mut requested_path = match timeout(
+        Duration::from_secs(5),
+        RemoteFileSystem::new(&fs_path, Some(tcp_fs)).canonicalize(),
+    )
+    .await
+    {
+        Ok(Ok(p)) => p,
+        Ok(Err(e)) => {
+            eprintln!("[get_files] Invalid path '{}': {}", fs_path, e);
             return (StatusCode::BAD_REQUEST, "Invalid path").into_response();
+        }
+        Err(_) => {
+            eprintln!("[get_files] Timeout resolving '{}'", fs_path);
+            return (StatusCode::GATEWAY_TIMEOUT, "Request timed out").into_response();
         }
     };
 
-    // Security check
-    // if !requested_path.to_string().starts_with(&base_path.to_string()) {
-    //     eprintln!(
-    //         "[get_files] Security check failed: {} not in {}",
-    //         requested_path.to_string(),
-    //         base_path.to_string()
-    //     );
-    //     return (StatusCode::FORBIDDEN, "Forbidden: escape attempt").into_response();
-    // }
-
-    // Read directory with detailed logging
-    match requested_path.read_dir().await {
-        Ok(entries) => {
-
-
-            let mut items = Vec::new();
-            for mut entry in entries {
-                if let Some(name) = entry.file_name() {
-                    let name_str = name.to_string_lossy().into_owned();
-                    if entry.is_dir().await.unwrap_or(false) {
-                        items.push(FsItem::Folder(name_str));
-                    } else if entry.is_file().await.unwrap_or(false) {
-                        items.push(FsItem::File(name_str));
-                    } else {
-                    }
-                } 
-            }
-
-            Json(List {
-                list: ApiCalls::FileList(items),
-            })
-            .into_response()
+    let is_dir = match timeout(Duration::from_secs(3), requested_path.is_dir()).await {
+        Ok(Ok(true)) => true,
+        Ok(Ok(false)) => {
+            eprintln!("[get_files] Path is not a directory: '{}'", requested_path.to_string());
+            return (StatusCode::BAD_REQUEST, "Path is not a directory").into_response();
         }
-        Err(e) => {
-            eprintln!("[get_files] Failed to read directory: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to read directory",
-            )
-                .into_response()
+        Ok(Err(e)) => {
+            eprintln!("[get_files] Error checking dir '{}': {}", requested_path.to_string(), e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to check directory").into_response();
+        }
+        Err(_) => {
+            eprintln!("[get_files] Timeout checking dir '{}'", requested_path.to_string());
+            return (StatusCode::GATEWAY_TIMEOUT, "Request timed out").into_response();
+        }
+    };
+
+    let entries = match timeout(Duration::from_secs(20), requested_path.read_dir()).await {
+        Ok(Ok(list)) => list,
+        Ok(Err(e)) => {
+            eprintln!("[get_files] Failed to read directory '{}': {}", requested_path.to_string(), e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read directory").into_response();
+        }
+        Err(_) => {
+            eprintln!("[get_files] Timeout reading dir '{}'", requested_path.to_string());
+            return (StatusCode::GATEWAY_TIMEOUT, "Request timed out").into_response();
+        }
+    };
+
+    let mut items = Vec::with_capacity(entries.len());
+    for mut entry in entries {
+        if let Some(entry_name) = entry.file_name().unwrap().to_str() {
+            if let Ok(is_dir) = entry.is_dir().await {
+                items.push(if is_dir {
+                    FsItem::Folder(entry_name.to_string())
+                } else {
+                    FsItem::File(entry_name.to_string())
+                });
+            }
         }
     }
-}
 
+    Json(List {
+        list: ApiCalls::FileList(items),
+    }).into_response()
+}
 // async fn get_files(
 //     State(arc_state): State<Arc<RwLock<AppState>>>,
 //     Query(params): Query<FileParams>

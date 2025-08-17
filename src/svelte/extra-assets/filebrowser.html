@@ -1,26 +1,33 @@
-<!DOCTYPE html><html lang="en"><head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<meta name="site-url" content="[[SITE_URL]]">
-    <title>Document</title>
-    <link rel="stylesheet" href="filebrowser.css">
-    <link rel="stylesheet" href="https://unpkg.com/dropzone@6.0.0-beta.2/dist/dropzone.css" />
-    <script src="https://unpkg.com/dropzone@6.0.0-beta.2/dist/dropzone-min.js"></script>
-    <script src="filebrowser.js" defer=""></script>
-</head>
-<body>
-    <div class="header-bar">
-        test
-    </div>
-    <div class="main-body">
-        <div class="top-buttons">
-            <button class="toggle-button" id="toggleUploader">Show File Uploader</button>
-            <form action="" class="dropzone" id="myDropzone"></form>
-        </div>
-        <div class="center" id="center"></div>
-    </div>
-    <!-- <div>
-        <p>Hello</p>
-    </div> -->
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<meta name="site-url" content="[[SITE_URL]]" />
+		<title>Document</title>
+		<link rel="stylesheet" href="filebrowser.css" />
+		<link rel="stylesheet" href="https://unpkg.com/dropzone@6.0.0-beta.2/dist/dropzone.css" />
+		<script src="https://unpkg.com/dropzone@6.0.0-beta.2/dist/dropzone-min.js"></script>
+		<script src="filebrowser.js" defer></script>
+	</head>
+	<body>
+		<div class="header-bar">test</div>
 
-</body></html>
+		<div class="full-filebrowser">
+			<div class="file-editor" id="file-editor">
+				<pre id="editor"></pre>
+                <div id="editor-sentinel"></div>
+			</div>
+
+			<div class="main-body">
+				<div class="navigate-buttons">
+					<button class="toggle-button" id="toggleUploader">Show File Uploader</button>
+					<form action="" class="dropzone" id="myDropzone"></form>
+				</div>
+
+				<div class="center" id="center">
+				</div>
+			</div>
+		</div>
+	</body>
+</html>

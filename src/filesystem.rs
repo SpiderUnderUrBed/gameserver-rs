@@ -1,13 +1,18 @@
-// struct FsItem {
-//     name:
-// }
-use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
-use std::time::{Duration, Instant};
-use std::path::{Path, PathBuf};
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+use std::{
+    any::Any,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+};
 use tokio::time::timeout;
-use async_trait::async_trait;
+
+use crate::IncomingMessage;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(tag = "kind", content = "data")]
@@ -17,8 +22,14 @@ pub enum FsItem {
 }
 #[async_trait::async_trait]
 pub trait FsType: Clone + Send + Sync {
+    async fn get_files_content(
+        &mut self,
+        file_chunk: FileChunk,
+    ) -> std::io::Result<IncomingMessage>;
     async fn get_metadata(&mut self, path: &str) -> std::io::Result<FsMetadata>;
     async fn list_directory(&mut self, path: &str) -> std::io::Result<Vec<FsEntry>>;
+    fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -42,11 +53,19 @@ pub struct FileRequestMessage {
     payload: FileRequestPayload,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct FileChunk {
+    pub(crate) file_name: String,
+    pub(crate) file_chunk_offet: String,
+    pub(crate) file_chunk_size: String,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum FileRequestPayload {
     Metadata { path: String },
     ListDir { path: String },
+    FileChunk(FileChunk),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -60,7 +79,6 @@ pub struct OneTimeWrapper {
     pub data: Value,
 }
 
-// TCP Filesystem implementation
 #[derive(Debug)]
 pub struct TcpFs {
     pub tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
@@ -91,7 +109,6 @@ impl TcpFs {
         }
     }
 
-    // Send request once, no waiting for responses here
     async fn send_request(&mut self, payload: FileRequestPayload) -> std::io::Result<u64> {
         let id = self.request_id.fetch_add(1, Ordering::SeqCst);
 
@@ -108,10 +125,60 @@ impl TcpFs {
 
         Ok(id)
     }
-
     async fn recv_response(&mut self, id: u64) -> std::io::Result<Vec<u8>> {
+        use serde_json::Value;
+        use std::time::Instant;
+        use tokio::time::{sleep, Duration};
+
         let timeout_duration = Duration::from_secs(10);
         let start_time = Instant::now();
+
+        let mut assembled = String::new();
+        let mut assembling_for: Option<u64> = None;
+        let mut did_micro_wait = false;
+
+        let mut assembly_deadline: Option<Instant> = None;
+        let assembly_timeout = Duration::from_millis(2000);
+
+        fn looks_closed(s: &str) -> bool {
+            let t = s.trim();
+            if t.is_empty() {
+                return false;
+            }
+            match (t.chars().next(), t.chars().rev().next()) {
+                (Some('['), Some(']')) => true,
+                (Some('{'), Some('}')) => true,
+                _ => false,
+            }
+        }
+
+        fn try_salvage_json(s: &str) -> Result<Vec<u8>, String> {
+            if serde_json::from_str::<Value>(s).is_ok() {
+                return Ok(s.as_bytes().to_vec());
+            }
+            if let (Some(start), Some(end)) = (s.find('['), s.rfind(']')) {
+                if start < end {
+                    let candidate = &s[start..=end];
+                    if serde_json::from_str::<Value>(candidate).is_ok() {
+                        return Ok(candidate.as_bytes().to_vec());
+                    }
+                }
+            }
+            if let (Some(start), Some(end)) = (s.find('{'), s.rfind('}')) {
+                if start < end {
+                    let candidate = &s[start..=end];
+                    if serde_json::from_str::<Value>(candidate).is_ok() {
+                        return Ok(candidate.as_bytes().to_vec());
+                    }
+                }
+            }
+            let snippet = if s.len() > 1024 {
+                s[..1024].to_string() + "..."
+            } else {
+                s.to_string()
+            };
+            Err(snippet)
+        }
 
         loop {
             if start_time.elapsed() > timeout_duration {
@@ -119,6 +186,25 @@ impl TcpFs {
                     std::io::ErrorKind::TimedOut,
                     format!("Timeout waiting for response to request {}", id),
                 ));
+            }
+
+            if assembling_for == Some(id) {
+                if let Some(deadline) = assembly_deadline {
+                    if Instant::now() > deadline {
+                        match try_salvage_json(&assembled) {
+                            Ok(bytes) => return Ok(bytes),
+                            Err(snippet) => {
+                                return Err(std::io::Error::new(
+                                    std::io::ErrorKind::TimedOut,
+                                    format!(
+                                        "Assembly timeout for request {}: partial data: {}",
+                                        id, snippet
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                }
             }
 
             let response = self
@@ -131,97 +217,60 @@ impl TcpFs {
                 continue;
             }
 
-            let response_str = String::from_utf8_lossy(&response);
+            let response_str = String::from_utf8_lossy(&response).to_string();
+            if assembling_for == Some(id) || !assembled.is_empty() {
+                assembled.push_str(&response_str);
+                if !did_micro_wait {
+                    did_micro_wait = true;
+                    sleep(Duration::from_millis(30)).await;
+                }
 
-            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&response_str) {
-                // Accept both "in_response_to" and "id"
-                let msg_id = json_value
-                    .get("in_response_to")
-                    .and_then(|v| v.as_u64())
-                    .or_else(|| json_value.get("id").and_then(|v| v.as_u64()));
-
-                if let Some(mid) = msg_id {
-                    if mid != id {
-                        continue;
+                if looks_closed(&assembled) {
+                    if let Ok(_) = serde_json::from_str::<Value>(&assembled) {
+                        return Ok(assembled.into_bytes());
                     }
+                }
+                continue;
+            }
 
-                    if let Some(data) = json_value.get("data") {
-                        // If object, check if FsMetadata is complete
-                        if let Some(obj) = data.as_object() {
-                            if obj.contains_key("is_file") && obj.contains_key("is_dir") {
-                                return Ok(serde_json::to_vec(data)?);
-                            } else {
-                                continue;
-                            }
+            match serde_json::from_str::<Value>(&response_str) {
+                Ok(mut json_value) => {
+                    if let Some(msg_id) = json_value.get("in_response_to").and_then(|v| v.as_u64())
+                    {
+                        if msg_id != id {
+                            continue;
                         }
 
-                        // If data is a byte array
-                        if let Some(bytes_array) = data.as_array() {
-                            if bytes_array.iter().all(|v| v.is_u64()) {
-                                let raw_bytes: Vec<u8> = bytes_array
-                                    .iter()
-                                    .filter_map(|v| v.as_u64().map(|n| n as u8))
-                                    .collect();
+                        assembling_for = Some(id);
+                        assembly_deadline = Some(Instant::now() + assembly_timeout);
 
-                                // Try UTF-8 decoding
-                                if let Ok(mut inner_str) = String::from_utf8(raw_bytes.clone()) {
-                                    // Keep unwrapping JSON strings until we hit object/array
-                                    loop {
-                                        if let Ok(inner_json) =
-                                            serde_json::from_str::<serde_json::Value>(&inner_str)
-                                        {
-                                            if inner_json.is_string() {
-                                                inner_str =
-                                                    inner_json.as_str().unwrap().to_string();
-                                                continue;
-                                            } else {
-                                                return Ok(serde_json::to_vec(&inner_json)?);
-                                            }
-                                        }
-                                        break;
+                        if let Some(data_val) = json_value.get_mut("data") {
+                            match data_val {
+                                Value::String(s) => {
+                                    assembled.push_str(s);
+                                    if looks_closed(&assembled)
+                                        && serde_json::from_str::<Value>(&assembled).is_ok()
+                                    {
+                                        return Ok(assembled.into_bytes());
                                     }
+                                    continue;
                                 }
-
-                                return Ok(raw_bytes);
-                            }
-                        }
-
-                        // If data is a JSON string
-                        if let Some(s) = data.as_str() {
-                            let mut inner_str = s.to_string();
-                            loop {
-                                if let Ok(inner_json) =
-                                    serde_json::from_str::<serde_json::Value>(&inner_str)
-                                {
-                                    if inner_json.is_string() {
-                                        inner_str = inner_json.as_str().unwrap().to_string();
-                                        continue;
-                                    } else {
-                                        return Ok(serde_json::to_vec(&inner_json)?);
-                                    }
+                                Value::Array(_) | Value::Object(_) => {
+                                    return serde_json::to_vec(data_val).map_err(|e| {
+                                        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+                                    });
                                 }
-                                break;
+                                _ => continue,
                             }
-                            return Ok(s.as_bytes().to_vec());
-                        }
-
-                        // If data is already JSON object or array
-                        if data.is_object() || data.is_array() {
-                            return Ok(serde_json::to_vec(data)?);
                         }
                     }
                 }
-            }
-
-            // Fallbacks — try direct parsing
-            if let Ok(entries) = serde_json::from_slice::<Vec<FsEntry>>(&response) {
-                return Ok(serde_json::to_vec(&entries)?);
-            }
-            if let Ok(entry) = serde_json::from_slice::<FsEntry>(&response) {
-                return Ok(serde_json::to_vec(&entry)?);
-            }
-            if let Ok(metadata) = serde_json::from_slice::<FsMetadata>(&response) {
-                return Ok(serde_json::to_vec(&metadata)?);
+                Err(_) => {
+                    assembled.push_str(&response_str);
+                    assembling_for = Some(id);
+                    assembly_deadline = Some(Instant::now() + assembly_timeout);
+                    continue;
+                }
             }
         }
     }
@@ -229,6 +278,32 @@ impl TcpFs {
 
 #[async_trait::async_trait]
 impl FsType for TcpFs {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
+    async fn get_files_content(
+        &mut self,
+        file_chunk: FileChunk,
+    ) -> std::io::Result<IncomingMessage> {
+        let id = self
+            .send_request(FileRequestPayload::FileChunk(file_chunk))
+            .await?;
+
+        let response = self.recv_response(id).await?;
+
+        let message_str = String::from_utf8_lossy(&response).to_string();
+
+        Ok(IncomingMessage {
+            message_type: "file_content".to_string(),
+            message: message_str,
+            authcode: "0".to_string(),
+        })
+    }
+
     async fn get_metadata(&mut self, path: &str) -> std::io::Result<FsMetadata> {
         let id = self
             .send_request(FileRequestPayload::Metadata {
@@ -241,41 +316,12 @@ impl FsType for TcpFs {
         match serde_json::from_slice::<FsMetadata>(&response) {
             Ok(metadata) => Ok(metadata),
             Err(e) => {
-                println!(
-                    "[TcpFs][get_metadata] Failed to parse FsMetadata JSON: {}",
-                    e
-                );
                 Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
             }
         }
     }
-
     async fn list_directory(&mut self, path: &str) -> std::io::Result<Vec<FsEntry>> {
-        let metadata = self.get_metadata(path).await?;
-
-        if metadata.is_file {
-            println!("[TcpFs] Error: path is a file, not a directory");
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Path is a file, not a directory",
-            ));
-        }
-
-        let expected_count = metadata.optional_folder_children.unwrap_or(0);
-
-        if expected_count == 0 {
-            let id = self
-                .send_request(FileRequestPayload::ListDir {
-                    path: path.to_string(),
-                })
-                .await?;
-
-            let response = self.recv_response(id).await?;
-
-            let list: Vec<FsEntry> = serde_json::from_slice(&response).unwrap_or_default();
-
-            return Ok(list);
-        }
+        use serde_json::Value;
 
         let id = self
             .send_request(FileRequestPayload::ListDir {
@@ -283,62 +329,66 @@ impl FsType for TcpFs {
             })
             .await?;
 
-        let mut collected_entries = Vec::new();
-
-        // Timer duration for timeout after no new entries
-        let timeout_duration = Duration::from_secs(3);
-        // Keep track of when last new entries arrived
-        let mut last_received = Instant::now();
-
-        loop {
-            // If we've got all entries, break
-            if (collected_entries.len() as u64) >= expected_count {
-                break;
+        let response = match self.recv_response(id).await {
+            Ok(b) => b,
+            Err(e) => {
+                println!(
+                    "[TcpFs][list_directory] recv_response error for id {}: {}",
+                    id, e
+                );
+                return Err(e);
             }
+        };
 
-            // Calculate remaining time before timeout triggers
-            let time_since_last = Instant::now().duration_since(last_received);
-            let time_left = if time_since_last >= timeout_duration {
-                // Timeout already expired
-                Duration::ZERO
-            } else {
-                timeout_duration - time_since_last
-            };
+        let raw_text = String::from_utf8_lossy(&response).to_string();
+        if let Ok(entries) = serde_json::from_slice::<Vec<FsEntry>>(&response) {
+            return Ok(entries);
+        }
 
-            // Wait for next response chunk with timeout
-            let recv_result = timeout(time_left, self.recv_response(id)).await;
+        let val: Value = serde_json::from_str(&raw_text).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to parse response as JSON Value: {}", e),
+            )
+        })?;
 
-            match recv_result {
-                Ok(Ok(response)) => {
-                    let mut added_entries = 0;
+        if val.is_array() {
+            let entries: Vec<FsEntry> = serde_json::from_value(val).map_err(|e| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+            })?;
+            return Ok(entries);
+        }
 
-                    if let Ok(mut entries) = serde_json::from_slice::<Vec<FsEntry>>(&response) {
-                        added_entries = entries.len();
-                        collected_entries.append(&mut entries);
-                    } else if let Ok(single) = serde_json::from_slice::<FsEntry>(&response) {
-                        added_entries = 1;
-                        collected_entries.push(single);
-                    }
+        if let Value::String(s) = val {
+            let inner = s.trim();
+            let entries: Vec<FsEntry> = serde_json::from_str(inner).map_err(|e| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+            })?;
+            return Ok(entries);
+        }
 
-                    if added_entries > 0 {
-                        last_received = Instant::now();
-                    }
+        if let Value::Object(mut map) = val {
+            if let Some(data_val) = map.remove("data") {
+                if data_val.is_array() || data_val.is_object() {
+                    let entries: Vec<FsEntry> = serde_json::from_value(data_val).map_err(|e| {
+                        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+                    })?;
+                    return Ok(entries);
                 }
-                Ok(Err(e)) => {
-                    eprintln!("[TcpFs] Error receiving response: {}", e);
-                    break;
-                }
-                Err(_) => {
-                    // Timeout triggered, no new entries within timeout_duration
-                    println!(
-                        "[TcpFs] Timeout waiting for new entries, returning collected entries"
-                    );
-                    break;
+                if let Value::String(s) = data_val {
+                    let inner = s.trim();
+                    let entries: Vec<FsEntry> = serde_json::from_str(inner).map_err(|e| {
+                        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+                    })?;
+                    return Ok(entries);
                 }
             }
         }
 
-        Ok(collected_entries)
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Failed to parse directory listing into Vec<FsEntry>",
+        ))
     }
 }
 
@@ -350,6 +400,14 @@ pub struct RemoteFileSystem<S: FsType> {
     cached_entries: Option<Vec<FsEntry>>,
 }
 impl<S: FsType> RemoteFileSystem<S> {
+    pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
+        self.state.as_ref()?.as_any().downcast_ref::<T>()
+    }
+
+    pub fn downcast_mut<T: 'static>(&mut self) -> Option<&mut T> {
+        self.state.as_mut()?.as_any_mut().downcast_mut::<T>()
+    }
+
     pub fn new(path: &str, state: Option<S>) -> Self {
         Self {
             path: path.to_string(),
@@ -357,6 +415,18 @@ impl<S: FsType> RemoteFileSystem<S> {
             cached_metadata: None,
             cached_entries: None,
         }
+    }
+
+    pub fn parent(&self) -> Option<Self> {
+        let parent_path = Path::new(&self.path).parent()?.to_path_buf();
+        Some(Self::new(
+            &parent_path.to_string_lossy(),
+            self.state.clone(),
+        ))
+    }
+
+    pub fn to_path_buf(&self) -> std::path::PathBuf {
+        Path::new(&self.path).to_path_buf()
     }
 
     pub fn as_path(&self) -> &Path {
@@ -442,10 +512,8 @@ impl<S: FsType> RemoteFileSystem<S> {
     }
 }
 
-// Specific implementation for TcpFs
 impl RemoteFileSystem<TcpFs> {
     pub async fn read_dir(&self) -> std::io::Result<Vec<RemoteFileSystem<TcpFs>>> {
-        // Create a mutable clone to call ensure_entries
         let mut fs_clone = self.clone();
         fs_clone.ensure_entries().await?;
 

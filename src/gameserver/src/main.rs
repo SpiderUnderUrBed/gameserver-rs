@@ -7,7 +7,8 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use tokio::fs;
 use tokio::io;
-use tokio::io::{split, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, BufReader, AsyncBufReadExt, AsyncWriteExt, split};
+use std::io::SeekFrom;
 use tokio::net::TcpListener;
 use tokio::process::{ChildStdin, Command as TokioCommand};
 use tokio::sync::{mpsc, Mutex};
@@ -222,6 +223,13 @@ pub struct FsEntry {
     pub is_dir: bool,
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub struct FileChunk {
+    file_name: String,
+    file_chunk_offet: String,
+    file_chunk_size: String
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct FileRequestMessage {
     id: u64,
@@ -234,6 +242,7 @@ struct FileRequestMessage {
 enum FileRequestPayload {
     Metadata { path: String },
     ListDir { path: String },
+    FileChunk(FileChunk)
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -246,20 +255,19 @@ struct FileResponseMessage {
 struct OneTimeWrapper {
     data: Value,
 }
-
 async fn get_metadata(path: &str) -> io::Result<FsMetadata> {
     let metadata = fs::metadata(path).await?;
     let canonical = fs::canonicalize(path).await?;
 
-    let optional_folder_children = if metadata.is_file() {
-        None
-    } else {
+    let optional_folder_children = if metadata.is_dir() {
         let mut count = 0;
         let mut dir = fs::read_dir(path).await?;
         while let Some(entry) = dir.next_entry().await? {
             count += 1;
         }
         Some(count)
+    } else {
+        None
     };
 
     Ok(FsMetadata {
@@ -269,9 +277,10 @@ async fn get_metadata(path: &str) -> io::Result<FsMetadata> {
         canonical_path: canonical.to_string_lossy().to_string(),
     })
 }
-async fn list_directory(path: &str) -> std::io::Result<Vec<FsEntry>> {
+
+async fn list_directory(path: &str) -> io::Result<Vec<FsEntry>> {
     let mut entries = Vec::new();
-    let mut dir = tokio::fs::read_dir(path).await?;
+    let mut dir = fs::read_dir(path).await?;
 
     while let Some(entry) = dir.next_entry().await? {
         let metadata = entry.metadata().await?;
@@ -284,6 +293,38 @@ async fn list_directory(path: &str) -> std::io::Result<Vec<FsEntry>> {
 
     Ok(entries)
 }
+
+pub async fn get_files_content(file_chunk: FileChunk) -> io::Result<MessagePayload> {
+    let metadata = fs::metadata(&file_chunk.file_name).await?;
+
+    if metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Path is a directory: {}", file_chunk.file_name),
+        ));
+    }
+
+    let mut file = File::open(&file_chunk.file_name).await?;
+    let offset: u64 = file_chunk.file_chunk_offet
+        .parse()
+        .expect("Invalid file offset");
+
+    file.seek(SeekFrom::Start(offset.try_into().unwrap())).await?;
+    let chunk_size: usize = file_chunk.file_chunk_size
+        .parse()
+        .expect("Invalid chunk size");
+
+    let mut buffer = vec![0; chunk_size];
+    let bytes_read = file.read(&mut buffer).await?;
+    let content = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+
+    Ok(MessagePayload {
+        r#type: "file_content".to_string(),
+        message: content,
+        authcode: "0".to_string(),
+    })
+}
+
 
 
 pub async fn handle_multipart_message(
@@ -399,72 +440,101 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let out_tx_clone = out_tx.clone();
                             tokio::spawn(async move {
                                 let response_json = match request.payload {
-                                    FileRequestPayload::Metadata { path } => {
-                                        match get_metadata(&path).await {
-                                            Ok(metadata) => {
-                                                let metadata_json =
-                                                    serde_json::to_string(&metadata)
-                                                        .unwrap_or_else(|_| "{}".to_string());
+    FileRequestPayload::Metadata { path } => {
+        println!("[Server] Received Metadata request for '{}'", path);
+        match get_metadata(&path).await {
+            Ok(metadata) => {
+                println!("[Server] Metadata for '{}': {:?}", path, metadata);
 
-                                                let response_msg = FileResponseMessage {
-                                                    in_response_to: request.id,
-                                                    data: metadata_json,
-                                                };
+                let metadata_json = serde_json::to_string(&metadata)
+                    .unwrap_or_else(|_| "{}".to_string());
 
-                                                serde_json::to_string(&response_msg).unwrap_or_else(
-                                                    |_| {
-                                                        r#"{"in_response_to":0,"data":""}"#
-                                                            .to_string()
-                                                    },
-                                                )
-                                            }
-                                            Err(e) => {
-                                                eprintln!("TcpFs get_metadata error: {}", e);
-                                                let error_response = FileResponseMessage {
-                                                    in_response_to: request.id,
-                                                    data: format!(r#"{{"error":"{}"}}"#, e),
-                                                };
-                                                serde_json::to_string(&error_response)
-                                                    .unwrap_or_else(|_| {
-                                                        r#"{"in_response_to":0,"data":""}"#
-                                                            .to_string()
-                                                    })
-                                            }
-                                        }
-                                    }
-                                    FileRequestPayload::ListDir { path } => {
-                                        match list_directory(&path).await {
-                                            Ok(entries) => {
-                                                let entries_json = serde_json::to_string(&entries)
-                                                    .unwrap_or_else(|_| "[]".to_string());
+                let response_msg = FileResponseMessage {
+                    in_response_to: request.id,
+                    data: metadata_json,
+                };
 
-                                                let response_msg = FileResponseMessage {
-                                                    in_response_to: request.id,
-                                                    data: entries_json,
-                                                };
+                serde_json::to_string(&response_msg).unwrap_or_else(|_| {
+                    r#"{"in_response_to":0,"data":""}"#.to_string()
+                })
+            }
+            Err(e) => {
+                eprintln!("[Server] TcpFs get_metadata error for '{}': {}", path, e);
+                let error_response = FileResponseMessage {
+                    in_response_to: request.id,
+                    data: format!(r#"{{"error":"{}"}}"#, e),
+                };
+                serde_json::to_string(&error_response)
+                    .unwrap_or_else(|_| r#"{"in_response_to":0,"data":""}"#.to_string())
+            }
+        }
+    }
 
-                                                serde_json::to_string(&response_msg).unwrap_or_else(
-                                                    |_| {
-                                                        r#"{"in_response_to":0,"data":""}"#
-                                                            .to_string()
-                                                    },
-                                                )
-                                            }
-                                            Err(e) => {
-                                                eprintln!("TcpFs list_directory error: {}", e);
-                                                let error_response = FileResponseMessage {
-                                                    in_response_to: request.id,
-                                                    data: format!(r#"{{"error":"{}"}}"#, e),
-                                                };
-                                                serde_json::to_string(&error_response)
-                                                    .unwrap_or_else(|_| {
-                                                        r#"{"in_response_to":0,"data":""}"#
-                                                            .to_string()
-                                                    })
-                                            }
-                                        }
-                                    }
-                                };
+    FileRequestPayload::FileChunk(file_chunk) => {
+        println!(
+            "[Server] Received FileChunk request for '{}', offset: {}, size: {}",
+            file_chunk.file_name, file_chunk.file_chunk_offet, file_chunk.file_chunk_size
+        );
+
+        match get_files_content(file_chunk).await {
+            Ok(content_message) => {
+                println!("[Server] FileChunk content prepared for '{}'", content_message.r#type);
+
+                let content_message_json = serde_json::to_string(&content_message)
+                    .unwrap_or_else(|_| "[]".to_string());
+
+                let response_msg = FileResponseMessage {
+                    in_response_to: request.id,
+                    data: content_message_json,
+                };
+
+                serde_json::to_string(&response_msg).unwrap_or_else(|_| {
+                    r#"{"in_response_to":0,"data":""}"#.to_string()
+                })
+            }
+            Err(e) => {
+                eprintln!("[Server] TcpFs file_content error: {}", e);
+                let error_response = FileResponseMessage {
+                    in_response_to: request.id,
+                    data: format!(r#"{{"error":"{}"}}"#, e),
+                };
+                serde_json::to_string(&error_response)
+                    .unwrap_or_else(|_| r#"{"in_response_to":0,"data":""}"#.to_string())
+            }
+        }
+    }
+
+    FileRequestPayload::ListDir { path } => {
+        println!("[Server] Received ListDir request for '{}'", path);
+        match list_directory(&path).await {
+            Ok(entries) => {
+                println!("[Server] Entries for '{}': {:#?}", path, entries);
+
+                let entries_json = serde_json::to_string(&entries)
+                    .unwrap_or_else(|_| "[]".to_string());
+
+                let response_msg = FileResponseMessage {
+                    in_response_to: request.id,
+                    data: entries_json,
+                };
+
+                serde_json::to_string(&response_msg).unwrap_or_else(|_| {
+                    r#"{"in_response_to":0,"data":""}"#.to_string()
+                })
+            }
+            Err(e) => {
+                eprintln!("[Server] TcpFs list_directory error for '{}': {}", path, e);
+                let error_response = FileResponseMessage {
+                    in_response_to: request.id,
+                    data: format!(r#"{{"error":"{}"}}"#, e),
+                };
+                serde_json::to_string(&error_response)
+                    .unwrap_or_else(|_| r#"{"in_response_to":0,"data":""}"#.to_string())
+            }
+        }
+    }
+};
+
 
                                 if let Err(e) = out_tx_clone.send(response_json).await {
                                     eprintln!("Failed to send TcpFs response: {}", e);
