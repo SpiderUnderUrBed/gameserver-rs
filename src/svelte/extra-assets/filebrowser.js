@@ -75,12 +75,7 @@ async function load_chunk(path, offset) {
 		}
 
 		let fileContent;
-		try {
-			const inner = JSON.parse(data.message);
-			fileContent = inner?.message ?? data.message;
-		} catch {
-			fileContent = data.message;
-		}
+		fileContent = extractMessage(data);
 
 		if (!fileContent) {
 			console.warn('File content is empty or undefined', data);
@@ -112,6 +107,30 @@ async function load_chunk(path, offset) {
 		loadingChunk = false;
 		return false;
 	}
+}
+let fileContent = null;
+
+function extractMessage(obj) {
+	if (!obj) return null;
+
+	if (typeof obj === 'string') {
+		try {
+			const parsed = JSON.parse(obj);
+			return extractMessage(parsed);
+		} catch {
+			return obj;
+		}
+	}
+
+	if (typeof obj.message === 'string') {
+		return extractMessage(obj.message);
+	}
+
+	if (obj.data) {
+		return extractMessage(obj.data);
+	}
+
+	return null;
 }
 
 async function open_editor(filename) {
