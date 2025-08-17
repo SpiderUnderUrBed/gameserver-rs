@@ -248,13 +248,14 @@ enum FileRequestPayload {
 #[derive(serde::Serialize, serde::Deserialize)]
 struct FileResponseMessage {
     in_response_to: u64,
-    data: String,
+    data: serde_json::Value,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct OneTimeWrapper {
     data: Value,
 }
+
 async fn get_metadata(path: &str) -> io::Result<FsMetadata> {
     let metadata = fs::metadata(path).await?;
     let canonical = fs::canonicalize(path).await?;
@@ -333,7 +334,6 @@ pub async fn handle_multipart_message(
 ) -> std::io::Result<()> {
     match payload.r#type.as_str() {
         "start_file" => {
-            //Uuid::new_v4()
             let file_name = format!("server/{}", payload.message);
 
             if let Err(e) = tokio::fs::create_dir_all("server").await {
@@ -417,137 +417,115 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 let line = buf.trim_end();
-
                 if line.starts_with('{') {
                     if let Ok(json_line) = serde_json::from_str::<Value>(&line) {
-                        if let Ok(payload) =
-                            serde_json::from_value::<MessagePayload>(json_line.clone())
-                        {
+                        if let Ok(request) = serde_json::from_value::<FileRequestMessage>(json_line.clone()) {
+                            
+                            let out_tx_clone = out_tx.clone();
+                            tokio::spawn(async move {
+                                
+                                let response_json = match request.payload {
+                                    FileRequestPayload::Metadata { path } => {
+
+                                        match get_metadata(&path).await {
+                                            Ok(metadata) => {
+
+                                                let response_msg = FileResponseMessage {
+                                                    in_response_to: request.id,
+                                                    data: serde_json::to_value(&metadata).unwrap(),
+                                                };
+
+                                                let json_response = serde_json::to_string(&response_msg)
+                                                    .unwrap_or_else(|e| {
+                                                        eprintln!("[Server] Failed to serialize metadata: {}", e);
+                                                        r#"{"in_response_to":0,"data":{}}"#.to_string()
+                                                    });
+                                                
+                                                json_response
+                                            }
+                                            Err(e) => {
+                                                eprintln!("[Server] get_metadata error '{}': {}", path, e);
+                                                let error_response = FileResponseMessage {
+                                                    in_response_to: request.id,
+                                                    data: serde_json::json!({ "error": e.to_string() }),
+                                                };
+                                                serde_json::to_string(&error_response).unwrap()
+                                            }
+                                        }
+                                    }
+
+                                    FileRequestPayload::ListDir { path } => {
+
+                                        match list_directory(&path).await {
+                                            Ok(entries) => {
+
+                                                let response_msg = FileResponseMessage {
+                                                    in_response_to: request.id,
+                                                    data: serde_json::to_value(&entries).unwrap(),
+                                                };
+
+                                                let json_response = serde_json::to_string(&response_msg)
+                                                    .unwrap_or_else(|e| {
+                                                        eprintln!("[Server] Failed to serialize list directory: {}", e);
+                                                        r#"{"in_response_to":0,"data":[]}"#.to_string()
+                                                    });
+                                                
+                                                json_response
+                                            }
+                                            Err(e) => {
+                                                let error_response = FileResponseMessage {
+                                                    in_response_to: request.id,
+                                                    data: serde_json::json!({ "error": e.to_string() }),
+                                                };
+                                                serde_json::to_string(&error_response).unwrap()
+                                            }
+                                        }
+                                    }
+
+                                    FileRequestPayload::FileChunk(file_chunk) => {
+
+                                        match get_files_content(file_chunk).await {
+                                            Ok(content_msg) => {
+                                                let response_msg = FileResponseMessage {
+                                                    in_response_to: request.id,
+                                                    data: serde_json::Value::String(content_msg.message),
+                                                };
+                                                let json_response = serde_json::to_string(&response_msg).unwrap();
+                                                json_response
+                                            }
+                                            Err(e) => {
+                                                let response_msg = FileResponseMessage {
+                                                    in_response_to: request.id,
+                                                    data: serde_json::json!({ "error": e.to_string() }),
+                                                };
+                                                serde_json::to_string(&response_msg).unwrap()
+                                            }
+                                        }
+                                    }
+                                };
+
+                                if let Err(e) = out_tx_clone.send(response_json).await {
+                                    eprintln!("Failed to send TcpFs response: {}", e);
+                                } else {
+                                }
+                            });
+                            continue;
+                        } else {
+                        }
+
+                        if let Ok(payload) = serde_json::from_value::<MessagePayload>(json_line.clone()) {
+                            
                             if payload.r#type == "start_file" {
                                 println!("Processing file message: {:?}", payload);
-                                if let Err(e) =
-                                    handle_multipart_message(&payload, &mut current_file).await
-                                {
+                                if let Err(e) = handle_multipart_message(&payload, &mut current_file).await {
                                     eprintln!("Error handling multipart message: {}", e);
                                 }
                                 continue;
                             }
-                        }
 
-                        if let Ok(request) =
-                            serde_json::from_value::<FileRequestMessage>(json_line.clone())
-                        {
-                            let out_tx_clone = out_tx.clone();
-                            tokio::spawn(async move {
-                                let response_json = match request.payload {
-    FileRequestPayload::Metadata { path } => {
-        println!("[Server] Received Metadata request for '{}'", path);
-        match get_metadata(&path).await {
-            Ok(metadata) => {
-                println!("[Server] Metadata for '{}': {:?}", path, metadata);
-
-                let metadata_json = serde_json::to_string(&metadata)
-                    .unwrap_or_else(|_| "{}".to_string());
-
-                let response_msg = FileResponseMessage {
-                    in_response_to: request.id,
-                    data: metadata_json,
-                };
-
-                serde_json::to_string(&response_msg).unwrap_or_else(|_| {
-                    r#"{"in_response_to":0,"data":""}"#.to_string()
-                })
-            }
-            Err(e) => {
-                eprintln!("[Server] TcpFs get_metadata error for '{}': {}", path, e);
-                let error_response = FileResponseMessage {
-                    in_response_to: request.id,
-                    data: format!(r#"{{"error":"{}"}}"#, e),
-                };
-                serde_json::to_string(&error_response)
-                    .unwrap_or_else(|_| r#"{"in_response_to":0,"data":""}"#.to_string())
-            }
-        }
-    }
-
-    FileRequestPayload::FileChunk(file_chunk) => {
-        println!(
-            "[Server] Received FileChunk request for '{}', offset: {}, size: {}",
-            file_chunk.file_name, file_chunk.file_chunk_offet, file_chunk.file_chunk_size
-        );
-
-        match get_files_content(file_chunk).await {
-            Ok(content_message) => {
-                println!("[Server] FileChunk content prepared for '{}'", content_message.r#type);
-
-                let content_message_json = serde_json::to_string(&content_message)
-                    .unwrap_or_else(|_| "[]".to_string());
-
-                let response_msg = FileResponseMessage {
-                    in_response_to: request.id,
-                    data: content_message_json,
-                };
-
-                serde_json::to_string(&response_msg).unwrap_or_else(|_| {
-                    r#"{"in_response_to":0,"data":""}"#.to_string()
-                })
-            }
-            Err(e) => {
-                eprintln!("[Server] TcpFs file_content error: {}", e);
-                let error_response = FileResponseMessage {
-                    in_response_to: request.id,
-                    data: format!(r#"{{"error":"{}"}}"#, e),
-                };
-                serde_json::to_string(&error_response)
-                    .unwrap_or_else(|_| r#"{"in_response_to":0,"data":""}"#.to_string())
-            }
-        }
-    }
-
-    FileRequestPayload::ListDir { path } => {
-        println!("[Server] Received ListDir request for '{}'", path);
-        match list_directory(&path).await {
-            Ok(entries) => {
-                println!("[Server] Entries for '{}': {:#?}", path, entries);
-
-                let entries_json = serde_json::to_string(&entries)
-                    .unwrap_or_else(|_| "[]".to_string());
-
-                let response_msg = FileResponseMessage {
-                    in_response_to: request.id,
-                    data: entries_json,
-                };
-
-                serde_json::to_string(&response_msg).unwrap_or_else(|_| {
-                    r#"{"in_response_to":0,"data":""}"#.to_string()
-                })
-            }
-            Err(e) => {
-                eprintln!("[Server] TcpFs list_directory error for '{}': {}", path, e);
-                let error_response = FileResponseMessage {
-                    in_response_to: request.id,
-                    data: format!(r#"{{"error":"{}"}}"#, e),
-                };
-                serde_json::to_string(&error_response)
-                    .unwrap_or_else(|_| r#"{"in_response_to":0,"data":""}"#.to_string())
-            }
-        }
-    }
-};
-
-
-                                if let Err(e) = out_tx_clone.send(response_json).await {
-                                    eprintln!("Failed to send TcpFs response: {}", e);
-                                }
-                            });
-                            continue;
-                        }
-
-                        if let Ok(val) = serde_json::from_value::<MessagePayload>(json_line.clone())
-                        {
-                            let typ = val.r#type.clone();
+                            let typ = payload.r#type.clone();
                             if typ == "command" {
-                                let cmd_str = val.message.clone();
+                                let cmd_str = payload.message.clone();
                                 if cmd_str == "create_server" {
                                     if let Some(prov) = get_provider("minecraft") {
                                         if let Some(cmd) = prov.pre_hook() {
@@ -556,8 +534,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 "Pre-hook".into(),
                                                 Some(cmd_tx.clone()),
                                                 None,
-                                            )
-                                            .await;
+                                            ).await;
                                         }
                                         if let Some(cmd) = prov.install() {
                                             let _ = run_command_live_output(
@@ -565,8 +542,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 "Install".into(),
                                                 Some(cmd_tx.clone()),
                                                 None,
-                                            )
-                                            .await;
+                                            ).await;
                                         }
                                         if let Some(cmd) = prov.post_hook() {
                                             let _ = run_command_live_output(
@@ -574,8 +550,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 "Post-hook".into(),
                                                 Some(cmd_tx.clone()),
                                                 None,
-                                            )
-                                            .await;
+                                            ).await;
                                         }
                                         if let Some(cmd) = prov.start() {
                                             println!("starting");
@@ -587,8 +562,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     "Server".into(),
                                                     Some(tx),
                                                     Some(stdin_clone),
-                                                )
-                                                .await;
+                                                ).await;
                                             });
                                             let _ = cmd_tx.send("Server started".into()).await;
                                         }
@@ -597,12 +571,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let input = "stop";
                                     let mut guard = stdin_ref.lock().await;
                                     if let Some(stdin) = guard.as_mut() {
-                                        let _ = stdin
-                                            .write_all(format!("{}\n", input).as_bytes())
-                                            .await;
+                                        let _ = stdin.write_all(format!("{}\n", input).as_bytes()).await;
                                         let _ = stdin.flush().await;
-                                        let _ =
-                                            cmd_tx.send(format!("Sent to server: {}", input)).await;
+                                        let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
                                     }
                                 } else if cmd_str == "start_server" {
                                     if let Some(prov) = get_provider("minecraft") {
@@ -616,63 +587,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     "Server".into(),
                                                     Some(tx),
                                                     Some(stdin_clone),
-                                                )
-                                                .await;
+                                                ).await;
                                             });
                                             let _ = cmd_tx.send("Server started".into()).await;
                                         }
                                     }
                                 } else if cmd_str == "server_data" {
-                                    let _ = cmd_tx
-                                        .send(
-                                            serde_json::to_string(&GetState {
-                                                start_keyword: "help".to_string(),
-                                                stop_keyword: "All dimensions are saved"
-                                                    .to_string(),
-                                            })
-                                            .expect("Failed, not json"),
-                                        )
-                                        .await;
+                                    let _ = cmd_tx.send(
+                                        serde_json::to_string(&GetState {
+                                            start_keyword: "help".to_string(),
+                                            stop_keyword: "All dimensions are saved".to_string(),
+                                        }).expect("Failed, not json"),
+                                    ).await;
                                 } else if cmd_str == "server_name" {
                                     let hostname_str = match hostname.as_ref() {
                                         Ok(os) => os.to_string_lossy().to_string(),
                                         Err(e) => e.clone(),
                                     };
-                                    let _ = cmd_tx
-                                        .send(
-                                            serde_json::to_string(&MessagePayload {
-                                                r#type: "command".to_string(),
-                                                message: hostname_str,
-                                                authcode: "0".to_string(),
-                                            })
-                                            .expect("Failed, not json"),
-                                        )
-                                        .await;
+                                    let _ = cmd_tx.send(
+                                        serde_json::to_string(&MessagePayload {
+                                            r#type: "command".to_string(),
+                                            message: hostname_str,
+                                            authcode: "0".to_string(),
+                                        }).expect("Failed, not json"),
+                                    ).await;
                                 } else {
-                                    let _ =
-                                        cmd_tx.send(format!("Unknown command: {}", cmd_str)).await;
+                                    let _ = cmd_tx.send(format!("Unknown command: {}", cmd_str)).await;
                                 }
                             } else if typ == "console" {
-                                let input = val.message;
+                                let input = payload.message;
                                 let mut guard = stdin_ref.lock().await;
                                 if let Some(stdin) = guard.as_mut() {
-                                    let _ =
-                                        stdin.write_all(format!("{}\n", input).as_bytes()).await;
+                                    let _ = stdin.write_all(format!("{}\n", input).as_bytes()).await;
                                     let _ = stdin.flush().await;
                                     let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
                                 }
                             }
-                        } else if let Ok(_val) = json_line.clone().try_into() as Result<List, _> {
-                            println!("Received capabilities");
-                            let _ = out_tx
-                                .send(
-                                    serde_json::to_string(&List {
-                                        list: vec!["all".to_string()],
-                                    })
-                                    .unwrap(),
-                                )
-                                .await;
+                            continue;
                         }
+
+                        if let Ok(_val) = json_line.clone().try_into() as Result<List, _> {
+                            let _ = out_tx.send(
+                                serde_json::to_string(&List {
+                                    list: vec!["all".to_string()],
+                                }).unwrap(),
+                            ).await;
+                            continue;
+                        }
+
+                    } else {
                     }
                 } else if !line.is_empty() {
                     if let Some(file) = &mut current_file {

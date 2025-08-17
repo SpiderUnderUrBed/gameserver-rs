@@ -20,6 +20,7 @@ pub enum FsItem {
     File(String),
     Folder(String),
 }
+
 #[async_trait::async_trait]
 pub trait FsType: Clone + Send + Sync {
     async fn get_files_content(
@@ -46,6 +47,7 @@ pub struct FsEntry {
     pub is_file: bool,
     pub is_dir: bool,
 }
+
 #[derive(Serialize, Deserialize)]
 pub struct FileRequestMessage {
     id: u64,
@@ -97,6 +99,164 @@ impl Clone for TcpFs {
     }
 }
 
+use tokio::time::sleep;
+
+pub struct JsonAssembler {
+    buffer: String,
+    assembling_for: Option<u64>,
+    assembly_deadline: Option<std::time::Instant>,
+    assembly_timeout: std::time::Duration,
+}
+
+impl JsonAssembler {
+    pub fn new() -> Self {
+        Self {
+            buffer: String::new(),
+            assembling_for: None,
+            assembly_deadline: None,
+            assembly_timeout: Duration::from_secs(5),
+        }
+    }
+
+    pub fn check_timeout(&mut self, id: u64) -> Option<std::io::Result<Vec<u8>>> {
+        if let Some(deadline) = self.assembly_deadline {
+            if Instant::now() > deadline {
+                let buffer_content = self.buffer.clone();
+                self.buffer.clear();
+                self.assembly_deadline = None;
+                self.assembling_for = None;
+
+                if buffer_content.is_empty() {
+                    return Some(Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!("Assembly timeout for request {} with empty buffer", id),
+                    )));
+                } else {
+                    return Some(Ok(buffer_content.into_bytes()));
+                }
+            }
+        }
+        None
+    }
+
+    pub async fn feed_chunk(&mut self, chunk: &str, id: u64) -> Vec<Vec<u8>> {
+        if self.assembly_deadline.is_none() {
+            self.assembly_deadline = Some(Instant::now() + self.assembly_timeout);
+            self.assembling_for = Some(id);
+        }
+
+        self.buffer.push_str(chunk);
+        let mut completed = Vec::new();
+
+        loop {
+            let s = self.buffer.trim_start();
+            if s.is_empty() {
+                self.buffer.clear();
+                break;
+            }
+
+            let mut start_pos = None;
+            let mut in_string = false;
+            let mut escape_next = false;
+            let mut brace_count = 0;
+            let mut bracket_count = 0;
+            let mut found_start = false;
+
+            for (i, c) in s.char_indices() {
+                if escape_next {
+                    escape_next = false;
+                    continue;
+                }
+
+                match c {
+                    '\\' if in_string => {
+                        escape_next = true;
+                    }
+                    '"' => {
+                        in_string = !in_string;
+                    }
+                    '{' if !in_string => {
+                        if !found_start {
+                            start_pos = Some(i);
+                            found_start = true;
+                        }
+                        brace_count += 1;
+                    }
+                    '}' if !in_string => {
+                        brace_count -= 1;
+                        if brace_count == 0 && found_start {
+                            if let Some(start) = start_pos {
+                                let candidate = &s[start..=i];
+
+                                match serde_json::from_str::<serde_json::Value>(candidate) {
+                                    Ok(_) => {
+                                        completed.push(candidate.as_bytes().to_vec());
+                                        self.buffer = s[i + 1..].to_string();
+
+                                        self.assembly_deadline = None;
+                                        self.assembling_for = None;
+
+                                        return completed;
+                                    }
+                                    Err(e) => {}
+                                }
+                            }
+                        }
+                    }
+                    '[' if !in_string => {
+                        if !found_start {
+                            start_pos = Some(i);
+                            found_start = true;
+                        }
+                        bracket_count += 1;
+                    }
+                    ']' if !in_string => {
+                        bracket_count -= 1;
+                        if bracket_count == 0 && found_start && brace_count == 0 {
+                            if let Some(start) = start_pos {
+                                let candidate = &s[start..=i];
+
+                                match serde_json::from_str::<serde_json::Value>(candidate) {
+                                    Ok(_) => {
+                                        completed.push(candidate.as_bytes().to_vec());
+                                        self.buffer = s[i + 1..].to_string();
+
+                                        self.assembly_deadline = None;
+                                        self.assembling_for = None;
+
+                                        return completed;
+                                    }
+                                    Err(_) => {}
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if found_start && (brace_count > 0 || bracket_count > 0) {
+                break;
+            } else if !found_start {
+                if let Some(pos) = s.find('{').or_else(|| s.find('[')) {
+                    if pos > 0 {
+                        self.buffer = s[pos..].to_string();
+                        continue;
+                    }
+                } else {
+                    self.buffer.clear();
+                    break;
+                }
+            } else {
+                self.buffer.clear();
+                break;
+            }
+        }
+
+        completed
+    }
+}
+
 impl TcpFs {
     pub fn new(
         tx: tokio::sync::broadcast::Sender<Vec<u8>>,
@@ -111,74 +271,25 @@ impl TcpFs {
 
     async fn send_request(&mut self, payload: FileRequestPayload) -> std::io::Result<u64> {
         let id = self.request_id.fetch_add(1, Ordering::SeqCst);
-
         let request = FileRequestMessage { id, payload };
 
         let json_string = serde_json::to_string(&request)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
         let serialized = (json_string + "\n").into_bytes();
-
         self.tcp_tx
             .send(serialized)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::ConnectionAborted, e))?;
-
         Ok(id)
     }
-    async fn recv_response(&mut self, id: u64) -> std::io::Result<Vec<u8>> {
-        use serde_json::Value;
-        use std::time::Instant;
-        use tokio::time::{sleep, Duration};
+
+    pub async fn recv_response(&mut self, id: u64) -> std::io::Result<Vec<Vec<u8>>> {
+        use tokio::time::{Duration, Instant};
 
         let timeout_duration = Duration::from_secs(10);
         let start_time = Instant::now();
-
-        let mut assembled = String::new();
-        let mut assembling_for: Option<u64> = None;
-        let mut did_micro_wait = false;
-
-        let mut assembly_deadline: Option<Instant> = None;
-        let assembly_timeout = Duration::from_millis(2000);
-
-        fn looks_closed(s: &str) -> bool {
-            let t = s.trim();
-            if t.is_empty() {
-                return false;
-            }
-            match (t.chars().next(), t.chars().rev().next()) {
-                (Some('['), Some(']')) => true,
-                (Some('{'), Some('}')) => true,
-                _ => false,
-            }
-        }
-
-        fn try_salvage_json(s: &str) -> Result<Vec<u8>, String> {
-            if serde_json::from_str::<Value>(s).is_ok() {
-                return Ok(s.as_bytes().to_vec());
-            }
-            if let (Some(start), Some(end)) = (s.find('['), s.rfind(']')) {
-                if start < end {
-                    let candidate = &s[start..=end];
-                    if serde_json::from_str::<Value>(candidate).is_ok() {
-                        return Ok(candidate.as_bytes().to_vec());
-                    }
-                }
-            }
-            if let (Some(start), Some(end)) = (s.find('{'), s.rfind('}')) {
-                if start < end {
-                    let candidate = &s[start..=end];
-                    if serde_json::from_str::<Value>(candidate).is_ok() {
-                        return Ok(candidate.as_bytes().to_vec());
-                    }
-                }
-            }
-            let snippet = if s.len() > 1024 {
-                s[..1024].to_string() + "..."
-            } else {
-                s.to_string()
-            };
-            Err(snippet)
-        }
+        let mut assembler = JsonAssembler::new();
+        let mut expecting_fragments = false;
 
         loop {
             if start_time.elapsed() > timeout_duration {
@@ -186,25 +297,6 @@ impl TcpFs {
                     std::io::ErrorKind::TimedOut,
                     format!("Timeout waiting for response to request {}", id),
                 ));
-            }
-
-            if assembling_for == Some(id) {
-                if let Some(deadline) = assembly_deadline {
-                    if Instant::now() > deadline {
-                        match try_salvage_json(&assembled) {
-                            Ok(bytes) => return Ok(bytes),
-                            Err(snippet) => {
-                                return Err(std::io::Error::new(
-                                    std::io::ErrorKind::TimedOut,
-                                    format!(
-                                        "Assembly timeout for request {}: partial data: {}",
-                                        id, snippet
-                                    ),
-                                ));
-                            }
-                        }
-                    }
-                }
             }
 
             let response = self
@@ -217,60 +309,64 @@ impl TcpFs {
                 continue;
             }
 
-            let response_str = String::from_utf8_lossy(&response).to_string();
-            if assembling_for == Some(id) || !assembled.is_empty() {
-                assembled.push_str(&response_str);
-                if !did_micro_wait {
-                    did_micro_wait = true;
-                    sleep(Duration::from_millis(30)).await;
+            let response_str = String::from_utf8_lossy(&response);
+
+            if expecting_fragments {
+            } else {
+                if response_str.contains("\"type\":\"Metadata\"")
+                    || response_str.contains("\"type\":\"ListDir\"")
+                    || response_str.contains("\"type\":\"FileChunk\"")
+                {
+                    continue;
                 }
 
-                if looks_closed(&assembled) {
-                    if let Ok(_) = serde_json::from_str::<Value>(&assembled) {
-                        return Ok(assembled.into_bytes());
-                    }
+                if !response_str.contains("\"in_response_to\"") {
+                    continue;
                 }
+
+                if !response_str.contains(&format!("\"in_response_to\":{}", id)) {
+                    continue;
+                }
+
+                if response_str.starts_with("{\"in_response_to\"") {
+                    expecting_fragments = true;
+                }
+            }
+
+            let preview_snippet: &str = if response_str.len() > 512 {
+                &response_str[..512]
+            } else {
+                &response_str
+            };
+            let before_len = assembler.buffer.len();
+
+            let completed = assembler.feed_chunk(&response_str, id).await;
+
+            let after_len = assembler.buffer.len();
+
+            if !completed.is_empty() {
+                expecting_fragments = false;
+                return Ok(completed);
+            }
+
+            if expecting_fragments && assembler.buffer.len() > 0 {
                 continue;
             }
 
-            match serde_json::from_str::<Value>(&response_str) {
-                Ok(mut json_value) => {
-                    if let Some(msg_id) = json_value.get("in_response_to").and_then(|v| v.as_u64())
-                    {
-                        if msg_id != id {
-                            continue;
-                        }
-
-                        assembling_for = Some(id);
-                        assembly_deadline = Some(Instant::now() + assembly_timeout);
-
-                        if let Some(data_val) = json_value.get_mut("data") {
-                            match data_val {
-                                Value::String(s) => {
-                                    assembled.push_str(s);
-                                    if looks_closed(&assembled)
-                                        && serde_json::from_str::<Value>(&assembled).is_ok()
-                                    {
-                                        return Ok(assembled.into_bytes());
-                                    }
-                                    continue;
-                                }
-                                Value::Array(_) | Value::Object(_) => {
-                                    return serde_json::to_vec(data_val).map_err(|e| {
-                                        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-                                    });
-                                }
-                                _ => continue,
-                            }
-                        }
+            if let Some(result) = assembler.check_timeout(id) {
+                match &result {
+                    Ok(bytes) => {
+                        let s = String::from_utf8_lossy(bytes);
+                    }
+                    Err(e) => {
+                        println!(
+                            "[recv_response:{}] assembler.check_timeout error: {}",
+                            id, e
+                        );
                     }
                 }
-                Err(_) => {
-                    assembled.push_str(&response_str);
-                    assembling_for = Some(id);
-                    assembly_deadline = Some(Instant::now() + assembly_timeout);
-                    continue;
-                }
+                expecting_fragments = false;
+                return result.map(|v| vec![v]);
             }
         }
     }
@@ -293,9 +389,53 @@ impl FsType for TcpFs {
             .send_request(FileRequestPayload::FileChunk(file_chunk))
             .await?;
 
-        let response = self.recv_response(id).await?;
+        let response_chunks = self.recv_response(id).await?;
 
-        let message_str = String::from_utf8_lossy(&response).to_string();
+        for (i, chunk) in response_chunks.iter().enumerate() {
+            let preview = String::from_utf8_lossy(chunk);
+
+            if let Ok(val) = serde_json::from_slice::<Value>(chunk) {
+                if let Some(msg) = val.get("message").and_then(|v| v.as_str()) {
+                    return Ok(IncomingMessage {
+                        message_type: "file_content".to_string(),
+                        message: msg.to_string(),
+                        authcode: "0".to_string(),
+                    });
+                }
+                if let Some(data_val) = val.get("data") {
+                    if let Some(s) = data_val.as_str() {
+                        return Ok(IncomingMessage {
+                            message_type: "file_content".to_string(),
+                            message: s.to_string(),
+                            authcode: "0".to_string(),
+                        });
+                    } else {
+                        let text = serde_json::to_string(data_val).unwrap_or_default();
+                        return Ok(IncomingMessage {
+                            message_type: "file_content".to_string(),
+                            message: text,
+                            authcode: "0".to_string(),
+                        });
+                    }
+                }
+                if let Value::String(s) = val {
+                    return Ok(IncomingMessage {
+                        message_type: "file_content".to_string(),
+                        message: s,
+                        authcode: "0".to_string(),
+                    });
+                }
+            } else if let Ok(as_str) = std::str::from_utf8(chunk) {
+                return Ok(IncomingMessage {
+                    message_type: "file_content".to_string(),
+                    message: as_str.to_string(),
+                    authcode: "0".to_string(),
+                });
+            }
+        }
+
+        let response_all: Vec<u8> = response_chunks.concat();
+        let message_str = String::from_utf8_lossy(&response_all).to_string();
 
         Ok(IncomingMessage {
             message_type: "file_content".to_string(),
@@ -311,15 +451,47 @@ impl FsType for TcpFs {
             })
             .await?;
 
-        let response = self.recv_response(id).await?;
+        let response_chunks = self.recv_response(id).await?;
 
-        match serde_json::from_slice::<FsMetadata>(&response) {
-            Ok(metadata) => Ok(metadata),
-            Err(e) => {
-                Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        for (i, chunk) in response_chunks.iter().enumerate() {
+            if let Ok(meta) = serde_json::from_slice::<FsMetadata>(chunk) {
+                return Ok(meta);
             }
+
+            if let Ok(val) = serde_json::from_slice::<Value>(chunk) {
+                if let Some(data_val) = val.get("data") {
+                    if data_val.is_object() || data_val.is_array() {
+                        if let Ok(meta) = serde_json::from_value::<FsMetadata>(data_val.clone()) {
+                            return Ok(meta);
+                        }
+                    }
+                    if let Some(s) = data_val.as_str() {
+                        if let Ok(meta) = serde_json::from_str::<FsMetadata>(s) {
+                            return Ok(meta);
+                        }
+                    }
+                }
+                if let Value::String(s) = val {
+                    if let Ok(meta) = serde_json::from_str::<FsMetadata>(&s) {
+                        return Ok(meta);
+                    }
+                }
+            }
+
+            println!(
+                "[get_metadata:{}] chunk[{}] did not parse as metadata",
+                id, i
+            );
         }
+
+        let response: Vec<u8> = response_chunks.concat();
+
+        serde_json::from_slice::<FsMetadata>(&response).map_err(|e| {
+            println!("[get_metadata:{}] final parse error: {}", id, e);
+            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+        })
     }
+
     async fn list_directory(&mut self, path: &str) -> std::io::Result<Vec<FsEntry>> {
         use serde_json::Value;
 
@@ -329,23 +501,165 @@ impl FsType for TcpFs {
             })
             .await?;
 
-        let response = match self.recv_response(id).await {
+        let response_chunks = match self.recv_response(id).await {
             Ok(b) => b,
             Err(e) => {
-                println!(
-                    "[TcpFs][list_directory] recv_response error for id {}: {}",
-                    id, e
-                );
+                println!("[list_directory:{}] recv_response error: {}", id, e);
                 return Err(e);
             }
         };
 
+        for (i, chunk) in response_chunks.iter().enumerate() {
+            let preview = String::from_utf8_lossy(chunk);
+
+            if let Ok(entries) = serde_json::from_slice::<Vec<FsEntry>>(chunk) {
+                return Ok(entries);
+            }
+
+            if let Ok(val) = serde_json::from_slice::<Value>(chunk) {
+                if val.is_array() {
+                    if let Ok(entries) = serde_json::from_value::<Vec<FsEntry>>(val.clone()) {
+                        return Ok(entries);
+                    }
+                    if let Some(arr) = val.as_array() {
+                        let mut out = Vec::new();
+                        let mut ok = true;
+                        for item in arr {
+                            if let Some(name) = item.as_str() {
+                                out.push(FsEntry {
+                                    name: name.to_string(),
+                                    is_file: true,
+                                    is_dir: false,
+                                });
+                            } else {
+                                ok = false;
+                                break;
+                            }
+                        }
+                        if ok {
+                            return Ok(out);
+                        }
+                    }
+                }
+
+                if let Some(data_val) = val.get("data") {
+                    if data_val.is_array() || data_val.is_object() {
+                        if let Ok(entries) =
+                            serde_json::from_value::<Vec<FsEntry>>(data_val.clone())
+                        {
+                            return Ok(entries);
+                        }
+                        if let Some(arr) = data_val.as_array() {
+                            let mut out = Vec::new();
+                            let mut ok = true;
+                            for item in arr {
+                                if let Some(name) = item.as_str() {
+                                    out.push(FsEntry {
+                                        name: name.to_string(),
+                                        is_file: true,
+                                        is_dir: false,
+                                    });
+                                } else {
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                            if ok {
+                                return Ok(out);
+                            }
+                        }
+                    }
+
+                    if let Some(s) = data_val.as_str() {
+                        if let Ok(entries) = serde_json::from_str::<Vec<FsEntry>>(s) {
+                            return Ok(entries);
+                        }
+                        if let Ok(val2) = serde_json::from_str::<Value>(s) {
+                            if val2.is_array() {
+                                if let Some(arr) = val2.as_array() {
+                                    let mut out = Vec::new();
+                                    let mut ok = true;
+                                    for item in arr {
+                                        if let Some(name) = item.as_str() {
+                                            out.push(FsEntry {
+                                                name: name.to_string(),
+                                                is_file: true,
+                                                is_dir: false,
+                                            });
+                                        } else {
+                                            ok = false;
+                                            break;
+                                        }
+                                    }
+                                    if ok {
+                                        return Ok(out);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Some(list_val) = val.get("list") {
+                    if list_val.is_array() {
+                        if let Ok(entries) =
+                            serde_json::from_value::<Vec<FsEntry>>(list_val.clone())
+                        {
+                            return Ok(entries);
+                        }
+                        if let Some(arr) = list_val.as_array() {
+                            let mut out = Vec::new();
+                            let mut ok = true;
+                            for item in arr {
+                                if let Some(name) = item.as_str() {
+                                    out.push(FsEntry {
+                                        name: name.to_string(),
+                                        is_file: true,
+                                        is_dir: false,
+                                    });
+                                } else {
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                            if ok {
+                                return Ok(out);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Ok(as_str) = std::str::from_utf8(chunk) {
+                let trimmed = as_str.trim();
+                if trimmed.contains('\n') {
+                    let out: Vec<FsEntry> = trimmed
+                        .lines()
+                        .map(|l| FsEntry {
+                            name: l.trim().to_string(),
+                            is_file: true,
+                            is_dir: false,
+                        })
+                        .collect();
+                    if !out.is_empty() {
+                        return Ok(out);
+                    }
+                }
+            }
+        }
+
+        let response: Vec<u8> = response_chunks.concat();
         let raw_text = String::from_utf8_lossy(&response).to_string();
+
         if let Ok(entries) = serde_json::from_slice::<Vec<FsEntry>>(&response) {
             return Ok(entries);
         }
 
         let val: Value = serde_json::from_str(&raw_text).map_err(|e| {
+            println!(
+                "[list_directory:{}] final parse into Value failed: {}",
+                id, e
+            );
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("Failed to parse response as JSON Value: {}", e),
@@ -354,6 +668,10 @@ impl FsType for TcpFs {
 
         if val.is_array() {
             let entries: Vec<FsEntry> = serde_json::from_value(val).map_err(|e| {
+                println!(
+                    "[list_directory:{}] from_value into Vec<FsEntry> failed: {}",
+                    id, e
+                );
                 std::io::Error::new(std::io::ErrorKind::InvalidData, e)
             })?;
             return Ok(entries);
@@ -362,6 +680,10 @@ impl FsType for TcpFs {
         if let Value::String(s) = val {
             let inner = s.trim();
             let entries: Vec<FsEntry> = serde_json::from_str(inner).map_err(|e| {
+                println!(
+                    "[list_directory:{}] parsing inner string into Vec<FsEntry> failed: {}",
+                    id, e
+                );
                 std::io::Error::new(std::io::ErrorKind::InvalidData, e)
             })?;
             return Ok(entries);
@@ -371,6 +693,10 @@ impl FsType for TcpFs {
             if let Some(data_val) = map.remove("data") {
                 if data_val.is_array() || data_val.is_object() {
                     let entries: Vec<FsEntry> = serde_json::from_value(data_val).map_err(|e| {
+                        println!(
+                            "[list_directory:{}] parsing data field into Vec<FsEntry> failed: {}",
+                            id, e
+                        );
                         std::io::Error::new(std::io::ErrorKind::InvalidData, e)
                     })?;
                     return Ok(entries);
@@ -378,6 +704,7 @@ impl FsType for TcpFs {
                 if let Value::String(s) = data_val {
                     let inner = s.trim();
                     let entries: Vec<FsEntry> = serde_json::from_str(inner).map_err(|e| {
+                        println!("[list_directory:{}] parsing inner data string into Vec<FsEntry> failed: {}", id, e);
                         std::io::Error::new(std::io::ErrorKind::InvalidData, e)
                     })?;
                     return Ok(entries);
@@ -399,6 +726,7 @@ pub struct RemoteFileSystem<S: FsType> {
     cached_metadata: Option<FsMetadata>,
     cached_entries: Option<Vec<FsEntry>>,
 }
+
 impl<S: FsType> RemoteFileSystem<S> {
     pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
         self.state.as_ref()?.as_any().downcast_ref::<T>()
