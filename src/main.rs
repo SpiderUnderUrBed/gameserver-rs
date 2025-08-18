@@ -364,7 +364,8 @@ async fn handle_stream(
     let ip = stream.peer_addr()?.to_string();
     let (reader, mut writer) = stream.split();
     let mut buf_reader = BufReader::new(reader);
-    let mut line = String::new();
+
+    let mut buf = vec![0u8; 4096]; 
 
     let capability_msg = serde_json::to_string(&List {
         list: ApiCalls::Capabilities(vec!["all".to_string()]),
@@ -390,112 +391,105 @@ async fn handle_stream(
 
     loop {
         tokio::select! {
-            read_result = buf_reader.read_line(&mut line) => {
+            read_result = buf_reader.read(&mut buf) => {
                 match read_result {
                     Ok(0) => break, 
-                    Ok(_) => {
-                        let line_content = line.trim();
-                        if line_content.is_empty() {
-                            line.clear();
-                            continue;
+                    Ok(n) => {
+                        let raw_data = &buf[..n];
+
+                        {
+                            let state_guard = arc_state.read().await;
+                            let _ = state_guard.tcp_tx.send(raw_data.to_vec());
                         }
-                        if let Ok(list) = serde_json::from_str::<List>(line_content) {
-                            if let ApiCalls::Capabilities(_) = list.list {
-                                line.clear();
-                                continue;
-                            }
-                        }
-                        
-                        if let Ok(msg) = serde_json::from_str::<ConsoleData>(line_content) {
-                            match msg.r#type.as_str() {
-                                "info" => {
-                                    if msg.data.contains("start_keyword") && msg.data.contains("stop_keyword") {
-                                        arc_state.write().await.gameserver = serde_json::Value::String(msg.data.clone());
-                                        
-                                        if let Ok(server_config) = serde_json::from_str::<serde_json::Value>(&msg.data) {
-                                            if let (Some(start_kw), Some(stop_kw)) = (
-                                                server_config.get("start_keyword").and_then(|v| v.as_str()),
-                                                server_config.get("stop_keyword").and_then(|v| v.as_str())
-                                            ) {
-                                                
-                                                server_start_keyword = start_kw.to_string();
-                                                server_stop_keyword = stop_kw.to_string();
-                                            }
-                                        }
+
+                        if let Ok(text) = std::str::from_utf8(raw_data) {
+                            let line_content = text.trim();
+                            if !line_content.is_empty() {
+                                if let Ok(list) = serde_json::from_str::<List>(line_content) {
+                                    if let ApiCalls::Capabilities(_) = list.list {
+                                        continue;
                                     }
-                                    else if msg.data.contains("\"type\":\"command\"") {
-                                        if let Ok(inner_msg) = serde_json::from_str::<MessagePayload>(&msg.data) {
-                                            if inner_msg.r#type == "command" {
-                                                
-                                                let db_state = &arc_state.write().await.database;
-                                                if let Ok(nodes) = db_state.fetch_all_nodes().await {
-                                                    let node = Node {
-                                                        ip: ip.clone(),
-                                                        nodename: inner_msg.message,
-                                                        nodetype: "main".to_string(),
-                                                    };
-                                                    if !nodes.iter().any(|n| n.ip == node.ip && n.nodename == node.nodename) {
-                                                        let _ = db_state.create_nodes_in_db(CreateElementData {
-                                                            element: Element::Node(node),
-                                                            jwt: "".to_string(),
-                                                            require_auth: false,
-                                                        }).await;
+                                }
+
+                                if let Ok(msg) = serde_json::from_str::<ConsoleData>(line_content) {
+                                    match msg.r#type.as_str() {
+                                        "info" => {
+                                            if msg.data.contains("start_keyword") && msg.data.contains("stop_keyword") {
+                                                arc_state.write().await.gameserver = serde_json::Value::String(msg.data.clone());
+                                                if let Ok(server_config) = serde_json::from_str::<serde_json::Value>(&msg.data) {
+                                                    if let (Some(start_kw), Some(stop_kw)) = (
+                                                        server_config.get("start_keyword").and_then(|v| v.as_str()),
+                                                        server_config.get("stop_keyword").and_then(|v| v.as_str())
+                                                    ) {
+                                                        server_start_keyword = start_kw.to_string();
+                                                        server_stop_keyword = stop_kw.to_string();
                                                     }
                                                 }
-                                            }
-                                        }
-                                    }
-                                    else if msg.data == "Server started" {
-                                        //let _ = ws_tx.send("Server started successfully".to_string());
-                                    }
-                                    else if msg.data.contains("\"type\":\"stdout\"") {
-                                        if let Ok(output_msg) = serde_json::from_str::<serde_json::Value>(&msg.data) {
-                                            if let Some(server_output) = output_msg.get("data").and_then(|v| v.as_str()) {
-                                                if !server_start_keyword.is_empty() && server_output.contains(&server_start_keyword) {
-                                                    let _ = ws_tx.send("Server is ready for connections!".to_string());
-                                                    arc_state.write().await.status = Status::Up;
-                                                } else if !server_stop_keyword.is_empty() && server_output.contains(&server_stop_keyword) {
-                                                    arc_state.write().await.status = Status::Down;
+                                            } else if msg.data.contains("\"type\":\"command\"") {
+                                                if let Ok(inner_msg) = serde_json::from_str::<MessagePayload>(&msg.data) {
+                                                    if inner_msg.r#type == "command" {
+                                                        let db_state = &arc_state.write().await.database;
+                                                        if let Ok(nodes) = db_state.fetch_all_nodes().await {
+                                                            let node = Node {
+                                                                ip: ip.clone(),
+                                                                nodename: inner_msg.message,
+                                                                nodetype: "main".to_string(),
+                                                            };
+                                                            if !nodes.iter().any(|n| n.ip == node.ip && n.nodename == node.nodename) {
+                                                                let _ = db_state.create_nodes_in_db(CreateElementData {
+                                                                    element: Element::Node(node),
+                                                                    jwt: "".to_string(),
+                                                                    require_auth: false,
+                                                                }).await;
+                                                            }
+                                                        }
+                                                    }
                                                 }
-                                                
-                                                let _ = ws_tx.send(format!("{}", server_output));
+                                            } else if msg.data == "Server started" {
+                                                // let _ = ws_tx.send("Server started successfully".to_string());
+                                            } else if msg.data.contains("\"type\":\"stdout\"") {
+                                                if let Ok(output_msg) = serde_json::from_str::<serde_json::Value>(&msg.data) {
+                                                    if let Some(server_output) = output_msg.get("data").and_then(|v| v.as_str()) {
+                                                        if !server_start_keyword.is_empty() && server_output.contains(&server_start_keyword) {
+                                                            let _ = ws_tx.send("Server is ready for connections!".to_string());
+                                                            arc_state.write().await.status = Status::Up;
+                                                        } else if !server_stop_keyword.is_empty() && server_output.contains(&server_stop_keyword) {
+                                                            arc_state.write().await.status = Status::Down;
+                                                        }
+                                                        let _ = ws_tx.send(server_output.to_string());
+                                                    }
+                                                }
+                                            } else {
+                                                let _ = ws_tx.send(msg.data.clone());
                                             }
                                         }
+                                        _ => {}
                                     }
-                                    else {
-                                        let _ = ws_tx.send(msg.data.clone());
-                                    }
-                                }
-                                _ => {
-                                    println!("Unknown message type: {} - {}", msg.r#type, msg.data);
                                 }
                             }
                         }
-                        line.clear();
                     }
                     Err(e) => return Err(e.into()),
                 }
-            },
-            
+            }
+
             broadcast_result = rx.recv() => {
                 match broadcast_result {
                     Ok(data) => {
-                        println!("Forwarding message to TCP server: {:?}", String::from_utf8_lossy(&data));
                         writer.write_all(&data).await?;
                         writer.write_all(b"\n").await?;
                         writer.flush().await?;
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                        eprintln!("Lagged: missed {} messages", skipped);
-                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
         }
     }
-    
+
     Ok(())
 }
+
 
 // does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
 async fn connect_to_server(
