@@ -619,6 +619,7 @@ class ServerConsole {
     }
     const statusEvent = new EventSource(`${this.basePath}/api/awaitserverstatus`);
     statusEvent.onmessage = (e) => {
+      console.log(e.data)
       if ((e.data == "healthy" || e.data == "up") && state == "up"){
         loading.style.display = "none";
       } else if (e.data == "down" && state == "down"){

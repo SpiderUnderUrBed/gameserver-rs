@@ -418,6 +418,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let line = buf.trim_end();
                 if line.starts_with('{') {
+                    println!("{}", line);
                     if let Ok(json_line) = serde_json::from_str::<Value>(&line) {
                         if let Ok(request) = serde_json::from_value::<FileRequestMessage>(json_line.clone()) {
                             
