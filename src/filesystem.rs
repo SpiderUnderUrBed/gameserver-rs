@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::sync::broadcast;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use std::{
@@ -11,10 +12,10 @@ use std::{
     },
 };
 use tokio::time::timeout;
-
+use axum::extract::Multipart;
 use crate::extra::JsonAssembler;
-
 use crate::{extra, IncomingMessage};
+use crate::MessagePayload;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(tag = "kind", content = "data")]
@@ -218,6 +219,51 @@ impl TcpFs {
         }
     }
 }
+
+
+pub async fn send_multipart_over_broadcast(
+    mut multipart: Multipart,
+    tx: broadcast::Sender<Vec<u8>>,
+) -> std::io::Result<()> {
+    while let Some(mut field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+    {
+        let file_name = field.file_name().unwrap_or("file.bin").to_string();
+
+        // Send start message
+        let start_json = MessagePayload {
+            r#type: "start_file".into(),
+            message: format!("{}", file_name),
+            authcode: "0".into(),
+        };
+        tx.send(serde_json::to_vec(&start_json)?)
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed"))?;
+        // Send chunks
+        while let Some(chunk) = field
+            .chunk()
+            .await
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+        {
+            tx.send(chunk.to_vec()).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed")
+            })?;
+        }
+
+        // Send end message
+        let end_json = MessagePayload {
+            r#type: "end_file".into(),
+            message: "".to_string(),
+            authcode: "0".into(),
+        };
+        tx.send(serde_json::to_vec(&end_json)?)
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed"))?;
+    }
+
+    Ok(())
+}
+
 
 #[async_trait::async_trait]
 impl FsType for TcpFs {

@@ -12,11 +12,13 @@ use std::io::SeekFrom;
 use tokio::net::TcpListener;
 use tokio::process::{ChildStdin, Command as TokioCommand};
 use tokio::sync::{mpsc, Mutex};
+use tokio::fs::OpenOptions;
 
 use tokio::fs::File;
 use tokio::io::AsyncRead;
 use tokio::net::TcpStream;
 use uuid::Uuid;
+
 
 const SERVER_DIR: &str = "server";
 
@@ -295,6 +297,7 @@ async fn list_directory(path: &str) -> io::Result<Vec<FsEntry>> {
     Ok(entries)
 }
 
+
 pub async fn get_files_content(file_chunk: FileChunk) -> io::Result<MessagePayload> {
     let metadata = fs::metadata(&file_chunk.file_name).await?;
 
@@ -336,11 +339,14 @@ pub async fn handle_multipart_message(
         "start_file" => {
             let file_name = format!("server/{}", payload.message);
 
-            if let Err(e) = tokio::fs::create_dir_all("server").await {
-                eprintln!("Failed to create server directory: {}", e);
-            }
+            tokio::fs::create_dir_all("server").await?;
 
-            let file = File::create(&file_name).await?;
+            let file = OpenOptions::new()
+                .create(true)   
+                .write(true)    
+                .open(&file_name)
+                .await?;
+
             *current_file = Some(file);
         }
         "end_file" => {

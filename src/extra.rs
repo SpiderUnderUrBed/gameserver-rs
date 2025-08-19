@@ -1,14 +1,28 @@
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use futures_util::StreamExt;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use tokio::sync::RwLock;
 use tokio::time::Instant;
 use crate::filesystem::FileResponseMessage;
+use crate::AppState;
 use crate::ConsoleData;
 use crate::Debug;
 use crate::InnerData;
 use crate::List;
+use crate::MessagePayload;
+
+use tokio::sync::Mutex;
+use crate::Message;
+use futures_util::stream;
+use axum::extract::ws::WebSocket;
+use crate::WsMessage;
+use tokio::time::interval;
+use axum::body::Bytes;
+use futures_util::SinkExt;
 
 pub struct JsonAssembler {
     pub(crate) buffer: String,
@@ -312,4 +326,128 @@ where
     }
 
     final_values
+}
+
+
+async fn ws_debug(
+    conn_id: usize,
+    arc_state: Arc<RwLock<AppState>>,
+    sender: Arc<Mutex<stream::SplitSink<WebSocket, WsMessage>>>,
+    receiver: &mut stream::SplitStream<WebSocket>,
+) {
+    let state = arc_state.write().await;
+    // Ping task with more visible logging
+    let ping_task = {
+        let conn_id = conn_id;
+        let sender = Arc::clone(&sender);
+        let mut interval = interval(Duration::from_secs(30));
+
+        tokio::spawn(async move {
+            println!("[Conn {}] PING TASK STARTED", conn_id);
+
+            loop {
+                interval.tick().await;
+                println!("[Conn {}] SENDING PING", conn_id); // <-- Log ping attempts
+
+                let mut sender = sender.lock().await;
+                match sender.send(Message::Ping(Bytes::new())).await {
+                    Ok(_) => println!("[Conn {}] PING SENT SUCCESSFULLY", conn_id),
+                    Err(e) => {
+                        println!("[Conn {}] PING FAILED: {}", conn_id, e);
+                        break;
+                    }
+                }
+            }
+
+            println!("[Conn {}] PING TASK EXITING", conn_id);
+        })
+    };
+
+    // Broadcast receiver task with more visible logging
+    let broadcast_task = {
+        let conn_id = conn_id;
+        let sender = Arc::clone(&sender);
+        let mut broadcast_rx = state.ws_tx.subscribe();
+
+        tokio::spawn(async move {
+            println!("[Conn {}] BROADCAST TASK STARTED", conn_id);
+
+            while let Ok(msg) = broadcast_rx.recv().await {
+                println!("[Conn {}] RECEIVED BROADCAST: {}", conn_id, msg);
+
+                let mut sender = sender.lock().await;
+                match sender.send(Message::Text(msg.into())).await {
+                    Ok(_) => println!("[Conn {}] FORWARDED MESSAGE", conn_id),
+                    Err(e) => {
+                        println!("[Conn {}] FAILED TO FORWARD: {}", conn_id, e);
+                        break;
+                    }
+                }
+            }
+
+            println!("[Conn {}] BROADCAST TASK EXITING", conn_id);
+        })
+    };
+
+    // Main message processing loop with more visible logging
+    println!("[Conn {}] STARTING MESSAGE PROCESSING", conn_id);
+
+    while let Some(result) = receiver.next().await {
+        match result {
+            Ok(Message::Text(text)) => {
+                println!("[Conn {}] RECEIVED TEXT: {}", conn_id, text);
+
+                match serde_json::from_str::<MessagePayload>(&text) {
+                    Ok(payload) => {
+                        println!("[Conn {}] PARSED PAYLOAD: {:?}", conn_id, payload);
+
+                        match serde_json::to_vec(&payload) {
+                            Ok(mut bytes) => {
+                                bytes.push(b'\n');
+                                println!("[Conn {}] SERIALIZED TO {} BYTES", conn_id, bytes.len());
+
+                                match state.tcp_tx.send(bytes) {
+                                    Ok(_) => println!("[Conn {}] SENT TO TCP", conn_id),
+                                    Err(e) => println!("[Conn {}] TCP SEND FAILED: {}", conn_id, e),
+                                }
+                            }
+                            Err(e) => println!("[Conn {}] SERIALIZATION FAILED: {}", conn_id, e),
+                        }
+                    }
+                    Err(e) => println!("[Conn {}] PARSE FAILED: {}", conn_id, e),
+                }
+            }
+            Ok(Message::Binary(bin)) => {
+                println!("[Conn {}] RECEIVED BINARY ({} bytes)", conn_id, bin.len());
+            }
+            Ok(Message::Ping(data)) => {
+                println!("[Conn {}] RECEIVED PING ({} bytes)", conn_id, data.len());
+            }
+            Ok(Message::Pong(data)) => {
+                println!("[Conn {}] RECEIVED PONG ({} bytes)", conn_id, data.len());
+            }
+            Ok(Message::Close(frame)) => {
+                println!("[Conn {}] CLOSE FRAME: {:?}", conn_id, frame);
+                break;
+            }
+            Err(e) => {
+                println!("[Conn {}] WEBSOCKET ERROR: {}", conn_id, e);
+                break;
+            }
+        }
+    }
+
+    println!("[Conn {}] SHUTTING DOWN", conn_id);
+    ping_task.abort();
+    broadcast_task.abort();
+
+    match ping_task.await {
+        Ok(_) => println!("[Conn {}] PING TASK SHUT DOWN", conn_id),
+        Err(e) => println!("[Conn {}] PING TASK ERROR: {:?}", conn_id, e),
+    }
+
+    match broadcast_task.await {
+        Ok(_) => println!("[Conn {}] BROADCAST TASK SHUT DOWN", conn_id),
+        Err(e) => println!("[Conn {}] BROADCAST TASK ERROR: {:?}", conn_id, e),
+    }
 }

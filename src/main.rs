@@ -9,7 +9,7 @@ use std::{net::SocketAddr, path::Path, sync::Arc};
 // and the general api, redirections, it will take form data and queries and make it easily accessible
 // I also use axum_login to take off alot of effort that would be required for authentication
 use crate::database::Element;
-use crate::filesystem::FsType;
+use crate::filesystem::{send_multipart_over_broadcast, FsType};
 use crate::http::HeaderMap;
 use crate::middleware::from_fn;
 use axum::extract::ws::Message as WsMessage;
@@ -690,6 +690,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/ws", get(ws_handler))
         // .route("getfiles", get(get_files))
         .route("/api/upload", post(upload))
+        //.route("/api/uploadcontent", post(upload))
         .route("/api/awaitserverstatus", get(ongoing_server_status))
         .route("/api/getstatus", post(get_status))
         .route("/api/getfiles", post(get_files))
@@ -727,48 +728,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
-pub async fn send_multipart_over_broadcast(
-    mut multipart: Multipart,
-    tx: broadcast::Sender<Vec<u8>>,
-) -> std::io::Result<()> {
-    while let Some(mut field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
-    {
-        let file_name = field.file_name().unwrap_or("file.bin").to_string();
+// async fn uploadcontent(
+//     State(arc_state): State<Arc<RwLock<AppState>>>,
+//     multipart: Multipart,
+// ) -> StatusCode {
 
-        // Send start message
-        let start_json = MessagePayload {
-            r#type: "start_file".into(),
-            message: format!("{}", file_name),
-            authcode: "0".into(),
-        };
-        tx.send(serde_json::to_vec(&start_json)?)
-            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed"))?;
-        // Send chunks
-        while let Some(chunk) = field
-            .chunk()
-            .await
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
-        {
-            tx.send(chunk.to_vec()).map_err(|_| {
-                std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed")
-            })?;
-        }
-
-        // Send end message
-        let end_json = MessagePayload {
-            r#type: "end_file".into(),
-            message: "".to_string(),
-            authcode: "0".into(),
-        };
-        tx.send(serde_json::to_vec(&end_json)?)
-            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed"))?;
-    }
-
-    Ok(())
-}
+// }
 
 async fn upload(
     State(arc_state): State<Arc<RwLock<AppState>>>,
@@ -966,128 +931,7 @@ async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
     println!("[Conn {}] DISCONNECTED", conn_id);
 }
 
-async fn ws_debug(
-    conn_id: usize,
-    arc_state: Arc<RwLock<AppState>>,
-    sender: Arc<Mutex<stream::SplitSink<WebSocket, WsMessage>>>,
-    receiver: &mut stream::SplitStream<WebSocket>,
-) {
-    let state = arc_state.write().await;
-    // Ping task with more visible logging
-    let ping_task = {
-        let conn_id = conn_id;
-        let sender = Arc::clone(&sender);
-        let mut interval = interval(Duration::from_secs(30));
 
-        tokio::spawn(async move {
-            println!("[Conn {}] PING TASK STARTED", conn_id);
-
-            loop {
-                interval.tick().await;
-                println!("[Conn {}] SENDING PING", conn_id); // <-- Log ping attempts
-
-                let mut sender = sender.lock().await;
-                match sender.send(Message::Ping(Bytes::new())).await {
-                    Ok(_) => println!("[Conn {}] PING SENT SUCCESSFULLY", conn_id),
-                    Err(e) => {
-                        println!("[Conn {}] PING FAILED: {}", conn_id, e);
-                        break;
-                    }
-                }
-            }
-
-            println!("[Conn {}] PING TASK EXITING", conn_id);
-        })
-    };
-
-    // Broadcast receiver task with more visible logging
-    let broadcast_task = {
-        let conn_id = conn_id;
-        let sender = Arc::clone(&sender);
-        let mut broadcast_rx = state.ws_tx.subscribe();
-
-        tokio::spawn(async move {
-            println!("[Conn {}] BROADCAST TASK STARTED", conn_id);
-
-            while let Ok(msg) = broadcast_rx.recv().await {
-                println!("[Conn {}] RECEIVED BROADCAST: {}", conn_id, msg);
-
-                let mut sender = sender.lock().await;
-                match sender.send(Message::Text(msg.into())).await {
-                    Ok(_) => println!("[Conn {}] FORWARDED MESSAGE", conn_id),
-                    Err(e) => {
-                        println!("[Conn {}] FAILED TO FORWARD: {}", conn_id, e);
-                        break;
-                    }
-                }
-            }
-
-            println!("[Conn {}] BROADCAST TASK EXITING", conn_id);
-        })
-    };
-
-    // Main message processing loop with more visible logging
-    println!("[Conn {}] STARTING MESSAGE PROCESSING", conn_id);
-
-    while let Some(result) = receiver.next().await {
-        match result {
-            Ok(Message::Text(text)) => {
-                println!("[Conn {}] RECEIVED TEXT: {}", conn_id, text);
-
-                match serde_json::from_str::<MessagePayload>(&text) {
-                    Ok(payload) => {
-                        println!("[Conn {}] PARSED PAYLOAD: {:?}", conn_id, payload);
-
-                        match serde_json::to_vec(&payload) {
-                            Ok(mut bytes) => {
-                                bytes.push(b'\n');
-                                println!("[Conn {}] SERIALIZED TO {} BYTES", conn_id, bytes.len());
-
-                                match state.tcp_tx.send(bytes) {
-                                    Ok(_) => println!("[Conn {}] SENT TO TCP", conn_id),
-                                    Err(e) => println!("[Conn {}] TCP SEND FAILED: {}", conn_id, e),
-                                }
-                            }
-                            Err(e) => println!("[Conn {}] SERIALIZATION FAILED: {}", conn_id, e),
-                        }
-                    }
-                    Err(e) => println!("[Conn {}] PARSE FAILED: {}", conn_id, e),
-                }
-            }
-            Ok(Message::Binary(bin)) => {
-                println!("[Conn {}] RECEIVED BINARY ({} bytes)", conn_id, bin.len());
-            }
-            Ok(Message::Ping(data)) => {
-                println!("[Conn {}] RECEIVED PING ({} bytes)", conn_id, data.len());
-            }
-            Ok(Message::Pong(data)) => {
-                println!("[Conn {}] RECEIVED PONG ({} bytes)", conn_id, data.len());
-            }
-            Ok(Message::Close(frame)) => {
-                println!("[Conn {}] CLOSE FRAME: {:?}", conn_id, frame);
-                break;
-            }
-            Err(e) => {
-                println!("[Conn {}] WEBSOCKET ERROR: {}", conn_id, e);
-                break;
-            }
-        }
-    }
-
-    println!("[Conn {}] SHUTTING DOWN", conn_id);
-    ping_task.abort();
-    broadcast_task.abort();
-
-    match ping_task.await {
-        Ok(_) => println!("[Conn {}] PING TASK SHUT DOWN", conn_id),
-        Err(e) => println!("[Conn {}] PING TASK ERROR: {:?}", conn_id, e),
-    }
-
-    match broadcast_task.await {
-        Ok(_) => println!("[Conn {}] BROADCAST TASK SHUT DOWN", conn_id),
-        Err(e) => println!("[Conn {}] BROADCAST TASK ERROR: {:?}", conn_id, e),
-    }
-}
 async fn ws_handler(
     ws: WebSocketUpgrade,
     State(arc_state): State<Arc<RwLock<AppState>>>,

@@ -176,11 +176,38 @@ const dz = new Dropzone('#myDropzone', {
 });
 dz.hiddenFileInput.setAttribute('webkitdirectory', true);
 
-document.getElementById('saveBtn').addEventListener('click', () => {
+document.getElementById('saveBtn').addEventListener('click', async () => {
 	const editor = document.getElementById('editor');
 	const text = Array.from(editor.children)
 		.filter(c => c.id !== 'editor-sentinel')
-		.map(c => c.textContent).join('\n');
-	document.getElementById('output').textContent = text;
-	console.log('Saved text:', text);
+		.map(c => c.textContent)
+		.join('\n');
+
+	if (!currentFilePath) {
+		alert('No file open to save.');
+		return;
+	}
+
+	try {
+		const fullFilePath = current_path ? `${current_path}/${currentFilePath}` : currentFilePath;
+
+		const blob = new Blob([text], { type: 'text/plain' });
+		const formData = new FormData();
+		formData.append('file', blob, currentFilePath);
+
+		const res = await fetch(`${basePath}/api/upload`, {
+			method: 'POST',
+			body: formData
+		});
+
+		if (!res.ok) {
+			throw new Error(`Upload failed: ${res.status}`);
+		}
+
+		console.log(`Saved ${fullFilePath}`);
+		get_files(current_path); 
+	} catch (err) {
+		console.error('Error saving file:', err);
+		alert('Failed to save file.');
+	}
 });
