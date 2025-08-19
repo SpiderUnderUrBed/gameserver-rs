@@ -40,6 +40,10 @@ file-transfer-system = "0.3.1"
 [features]
 default = []
 database = []
+docker = [
+    "bollard",
+    "sqlx"
+]
 full-stack = [
     "kube",
     "k8s-openapi",

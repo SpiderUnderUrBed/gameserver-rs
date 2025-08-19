@@ -81,18 +81,18 @@ use tokio::time::interval;
 // For now I only restrict the json backend for running this without kubernetes
 // the json backend is only for testing in most cases, simple deployments would use full-stack feature flag
 // and you can use postgres manually with the database feature flag
-#[cfg(any(feature = "full-stack", feature = "database"))]
+#[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
 mod database {
     include!("pgdatabase.rs");
 }
 
-#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
+#[cfg(all(not(feature = "full-stack"), not(feature = "docker"), not(feature = "database")))]
 mod database {
     include!("jsondatabase.rs");
 }
 
 // JsonDatabase is only something that would be unique to Json and not any other database managed by sqlx
-#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
+#[cfg(all(not(feature = "full-stack"), not(feature = "docker"), not(feature = "database")))]
 use database::JsonBackend;
 
 // Both database files and any more should have these structs
@@ -155,6 +155,9 @@ static LocalUrl: &str = "127.0.0.1:8081";
 #[cfg(not(feature = "full-stack"))]
 static K8S_WORKS: bool = false;
 
+#[cfg(not(feature = "docker"))]
+static DOCKER_WORKS: bool = false;
+
 #[cfg(feature = "full-stack")]
 static TcpUrl: &str = "gameserver-service:8080";
 
@@ -166,6 +169,9 @@ static WEBSOCKET_DEBUGGING: bool = false;
 // to avoid calling the dummy functions
 #[cfg(feature = "full-stack")]
 static K8S_WORKS: bool = true;
+
+#[cfg(feature = "docker")]
+static DOCKER_WORKS: bool = true;
 
 // dummy client and function
 #[cfg(not(feature = "full-stack"))]
@@ -181,7 +187,7 @@ impl Client {
 
 // The database connection would be avalible in the full-stack or explicit database testing
 // which in this case means postgres
-#[cfg(any(feature = "full-stack", feature = "database"))]
+#[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
 async fn first_connection() -> Result<sqlx::Pool<sqlx::Postgres>, sqlx::Error> {
     // The user should be able to customize alot about where the database is, how to authenticate with it,
     // whether it is being ran with the full stack or not, hence the env varibles with sensible defaults
@@ -203,7 +209,7 @@ async fn first_connection() -> Result<sqlx::Pool<sqlx::Postgres>, sqlx::Error> {
 // due to reduced complexity, and currently at the time of writing this
 // dependency issues, so unless you are testing the postgres db itself with this project
 // the json backend MIGHT be sufficent, but at the time of writing this I have not made the json backend work
-#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
+#[cfg(all(not(feature = "full-stack"), not(feature = "docker"), not(feature = "database")))]
 async fn first_connection() -> Result<JsonBackend, String> {
     Ok(JsonBackend::new(None))
 }
@@ -1904,12 +1910,12 @@ mod tests {
         use super::*;
         use crate::database::{Database, Element};
 
-        #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
+        #[cfg(all(not(feature = "full-stack"), not(feature = "docker"), not(feature = "database")))]
         async fn create_db_for_tests() -> Result<Database, String> {
             Ok(Database::new(None))
         }
 
-        #[cfg(any(feature = "full-stack", feature = "database"))]
+        #[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
         async fn create_db_for_tests() -> Result<Database, sqlx::Error> {
             let conn = first_connection().await?;
             let database = database::Database::new(Some(conn));
