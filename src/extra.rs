@@ -5,8 +5,10 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::time::Instant;
 use crate::filesystem::FileResponseMessage;
+use crate::ConsoleData;
 use crate::Debug;
 use crate::InnerData;
+use crate::List;
 
 pub struct JsonAssembler {
     pub(crate) buffer: String,
@@ -218,6 +220,7 @@ where
     results
 }
 
+
 pub async fn value_from_line<T, F>(gameserver_str: &str, filter: F) -> Vec<Result<T, serde_json::Error>>
 where
     T: DeserializeOwned + Debug,
@@ -227,59 +230,81 @@ where
 
     for line in gameserver_str.lines() {
         let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if !filter(line) {
+        if line.is_empty() || !filter(line) {
             continue;
         }
 
         match serde_json::from_str::<Value>(line) {
             Ok(line_val) => {
-                if let Ok(resp_msg) =
-                    serde_json::from_value::<FileResponseMessage>(line_val.clone())
-                {
-                    match String::from_utf8(resp_msg.data) {
-                        Ok(data_str) => match serde_json::from_str::<T>(&data_str) {
-                            Ok(result) => {
+                let mut parsed = false;
+
+                if !parsed {
+                    if let Ok(resp_msg) = serde_json::from_value::<FileResponseMessage>(line_val.clone()) {
+                        if let Ok(data_str) = String::from_utf8(resp_msg.data.clone()) {
+                            if let Ok(result) = serde_json::from_str::<T>(&data_str) {
                                 final_values.push(Ok(result));
+                            } else {
+                                final_values.push(Err(serde_json::from_str::<T>("").unwrap_err()));
                             }
-                            Err(e) => {
-                                final_values.push(Err(e));
-                            }
-                        },
-                        Err(e) => {
+                        }
+                        parsed = true;
+                    }
+                }
+
+                if !parsed {
+                    if let Ok(inner_data) = serde_json::from_value::<InnerData>(line_val.clone()) {
+                        if let Ok(result) = serde_json::from_str::<T>(&inner_data.data) {
+                            final_values.push(Ok(result));
+                        } else if let Ok(result) = serde_json::from_value::<T>(serde_json::to_value(&inner_data).unwrap()) {
+                            final_values.push(Ok(result));
+                        } else {
                             final_values.push(Err(serde_json::from_str::<T>("").unwrap_err()));
                         }
+                        parsed = true;
                     }
-                } else if let Ok(inner_data) = serde_json::from_value::<InnerData>(line_val.clone())
-                {
-                    match serde_json::from_str::<T>(&inner_data.data) {
-                        Ok(result) => {
+                }
+
+                if !parsed {
+                    if let Ok(console_data) = serde_json::from_value::<ConsoleData>(line_val.clone()) {
+                        if let Ok(result) = serde_json::from_str::<T>(&console_data.data) {
+                            final_values.push(Ok(result));
+                        } else if let Ok(result) = serde_json::from_value::<T>(serde_json::to_value(&console_data).unwrap()) {
+                            final_values.push(Ok(result));
+                        } else {
+                            final_values.push(Err(serde_json::from_str::<T>("").unwrap_err()));
+                        }
+                        parsed = true;
+                    }
+                }
+
+                if !parsed {
+                    if let Ok(list) = serde_json::from_value::<List>(line_val.clone()) {
+                        if let Ok(result) = serde_json::from_value::<T>(serde_json::to_value(&list).unwrap()) {
                             final_values.push(Ok(result));
                         }
-                        Err(e) => {
-                            final_values.push(Err(e));
-                        }
+                        parsed = true;
                     }
-                } else {
-                    match serde_json::from_value::<T>(line_val) {
-                        Ok(result) => {
-                            final_values.push(Ok(result));
-                        }
+                }
+
+                if !parsed {
+                    match serde_json::from_value::<T>(line_val.clone()) {
+                        Ok(result) => final_values.push(Ok(result)),
                         Err(e) => {
-                            final_values.push(Err(e));
+                            if let Ok(result) = serde_json::from_value::<T>(line_val) {
+                                final_values.push(Ok(result));
+                            } else {
+                                final_values.push(Err(e));
+                            }
                         }
                     }
                 }
             }
             Err(e) => {
-                println!("Failed to parse line as JSON: {}", e);
                 let partials = parse_json_objects_in_str::<T>(line);
                 if partials.is_empty() {
-                    println!(
-                        "Failed to parse line as JSON and no valid JSON objects found inside."
-                    );
+                    if let Ok(val) = serde_json::from_str::<T>(&format!("\"{}\"", line)) {
+                        final_values.push(Ok(val));
+                    }
                 }
                 final_values.extend(partials);
             }

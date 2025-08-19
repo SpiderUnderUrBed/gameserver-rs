@@ -355,7 +355,10 @@ async fn attempt_connection() -> Result<TcpStream, Box<dyn std::error::Error + S
         .await?
         .map_err(Into::into)
 }
-async fn handle_stream(
+
+// use tokio::sync::broadcast::error::RecvError::Lagged;
+// use tokio::sync::broadcast::error::RecvError::Closed;
+pub async fn handle_stream(
     arc_state: Arc<RwLock<AppState>>,
     rx: &mut tokio::sync::broadcast::Receiver<Vec<u8>>,
     stream: &mut TcpStream,
@@ -364,27 +367,21 @@ async fn handle_stream(
     let ip = stream.peer_addr()?.to_string();
     let (reader, mut writer) = stream.split();
     let mut buf_reader = BufReader::new(reader);
-
-    let mut buf = vec![0u8; 4096]; 
+    let mut buf = vec![0u8; 4096];
 
     let capability_msg = serde_json::to_string(&List {
         list: ApiCalls::Capabilities(vec!["all".to_string()]),
     })? + "\n";
     writer.write_all(capability_msg.as_bytes()).await?;
 
-    let server_data_msg = serde_json::to_string(&MessagePayload {
-        r#type: "command".to_string(),
-        message: "server_data".to_string(),
-        authcode: "0".to_string(),
-    })? + "\n";
-    writer.write_all(server_data_msg.as_bytes()).await?;
-
-    let server_node_name_msg = serde_json::to_string(&MessagePayload {
-        r#type: "command".to_string(),
-        message: "server_name".to_string(),
-        authcode: "0".to_string(),
-    })? + "\n";
-    writer.write_all(server_node_name_msg.as_bytes()).await?;
+    for command in &["server_data", "server_name"] {
+        let cmd_msg = serde_json::to_string(&MessagePayload {
+            r#type: "command".to_string(),
+            message: command.to_string(),
+            authcode: "0".to_string(),
+        })? + "\n";
+        writer.write_all(cmd_msg.as_bytes()).await?;
+    }
 
     let mut server_start_keyword = String::new();
     let mut server_stop_keyword = String::new();
@@ -393,10 +390,9 @@ async fn handle_stream(
         tokio::select! {
             read_result = buf_reader.read(&mut buf) => {
                 match read_result {
-                    Ok(0) => break, 
+                    Ok(0) => break,
                     Ok(n) => {
                         let raw_data = &buf[..n];
-
                         {
                             let state_guard = arc_state.read().await;
                             let _ = state_guard.tcp_tx.send(raw_data.to_vec());
@@ -404,67 +400,91 @@ async fn handle_stream(
 
                         if let Ok(text) = std::str::from_utf8(raw_data) {
                             let line_content = text.trim();
-                            if !line_content.is_empty() {
-                                if let Ok(list) = serde_json::from_str::<List>(line_content) {
-                                    if let ApiCalls::Capabilities(_) = list.list {
-                                        continue;
+                            if line_content.is_empty() { continue; }
+
+                            let mut final_data: Vec<ConsoleData> = vec![];
+
+                            let list_parsed: Vec<Result<List, serde_json::Error>> =
+                                value_from_line::<List, _>(line_content, |line| line.contains("\"list\"")).await;
+
+                            let mut list_values: Vec<ConsoleData> = vec![];
+                            for item in list_parsed {
+                                if let Ok(list_item) = item {
+                                    let serialized = serde_json::to_string(&list_item)?;
+                                    list_values.push(ConsoleData {
+                                        data: serialized,
+                                        r#type: "list_item".to_string(),
+                                        authcode: "0".to_string(),
+                                    });
+                                }
+                            }
+                            let mut list_lines: Vec<String> = list_values.iter().map(|v| v.data.clone()).collect();
+
+                            let console_parsed: Vec<Result<ConsoleData, serde_json::Error>> =
+                                value_from_line::<ConsoleData, _>(line_content, |line| !line.contains("\"list\"")).await;
+
+                            let mut console_values: Vec<ConsoleData> = vec![];
+                            for item in console_parsed {
+                                if let Ok(data) = item {
+                                    if !list_lines.contains(&data.data) {
+                                        console_values.push(data);
+                                    }
+                                }
+                            }
+
+                            final_data.extend(list_values);
+                            final_data.extend(console_values);
+
+                            for data_clone in final_data.iter() {
+                                if let Ok(inner) = serde_json::from_str::<serde_json::Value>(&data_clone.data) {
+                                    if let (Some(start_kw), Some(stop_kw)) = (
+                                        inner.get("start_keyword").and_then(|v| v.as_str()),
+                                        inner.get("stop_keyword").and_then(|v| v.as_str()),
+                                    ) {
+                                        server_start_keyword = start_kw.to_string();
+                                        server_stop_keyword = stop_kw.to_string();
                                     }
                                 }
 
-                                if let Ok(msg) = serde_json::from_str::<ConsoleData>(line_content) {
-                                    match msg.r#type.as_str() {
-                                        "info" => {
-                                            if msg.data.contains("start_keyword") && msg.data.contains("stop_keyword") {
-                                                arc_state.write().await.gameserver = serde_json::Value::String(msg.data.clone());
-                                                if let Ok(server_config) = serde_json::from_str::<serde_json::Value>(&msg.data) {
-                                                    if let (Some(start_kw), Some(stop_kw)) = (
-                                                        server_config.get("start_keyword").and_then(|v| v.as_str()),
-                                                        server_config.get("stop_keyword").and_then(|v| v.as_str())
-                                                    ) {
-                                                        server_start_keyword = start_kw.to_string();
-                                                        server_stop_keyword = stop_kw.to_string();
-                                                    }
+                                if data_clone.data.contains("\"type\":\"command\"") {
+                                    if let Ok(inner_msg) = serde_json::from_str::<MessagePayload>(&data_clone.data) {
+                                        if inner_msg.r#type == "command" {
+                                            let db_state = &arc_state.write().await.database;
+                                            if let Ok(nodes) = db_state.fetch_all_nodes().await {
+                                                let node = Node {
+                                                    ip: ip.clone(),
+                                                    nodename: inner_msg.message,
+                                                    nodetype: "main".to_string(),
+                                                };
+                                                if !nodes.iter().any(|n| n.ip == node.ip && n.nodename == node.nodename) {
+                                                    let _ = db_state.create_nodes_in_db(CreateElementData {
+                                                        element: Element::Node(node),
+                                                        jwt: "".to_string(),
+                                                        require_auth: false,
+                                                    }).await;
                                                 }
-                                            } else if msg.data.contains("\"type\":\"command\"") {
-                                                if let Ok(inner_msg) = serde_json::from_str::<MessagePayload>(&msg.data) {
-                                                    if inner_msg.r#type == "command" {
-                                                        let db_state = &arc_state.write().await.database;
-                                                        if let Ok(nodes) = db_state.fetch_all_nodes().await {
-                                                            let node = Node {
-                                                                ip: ip.clone(),
-                                                                nodename: inner_msg.message,
-                                                                nodetype: "main".to_string(),
-                                                            };
-                                                            if !nodes.iter().any(|n| n.ip == node.ip && n.nodename == node.nodename) {
-                                                                let _ = db_state.create_nodes_in_db(CreateElementData {
-                                                                    element: Element::Node(node),
-                                                                    jwt: "".to_string(),
-                                                                    require_auth: false,
-                                                                }).await;
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            } else if msg.data == "Server started" {
-                                                // let _ = ws_tx.send("Server started successfully".to_string());
-                                            } else if msg.data.contains("\"type\":\"stdout\"") {
-                                                if let Ok(output_msg) = serde_json::from_str::<serde_json::Value>(&msg.data) {
-                                                    if let Some(server_output) = output_msg.get("data").and_then(|v| v.as_str()) {
-                                                        if !server_start_keyword.is_empty() && server_output.contains(&server_start_keyword) {
-                                                            let _ = ws_tx.send("Server is ready for connections!".to_string());
-                                                            arc_state.write().await.status = Status::Up;
-                                                        } else if !server_stop_keyword.is_empty() && server_output.contains(&server_stop_keyword) {
-                                                            arc_state.write().await.status = Status::Down;
-                                                        }
-                                                        let _ = ws_tx.send(server_output.to_string());
-                                                    }
-                                                }
-                                            } else {
-                                                let _ = ws_tx.send(msg.data.clone());
                                             }
                                         }
-                                        _ => {}
                                     }
+                                }
+
+                                if data_clone.data.contains("\"type\":\"stdout\"") {
+                                    if let Ok(output_msg) = serde_json::from_str::<serde_json::Value>(&data_clone.data) {
+                                        if let Some(server_output) = output_msg.get("data").and_then(|v| v.as_str()) {
+                                            if !server_start_keyword.is_empty() && server_output.contains(&server_start_keyword) {
+                                                let _ = ws_tx.send("Server is ready for connections!".to_string());
+                                                arc_state.write().await.status = Status::Up;
+                                            } else if !server_stop_keyword.is_empty() && server_output.contains(&server_stop_keyword) {
+                                                arc_state.write().await.status = Status::Down;
+                                            }
+                                            let _ = ws_tx.send(server_output.to_string());
+                                            continue;
+                                        }
+                                    }
+                                }
+
+                                if !data_clone.data.contains("\"type\":\"stdout\"") && !data_clone.data.contains("\"type\":\"command\"") {
+                                    let _ = ws_tx.send(data_clone.data.clone());
                                 }
                             }
                         }
@@ -480,8 +500,7 @@ async fn handle_stream(
                         writer.write_all(b"\n").await?;
                         writer.flush().await?;
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(_) => {}
                 }
             }
         }
@@ -489,6 +508,10 @@ async fn handle_stream(
 
     Ok(())
 }
+
+
+// use tokio::sync::broadcast::error::RecvError::Lagged;
+// use tokio::sync::broadcast::error::RecvError::Closed;
 
 
 // does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
@@ -835,7 +858,7 @@ async fn button_reset(
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 struct ConsoleData {
     authcode: String, 
     data: String, 
