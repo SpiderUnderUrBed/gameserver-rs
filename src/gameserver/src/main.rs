@@ -14,15 +14,46 @@ use tokio::process::{ChildStdin, Command as TokioCommand};
 use tokio::sync::{mpsc, Mutex};
 use tokio::fs::OpenOptions;
 
+use crate::broadcast::Sender;
+use crate::filesystem::send_folder_over_broadcast;
+
 use tokio::fs::File;
 use tokio::io::AsyncRead;
 use tokio::net::TcpStream;
 use uuid::Uuid;
 
+use std::net::SocketAddr;
+use tokio::sync::broadcast;
+
+mod filesystem;
+mod extra;
 
 const SERVER_DIR: &str = "server";
 
 struct Minecraft;
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+struct IncomingMessage {
+    message: String,
+    #[serde(rename = "type")]
+    message_type: String,
+    authcode: String,
+}
+
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+struct SrcAndDest {
+    src: ApiCalls,
+    dest: ApiCalls,
+    metadata: String
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Node {
+    pub nodename: String,
+    pub ip: String,
+    pub nodetype: String
+}
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct List {
@@ -42,6 +73,7 @@ enum ApiCalls {
     Capabilities(Vec<String>),
     NodeList(Vec<String>),
     IncomingMessage(MessagePayload),
+    Node(Node)
 }
 
 impl TryFrom<Value> for List {
@@ -360,6 +392,58 @@ pub async fn handle_multipart_message(
     Ok(())
 }
 
+pub async fn unsure_ip_or_port_tcp_conn(ip: Option<String>, port: Option<String>) -> Result<TcpStream, Box<dyn std::error::Error>> {
+    let ip = ip.ok_or("IP is required")?;
+
+    let (host, extracted_port) = if let Some(idx) = ip.rfind(':') {
+        let (host_part, port_part) = ip.split_at(idx);
+        let port_part = &port_part[1..]; 
+        (host_part.to_string(), Some(port_part.to_string()))
+    } else {
+        (ip.clone(), None)
+    };
+
+    let final_port = match (port, extracted_port) {
+        (Some(p), _) => p,
+        (None, Some(p)) => p,
+        (None, None) => "80".to_string(),
+    };
+
+    let addr = format!("{}:{}", host, final_port);
+
+    let socket_addr: SocketAddr = addr.parse()?;
+
+    let stream = TcpStream::connect(socket_addr).await?;
+
+    Ok(stream)
+}
+pub async fn tcp_to_broadcast(
+    mut stream: TcpStream,
+) -> broadcast::Sender<Vec<u8>> {
+    let (tx, _rx) = broadcast::channel(16);
+    let tx_clone = tx.clone();
+    tokio::spawn(async move {
+        let mut buf = [0u8; 1024];
+
+        loop {
+            match stream.read(&mut buf).await {
+                Ok(0) => break, 
+                Ok(n) => {
+                    let data = buf[..n].to_vec();
+                    let _ = tx_clone.send(data);
+                }
+                Err(err) => {
+                    eprintln!("TCP read error: {}", err);
+                    break;
+                }
+            }
+        }
+    });
+
+    tx
+}
+
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(format!("0.0.0.0:{}", PORT)).await?;
@@ -423,8 +507,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 let line = buf.trim_end();
+                println!("{}", line);
                 if line.starts_with('{') {
-                    println!("{}", line);
                     if let Ok(json_line) = serde_json::from_str::<Value>(&line) {
                         if let Ok(request) = serde_json::from_value::<FileRequestMessage>(json_line.clone()) {
                             
@@ -517,7 +601,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             });
                             continue;
-                        } else {
+                        } 
+                        if let Ok(payload) = serde_json::from_value::<SrcAndDest>(json_line.clone()) { 
+                            if let ApiCalls::Node(dest) = payload.dest {
+                                let conn = match unsure_ip_or_port_tcp_conn(Some(dest.ip), None).await {
+                                    Ok(c) => c,
+                                    Err(e) => {
+                                        eprintln!("Failed to connect: {}", e);
+                                        return; 
+                                    }
+                                };
+                                let broadcast_tx = tcp_to_broadcast(conn).await;
+                                if let Err(e) = send_folder_over_broadcast("server/", broadcast_tx).await {
+                                    eprintln!("Failed to send folder: {}", e);
+                                }
+
+                                //let broadcast_rx = broadcast_tx.subscribe();
+                                // let mut tcp_fs = TcpFs::new(broadcast_tx, broadcast_rx);
+                                // let mut base_path = RemoteFileSystem::new("server", Some(tcp_fs.clone()));
+                                //send_multipart_over_broadcast(multipart, broadcast_tx).await;
+                                // match send_multipart_over_broadcast(multipart, tcp_tx).await {
+                                //     Ok(_) => StatusCode::OK,
+                                //     Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                                // }
+                            }
+
                         }
 
                         if let Ok(payload) = serde_json::from_value::<MessagePayload>(json_line.clone()) {

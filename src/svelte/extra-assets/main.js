@@ -96,31 +96,52 @@ class ServerConsole {
     });
   }
 
-  async fetchNodes() {
+async fetchNodes() {
     try {
         const response = await fetch(`${this.basePath}/api/nodes`);
-        if (response.ok) {
-            const data = await response.json();
-            const nodes = data.list.data;
+        if (!response.ok) throw new Error("Failed to fetch nodes");
 
-            const nodesBar = document.querySelector("#nodes-bar");
-            nodesBar.innerHTML = ""; 
+        const data = await response.json();
+        const nodes = data.list.data;
 
-            nodes.forEach((node, index) => {
+        const nodesBar = document.querySelector("#nodes-bar");
+        if (nodesBar) nodesBar.innerHTML = "";
+        nodes.forEach((node) => {
+            if (nodesBar) {
                 const button = document.createElement("button");
                 button.textContent = node;
                 button.className = "nodes-element";
                 button.onclick = () => alert(`Node clicked: ${node}`);
                 nodesBar.appendChild(button);
-            });
-        } else {
-            // document.getElementById('message').innerText = 'Failed to get nodes from the server.';
+            }
+        });
+
+        const migrateto = document.getElementById("migrate-to");
+        const migratefrom = document.getElementById("migrate-from");
+
+        if (!migrateto || !migratefrom) {
+            console.warn("Migration selects not found in DOM yet. Will retry when dialog opens.");
+            return;
         }
+
+        migrateto.innerHTML = "";
+        migratefrom.innerHTML = "";
+
+        nodes.forEach((node) => {
+            const option = document.createElement("option");
+            option.value = node;
+            option.text = node;
+
+            migrateto.appendChild(option);
+            migratefrom.appendChild(option.cloneNode(true));
+        });
+
     } catch (error) {
-        // document.getElementById('message').innerText = 'Error connecting to the server.';
-        console.log('Error fetching nodes:', error);
+        console.error("Error fetching nodes:", error);
     }
 }
+
+
 
 //   setupNodeBar(){
 //     const nodesBar = document.querySelector("#nodes-bar");
@@ -665,7 +686,43 @@ class ServerConsole {
     }
   }
   async updateServer(){
-    
+    let migratingto = document.getElementById("migrate-to").value;
+    let migratingfrom = document.getElementById("migrate-from").value;
+    try {
+      const res = await fetch(`${this.basePath}/api/migrate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          src: {
+            kind: "Node",
+            data: { nodename: migratingfrom, nodetype: "custom", ip: "" },
+          },
+          dest: {
+            kind: "Node",
+            data: { nodename: migratingto, nodetype: "custom", ip: "" },
+          },
+          metadata: ""
+        }),
+      });
+
+      const text = await res.text();
+      if (res.ok) {
+        try {
+          const data = JSON.parse(text);
+          console.log( `Server Response: ${data.response}`);
+          //this.addResult("", `Server Response: ${data.response}`, false, true);
+        } catch {
+          console.log(`Invalid JSON response: ${text}`);
+          //this.addResult("", `Invalid JSON response: ${text}`, false, true);
+        }
+      } else {
+        console.log(`Failed (${res.status}): ${text}`)
+        //this.addResult("", `Failed (${res.status}): ${text}`, false, true);
+      }
+    } catch (err) {
+      console.log(`Error: ${err.message}`)
+      //this.addResult("", `Error: ${err.message}`, false, true);
+    } 
   }
   configureServer(){
     const serverDialog = document.getElementById("configureServerDialog");

@@ -80,6 +80,23 @@
 		<dialog id="configureServerDialog" class="user-dialog">
 			<form method="dialog">
 				<h1>Test</h1>
+				<h5>Server type:</h5>
+				<h5>Minecraft</h5>
+				<br>
+				<div>
+				<h5>Migrate from</h5>
+				<select id="migrate-from" name="migrate-from">
+						<!-- <option value="main">Initial gameserver</option>
+						<option value="custom" selected="selected">Custom</option> -->
+				</select>
+				</div>
+				<div>
+				<h5>Migrate to</h5>
+				<select id="migrate-to" name="migrate-to">
+						<!-- <option value="main">Initial gameserver</option>
+						<option value="custom" selected="selected">Custom</option> -->
+				</select>
+				</div>
 				<div class="dialog-buttons">
 					<button type="submit" onclick="updateServer()">Confirm</button>
 					<button type="button" onclick="this.closest('dialog').close()">Cancel</button>

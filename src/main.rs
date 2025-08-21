@@ -131,6 +131,8 @@ mod docker {
 }
 #[cfg(not(feature = "full-stack"))]
 mod kubernetes {
+    use crate::NodeAndTCP;
+
     pub async fn create_k8s_deployment(
         _: &crate::Client,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -139,6 +141,11 @@ mod kubernetes {
     pub async fn list_node_names(
         _: crate::Client,
     ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        Err("This should not be running".into())
+    }
+    pub async fn list_node_info(
+    _: crate::Client,
+    ) -> Result<Vec<NodeAndTCP>, Box<dyn std::error::Error + Send + Sync>> {
         Err("This should not be running".into())
     }
 }
@@ -229,6 +236,27 @@ struct MessagePayload {
     authcode: String,
 }
 
+// #[derive(PartialEq)]
+
+struct NodeAndTCP {
+    name: String, 
+    ip: String, 
+    nodetype: String,
+    tcp_tx: Option<tokio::sync::broadcast::Sender<Vec<u8>>>,
+    tcp_rx: Option<tokio::sync::broadcast::Receiver<Vec<u8>>>
+}
+impl Clone for NodeAndTCP {
+    fn clone(&self) -> NodeAndTCP {
+        NodeAndTCP {
+            name: self.name.clone(),
+            ip: self.ip.clone(),
+            nodetype: self.nodetype.clone(),
+            tcp_tx: self.tcp_tx.clone(),
+            tcp_rx: self.tcp_tx.as_ref().map(|tx| tx.subscribe()),
+        }
+    }
+}
+
 // console messages are for the console specifically, but this might be redundant
 #[derive(Debug, Deserialize)]
 struct ConsoleMessage {
@@ -299,6 +327,13 @@ struct IncomingMessage {
     authcode: String,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct SrcAndDest {
+    src: ApiCalls,
+    dest: ApiCalls,
+    metadata: String
+}
+
 // Some common api calls which is just what might get exchanged between the frontend and backend via api
 // this is needed rather than a bunch of structs or however else I might do it because in some cases I might not know what api call to expect
 // as it would be determined by a 'kind' flag provided by serde, and the content, be it a array or struct, be nested in json (which provides new hurdles for how to process
@@ -314,6 +349,7 @@ enum ApiCalls {
     ButtonList(Vec<Button>),
     IncomingMessage(IncomingMessage),
     FileList(Vec<FsItem>),
+    Node(Node),
 }
 
 #[derive(Clone)]
@@ -332,6 +368,8 @@ enum Status {
 struct AppState {
     tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
     tcp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
+    additonal_node_tcp: Vec<NodeAndTCP>,
+    //additonal_node_tcp: Vec<(tokio::sync::broadcast::Sender<Vec<u8>>, tokio::sync::broadcast::Receiver<Vec<u8>>)>,
     gameserver: Value,
     status: Status,
     ws_tx: broadcast::Sender<String>,
@@ -350,9 +388,28 @@ impl Clone for AppState {
             base_path: self.base_path.clone(),
             client: self.client.clone(),
             database: self.database.clone(),
+            additonal_node_tcp: self.additonal_node_tcp
+                .iter()
+                .map(|node| 
+                    NodeAndTCP {
+                        name: node.name.clone(),
+                        ip: node.ip.clone(),
+                        tcp_tx: node.tcp_tx.clone(),
+                        tcp_rx: {
+                            if let Some (tcp_rx) = &node.tcp_rx {
+                                Some(tcp_rx.resubscribe())
+                            } else {
+                                None
+                            }
+                        },
+                        nodetype: String::new(),
+                    }
+                )
+                .collect(),
         }
     }
 }
+
 
 // for the initial connection attempt, which will determine if possibly I would need to create the container and deployment upon failure
 // i will use rusts 'timeout' for x interval determined with CONNECTION_TIMEOUT
@@ -616,8 +673,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         client = Some(Client::try_default().await?);
     }
 
+   
+    let mut nodes: Vec<NodeAndTCP> = vec![];
+    if let Ok(db_nodes) = database.fetch_all_nodes().await {
+        nodes = db_nodes.into_iter().map(|node| NodeAndTCP { name: node.nodename, nodetype: node.nodetype, ip: node.ip, tcp_tx: None, tcp_rx: None }).collect()
+    }
+
     // use everything so far to make the app state
-    let state = AppState {
+    let state: AppState = AppState {
         gameserver: json!({}),
         status: Status::Down,
         tcp_tx: tcp_tx,
@@ -627,6 +690,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         base_path: base_path.clone(),
         database,
         client,
+        additonal_node_tcp: nodes
     };
 
     let multifaceted_state = Arc::new(RwLock::new(state));
@@ -692,6 +756,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/upload", post(upload))
         //.route("/api/uploadcontent", post(upload))
         .route("/api/awaitserverstatus", get(ongoing_server_status))
+        .route("/api/migrate", post(migrate))
         .route("/api/getstatus", post(get_status))
         .route("/api/getfiles", post(get_files))
         .route("/api/getfilescontent", post(get_files_content))
@@ -746,6 +811,26 @@ async fn upload(
         Ok(_) => StatusCode::OK,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
+}
+//SrcAndDest
+async fn migrate(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    Json(request): Json<SrcAndDest>,
+) -> impl IntoResponse {
+    let state = arc_state.read().await;
+
+    // &state.tcp_tx {
+    match serde_json::to_vec(&request) {
+        Ok(bytes) => {
+            if let Err(err) = state.tcp_tx.send(bytes) {
+                eprintln!("Failed to send request over broadcast: {}", err);
+            }
+        }
+        Err(err) => eprintln!("Failed to serialize request: {}", err),
+    }
+    //}
+
+    "ok"
 }
 
 // TODO: maybe split this function and route into several routes with statuses for diffrent states/nodes/settings?
@@ -1193,10 +1278,11 @@ async fn users(
 
 // A list of nodes in a k8s cluster is returned, nothing is returned if there is not a client (k8s support is off)
 async fn get_nodes(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl IntoResponse {
-    let state = arc_state.write().await;
-    let mut node_list = vec![];
-    if state.client.is_some() {
-        match kubernetes::list_node_names(state.client.clone().unwrap()).await {
+    let mut state = arc_state.write().await;
+    let mut node_list: Vec<NodeAndTCP> = vec![];
+
+    if let Some(client) = state.client.clone() {
+        match kubernetes::list_node_info(client).await {
             Ok(nodes) => {
                 node_list.extend(nodes.clone());
             }
@@ -1205,22 +1291,42 @@ async fn get_nodes(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl IntoR
             }
         }
     }
+
     match state.database.fetch_all_nodes().await {
         Ok(nodes) => {
-            let nodename_list: Vec<String> =
-                nodes.iter().map(|node| node.nodename.clone()).collect();
-            for node in nodename_list {
-                if !node_list.contains(&node) {
-                    node_list.push(node);
+            for node in nodes {
+                let new_node = NodeAndTCP {
+                    name: node.nodename,
+                    ip: node.ip,
+                    nodetype: node.nodetype,
+                    tcp_tx: None,
+                    tcp_rx: None,
+                };
+
+                let exists = node_list.iter().any(|n| n.name == new_node.name);
+
+                if !exists {
+                    node_list.push(new_node);
                 }
             }
         }
         Err(err) => eprintln!("Error fetching DB nodes: {}", err),
     }
+
+    for node in node_list.clone() {
+        let exists = state.additonal_node_tcp.iter().any(|n| n.name == node.name);
+        if !exists {
+            state.additonal_node_tcp.push(node);
+        }
+    }
+
+    let node_name_list: Vec<String> = node_list.into_iter().map(|node| node.name).collect();
+
     Json(List {
-        list: ApiCalls::NodeList(node_list),
+        list: ApiCalls::NodeList(node_name_list),
     })
 }
+
 async fn get_servers(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl IntoResponse {
     Json(List {
         list: ApiCalls::None,

@@ -43,7 +43,8 @@ impl JsonAssembler {
 
     pub fn check_timeout(&mut self, id: u64) -> Option<std::io::Result<Vec<u8>>> {
         if let Some(deadline) = self.assembly_deadline {
-            if Instant::now() > deadline.into() {
+            let instant_deadline: Instant = deadline.into();
+            if Instant::now() > instant_deadline {
                 let buffer_content = self.buffer.clone();
                 self.buffer.clear();
                 self.assembly_deadline = None;
