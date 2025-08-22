@@ -114,51 +114,116 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 async function get_files(path) {
+	console.log("Getting files for path:", path);
 	const fileview = document.getElementById('center');
-	fileview.innerHTML = '';
 	if (!path) path = '';
 	current_path = path;
-	try {
-		const res = await fetch(`${basePath}/api/getfiles`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ type: 'command', message: path, authcode: '0' })
-		});
-		const text = await res.text();
-		if (res.ok) {
-			try {
-				const data = JSON.parse(text);
-				let filelist = data.list.data;
-				if (path !== '') filelist.unshift({ kind: 'Folder', data: '..' });
-				filelist.forEach(item => {
-					const filename = item.data;
-					const newelement = document.createElement('div');
-					newelement.className = 'file-item';
-					const button = document.createElement('button');
-					fileTypeMap[filename] = item.kind.toLowerCase() === 'folder' ? 'folder' : 'file';
-					if (item.kind.toLowerCase() === 'folder') {
-						button.className = 'folder-button';
-						button.onclick = () => {
-							if (filename === '..') {
-								const pathParts = path.split('/').filter(p => p !== '');
-								pathParts.pop();
-								get_files(pathParts.join('/'));
-							} else {
-								get_files(path ? `${path}/${filename}` : filename);
-							}
-						};
-					} else {
-						button.onclick = () => open_editor(filename);
-					}
-					button.textContent = filename;
-					newelement.appendChild(button);
-					fileview.appendChild(newelement);
-				});
-			} catch { }
-		}
-	} catch (err) { console.error(err); }
-}
 
+	// Show loading spinner immediately before any request
+	fileview.innerHTML = '<div style="padding: 20px; text-align: center;"><img src="icons/loading-load.gif" alt="Loading..." style="width: 32px; height: 32px;"><div style="margin-top: 10px; color: #666;">Loading files...</div></div>';
+
+	async function fetchFiles(isRetry = false) {
+		console.log("Fetching files, isRetry:", isRetry);
+		try {
+			const res = await fetch(`${basePath}/api/getfiles`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ type: 'command', message: path, authcode: '0' })
+			});
+			const text = await res.text();
+			console.log("API response:", text);
+			
+			if (res.ok) {
+				try {
+					const data = JSON.parse(text);
+					let filelist = data.list?.data || [];
+					console.log("Parsed filelist:", filelist, "Length:", filelist.length);
+
+					if (!isRetry && filelist.length === 0) {
+						console.log("Empty file list on first attempt, showing retry message");
+						fileview.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">There might be an issue, will confirm the files and directories in a few seconds...</div>';
+						setTimeout(() => {
+							console.log("Retrying file fetch...");
+							fetchFiles(true);
+						}, 5000);
+						return;
+					}
+
+					fileview.innerHTML = '';
+					if (path !== '') filelist.unshift({ kind: 'Folder', data: '..' });
+
+					if (filelist.length === 0 && isRetry) {
+						fileview.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">No files found in this directory.</div>';
+						return;
+					}
+
+					filelist.forEach(item => {
+						const filename = item.data;
+						const newelement = document.createElement('div');
+						newelement.className = 'file-item';
+						const button = document.createElement('button');
+						fileTypeMap[filename] = item.kind.toLowerCase() === 'folder' ? 'folder' : 'file';
+						if (item.kind.toLowerCase() === 'folder') {
+							button.className = 'folder-button';
+							button.onclick = () => {
+								if (filename === '..') {
+									const pathParts = path.split('/').filter(p => p !== '');
+									pathParts.pop();
+									get_files(pathParts.join('/'));
+								} else {
+									get_files(path ? `${path}/${filename}` : filename);
+								}
+							};
+						} else {
+							button.onclick = () => open_editor(filename);
+						}
+						button.textContent = filename;
+						newelement.appendChild(button);
+						fileview.appendChild(newelement);
+					});
+				} catch (parseError) {
+					console.error("JSON parse error:", parseError);
+					if (!isRetry) {
+						console.log("Parse error on first attempt, showing retry message");
+						fileview.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">There might be an issue, will confirm the files and directories in a few seconds...</div>';
+						setTimeout(() => {
+							console.log("Retrying file fetch after parse error...");
+							fetchFiles(true);
+						}, 5000);
+					} else {
+						fileview.innerHTML = '<div style="padding: 20px; text-align: center; color: #ff6666;">Failed to load file list.</div>';
+					}
+				}
+			} else {
+				console.error("HTTP error:", res.status, res.statusText);
+				if (!isRetry) {
+					console.log("HTTP error on first attempt, showing retry message");
+					fileview.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">There might be an issue, will confirm the files and directories in a few seconds...</div>';
+					setTimeout(() => {
+						console.log("Retrying file fetch after HTTP error...");
+						fetchFiles(true);
+					}, 5000);
+				} else {
+					fileview.innerHTML = '<div style="padding: 20px; text-align: center; color: #ff6666;">Error loading files.</div>';
+				}
+			}
+		} catch (err) {
+			console.error("Fetch error:", err);
+			if (!isRetry) {
+				console.log("Fetch error on first attempt, showing retry message");
+				fileview.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">There might be an issue, will confirm the files and directories in a few seconds...</div>';
+				setTimeout(() => {
+					console.log("Retrying file fetch after fetch error...");
+					fetchFiles(true);
+				}, 5000);
+			} else {
+				fileview.innerHTML = '<div style="padding: 20px; text-align: center; color: #ff6666;">Error loading files.</div>';
+			}
+		}
+	}
+
+	fetchFiles(false);
+}
 get_files('');
 
 const dz = new Dropzone('#myDropzone', {

@@ -277,7 +277,6 @@ pub async fn send_multipart_over_broadcast(
     {
         let file_name = field.file_name().unwrap_or("file.bin").to_string();
 
-        // Send start message
         let start_json = MessagePayload {
             r#type: "start_file".into(),
             message: format!("{}", file_name),
@@ -285,7 +284,6 @@ pub async fn send_multipart_over_broadcast(
         };
         tx.send(serde_json::to_vec(&start_json)?)
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed"))?;
-        // Send chunks
         while let Some(chunk) = field
             .chunk()
             .await
@@ -296,10 +294,9 @@ pub async fn send_multipart_over_broadcast(
             })?;
         }
 
-        // Send end message
         let end_json = MessagePayload {
             r#type: "end_file".into(),
-            message: "".to_string(),
+            message: format!("{}", file_name),
             authcode: "0".into(),
         };
         tx.send(serde_json::to_vec(&end_json)?)
@@ -382,53 +379,58 @@ impl FsType for TcpFs {
         })
     }
 
-    async fn get_metadata(&mut self, path: &str) -> std::io::Result<FsMetadata> {
-        let id = self
-            .send_request(FileRequestPayload::Metadata {
-                path: path.to_string(),
-            })
-            .await?;
+async fn get_metadata(&mut self, path: &str) -> std::io::Result<FsMetadata> {
+    let id = self
+        .send_request(FileRequestPayload::Metadata {
+            path: path.to_string(),
+        })
+        .await?;
 
-        let response_chunks = self.recv_response(id).await?;
+    let response_chunks = self.recv_response(id).await?;
 
-        for (i, chunk) in response_chunks.iter().enumerate() {
-            if let Ok(meta) = serde_json::from_slice::<FsMetadata>(chunk) {
-                return Ok(meta);
-            }
+    for chunk in response_chunks.iter() {
+        if let Ok(meta) = serde_json::from_slice::<FsMetadata>(chunk) {
+            return Ok(meta);
+        }
 
-            if let Ok(val) = serde_json::from_slice::<Value>(chunk) {
-                if let Some(data_val) = val.get("data") {
-                    if data_val.is_object() || data_val.is_array() {
-                        if let Ok(meta) = serde_json::from_value::<FsMetadata>(data_val.clone()) {
-                            return Ok(meta);
-                        }
-                    }
-                    if let Some(s) = data_val.as_str() {
-                        if let Ok(meta) = serde_json::from_str::<FsMetadata>(s) {
-                            return Ok(meta);
-                        }
+        if let Ok(val) = serde_json::from_slice::<Value>(chunk) {
+            if let Some(data_val) = val.get("data") {
+                if data_val.is_object() || data_val.is_array() {
+                    if let Ok(meta) = serde_json::from_value::<FsMetadata>(data_val.clone()) {
+                        return Ok(meta);
                     }
                 }
-                if let Value::String(s) = val {
-                    if let Ok(meta) = serde_json::from_str::<FsMetadata>(&s) {
+
+                if let Some(s) = data_val.as_str() {
+                    if let Ok(meta) = serde_json::from_str::<FsMetadata>(s) {
                         return Ok(meta);
                     }
                 }
             }
 
-            println!(
-                "[get_metadata:{}] chunk[{}] did not parse as metadata",
-                id, i
-            );
+            if let Value::String(s) = &val {
+                if let Ok(meta) = serde_json::from_str::<FsMetadata>(s) {
+                    return Ok(meta);
+                }
+            }
+
+            if let Ok(meta) = serde_json::from_value::<FsMetadata>(val.clone()) {
+                return Ok(meta);
+            }
         }
-
-        let response: Vec<u8> = response_chunks.concat();
-
-        serde_json::from_slice::<FsMetadata>(&response).map_err(|e| {
-            println!("[get_metadata:{}] final parse error: {}", id, e);
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-        })
     }
+
+    println!(
+        "[get_metadata:{}] final parse error: missing field `is_file` at line 1 column 58",
+        id
+    );
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!("Failed to parse metadata response for path '{}'", path),
+    ))
+}
+
 
     async fn list_directory(&mut self, path: &str) -> std::io::Result<Vec<FsEntry>> {
         use serde_json::Value;

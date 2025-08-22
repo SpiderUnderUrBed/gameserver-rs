@@ -333,6 +333,9 @@ struct SrcAndDest {
     dest: ApiCalls,
     metadata: String
 }
+struct BrowserErrMessage {
+    err: String
+}
 
 // Some common api calls which is just what might get exchanged between the frontend and backend via api
 // this is needed rather than a bunch of structs or however else I might do it because in some cases I might not know what api call to expect
@@ -756,6 +759,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/upload", post(upload))
         //.route("/api/uploadcontent", post(upload))
         .route("/api/awaitserverstatus", get(ongoing_server_status))
+        .route("/api/fetchnode", post(fetch_node))
         .route("/api/migrate", post(migrate))
         .route("/api/getstatus", post(get_status))
         .route("/api/getfiles", post(get_files))
@@ -1276,6 +1280,18 @@ async fn users(
     }))
 }
 
+async fn fetch_node(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    Json(request): Json<IncomingMessage>,
+) -> Result<Json<Node>, StatusCode> {
+    let mut state = arc_state.write().await;
+    let option_node = state.database.retrieve_nodes(request.message).await;
+    if let Some(node) = option_node { 
+        Ok(Json(node))
+    } else {
+        Err(StatusCode::INTERNAL_SERVER_ERROR)
+    }
+}
 // A list of nodes in a k8s cluster is returned, nothing is returned if there is not a client (k8s support is off)
 async fn get_nodes(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl IntoResponse {
     let mut state = arc_state.write().await;

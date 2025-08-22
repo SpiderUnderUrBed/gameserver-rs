@@ -685,21 +685,40 @@ async fetchNodes() {
       //this.addResult("", `Error: ${err.message}`, false, true);
     }
   }
+
   async updateServer(){
     let migratingto = document.getElementById("migrate-to").value;
     let migratingfrom = document.getElementById("migrate-from").value;
     try {
+      const res_migrate_to = await fetch(`${this.basePath}/api/fetchnode`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "", message: migratingto, authcode: "0",
+        }),
+      });
+      const res_migrate_from = await fetch(`${this.basePath}/api/fetchnode`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "", message: migratingfrom, authcode: "0",
+        }),
+      });
+      // console.log(res_migrate_from)
+      // console.log(res_migrate_to)
+      const res_migrate_to_json = await res_migrate_to.json();
+      const res_migrate_from_json = await res_migrate_from.json();
       const res = await fetch(`${this.basePath}/api/migrate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           src: {
             kind: "Node",
-            data: { nodename: migratingfrom, nodetype: "custom", ip: "" },
+            data: { nodename: res_migrate_from_json.nodename, nodetype: "custom", ip: res_migrate_from_json.ip },
           },
           dest: {
             kind: "Node",
-            data: { nodename: migratingto, nodetype: "custom", ip: "" },
+            data: { nodename: res_migrate_to_json.nodename, nodetype: "custom", ip: res_migrate_to_json.ip },
           },
           metadata: ""
         }),
@@ -724,6 +743,7 @@ async fetchNodes() {
       //this.addResult("", `Error: ${err.message}`, false, true);
     } 
   }
+
   configureServer(){
     const serverDialog = document.getElementById("configureServerDialog");
     serverDialog.showModal()

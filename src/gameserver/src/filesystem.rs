@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::broadcast;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use std::{
@@ -11,15 +10,15 @@ use std::{
         Arc,
     },
 };
+use tokio::sync::broadcast;
 use tokio::time::timeout;
-// use axum::extract::Multipart;
 use crate::extra::JsonAssembler;
-use crate::{extra, IncomingMessage};
-use crate::Sender;
 use crate::MessagePayload;
+use crate::Sender;
+use crate::{extra, IncomingMessage};
+use multer::Multipart;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
-use multer::Multipart;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(tag = "kind", content = "data")]
@@ -106,8 +105,8 @@ impl Clone for TcpFs {
     }
 }
 
+use tokio::sync::mpsc::Sender as MpscSender;
 use tokio::time::sleep;
-
 
 impl TcpFs {
     pub fn new(
@@ -224,95 +223,198 @@ impl TcpFs {
     }
 }
 
+use walkdir::WalkDir;
 
+const ENABLE_BROADCAST_LOGS: bool = true;
 
 pub async fn send_folder_over_broadcast<P: AsRef<Path>>(
     folder: P,
-    broadcast_tx: Sender<Vec<u8>>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let folder = folder.as_ref();
+    writer_tx: mpsc::Sender<Vec<u8>>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    const FILE_DELIMITER: &[u8] = b"<|END_OF_FILE|>";
 
-    for entry in walkdir::WalkDir::new(folder) {
+    let folder_path = folder.as_ref();
+
+    if !folder_path.exists() {
+        return Err(format!("Folder does not exist: {:?}", folder_path).into());
+    }
+
+    let mut entries = Vec::new();
+    collect_files(folder_path, folder_path, &mut entries)?;
+
+    println!("Starting transfer of {} files", entries.len());
+
+    for (i, (relative_path, full_path)) in entries.iter().enumerate() {
+        let expected_size = match tokio::fs::metadata(&full_path).await {
+            Ok(metadata) => metadata.len(),
+            Err(e) => {
+                eprintln!("Failed to get metadata for {}: {}", relative_path, e);
+                continue;
+            }
+        };
+
+        println!(
+            "Sending file {}/{}: {} ({} bytes expected)",
+            i + 1,
+            entries.len(),
+            relative_path,
+            expected_size
+        );
+
+        let start_msg = serde_json::json!({
+            "type": "start_file",
+            "message": relative_path,
+            "authcode": "0"
+        });
+        let start_json = format!("{}\n", start_msg);
+
+        println!("Sending start_file: {}", start_json.trim());
+
+        if let Err(e) = writer_tx.send(start_json.into_bytes()).await {
+            eprintln!(
+                "CRITICAL: Failed to send start_file for {}: {}",
+                relative_path, e
+            );
+            return Err(format!("Failed to send start_file: {}", e).into());
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+        if expected_size > 0 {
+            match tokio::fs::File::open(&full_path).await {
+                Ok(mut file) => {
+                    let mut buffer = vec![0u8; 4096];
+                    let mut total_bytes_sent = 0u64;
+                    let mut chunk_count = 0u64;
+
+                    loop {
+                        match file.read(&mut buffer).await {
+                            Ok(0) => {
+                                println!(
+                                    "EOF reached for {}: {} bytes sent in {} chunks",
+                                    relative_path, total_bytes_sent, chunk_count
+                                );
+                                break;
+                            }
+                            Ok(bytes_read) => {
+                                chunk_count += 1;
+                                let chunk_data = buffer[..bytes_read].to_vec();
+
+                                match writer_tx.send(chunk_data).await {
+                                    Ok(()) => {
+                                        total_bytes_sent += bytes_read as u64;
+
+                                        if total_bytes_sent % (5 * 1024 * 1024) == 0
+                                            || (total_bytes_sent > 0
+                                                && total_bytes_sent % 10_000_000 == 0)
+                                        {
+                                            println!(
+                                                "  Progress: {} / {} bytes ({:.1}%) for {}",
+                                                total_bytes_sent,
+                                                expected_size,
+                                                (total_bytes_sent as f64 / expected_size as f64)
+                                                    * 100.0,
+                                                relative_path
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "CRITICAL: Failed to send chunk {} for {}: {}",
+                                            chunk_count, relative_path, e
+                                        );
+                                        return Err(format!("Failed to send chunk: {}", e).into());
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to read from {}: {}", relative_path, e);
+                                return Err(format!("Failed to read file: {}", e).into());
+                            }
+                        }
+                    }
+
+                    if total_bytes_sent != expected_size {
+                        eprintln!(
+                            "WARNING: Size mismatch for {}! Expected: {}, Sent: {}",
+                            relative_path, expected_size, total_bytes_sent
+                        );
+                    } else {
+                        println!(
+                            "Successfully sent all {} bytes for: {}",
+                            total_bytes_sent, relative_path
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to open file {}: {}", relative_path, e);
+                    continue;
+                }
+            }
+        } else {
+            println!("File is empty, skipping data transfer");
+        }
+
+        let end_msg = serde_json::json!({
+            "type": "end_file",
+            "message": relative_path,
+            "authcode": "0"
+        });
+        let end_json = format!("{}\n", end_msg);
+
+        println!("Sending end_file: {}", end_json.trim());
+
+        if let Err(e) = writer_tx.send(end_json.into_bytes()).await {
+            eprintln!(
+                "CRITICAL: Failed to send end_file for {}: {}",
+                relative_path, e
+            );
+            return Err(format!("Failed to send end_file: {}", e).into());
+        }
+
+        if let Err(e) = writer_tx.send(FILE_DELIMITER.to_vec()).await {
+            eprintln!("Failed to send delimiter: {}", e);
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        println!(
+            "Completed file: {} ({} bytes)",
+            relative_path, expected_size
+        );
+    }
+
+    println!(
+        "Successfully completed transfer of all {} files",
+        entries.len()
+    );
+    Ok(())
+}
+
+fn collect_files(
+    current_dir: &Path,
+    base_dir: &Path,
+    entries: &mut Vec<(String, PathBuf)>,
+) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(current_dir)? {
         let entry = entry?;
         let path = entry.path();
 
-        if path.is_file() {
-            let rel_path = path.strip_prefix(folder)?.to_string_lossy().to_string();
-
-            let start_json = MessagePayload {
-                r#type: "start_file".into(),
-                message: rel_path.clone(),
-                authcode: "0".into(),
-            };
-            let start_bytes = serde_json::to_vec(&start_json)?;
-            let _ = broadcast_tx.send(start_bytes);
-
-            let mut file = File::open(path).await?;
-            let mut buf = [0u8; 8192];
-            loop {
-                let n = file.read(&mut buf).await?;
-                if n == 0 {
-                    break;
-                }
-                let _ = broadcast_tx.send(buf[..n].to_vec());
-            }
-
-            let end_json = MessagePayload {
-                r#type: "end_file".into(),
-                message: "".to_string(),
-                authcode: "0".into(),
-            };
-            let end_bytes = serde_json::to_vec(&end_json)?;
-            let _ = broadcast_tx.send(end_bytes);
+        if path.is_dir() {
+            collect_files(&path, base_dir, entries)?;
+        } else if path.is_file() {
+            let relative_path = path
+                .strip_prefix(base_dir)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+                .to_string_lossy()
+                .to_string();
+            entries.push((relative_path, path));
         }
     }
 
     Ok(())
 }
-
-pub async fn send_multipart_over_broadcast(
-    mut multipart: Multipart<'_>,
-    tx: broadcast::Sender<Vec<u8>>,
-) -> std::io::Result<()> {
-    while let Some(mut field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
-    {
-        let file_name = field.file_name().unwrap_or("file.bin").to_string();
-
-        // Send start message
-        let start_json = MessagePayload {
-            r#type: "start_file".into(),
-            message: format!("{}", file_name),
-            authcode: "0".into(),
-        };
-        tx.send(serde_json::to_vec(&start_json)?)
-            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed"))?;
-        // Send chunks
-        while let Some(chunk) = field
-            .chunk()
-            .await
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
-        {
-            tx.send(chunk.to_vec()).map_err(|_| {
-                std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed")
-            })?;
-        }
-
-        // Send end message
-        let end_json = MessagePayload {
-            r#type: "end_file".into(),
-            message: "".to_string(),
-            authcode: "0".into(),
-        };
-        tx.send(serde_json::to_vec(&end_json)?)
-            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed"))?;
-    }
-
-    Ok(())
-}
-
+use tokio::sync::mpsc;
 
 #[async_trait::async_trait]
 impl FsType for TcpFs {

@@ -16,6 +16,9 @@ uuid = { version = "1.18.0", features = ["v4"] }
 multer = "3.1.0"
 async-trait = "0.1.89"
 walkdir = "2.5.0"
+anyhow = "1.0.99"
+futures = "0.3.31"
+hex = "0.4.3"
 
 [[bin]]
 name = "myapp"

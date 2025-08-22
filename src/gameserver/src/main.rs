@@ -3,16 +3,16 @@ use serde_json::{json, Value};
 use std::convert::TryFrom;
 use std::error::Error;
 use std::ffi::OsString;
+use std::io::SeekFrom;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use tokio::fs;
+use tokio::fs::OpenOptions;
 use tokio::io;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, BufReader, AsyncBufReadExt, AsyncWriteExt, split};
-use std::io::SeekFrom;
+use tokio::io::{split, AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::process::{ChildStdin, Command as TokioCommand};
 use tokio::sync::{mpsc, Mutex};
-use tokio::fs::OpenOptions;
 
 use crate::broadcast::Sender;
 use crate::filesystem::send_folder_over_broadcast;
@@ -25,9 +25,10 @@ use uuid::Uuid;
 use std::net::SocketAddr;
 use tokio::sync::broadcast;
 
-mod filesystem;
 mod extra;
+mod filesystem;
 
+const ENABLE_BROADCAST_LOGS: bool = true;
 const SERVER_DIR: &str = "server";
 
 struct Minecraft;
@@ -40,19 +41,18 @@ struct IncomingMessage {
     authcode: String,
 }
 
-
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 struct SrcAndDest {
     src: ApiCalls,
     dest: ApiCalls,
-    metadata: String
+    metadata: String,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Node {
     pub nodename: String,
     pub ip: String,
-    pub nodetype: String
+    pub nodetype: String,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -68,12 +68,13 @@ struct MessagePayload {
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
+#[serde(tag = "kind", content = "data")]
 enum ApiCalls {
     None,
     Capabilities(Vec<String>),
     NodeList(Vec<String>),
     IncomingMessage(MessagePayload),
-    Node(Node)
+    Node(Node),
 }
 
 impl TryFrom<Value> for List {
@@ -261,22 +262,22 @@ pub struct FsEntry {
 pub struct FileChunk {
     file_name: String,
     file_chunk_offet: String,
-    file_chunk_size: String
+    file_chunk_size: String,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
 struct FileRequestMessage {
     id: u64,
     #[serde(flatten)]
     payload: FileRequestPayload,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
 #[serde(tag = "type", content = "data")]
 enum FileRequestPayload {
     Metadata { path: String },
     ListDir { path: String },
-    FileChunk(FileChunk)
+    FileChunk(FileChunk),
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -329,7 +330,6 @@ async fn list_directory(path: &str) -> io::Result<Vec<FsEntry>> {
     Ok(entries)
 }
 
-
 pub async fn get_files_content(file_chunk: FileChunk) -> io::Result<MessagePayload> {
     let metadata = fs::metadata(&file_chunk.file_name).await?;
 
@@ -341,12 +341,15 @@ pub async fn get_files_content(file_chunk: FileChunk) -> io::Result<MessagePaylo
     }
 
     let mut file = File::open(&file_chunk.file_name).await?;
-    let offset: u64 = file_chunk.file_chunk_offet
+    let offset: u64 = file_chunk
+        .file_chunk_offet
         .parse()
         .expect("Invalid file offset");
 
-    file.seek(SeekFrom::Start(offset.try_into().unwrap())).await?;
-    let chunk_size: usize = file_chunk.file_chunk_size
+    file.seek(SeekFrom::Start(offset.try_into().unwrap()))
+        .await?;
+    let chunk_size: usize = file_chunk
+        .file_chunk_size
         .parse()
         .expect("Invalid chunk size");
 
@@ -361,8 +364,6 @@ pub async fn get_files_content(file_chunk: FileChunk) -> io::Result<MessagePaylo
     })
 }
 
-
-
 pub async fn handle_multipart_message(
     payload: &MessagePayload,
     current_file: &mut Option<File>,
@@ -370,34 +371,44 @@ pub async fn handle_multipart_message(
     match payload.r#type.as_str() {
         "start_file" => {
             let file_name = format!("server/{}", payload.message);
-
             tokio::fs::create_dir_all("server").await?;
-
             let file = OpenOptions::new()
-                .create(true)   
-                .write(true)    
+                .create(true)
+                .write(true)
                 .open(&file_name)
                 .await?;
-
             *current_file = Some(file);
+            println!(
+                "[handle_multipart_message] Started writing file: {}",
+                file_name
+            );
         }
         "end_file" => {
             if let Some(mut file) = current_file.take() {
                 file.flush().await?;
-                println!("[handle_multipart_message] Finished writing file");
-            } 
+                println!(
+                    "[handle_multipart_message] Finished writing file: {}",
+                    payload.message
+                );
+            } else {
+                eprintln!(
+                    "[handle_multipart_message] end_file received but no file is currently open"
+                );
+            }
         }
         _ => {}
     }
     Ok(())
 }
 
-pub async fn unsure_ip_or_port_tcp_conn(ip: Option<String>, port: Option<String>) -> Result<TcpStream, Box<dyn std::error::Error>> {
+pub async fn unsure_ip_or_port_tcp_conn(
+    ip: Option<String>,
+    port: Option<String>,
+) -> Result<TcpStream, Box<dyn std::error::Error + Send + Sync>> {
     let ip = ip.ok_or("IP is required")?;
-
     let (host, extracted_port) = if let Some(idx) = ip.rfind(':') {
         let (host_part, port_part) = ip.split_at(idx);
-        let port_part = &port_part[1..]; 
+        let port_part = &port_part[1..];
         (host_part.to_string(), Some(port_part.to_string()))
     } else {
         (ip.clone(), None)
@@ -410,30 +421,37 @@ pub async fn unsure_ip_or_port_tcp_conn(ip: Option<String>, port: Option<String>
     };
 
     let addr = format!("{}:{}", host, final_port);
-
     let socket_addr: SocketAddr = addr.parse()?;
-
     let stream = TcpStream::connect(socket_addr).await?;
-
     Ok(stream)
 }
-pub async fn tcp_to_broadcast(
-    mut stream: TcpStream,
-) -> broadcast::Sender<Vec<u8>> {
-    let (tx, _rx) = broadcast::channel(16);
+
+pub async fn tcp_to_broadcast(stream: TcpStream) -> Sender<Vec<u8>> {
+    let (tx, mut rx) = broadcast::channel::<Vec<u8>>(16);
+
+    let (mut reader, mut writer) = stream.into_split();
+
+    let mut broadcast_rx = rx.resubscribe();
+    tokio::spawn(async move {
+        while let Ok(msg) = broadcast_rx.recv().await {
+            if let Err(e) = writer.write_all(&msg).await {
+                eprintln!("[tcp_to_broadcast] Failed to write to socket: {}", e);
+                break;
+            }
+        }
+    });
+
     let tx_clone = tx.clone();
     tokio::spawn(async move {
         let mut buf = [0u8; 1024];
-
         loop {
-            match stream.read(&mut buf).await {
-                Ok(0) => break, 
+            match reader.read(&mut buf).await {
+                Ok(0) => break,
                 Ok(n) => {
-                    let data = buf[..n].to_vec();
-                    let _ = tx_clone.send(data);
+                    let _ = tx_clone.send(buf[..n].to_vec());
                 }
-                Err(err) => {
-                    eprintln!("TCP read error: {}", err);
+                Err(e) => {
+                    eprintln!("[tcp_to_broadcast] TCP read error: {}", e);
                     break;
                 }
             }
@@ -443,342 +461,1009 @@ pub async fn tcp_to_broadcast(
     tx
 }
 
+pub async fn handle_incoming(mut conn: tokio::net::TcpStream) -> anyhow::Result<()> {
+    let mut reader = BufReader::new(&mut conn);
+    let mut line = String::new();
+
+    let mut current_file: Option<File> = None;
+
+    loop {
+        line.clear();
+        let n = reader.read_line(&mut line).await?;
+        if n == 0 {
+            break;
+        }
+
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
+            match json.get("type").and_then(|t| t.as_str()) {
+                Some("start_file") => {
+                    let path = json.get("message").and_then(|m| m.as_str()).unwrap();
+                    current_file = Some(File::create(path).await?);
+                    eprintln!("[handle_file] Started writing file: {}", path);
+                }
+                Some("end_file") => {
+                    eprintln!("[handle_file] Finished file.");
+                    current_file = None;
+                }
+                _ => {
+                    eprintln!("JSON received but no handler matched: {:?}", json);
+                }
+            }
+        } else if let Some(file) = &mut current_file {
+            file.write_all(line.as_bytes()).await?;
+        } else {
+            eprintln!("Invalid JSON received: {:?}", line);
+        }
+    }
+
+    Ok(())
+}
+
+enum ReadMode {
+    Json,
+    MigrationFile {
+        current_file: tokio::fs::File,
+        file_name: String,
+        bytes_written: u64,
+    },
+    NormalFile {
+        current_file: tokio::fs::File,
+    },
+}
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let listener = TcpListener::bind(format!("0.0.0.0:{}", PORT)).await?;
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    const FILE_DELIMITER: &[u8] = b"<|END_OF_FILE|>";
+    const PORT: u16 = 8082;
+    const FILE_MODE_TIMEOUT: u64 = 5;
+
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", PORT)).await?;
     println!("Listening on {}", PORT);
 
-    let verbose = std::env::var("VERBOSE").is_ok();
     let shared_stdin: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
-    let hostname: Arc<Result<OsString, String>> = Arc::new(match get() {
-        Ok(hostname) => Ok(hostname),
-        Err(err) => Err(err.to_string()),
+    let hostname_ref: Arc<Result<OsString, String>> = Arc::new(match hostname::get() {
+        Ok(h) => Ok(h),
+        Err(e) => Err(e.to_string()),
     });
 
     loop {
-        let hostname = Arc::clone(&hostname);
         let (socket, addr) = listener.accept().await?;
         let stdin_ref = shared_stdin.clone();
+        let hostname_ref = hostname_ref.clone();
 
-        println!("New connection from: {}", addr);
+        // println!("New connection from: {}", addr);
 
         tokio::spawn(async move {
-            let (read_half, write_half) = socket.into_split();
-            let mut reader = BufReader::new(read_half);
-            let mut buf = String::new();
-            let mut current_file: Option<File> = None;
+            let (mut read_half, mut write_half) = socket.into_split();
+            let (out_tx, mut out_rx) = mpsc::channel::<String>(128);
+            let (cmd_tx, mut cmd_rx) = mpsc::channel::<String>(128);
 
-            let (out_tx, mut out_rx) = mpsc::channel::<String>(32);
-            let (cmd_tx, mut cmd_rx) = mpsc::channel::<String>(32);
+            // println!("[{}] Connection established, spawning handler tasks", addr);
 
             tokio::spawn(async move {
-                let mut writer = write_half;
                 loop {
                     tokio::select! {
                         Some(msg) = cmd_rx.recv() => {
-                            let payload = json!({"type":"info","data":msg,"authcode": "0"}).to_string() + "\n";
-                            if let Err(e) = writer.write_all(payload.as_bytes()).await {
-                                eprintln!("Write error: {}", e);
+                            let payload = serde_json::json!({
+                                "type": "info",
+                                "data": msg,
+                                "authcode": "0"
+                            }).to_string() + "\n";
+                            if let Err(e) = write_half.write_all(payload.as_bytes()).await {
+                                eprintln!("[{}] Write error: {}", addr, e);
                                 break;
                             }
                         }
                         Some(out) = out_rx.recv() => {
-                            if let Err(e) = writer.write_all((out + "\n").as_bytes()).await {
-                                eprintln!("Write error: {}", e);
+                            if let Err(e) = write_half.write_all((out + "\n").as_bytes()).await {
+                                eprintln!("[{}] Write error: {}", addr, e);
                                 break;
                             }
                         }
                         else => break,
                     }
                 }
+                // println!("[{}] Command/output channel closed", addr);
             });
 
+            let mut read_buf = Vec::new();
+            let mut temp_buf = [0u8; 20632];
+
+            enum ReadMode {
+                Json,
+                File {
+                    current_file: tokio::fs::File,
+                    file_name: String,
+                    bytes_written: u64,
+                    last_logged_mb: u64,
+                    last_activity: tokio::time::Instant,
+                },
+            }
+
+            let mut mode = ReadMode::Json;
+            let mut files_received = 0;
+
+            let mut tick = tokio::time::interval(tokio::time::Duration::from_secs(1));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+            // println!("[{}] Starting read loop", addr);
+
             loop {
-                buf.clear();
-                let n = reader.read_line(&mut buf).await;
-                if let Ok(0) = n {
-                    println!("Connection closed by client: {}", addr);
-                    break;
+                tokio::select! {
+                    result = read_half.read(&mut temp_buf) => {
+                        let n = match result {
+                            Ok(0) => {
+                                // println!("[{}] Connection closed by client", addr);
+                                break;
+                            }
+                            Ok(n) => {
+                                // println!("[{}] Read {} bytes", addr, n);
+                                n
+                            }
+                            Err(e) => {
+                                eprintln!("[{}] Read error: {}", addr, e);
+                                break;
+                            }
+                        };
+
+                        read_buf.extend_from_slice(&temp_buf[..n]);
+                    }
+
+                    _ = tick.tick() => {
+                    }
+
+                    _ = tokio::time::sleep(tokio::time::Duration::from_secs(120)) => {
+                        // println!("[{}] Read timeout, continuing", addr);
+                        continue;
+                    }
                 }
-                if let Err(e) = n {
-                    eprintln!("Read error from {}: {}", addr, e);
-                    break;
+
+                const MAX_BUFFER_SIZE: usize = 50 * 1024 * 1024;
+                if read_buf.len() > MAX_BUFFER_SIZE {
+                    // eprintln!("[{}] Buffer overflow protection triggered", addr);
+                    read_buf.clear();
+                    mode = ReadMode::Json;
+                    continue;
                 }
 
-                let line = buf.trim_end();
-                println!("{}", line);
-                if line.starts_with('{') {
-                    if let Ok(json_line) = serde_json::from_str::<Value>(&line) {
-                        if let Ok(request) = serde_json::from_value::<FileRequestMessage>(json_line.clone()) {
-                            
-                            let out_tx_clone = out_tx.clone();
-                            tokio::spawn(async move {
-                                
-                                let response_json = match request.payload {
-                                    FileRequestPayload::Metadata { path } => {
+                // if read_buf.len() > 0 {
+                //     println!("[{}] Buffer contains {} bytes", addr, read_buf.len());
+                // }
 
-                                        match get_metadata(&path).await {
-                                            Ok(metadata) => {
+                loop {
+                    match &mut mode {
+                        ReadMode::Json => {
+                            let mut processed_delimiters = 0;
+                            const MAX_CONSECUTIVE_DELIMITERS: usize = 8;
 
-                                                let response_msg = FileResponseMessage {
-                                                    in_response_to: request.id,
-                                                    data: serde_json::to_value(&metadata).unwrap(),
-                                                };
+                            while processed_delimiters < MAX_CONSECUTIVE_DELIMITERS {
+                                if let Some(delim_pos) = find_subsequence(&read_buf, FILE_DELIMITER)
+                                {
+                                    processed_delimiters += 1;
+                                    // println!(
+                                    //     "[{}] Found file delimiter at position {}",
+                                    //     addr, delim_pos
+                                    // );
 
-                                                let json_response = serde_json::to_string(&response_msg)
-                                                    .unwrap_or_else(|e| {
-                                                        eprintln!("[Server] Failed to serialize metadata: {}", e);
-                                                        r#"{"in_response_to":0,"data":{}}"#.to_string()
-                                                    });
-                                                
-                                                json_response
-                                            }
-                                            Err(e) => {
-                                                eprintln!("[Server] get_metadata error '{}': {}", path, e);
-                                                let error_response = FileResponseMessage {
-                                                    in_response_to: request.id,
-                                                    data: serde_json::json!({ "error": e.to_string() }),
-                                                };
-                                                serde_json::to_string(&error_response).unwrap()
-                                            }
-                                        }
+                                    let drain_end = delim_pos + FILE_DELIMITER.len();
+                                    if drain_end <= read_buf.len() {
+                                        read_buf.drain(..drain_end);
+                                        // println!(
+                                        //     "[{}] Drained {} bytes after delimiter",
+                                        //     addr, drain_end
+                                        // );
+                                    } else {
+                                        // eprintln!("[{}] ERROR: Invalid delimiter position, clearing buffer", addr);
+                                        read_buf.clear();
+                                        break;
                                     }
-
-                                    FileRequestPayload::ListDir { path } => {
-
-                                        match list_directory(&path).await {
-                                            Ok(entries) => {
-
-                                                let response_msg = FileResponseMessage {
-                                                    in_response_to: request.id,
-                                                    data: serde_json::to_value(&entries).unwrap(),
-                                                };
-
-                                                let json_response = serde_json::to_string(&response_msg)
-                                                    .unwrap_or_else(|e| {
-                                                        eprintln!("[Server] Failed to serialize list directory: {}", e);
-                                                        r#"{"in_response_to":0,"data":[]}"#.to_string()
-                                                    });
-                                                
-                                                json_response
-                                            }
-                                            Err(e) => {
-                                                let error_response = FileResponseMessage {
-                                                    in_response_to: request.id,
-                                                    data: serde_json::json!({ "error": e.to_string() }),
-                                                };
-                                                serde_json::to_string(&error_response).unwrap()
-                                            }
-                                        }
-                                    }
-
-                                    FileRequestPayload::FileChunk(file_chunk) => {
-
-                                        match get_files_content(file_chunk).await {
-                                            Ok(content_msg) => {
-                                                let response_msg = FileResponseMessage {
-                                                    in_response_to: request.id,
-                                                    data: serde_json::Value::String(content_msg.message),
-                                                };
-                                                let json_response = serde_json::to_string(&response_msg).unwrap();
-                                                json_response
-                                            }
-                                            Err(e) => {
-                                                let response_msg = FileResponseMessage {
-                                                    in_response_to: request.id,
-                                                    data: serde_json::json!({ "error": e.to_string() }),
-                                                };
-                                                serde_json::to_string(&response_msg).unwrap()
-                                            }
-                                        }
-                                    }
-                                };
-
-                                if let Err(e) = out_tx_clone.send(response_json).await {
-                                    eprintln!("Failed to send TcpFs response: {}", e);
                                 } else {
+                                    break;
                                 }
-                            });
-                            continue;
-                        } 
-                        if let Ok(payload) = serde_json::from_value::<SrcAndDest>(json_line.clone()) { 
-                            if let ApiCalls::Node(dest) = payload.dest {
-                                let conn = match unsure_ip_or_port_tcp_conn(Some(dest.ip), None).await {
-                                    Ok(c) => c,
-                                    Err(e) => {
-                                        eprintln!("Failed to connect: {}", e);
-                                        return; 
-                                    }
-                                };
-                                let broadcast_tx = tcp_to_broadcast(conn).await;
-                                if let Err(e) = send_folder_over_broadcast("server/", broadcast_tx).await {
-                                    eprintln!("Failed to send folder: {}", e);
-                                }
-
-                                //let broadcast_rx = broadcast_tx.subscribe();
-                                // let mut tcp_fs = TcpFs::new(broadcast_tx, broadcast_rx);
-                                // let mut base_path = RemoteFileSystem::new("server", Some(tcp_fs.clone()));
-                                //send_multipart_over_broadcast(multipart, broadcast_tx).await;
-                                // match send_multipart_over_broadcast(multipart, tcp_tx).await {
-                                //     Ok(_) => StatusCode::OK,
-                                //     Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
-                                // }
                             }
 
+                            let mut found_message = false;
+                            while let Some(newline_pos) = read_buf.iter().position(|&b| b == b'\n')
+                            {
+                                let line = &read_buf[..newline_pos];
+
+                                if line.is_empty() {
+                                    if newline_pos + 1 <= read_buf.len() {
+                                        read_buf.drain(..newline_pos + 1);
+                                    } else {
+                                        read_buf.clear();
+                                    }
+                                    continue;
+                                }
+
+                                let line_str = String::from_utf8_lossy(line);
+                                // println!("[{}] Processing line: {}", addr, line_str.trim());
+
+                                if line_str.trim().starts_with('{')
+                                    && line_str.trim().ends_with('}')
+                                {
+                                    if let Ok(json_value) = serde_json::from_slice::<Value>(line) {
+                                        if let Ok(request) =
+                                            serde_json::from_value::<FileRequestMessage>(
+                                                json_value.clone(),
+                                            )
+                                        {
+                                            let out_tx_clone = out_tx.clone();
+                                            tokio::spawn(async move {
+                                                let response_json =
+                                                    handle_file_request(request).await;
+                                                let _ = out_tx_clone.send(response_json).await;
+                                            });
+                                        } else if let Ok(payload) =
+                                            serde_json::from_value::<SrcAndDest>(json_value.clone())
+                                        {
+                                            if let ApiCalls::Node(dest) = payload.dest {
+                                                match unsure_ip_or_port_tcp_conn(
+                                                    Some(dest.ip.clone()),
+                                                    None,
+                                                )
+                                                .await
+                                                {
+                                                    Ok(conn) => {
+                                                        let writer_tx = tcp_to_writer(conn).await;
+                                                        tokio::spawn(async move {
+                                                            if let Err(e) =
+                                                                send_folder_over_broadcast(
+                                                                    "server/", writer_tx,
+                                                                )
+                                                                .await
+                                                            {
+                                                                eprintln!(
+                                                                    "Error sending folder: {}",
+                                                                    e
+                                                                );
+                                                            }
+                                                        });
+                                                    }
+                                                    Err(e) => {
+                                                        eprintln!(
+                                                            "[{}] Failed to connect: {}",
+                                                            addr, e
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        } else if let Ok(msg_payload) =
+                                            serde_json::from_value::<MessagePayload>(
+                                                json_value.clone(),
+                                            )
+                                        {
+                                            if msg_payload.r#type == "start_file" {
+                                                files_received += 1;
+                                                // println!(
+                                                //     "[{}] Receiving file: {}",
+                                                //     addr, msg_payload.message
+                                                // );
+
+                                                let file_path =
+                                                    format!("server/{}", msg_payload.message);
+
+                                                if let Err(e) =
+                                                    tokio::fs::create_dir_all("server").await
+                                                {
+                                                    eprintln!("[{}] Failed to create server directory: {}", addr, e);
+                                                    if newline_pos + 1 <= read_buf.len() {
+                                                        read_buf.drain(..newline_pos + 1);
+                                                    } else {
+                                                        read_buf.clear();
+                                                    }
+                                                    continue;
+                                                }
+
+                                                if let Some(parent) =
+                                                    std::path::Path::new(&file_path).parent()
+                                                {
+                                                    if let Err(e) =
+                                                        tokio::fs::create_dir_all(parent).await
+                                                    {
+                                                        eprintln!("[{}] Failed to create parent directory: {}", addr, e);
+                                                        if newline_pos + 1 <= read_buf.len() {
+                                                            read_buf.drain(..newline_pos + 1);
+                                                        } else {
+                                                            read_buf.clear();
+                                                        }
+                                                        continue;
+                                                    }
+                                                }
+
+                                                match tokio::fs::OpenOptions::new()
+                                                    .create(true)
+                                                    .write(true)
+                                                    .truncate(true)
+                                                    .open(&file_path)
+                                                    .await
+                                                {
+                                                    Ok(file) => {
+                                                        mode = ReadMode::File {
+                                                            current_file: file,
+                                                            file_name: msg_payload.message.clone(),
+                                                            bytes_written: 0,
+                                                            last_logged_mb: 0,
+                                                            last_activity:
+                                                                tokio::time::Instant::now(),
+                                                        };
+                                                        // println!(
+                                                        //     "[{}] Switched to file mode for {}",
+                                                        //     addr, msg_payload.message
+                                                        // );
+                                                        if newline_pos + 1 <= read_buf.len() {
+                                                            read_buf.drain(..newline_pos + 1);
+                                                        } else {
+                                                            read_buf.clear();
+                                                        }
+                                                        found_message = true;
+                                                        break;
+                                                    }
+                                                    Err(e) => {
+                                                        eprintln!(
+                                                            "[{}] Failed to open file {}: {}",
+                                                            addr, file_path, e
+                                                        );
+                                                    }
+                                                }
+                                            } else if msg_payload.r#type == "end_file" {
+                                                // println!(
+                                                //     "[{}] Received end_file message for: {}",
+                                                //     addr, msg_payload.message
+                                                // );
+                                                if newline_pos + 1 <= read_buf.len() {
+                                                    read_buf.drain(..newline_pos + 1);
+                                                } else {
+                                                    read_buf.clear();
+                                                }
+                                                found_message = true;
+                                                continue;
+                                            } else {
+                                                handle_command_or_console(
+                                                    &msg_payload,
+                                                    &cmd_tx,
+                                                    &stdin_ref,
+                                                    &hostname_ref,
+                                                )
+                                                .await;
+                                            }
+                                        }
+                                    } else {
+                                        eprintln!("[{}] Failed to parse JSON: {}", addr, line_str);
+                                    }
+                                }
+
+                                if newline_pos + 1 <= read_buf.len() {
+                                    read_buf.drain(..newline_pos + 1);
+                                    found_message = true;
+                                } else {
+                                    // eprintln!(
+                                    //     "[{}] ERROR: Invalid newline position, clearing buffer",
+                                    //     addr
+                                    // );
+                                    read_buf.clear();
+                                    break;
+                                }
+                            }
+
+                            if !found_message {
+                                break;
+                            }
                         }
 
-                        if let Ok(payload) = serde_json::from_value::<MessagePayload>(json_line.clone()) {
-                            
-                            if payload.r#type == "start_file" {
-                                println!("Processing file message: {:?}", payload);
-                                if let Err(e) = handle_multipart_message(&payload, &mut current_file).await {
-                                    eprintln!("Error handling multipart message: {}", e);
-                                }
+                        ReadMode::File {
+                            current_file,
+                            file_name,
+                            bytes_written,
+                            last_logged_mb,
+                            last_activity,
+                        } => {
+                            if last_activity.elapsed()
+                                > tokio::time::Duration::from_secs(FILE_MODE_TIMEOUT)
+                            {
+                                // eprintln!("[{}] File {}: Timeout reached ({} seconds without activity), switching back to JSON mode", 
+                                //     addr, file_name, FILE_MODE_TIMEOUT);
+
+                                // if let Err(e) = current_file.flush().await {
+                                //     eprintln!(
+                                //         "[{}] File {}: Error flushing on timeout: {}",
+                                //         addr, file_name, e
+                                //     );
+                                // }
+
+                                mode = ReadMode::Json;
+                                //println!("[{}] Switched back to JSON mode due to timeout", addr);
                                 continue;
                             }
 
-                            let typ = payload.r#type.clone();
-                            if typ == "command" {
-                                let cmd_str = payload.message.clone();
-                                if cmd_str == "create_server" {
-                                    if let Some(prov) = get_provider("minecraft") {
-                                        if let Some(cmd) = prov.pre_hook() {
-                                            let _ = run_command_live_output(
-                                                cmd,
-                                                "Pre-hook".into(),
-                                                Some(cmd_tx.clone()),
-                                                None,
-                                            ).await;
+                            if read_buf.is_empty() {
+                                //println!("[{}] File {}: Read buffer empty", addr, file_name);
+                                break;
+                            }
+
+                            *last_activity = tokio::time::Instant::now();
+
+                            if let Some(delim_pos) = find_subsequence(&read_buf, FILE_DELIMITER) {
+                                // println!(
+                                //     "[{}] File {}: Found delimiter at position {}",
+                                //     addr, file_name, delim_pos
+                                // );
+
+                                if delim_pos > 0 {
+                                    match current_file.write_all(&read_buf[..delim_pos]).await {
+                                        Ok(()) => {
+                                            *bytes_written += delim_pos as u64;
+                                            // println!(
+                                            //     "[{}] File {}: Wrote final {} bytes (total: {})",
+                                            //     addr, file_name, delim_pos, bytes_written
+                                            // );
                                         }
-                                        if let Some(cmd) = prov.install() {
-                                            let _ = run_command_live_output(
-                                                cmd,
-                                                "Install".into(),
-                                                Some(cmd_tx.clone()),
-                                                None,
-                                            ).await;
-                                        }
-                                        if let Some(cmd) = prov.post_hook() {
-                                            let _ = run_command_live_output(
-                                                cmd,
-                                                "Post-hook".into(),
-                                                Some(cmd_tx.clone()),
-                                                None,
-                                            ).await;
-                                        }
-                                        if let Some(cmd) = prov.start() {
-                                            println!("starting");
-                                            let tx = cmd_tx.clone();
-                                            let stdin_clone = stdin_ref.clone();
-                                            tokio::spawn(async move {
-                                                let _ = run_command_live_output(
-                                                    cmd,
-                                                    "Server".into(),
-                                                    Some(tx),
-                                                    Some(stdin_clone),
-                                                ).await;
-                                            });
-                                            let _ = cmd_tx.send("Server started".into()).await;
+                                        Err(e) => {
+                                            eprintln!(
+                                                "[{}] File {}: Error writing final chunk: {}",
+                                                addr, file_name, e
+                                            );
                                         }
                                     }
-                                } else if cmd_str == "stop_server" {
-                                    let input = "stop";
-                                    let mut guard = stdin_ref.lock().await;
-                                    if let Some(stdin) = guard.as_mut() {
-                                        let _ = stdin.write_all(format!("{}\n", input).as_bytes()).await;
-                                        let _ = stdin.flush().await;
-                                        let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
-                                    }
-                                } else if cmd_str == "start_server" {
-                                    if let Some(prov) = get_provider("minecraft") {
-                                        if let Some(cmd) = prov.start() {
-                                            println!("starting");
-                                            let tx = cmd_tx.clone();
-                                            let stdin_clone = stdin_ref.clone();
-                                            tokio::spawn(async move {
-                                                let _ = run_command_live_output(
-                                                    cmd,
-                                                    "Server".into(),
-                                                    Some(tx),
-                                                    Some(stdin_clone),
-                                                ).await;
-                                            });
-                                            let _ = cmd_tx.send("Server started".into()).await;
-                                        }
-                                    }
-                                } else if cmd_str == "server_data" {
-                                    let _ = cmd_tx.send(
-                                        serde_json::to_string(&GetState {
-                                            start_keyword: "help".to_string(),
-                                            stop_keyword: "All dimensions are saved".to_string(),
-                                        }).expect("Failed, not json"),
-                                    ).await;
-                                } else if cmd_str == "server_name" {
-                                    let hostname_str = match hostname.as_ref() {
-                                        Ok(os) => os.to_string_lossy().to_string(),
-                                        Err(e) => e.clone(),
-                                    };
-                                    let _ = cmd_tx.send(
-                                        serde_json::to_string(&MessagePayload {
-                                            r#type: "command".to_string(),
-                                            message: hostname_str,
-                                            authcode: "0".to_string(),
-                                        }).expect("Failed, not json"),
-                                    ).await;
-                                } else {
-                                    let _ = cmd_tx.send(format!("Unknown command: {}", cmd_str)).await;
                                 }
-                            } else if typ == "console" {
-                                let input = payload.message;
-                                let mut guard = stdin_ref.lock().await;
-                                if let Some(stdin) = guard.as_mut() {
-                                    let _ = stdin.write_all(format!("{}\n", input).as_bytes()).await;
-                                    let _ = stdin.flush().await;
-                                    let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
+
+                                if let Err(e) = current_file.flush().await {
+                                    eprintln!(
+                                        "[{}] File {}: Error flushing: {}",
+                                        addr, file_name, e
+                                    );
+                                } else {
+                                    // println!(
+                                    //     "[{}] File {}: Received complete ({} bytes)",
+                                    //     addr, file_name, *bytes_written
+                                    // );
+                                }
+
+                                let drain_end = delim_pos + FILE_DELIMITER.len();
+                                if drain_end <= read_buf.len() {
+                                    read_buf.drain(..drain_end);
+                                    // println!(
+                                    //     "[{}] Drained {} bytes after delimiter",
+                                    //     addr, drain_end
+                                    // );
+                                } else {
+                                    eprintln!(
+                                        "[{}] ERROR: Invalid delimiter position, clearing buffer",
+                                        addr
+                                    );
+                                    read_buf.clear();
+                                }
+
+                                mode = ReadMode::Json;
+                                // println!("[{}] Switched back to JSON mode", addr);
+                                continue;
+                            }
+
+                            if let Some(newline_pos) = read_buf.iter().position(|&b| b == b'\n') {
+                                let line = &read_buf[..newline_pos];
+
+                                if let Ok(json_value) = serde_json::from_slice::<Value>(line) {
+                                    if let Ok(msg_payload) =
+                                        serde_json::from_value::<MessagePayload>(json_value.clone())
+                                    {
+                                        if msg_payload.r#type == "end_file"
+                                            && msg_payload.message == *file_name
+                                        {
+                                            //println!("[{}] File {}: Found end_file message at position {}", addr, file_name, newline_pos);
+
+                                            if newline_pos > 0 {
+                                                match current_file
+                                                    .write_all(&read_buf[..newline_pos])
+                                                    .await
+                                                {
+                                                    Ok(()) => {
+                                                        *bytes_written += newline_pos as u64;
+                                                        // println!("[{}] File {}: Wrote final {} bytes (total: {})", 
+                                                        //     addr, file_name, newline_pos, bytes_written);
+                                                    }
+                                                    Err(e) => {
+                                                        eprintln!("[{}] File {}: Error writing final chunk: {}", addr, file_name, e);
+                                                    }
+                                                }
+                                            }
+
+                                            if let Err(e) = current_file.flush().await {
+                                                eprintln!(
+                                                    "[{}] File {}: Error flushing: {}",
+                                                    addr, file_name, e
+                                                );
+                                            } else {
+                                                // println!(
+                                                //     "[{}] File {}: Received complete ({} bytes)",
+                                                //     addr, file_name, *bytes_written
+                                                // );
+                                            }
+
+                                            let drain_end = newline_pos + 1;
+                                            if drain_end <= read_buf.len() {
+                                                read_buf.drain(..drain_end);
+                                                // println!(
+                                                //     "[{}] Drained {} bytes after end_file message",
+                                                //     addr, drain_end
+                                                // );
+                                            } else {
+                                                eprintln!("[{}] ERROR: Invalid end_file position, clearing buffer", addr);
+                                                read_buf.clear();
+                                            }
+
+                                            mode = ReadMode::Json;
+                                            //println!("[{}] Switched back to JSON mode", addr);
+                                            continue;
+                                        }
+                                    }
                                 }
                             }
-                            continue;
-                        }
 
-                        if let Ok(_val) = json_line.clone().try_into() as Result<List, _> {
-                            let _ = out_tx.send(
-                                serde_json::to_string(&List {
-                                    list: vec!["all".to_string()],
-                                }).unwrap(),
-                            ).await;
-                            continue;
-                        }
+                            let write_size = read_buf.len().min(20632);
+                            // println!(
+                            //     "[{}] File {}: Writing {} bytes (total so far: {})",
+                            //     addr, file_name, write_size, bytes_written
+                            // );
 
-                    } else {
-                    }
-                } else if !line.is_empty() {
-                    if let Some(file) = &mut current_file {
-                        if let Err(e) = file.write_all(line.as_bytes()).await {
-                            eprintln!("Error writing to file: {}", e);
-                        } else {
-                            println!("[file_upload] Writing {} bytes to current file", line.len());
-                        }
-                        if let Err(e) = file.write_all(b"\n").await {
-                            eprintln!("Error writing newline to file: {}", e);
-                        }
-                    } else {
-                        let mut guard = stdin_ref.lock().await;
-                        if let Some(stdin) = guard.as_mut() {
-                            let _ = stdin.write_all(format!("{}\n", line).as_bytes()).await;
-                            let _ = stdin.flush().await;
-                            let _ = cmd_tx.send(format!("Sent to server: {}", line)).await;
-                        } else {
-                            let _ = cmd_tx.send("Server not running".into()).await;
+                            if write_size > 0 {
+                                match current_file.write_all(&read_buf[..write_size]).await {
+                                    Ok(()) => {
+                                        *bytes_written += write_size as u64;
+
+                                        let current_mb = *bytes_written / 1_000_000;
+                                        if current_mb > *last_logged_mb {
+                                            // println!(
+                                            //     "[{}] File {}: {} MB received",
+                                            //     addr, file_name, current_mb
+                                            // );
+                                            *last_logged_mb = current_mb;
+                                        }
+
+                                        if write_size <= read_buf.len() {
+                                            read_buf.drain(..write_size);
+                                        } else {
+                                            read_buf.clear();
+                                        }
+                                        // println!(
+                                        //     "[{}] File {}: Successfully wrote {} bytes",
+                                        //     addr, file_name, write_size
+                                        // );
+
+                                        *last_activity = tokio::time::Instant::now();
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "[{}] File {}: Error writing to file: {}",
+                                            addr, file_name, e
+                                        );
+                                        break;
+                                    }
+                                }
+                            }
+
+                            break;
                         }
                     }
                 }
             }
 
-            if let Some(mut file) = current_file.take() {
-                let _ = file.flush().await;
-                println!("Connection closed, flushed any open file");
+            // println!(
+            //     "[{}] Connection closed. Files received: {}",
+            //     addr, files_received
+            // );
+            match mode {
+                ReadMode::File {
+                    mut current_file,
+                    file_name,
+                    bytes_written,
+                    ..
+                } => {
+                    if let Err(e) = current_file.flush().await {
+                        eprintln!("[{}] Error flushing file on close: {}", addr, e);
+                    }
+                    eprintln!("[{}] WARNING: Connection closed during file transfer for {} ({} bytes received). The file may be incomplete.", 
+                        addr, file_name, bytes_written);
+                }
+                ReadMode::Json => {}
             }
         });
+    }
+}
+
+async fn handle_file_request(request: FileRequestMessage) -> String {
+    match request.payload {
+        FileRequestPayload::Metadata { path } => match get_metadata(&path).await {
+            Ok(metadata) => serde_json::to_string(&FileResponseMessage {
+                in_response_to: request.id,
+                data: serde_json::to_value(metadata).unwrap(),
+            })
+            .unwrap(),
+            Err(e) => serde_json::to_string(&FileResponseMessage {
+                in_response_to: request.id,
+                data: serde_json::json!({ "error": e.to_string() }),
+            })
+            .unwrap(),
+        },
+        FileRequestPayload::ListDir { path } => match list_directory(&path).await {
+            Ok(entries) => serde_json::to_string(&FileResponseMessage {
+                in_response_to: request.id,
+                data: serde_json::to_value(entries).unwrap(),
+            })
+            .unwrap(),
+            Err(e) => serde_json::to_string(&FileResponseMessage {
+                in_response_to: request.id,
+                data: serde_json::json!({ "error": e.to_string() }),
+            })
+            .unwrap(),
+        },
+        FileRequestPayload::FileChunk(file_chunk) => match get_files_content(file_chunk).await {
+            Ok(content_msg) => serde_json::to_string(&FileResponseMessage {
+                in_response_to: request.id,
+                data: serde_json::Value::String(content_msg.message),
+            })
+            .unwrap(),
+            Err(e) => serde_json::to_string(&FileResponseMessage {
+                in_response_to: request.id,
+                data: serde_json::json!({ "error": e.to_string() }),
+            })
+            .unwrap(),
+        },
+    }
+}
+
+fn drain_line(read_buf: &mut Vec<u8>, newline_pos: usize) {
+    if newline_pos + 1 <= read_buf.len() {
+        read_buf.drain(..newline_pos + 1);
+    } else {
+        read_buf.clear();
+    }
+}
+
+async fn finish_file(
+    current_file: &mut tokio::fs::File,
+    file_name: &str,
+    bytes_written: u64,
+    addr: std::net::SocketAddr,
+) {
+    if let Err(e) = current_file.flush().await {
+        eprintln!("[{}] Error flushing {}: {}", addr, file_name, e);
+    } else {
+        println!(
+            "[{}] Received file: {} ({} bytes)",
+            addr, file_name, bytes_written
+        );
+    }
+}
+
+async fn write_file_chunk(
+    read_buf: &mut Vec<u8>,
+    current_file: &mut tokio::fs::File,
+    bytes_written: &mut u64,
+    chunk_size: usize,
+    addr: std::net::SocketAddr,
+    file_name: &str,
+) {
+    let write_size = read_buf.len().min(chunk_size);
+
+    if write_size > 0 {
+        if let Err(e) = current_file.write_all(&read_buf[..write_size]).await {
+            eprintln!("[{}] Error writing to {}: {}", addr, file_name, e);
+            return;
+        }
+
+        *bytes_written += write_size as u64;
+
+        if write_size <= read_buf.len() {
+            read_buf.drain(..write_size);
+        } else {
+            read_buf.clear();
+        }
+    }
+}
+
+async fn handle_json_message(
+    json_value: Value,
+    out_tx: &mpsc::Sender<String>,
+    cmd_tx: &mpsc::Sender<String>,
+    stdin_ref: &Arc<Mutex<Option<ChildStdin>>>,
+    hostname_ref: &Arc<Result<OsString, String>>,
+    is_migrating: &mut bool,
+    mode: &mut ReadMode,
+    addr: std::net::SocketAddr,
+) -> bool {
+    use ReadMode::*;
+
+    if let Ok(incoming) = serde_json::from_value::<IncomingMessage>(json_value.clone()) {
+        if incoming.message == "migrating" && incoming.message_type == "command" {
+            *is_migrating = true;
+            println!("[{}] Entering migration mode", addr);
+            return true;
+        } else if incoming.message == "migrating_end" && incoming.message_type == "command" {
+            *is_migrating = false;
+            println!("[{}] Exiting migration mode", addr);
+            return true;
+        }
+    }
+
+    if let Ok(request) = serde_json::from_value::<FileRequestMessage>(json_value.clone()) {
+        let out_tx_clone = out_tx.clone();
+        tokio::spawn(async move {
+            let response_json = handle_file_request(request).await;
+            let _ = out_tx_clone.send(response_json).await;
+        });
+        return true;
+    }
+
+    if let Ok(payload) = serde_json::from_value::<SrcAndDest>(json_value.clone()) {
+        if let ApiCalls::Node(dest) = payload.dest {
+            match unsure_ip_or_port_tcp_conn(Some(dest.ip.clone()), None).await {
+                Ok(conn) => {
+                    let writer_tx = tcp_to_writer(conn).await;
+                    tokio::spawn(async move {
+                        if let Err(e) = send_folder_over_broadcast("server/", writer_tx).await {
+                            eprintln!("Error sending folder: {}", e);
+                        }
+                    });
+                }
+                Err(e) => {
+                    eprintln!("[{}] Failed to connect: {}", addr, e);
+                }
+            }
+        }
+        return true;
+    }
+
+    if let Ok(msg_payload) = serde_json::from_value::<MessagePayload>(json_value.clone()) {
+        if msg_payload.r#type == "start_file" {
+            println!(
+                "[{}] Receiving file: {} ({})",
+                addr,
+                msg_payload.message,
+                if *is_migrating {
+                    "migration mode"
+                } else {
+                    "normal mode"
+                }
+            );
+
+            let file_path = format!("server/{}", msg_payload.message);
+
+            if let Err(e) = tokio::fs::create_dir_all("server").await {
+                eprintln!("[{}] Failed to create server directory: {}", addr, e);
+                return true;
+            }
+
+            if let Some(parent) = std::path::Path::new(&file_path).parent() {
+                if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                    eprintln!("[{}] Failed to create parent directory: {}", addr, e);
+                    return true;
+                }
+            }
+
+            match tokio::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&file_path)
+                .await
+            {
+                Ok(file) => {
+                    if *is_migrating {
+                        *mode = ReadMode::MigrationFile {
+                            current_file: file,
+                            file_name: msg_payload.message.clone(),
+                            bytes_written: 0,
+                        };
+                    } else {
+                        *mode = ReadMode::NormalFile { current_file: file };
+                    }
+                    return true;
+                }
+                Err(e) => {
+                    eprintln!("[{}] Failed to open file {}: {}", addr, file_path, e);
+                    return true;
+                }
+            }
+        } else {
+            handle_command_or_console(&msg_payload, cmd_tx, stdin_ref, hostname_ref).await;
+            return true;
+        }
+    }
+
+    false
+}
+
+async fn handle_non_json_line(
+    line: &str,
+    stdin_ref: &Arc<Mutex<Option<ChildStdin>>>,
+    cmd_tx: &mpsc::Sender<String>,
+) {
+    let mut guard = stdin_ref.lock().await;
+    if let Some(stdin) = guard.as_mut() {
+        let _ = stdin.write_all(format!("{}\n", line).as_bytes()).await;
+        let _ = stdin.flush().await;
+        let _ = cmd_tx.send(format!("Sent to server: {}", line)).await;
+    } else {
+        let _ = cmd_tx.send("Server not running".into()).await;
+    }
+}
+
+fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+pub async fn tcp_to_writer(stream: TcpStream) -> mpsc::Sender<Vec<u8>> {
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(1024);
+
+    let (_reader, mut writer) = stream.into_split();
+
+    tokio::spawn(async move {
+        let mut total_bytes_written = 0u64;
+        let mut message_count = 0u64;
+
+        while let Some(msg) = rx.recv().await {
+            message_count += 1;
+            let msg_len = msg.len();
+
+            match writer.write_all(&msg).await {
+                Ok(()) => {
+                    total_bytes_written += msg_len as u64;
+
+                    if message_count % 1000 == 0 || total_bytes_written % 10_000_000 == 0 {
+                        println!(
+                            "[tcp_to_writer] Wrote {} messages, {} total bytes",
+                            message_count, total_bytes_written
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[tcp_to_writer] Failed to write message {} ({} bytes) to socket after {} total bytes: {}", 
+                            message_count, msg_len, total_bytes_written, e);
+                    break;
+                }
+            }
+
+            if message_count % 100 == 0 {
+                if let Err(e) = writer.flush().await {
+                    eprintln!("[tcp_to_writer] Failed to flush socket: {}", e);
+                    break;
+                }
+            }
+        }
+
+        if let Err(e) = writer.flush().await {
+            eprintln!("[tcp_to_writer] Failed final flush: {}", e);
+        }
+
+        println!(
+            "[tcp_to_writer] Writer task exiting after {} messages and {} bytes",
+            message_count, total_bytes_written
+        );
+    });
+
+    tx
+}
+
+async fn handle_command_or_console(
+    payload: &MessagePayload,
+    cmd_tx: &mpsc::Sender<String>,
+    stdin_ref: &Arc<Mutex<Option<ChildStdin>>>,
+    hostname: &Arc<Result<OsString, String>>,
+) {
+    let typ = payload.r#type.clone();
+    if typ == "command" {
+        let cmd_str = payload.message.clone();
+        match cmd_str.as_str() {
+            "create_server" => {
+                if let Some(prov) = get_provider("minecraft") {
+                    if let Some(cmd) = prov.pre_hook() {
+                        run_command_live_output(cmd, "Pre-hook".into(), Some(cmd_tx.clone()), None)
+                            .await
+                            .ok();
+                    }
+                    if let Some(cmd) = prov.install() {
+                        run_command_live_output(cmd, "Install".into(), Some(cmd_tx.clone()), None)
+                            .await
+                            .ok();
+                    }
+                    if let Some(cmd) = prov.post_hook() {
+                        run_command_live_output(
+                            cmd,
+                            "Post-hook".into(),
+                            Some(cmd_tx.clone()),
+                            None,
+                        )
+                        .await
+                        .ok();
+                    }
+                    if let Some(cmd) = prov.start() {
+                        let tx = cmd_tx.clone();
+                        let stdin_clone = stdin_ref.clone();
+                        tokio::spawn(async move {
+                            run_command_live_output(
+                                cmd,
+                                "Server".into(),
+                                Some(tx),
+                                Some(stdin_clone),
+                            )
+                            .await
+                            .ok();
+                        });
+                        let _ = cmd_tx.send("Server started".into()).await;
+                    }
+                }
+            }
+            "stop_server" => {
+                let input = "stop";
+                let mut guard = stdin_ref.lock().await;
+                if let Some(stdin) = guard.as_mut() {
+                    let _ = stdin.write_all(format!("{}\n", input).as_bytes()).await;
+                    let _ = stdin.flush().await;
+                    let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
+                }
+            }
+            "start_server" => {
+                if let Some(prov) = get_provider("minecraft") {
+                    if let Some(cmd) = prov.start() {
+                        let tx = cmd_tx.clone();
+                        let stdin_clone = stdin_ref.clone();
+                        tokio::spawn(async move {
+                            run_command_live_output(
+                                cmd,
+                                "Server".into(),
+                                Some(tx),
+                                Some(stdin_clone),
+                            )
+                            .await
+                            .ok();
+                        });
+                        let _ = cmd_tx.send("Server started".into()).await;
+                    }
+                }
+            }
+            "server_data" => {
+                let _ = cmd_tx
+                    .send(
+                        serde_json::to_string(&GetState {
+                            start_keyword: "help".to_string(),
+                            stop_keyword: "All dimensions are saved".to_string(),
+                        })
+                        .unwrap(),
+                    )
+                    .await;
+            }
+            "server_name" => {
+                let hostname_str = match hostname.as_ref() {
+                    Ok(os) => os.to_string_lossy().to_string(),
+                    Err(e) => e.clone(),
+                };
+                let _ = cmd_tx
+                    .send(
+                        serde_json::to_string(&MessagePayload {
+                            r#type: "command".to_string(),
+                            message: hostname_str,
+                            authcode: "0".to_string(),
+                        })
+                        .unwrap(),
+                    )
+                    .await;
+            }
+            other => {
+                let _ = cmd_tx.send(format!("Unknown command: {}", other)).await;
+            }
+        }
+    } else if typ == "console" {
+        let input = payload.message.clone();
+        let mut guard = stdin_ref.lock().await;
+        if let Some(stdin) = guard.as_mut() {
+            let _ = stdin.write_all(format!("{}\n", input).as_bytes()).await;
+            let _ = stdin.flush().await;
+            let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
+        }
     }
 }
