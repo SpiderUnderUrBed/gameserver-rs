@@ -64,6 +64,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use serial_test::serial;
 use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::time::interval;
 use tokio::{
     fs as tokio_fs,
     io::{AsyncReadExt, AsyncWriteExt},
@@ -75,10 +76,12 @@ use tower_http::cors::{Any as CorsAny, CorsLayer};
 
 use futures_util::{stream, Stream, TryFutureExt};
 
+use std::error::Error;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio_util::bytes::Bytes;
+
+use sysinfo::System;
+
 static CONNECTION_COUNTER: AtomicUsize = AtomicUsize::new(0);
-use tokio::time::interval;
 
 // For now I only restrict the json backend for running this without kubernetes
 // the json backend is only for testing in most cases, simple deployments would use full-stack feature flag
@@ -293,6 +296,11 @@ struct ResponseMessage {
     response: String,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+struct Statistics {
+    used_memory: String,
+    core_data: Vec<String>
+}
 // a list for things like nodes, capabilities, etc
 #[derive(Debug, Serialize, Deserialize)]
 struct List {
@@ -391,6 +399,7 @@ struct AppState {
     base_path: String,
     client: Option<Client>,
     database: database::Database,
+    //sysinfo: System
 }
 impl Clone for AppState {
     fn clone(&self) -> Self {
@@ -403,6 +412,7 @@ impl Clone for AppState {
             base_path: self.base_path.clone(),
             client: self.client.clone(),
             database: self.database.clone(),
+            //sysinfo: System::new_all(),
             additonal_node_tcp: self.additonal_node_tcp
                 .iter()
                 .map(|node| 
@@ -743,7 +753,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         base_path: base_path.clone(),
         database,
         client,
-        additonal_node_tcp: nodes
+        additonal_node_tcp: nodes,
+        //sysinfo: System::new_all()
     };
 
     let multifaceted_state = Arc::new(RwLock::new(state));
@@ -759,8 +770,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             multifaceted_state.write().await.tcp_tx.clone(),
         )
         .await
-        .is_err()
-            || FORCE_REBUILD
+        .is_err() || FORCE_REBUILD
         {
             eprintln!("Initial connection failed or force rebuild enabled");
             if BUILD_DOCKER_IMAGE {
@@ -809,6 +819,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // .route("getfiles", get(get_files))
         .route("/api/upload", post(upload))
         //.route("/api/uploadcontent", post(upload))
+        .route("/api/statistics", get(statistics))
         .route("/api/awaitserverstatus", get(ongoing_server_status))
         .route("/api/fetchnode", post(fetch_node))
         .route("/api/migrate", post(migrate))
@@ -1155,6 +1166,38 @@ fn routes_static(state: Arc<RwLock<AppState>>) -> Router<Arc<RwLock<AppState>>> 
 // async fn status(state: &AppState) -> String {
 //     state.status
 // }
+
+async fn statistics(
+    State(_): State<Arc<RwLock<AppState>>>,
+) -> Sse<impl Stream<Item = Result<Event, Box<dyn Error + Send + Sync>>>> {
+    let interval = interval(Duration::from_secs(3));
+    let system = System::new_all();
+    //let state_clone = arc_state.clone();
+
+    let updates = stream::unfold(
+        (interval, system),
+        move |(mut interval, mut system)| async move {
+            interval.tick().await;
+            system.refresh_all();
+            // let state = arc_state.write().await;
+            // let mut system = state.sysinfo;
+            // system.refresh_all();
+
+            let core_data: Vec<String> = system.cpus().into_iter().map(|core| core.cpu_usage().to_string()).collect();
+            let statistics = Statistics {
+                used_memory: system.total_memory().to_string(),
+                core_data,
+            };
+            let event = match serde_json::to_string(&statistics) {
+                Ok(json) => Ok(Event::default().data(json)),
+                Err(_) => Err("Error".into()), 
+            };
+            Some((event, (interval, system)))
+            // drop(state);
+            //Some((Ok(Event::default().data(serde_json::to_string(statistics)), (interval, system))))
+        });
+    Sse::new(updates).keep_alive(axum::response::sse::KeepAlive::default())
+}
 async fn ongoing_server_status(
     State(arc_state): State<Arc<RwLock<AppState>>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
