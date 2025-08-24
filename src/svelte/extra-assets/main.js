@@ -24,7 +24,8 @@ class ServerConsole {
     this.selectedNodeType();
     this.loadTopmostButtonsLinks();
     this.setStatuses();
-    
+    this.loadFileUpload();
+
     window.updateServer = () => this.updateServer();
     window.configureServer = () => this.configureServer();
     window.restoreButtonDefaults = () => this.restoreButtonDefaults();
@@ -42,6 +43,51 @@ class ServerConsole {
     window.enableDeveloperOptions = () => this.enableDeveloperOptions();
   }
   
+async loadFileUpload() {
+  // if (typeof Dropzone === "undefined") {
+  //   console.error("Dropzone not loaded");
+  //   return;
+  // }
+
+  // if (Dropzone.instances.length) {
+  //   Dropzone.instances.forEach(dz => dz.destroy());
+  // }
+
+  const dz = new Dropzone("#myDropzone", {
+    url: `${this.basePath}/api/upload`,
+    paramName: "file",
+    method: "post",
+    autoProcessQueue: false,  
+    maxFilesize: 1024,         
+    parallelUploads: 10,
+    uploadMultiple: false,
+    addRemoveLinks: true,
+    dictDefaultMessage: "Drop files or folders here to upload",
+    init: function () {
+      this.on("success", (file, response) => {
+        console.log("Upload success:", file.name, response);
+      });
+      this.on("error", (file, errorMessage) => {
+        console.error("Upload error:", file.name, errorMessage);
+      });
+      this.on("queuecomplete", () => {
+        console.log("All uploads complete");
+      });
+    }
+  });
+
+  dz.hiddenFileInput.setAttribute("webkitdirectory", true);
+
+  document.getElementById("uploadBtn").addEventListener("click", () => {
+    if (dz.getQueuedFiles().length === 0) {
+      alert("No files to upload.");
+      return;
+    }
+    dz.processQueue();
+  });
+  }
+
+
   async setStatuses(){
     let button_status = document.getElementById("temp-enable-defaults");
       try {
@@ -466,25 +512,28 @@ async fetchNodes() {
       const jwt = "";
 
       try {
-          const response = await fetch(`${this.basePath}/api/addnode`, {
-          method: 'POST',
-          headers: {
-              'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-              element: { 
-                  kind: "Node", 
-                  data: { 
-                      nodename, ip: nodeip, nodetype
-                  }
-              },
-              jwt,
-              // To be clear, just because its set to true at this point in the code, does not mean it gets to 
-              // demand the server to not require auth to prevent spoofing, the only time it respects that request is if its
-              // made internally
-              require_auth: true
-          })
-          });
+        const response = await fetch(`${this.basePath}/api/addnode`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                element: {
+                    kind: "Node",
+                    data: {
+                        nodename, 
+                        ip: nodeip, 
+                        nodetype: { kind: nodetype, data: null }, 
+                        nodestatus: { kind: "Enabled", data: null }
+                    }
+                },
+                jwt,
+                require_auth: true
+            })
+        });
+          // To be clear, just because its set to true at this point in the code, does not mean it gets to 
+          // demand the server to not require auth to prevent spoofing, the only time it respects that request is if its
+          // made internally
 
           if (!response.ok) {
           const error = await response.text();
@@ -708,21 +757,31 @@ async fetchNodes() {
       // console.log(res_migrate_to)
       const res_migrate_to_json = await res_migrate_to.json();
       const res_migrate_from_json = await res_migrate_from.json();
-      const res = await fetch(`${this.basePath}/api/migrate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          src: {
-            kind: "Node",
-            data: { nodename: res_migrate_from_json.nodename, nodetype: "custom", ip: res_migrate_from_json.ip },
-          },
-          dest: {
-            kind: "Node",
-            data: { nodename: res_migrate_to_json.nodename, nodetype: "custom", ip: res_migrate_to_json.ip },
-          },
-          metadata: ""
-        }),
-      });
+        const res = await fetch(`${this.basePath}/api/migrate`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                src: {
+                    kind: "Node",
+                    data: { 
+                        nodename: res_migrate_from_json.nodename, 
+                        nodetype: { kind: "Custom", data: null }, 
+                        ip: res_migrate_from_json.ip,
+                        nodestatus: { kind: "Enabled", data: null }
+                    },
+                },
+                dest: {
+                    kind: "Node",
+                    data: { 
+                        nodename: res_migrate_to_json.nodename, 
+                        nodetype: { kind: "Custom", data: null }, 
+                        ip: res_migrate_to_json.ip,
+                        nodestatus: { kind: "Enabled", data: null }
+                    },
+                },
+                metadata: ""
+            }),
+        });
 
       const text = await res.text();
       if (res.ok) {

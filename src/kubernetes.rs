@@ -73,6 +73,20 @@ pub async fn list_node_names(client: Client) -> Result<Vec<String>, Box<dyn std:
         .collect();
     Ok(names)
 }
+
+pub async fn get_avalible_gameserver(
+_: &crate::Client,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+
+}
+
+pub async fn verify_is_k8s_gameserver(
+_: crate::Client,
+_: String
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(false)
+}
+
 pub async fn create_k8s_deployment(
     client: &Client,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

@@ -7,6 +7,8 @@
 		<title>Server Panel</title>
 		<link rel="stylesheet" href="main.css" />
 		<script src="main.js" defer></script>
+		<link rel="stylesheet" href="https://unpkg.com/dropzone@6.0.0-beta.2/dist/dropzone.css" />
+		<script src="https://unpkg.com/dropzone@6.0.0-beta.2/dist/dropzone-min.js"></script>
 	</head>
 	<body>
 		<header>Server Panel</header>
@@ -28,26 +30,21 @@
 		<div class="topmost-bar">
 			<button id="filebrowser">Filebrowser</button>
 			<button id="statistics">Statistics</button>
-			<!-- <button id="scedules">Scedules</button>	 -->
 			<button id="workflows">Workflows</button>	
 			<button id="intergrations">Intergrations</button>	
 			<button id="backups">Backups</button>
 			<button id="settings">Settings</button>
 
-			<!-- <span style="width: 10vh;"></span> -->
 			<button onclick="toggleButtons()">Manage buttons</button>
 			<div class="management-buttons" id="management-buttons">
-			<!-- <button id="configure-button-links" onclick="configureTopmostButtons()">Configure Button links</button>
-			<button id="temporarially-restore-button-defaults">Temporarially enable defaults</button>
-			<button id="restore-button-defaults">Restore defaults</button> -->
-			<button onclick="configureTopmostButtons()">Configure Button links</button>
-			<button onclick="temporaryButtonReset()" id="temp-enable-defaults">Temporarially enable defaults</button>
-			<button onclick="restoreButtonDefaults()">Restore defaults</button>
+				<button onclick="configureTopmostButtons()">Configure Button links</button>
+				<button onclick="temporaryButtonReset()" id="temp-enable-defaults">Temporarially enable defaults</button>
+				<button onclick="restoreButtonDefaults()">Restore defaults</button>
 			</div>
 		</div>
 		<div class="top-bar">
 			<div class="server-status-indicator" id="server-status-indicator"></div>
-			<button class="main-buttons" onclick="createDefaultServer()">Create Server</button>
+			<button class="main-buttons" onclick="document.getElementById('createServerDialog').showModal()">Create Server</button>
 			<button class="main-buttons" onclick="startServer()">Start Server</button>
 			<button class="main-buttons" onclick="stopServer()">Stop Server</button>
 			<button class="main-buttons" onclick="configureServer()">Configure Server</button>
@@ -61,9 +58,7 @@
 		</div>
 
 		<main>
-			<div class="console-history" id="consoleHistory">
-				<!-- Console output goes here -->
-			</div>
+			<div class="console-history" id="consoleHistory"></div>
 		</main>
 
 		<div class="console-input-container">
@@ -77,6 +72,20 @@
 		</button>
 
 		<footer></footer>
+		<dialog id="createServerDialog" class="user-dialog">
+			<form method="dialog">
+				<h1>Create Server</h1>
+				<div class="navigate-buttons">
+					<button class="toggle-button" id="toggleUploader">Show File Uploader</button>
+					<div action="" class="dropzone" id="myDropzone"></div>
+					<button id="uploadBtn" type="button">Upload</button>
+				</div>
+				<div class="dialog-buttons">
+					<button type="button" onclick="createDefaultServer()">Standard Create Server</button>
+					<button type="button" onclick="this.closest('dialog').close()">Cancel</button>
+				</div>
+			</form>
+		</dialog>
 		<dialog id="configureServerDialog" class="user-dialog">
 			<form method="dialog">
 				<h1>Test</h1>
@@ -85,17 +94,11 @@
 				<br>
 				<div>
 				<h5>Migrate from</h5>
-				<select id="migrate-from" name="migrate-from">
-						<!-- <option value="main">Initial gameserver</option>
-						<option value="custom" selected="selected">Custom</option> -->
-				</select>
+				<select id="migrate-from" name="migrate-from"></select>
 				</div>
 				<div>
 				<h5>Migrate to</h5>
-				<select id="migrate-to" name="migrate-to">
-						<!-- <option value="main">Initial gameserver</option>
-						<option value="custom" selected="selected">Custom</option> -->
-				</select>
+				<select id="migrate-to" name="migrate-to"></select>
 				</div>
 				<div class="dialog-buttons">
 					<button type="submit" onclick="updateServer()">Confirm</button>
@@ -107,16 +110,14 @@
 			<form method="dialog">
 				<h3>Add Node</h3>
 				<div class="form-content">
-					<!-- Your node-specific content will go here -->
-					<div>Test</div>
                     <label for="create-nodename">Node name:</label><br>
                     <input type="text" id="create-nodename" name="nodename"><br>
                     <label for="nodeip">Node Ip:</label><br>
                     <input type="text" id="nodeip" name="nodeip"><br>
 					<label for="nodetype-selector">Node Type:</label><br>
 					<select id="nodetype-selector" name="nodetype-selector">
-                            <option value="main">Initial gameserver</option>
-                            <option value="custom" selected="selected">Custom</option>
+                            <option value="Main">Initial gameserver</option>
+                            <option value="Custom" selected="selected">Custom</option>
                     </select>
 				</div>
 				<div class="dialog-buttons">
@@ -133,7 +134,6 @@
 					<select id="topmost-button-option" name="topmost-button-option">
 						<option value="filebrowser">Filebrowser</option>
 						<option value="statistics">Statistics</option>
-						<!-- <option value="scedules">Scedules</option> -->
 						<option value="backups">Backups</option>
 						<option value="settings">Settings</option>
 						<option value="intergrations">Intergrations</option>

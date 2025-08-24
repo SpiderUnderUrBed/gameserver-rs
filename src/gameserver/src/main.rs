@@ -48,11 +48,30 @@ struct SrcAndDest {
     metadata: String,
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq)]
+#[serde(tag = "kind", content = "data")]
+pub enum NodeStatus {
+    Enabled, 
+    Disabled, 
+    ImmutablyEnabled,
+    ImmutablyDisabled,
+    // #[serde(other)]
+    // Unknown,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq)]
+#[serde(tag = "kind", content = "data")]
+pub enum NodeType {
+    Custom,
+    Main
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Node {
     pub nodename: String,
     pub ip: String,
-    pub nodetype: String,
+    pub nodetype: NodeType,
+    pub nodestatus: NodeStatus
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -538,7 +557,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let (out_tx, mut out_rx) = mpsc::channel::<String>(128);
             let (cmd_tx, mut cmd_rx) = mpsc::channel::<String>(128);
 
-            // println!("[{}] Connection established, spawning handler tasks", addr);
+            println!("[{}] Connection established, spawning handler tasks", addr);
 
             tokio::spawn(async move {
                 loop {
@@ -697,6 +716,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                         } else if let Ok(payload) =
                                             serde_json::from_value::<SrcAndDest>(json_value.clone())
                                         {
+                                            //println!("{:#?}", payload.dest);
                                             if let ApiCalls::Node(dest) = payload.dest {
                                                 match unsure_ip_or_port_tcp_conn(
                                                     Some(dest.ip.clone()),

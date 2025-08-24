@@ -11,6 +11,7 @@ use std::{net::SocketAddr, path::Path, sync::Arc};
 use crate::database::Element;
 use crate::filesystem::{send_multipart_over_broadcast, FsType};
 use crate::http::HeaderMap;
+use crate::kubernetes::verify_is_k8s_gameserver;
 use crate::middleware::from_fn;
 use axum::extract::ws::Message as WsMessage;
 use axum::extract::Multipart;
@@ -42,11 +43,12 @@ use tokio::sync::RwLock;
 
 // mod databasespec;
 // use databasespec::UserDatabase;
-use crate::database::databasespec::Button;
+use crate::database::databasespec::{Button, NodeStatus};
 use crate::database::databasespec::ButtonsDatabase;
 use crate::database::databasespec::NodesDatabase;
 use crate::database::databasespec::UserDatabase;
 use crate::database::Node;
+use crate::database::databasespec::NodeType;
 // miscellancious imports, future traits are used because alot of the code is asyncronus and cant fully be contained in tokio
 // mime_guess as when I am serving the files, I need to serve it with the correct mime type
 // serde_json because I exchange alot of json data between the backend and frontend and to the gameserver
@@ -96,8 +98,7 @@ mod database {
 use database::JsonBackend;
 
 // Both database files and any more should have these structs
-use database::CreateElementData;
-use database::RemoveElementData;
+use database::ModifyElementData;
 use database::RetrieveUser;
 use database::User;
 
@@ -147,6 +148,17 @@ mod kubernetes {
     _: crate::Client,
     ) -> Result<Vec<NodeAndTCP>, Box<dyn std::error::Error + Send + Sync>> {
         Err("This should not be running".into())
+    }
+    pub async fn verify_is_k8s_gameserver(
+    _: crate::Client,
+    _: String
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(false)
+    }
+    pub async fn get_avalible_gameserver(
+    _: &crate::Client,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        Err("This should not be running in a non-k8s environemnt".into())
     }
 }
 
@@ -241,7 +253,7 @@ struct MessagePayload {
 struct NodeAndTCP {
     name: String, 
     ip: String, 
-    nodetype: String,
+    nodetype: NodeType,
     tcp_tx: Option<tokio::sync::broadcast::Sender<Vec<u8>>>,
     tcp_rx: Option<tokio::sync::broadcast::Receiver<Vec<u8>>>
 }
@@ -405,7 +417,7 @@ impl Clone for AppState {
                                 None
                             }
                         },
-                        nodetype: String::new(),
+                        nodetype: node.nodetype.clone(),
                     }
                 )
                 .collect(),
@@ -416,8 +428,8 @@ impl Clone for AppState {
 
 // for the initial connection attempt, which will determine if possibly I would need to create the container and deployment upon failure
 // i will use rusts 'timeout' for x interval determined with CONNECTION_TIMEOUT
-async fn attempt_connection() -> Result<TcpStream, Box<dyn std::error::Error + Send + Sync>> {
-    timeout(CONNECTION_TIMEOUT, TcpStream::connect(TcpUrl))
+async fn attempt_connection(tcp_url: String) -> Result<TcpStream, Box<dyn std::error::Error + Send + Sync>> {
+    timeout(CONNECTION_TIMEOUT, TcpStream::connect(tcp_url))
         .await?
         .map_err(Into::into)
 }
@@ -515,15 +527,36 @@ pub async fn handle_stream(
                                 if data_clone.data.contains("\"type\":\"command\"") {
                                     if let Ok(inner_msg) = serde_json::from_str::<MessagePayload>(&data_clone.data) {
                                         if inner_msg.r#type == "command" {
-                                            let db_state = &arc_state.write().await.database;
-                                            if let Ok(nodes) = db_state.fetch_all_nodes().await {
+                                            let (client_option, database) = {
+                                                let state_guard = arc_state.read().await;
+                                                (state_guard.client.clone(), state_guard.database.clone())
+                                            };
+
+                                            if let Ok(nodes) = database.fetch_all_nodes().await {
+                                                let node_status = if let Some(client) = client_option {
+                                                    let client_clone = client.clone();
+                                                    let ip_clone = ip.clone();
+                                                    
+                                                    match tokio::time::timeout(
+                                                        std::time::Duration::from_millis(100),
+                                                        verify_is_k8s_gameserver(client_clone, ip_clone)
+                                                    ).await {
+                                                        Ok(Ok(true)) => NodeStatus::ImmutablyEnabled,
+                                                        _ => NodeStatus::Enabled,
+                                                    }
+                                                } else {
+                                                    NodeStatus::Enabled
+                                                };
+
                                                 let node = Node {
                                                     ip: ip.clone(),
                                                     nodename: inner_msg.message,
-                                                    nodetype: "main".to_string(),
+                                                    nodetype: NodeType::Custom,
+                                                    nodestatus: node_status,
                                                 };
+
                                                 if !nodes.iter().any(|n| n.ip == node.ip && n.nodename == node.nodename) {
-                                                    let _ = db_state.create_nodes_in_db(CreateElementData {
+                                                    let _ = database.create_nodes_in_db(ModifyElementData {
                                                         element: Element::Node(node),
                                                         jwt: "".to_string(),
                                                         require_auth: false,
@@ -539,9 +572,15 @@ pub async fn handle_stream(
                                         if let Some(server_output) = output_msg.get("data").and_then(|v| v.as_str()) {
                                             if !server_start_keyword.is_empty() && server_output.contains(&server_start_keyword) {
                                                 let _ = ws_tx.send("Server is ready for connections!".to_string());
-                                                arc_state.write().await.status = Status::Up;
+                                                {
+                                                    let mut state_guard = arc_state.write().await;
+                                                    state_guard.status = Status::Up;
+                                                }
                                             } else if !server_stop_keyword.is_empty() && server_output.contains(&server_stop_keyword) {
-                                                arc_state.write().await.status = Status::Down;
+                                                {
+                                                    let mut state_guard = arc_state.write().await;
+                                                    state_guard.status = Status::Down;
+                                                }
                                             }
                                             let _ = ws_tx.send(server_output.to_string());
                                             continue;
@@ -575,7 +614,6 @@ pub async fn handle_stream(
     Ok(())
 }
 
-
 // use tokio::sync::broadcast::error::RecvError::Lagged;
 // use tokio::sync::broadcast::error::RecvError::Closed;
 
@@ -583,11 +621,12 @@ pub async fn handle_stream(
 // does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
 async fn connect_to_server(
     state: Arc<RwLock<AppState>>,
+    tcp_url: String,
     mut rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
     ws_tx: broadcast::Sender<String>,
 ) -> Result<SocketAddr, Box<dyn std::error::Error + Send + Sync>> {
     loop {
-        match timeout(CONNECTION_TIMEOUT, TcpStream::connect(TcpUrl)).await {
+        match timeout(CONNECTION_TIMEOUT, TcpStream::connect(tcp_url.clone())).await {
             Ok(Ok(mut stream)) => {
                 let stream_result =
                     handle_stream(state.clone(), &mut rx, &mut stream, ws_tx.clone()).await;
@@ -611,10 +650,11 @@ async fn connect_to_server(
 // try to connect upon failing but it should not try to create the container and deployment every time it fails)
 async fn try_initial_connection(
     state: Arc<RwLock<AppState>>,
+    tcp_url: String,
     ws_tx: broadcast::Sender<String>,
     tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    match attempt_connection().await {
+    match attempt_connection(tcp_url).await {
         Ok(mut stream) => {
             println!("Initial connection succeeded!");
 
@@ -664,6 +704,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     const FORCE_REBUILD: bool = false;
     const BUILD_DOCKER_IMAGE: bool = true;
     const BUILD_DEPLOYMENT: bool = true;
+    const DONT_OVERRIDE_CONN_WITH_K8S: bool = false;
 
     // creates a websocket broadcase and tcp channels
     let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
@@ -676,7 +717,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         client = Some(Client::try_default().await?);
     }
 
-   
+    let mut tcp_url: String = TcpUrl.to_string();
+    if !DONT_OVERRIDE_CONN_WITH_K8S && client.is_some() {
+        if let Ok(url_result) = &kubernetes::get_avalible_gameserver(client.as_ref().unwrap()).await {
+            tcp_url = url_result.clone();  
+        } else {
+            println!("Could not get a successful url for a existing gameserver, will try the fallback url")
+        }
+    }
+
+
     let mut nodes: Vec<NodeAndTCP> = vec![];
     if let Ok(db_nodes) = database.fetch_all_nodes().await {
         nodes = db_nodes.into_iter().map(|node| NodeAndTCP { name: node.nodename, nodetype: node.nodetype, ip: node.ip, tcp_tx: None, tcp_rx: None }).collect()
@@ -704,6 +754,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         println!("Trying initial connection...");
         if try_initial_connection(
             multifaceted_state.clone(),
+            tcp_url.to_string(),
             ws_tx.clone(),
             multifaceted_state.write().await.tcp_tx.clone(),
         )
@@ -731,7 +782,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let bridge_tx = multifaceted_state.read().await.ws_tx.clone();
 
     tokio::spawn(async move {
-        if let Err(e) = connect_to_server(server_connection_state, bridge_rx, bridge_tx).await {
+        if let Err(e) = connect_to_server(server_connection_state, tcp_url.to_string(), bridge_rx, bridge_tx).await {
             eprintln!("[DEBUG] Connection task failed: {}", e);
         }
     });
@@ -823,6 +874,7 @@ async fn migrate(
 ) -> impl IntoResponse {
     let state = arc_state.read().await;
 
+    //println!("{:#?}", request.clone());
     // &state.tcp_tx {
     match serde_json::to_vec(&request) {
         Ok(bytes) => {
@@ -882,7 +934,7 @@ async fn get_buttons(State(state): State<Arc<RwLock<AppState>>>) -> impl IntoRes
 
 async fn edit_buttons(
     State(arc_state): State<Arc<RwLock<AppState>>>,
-    Json(request): Json<CreateElementData>,
+    Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
     //println!("Got request");
     let state = arc_state.write().await;
@@ -1131,7 +1183,7 @@ async fn ongoing_server_status(
 
 async fn add_node(
     State(arc_state): State<Arc<RwLock<AppState>>>,
-    Json(request): Json<CreateElementData>,
+    Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
     let result = state
@@ -1145,7 +1197,7 @@ async fn add_node(
 // delegate user creation to the DB and return with relevent status code
 async fn create_user(
     State(arc_state): State<Arc<RwLock<AppState>>>,
-    Json(request): Json<CreateElementData>,
+    Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
     let result = state
@@ -1158,7 +1210,7 @@ async fn create_user(
 // edits the user data in the db
 async fn edit_user(
     State(arc_state): State<Arc<RwLock<AppState>>>,
-    Json(request): Json<CreateElementData>,
+    Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
     let result = state
@@ -1193,7 +1245,7 @@ async fn get_user(
 // delegate user delection to the DB and returns with relevent status code
 async fn delete_user(
     State(arc_state): State<Arc<RwLock<AppState>>>,
-    Json(request): Json<RemoveElementData>,
+    Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
     let result = state
@@ -1750,16 +1802,7 @@ pub async fn get_files(
     })
     .into_response()
 }
-// async fn get_files(
-//     State(arc_state): State<Arc<RwLock<AppState>>>,
-//     Query(params): Query<FileParams>
-// ){
 
-// }
-// #[derive(Deserialize)]
-// pub struct FileParams {
-//     file: String,
-// }
 
 // This is crucial for authentication, it will take a next for redirects, and a jwk to verify the claim with, then it grants the claim for the current session
 // and redirects the user to their original destination
@@ -1893,7 +1936,7 @@ mod tests {
         async fn remove_user() {
             let database = create_db_for_tests().await.unwrap();
             database.clear_db().await.expect("Failed to clear DB");
-            let user = CreateElementData {
+            let user = ModifyElementData {
                 element: Element::User {
                     user: "kk".to_owned(),
                     password: "ddd".to_owned(),
@@ -1907,9 +1950,14 @@ mod tests {
                 .await
                 .expect("Failed to clear DB");
             let remove_user_result = database
-                .remove_user_in_db(RemoveElementData {
-                    element: "kk".to_string(),
+                .remove_user_in_db(ModifyElementData {
+                    element: Element::User {
+                        user: "kk".to_owned(),
+                        password: "ddd".to_owned(),
+                        user_perms: vec![], 
+                    },
                     jwt: "".to_string(),
+                    require_auth: false
                 })
                 .await;
             if remove_user_result.is_ok() {
@@ -1924,7 +1972,7 @@ mod tests {
         async fn create_user_perms() {
             let database = create_db_for_tests().await.unwrap();
             database.clear_db().await.expect("Failed to clear DB");
-            let user = CreateElementData {
+            let user = ModifyElementData {
                 element: Element::User {
                     user: "kk".to_owned(),
                     password: "ddd".to_owned(),
@@ -1947,7 +1995,7 @@ mod tests {
         async fn create_user() {
             let database = create_db_for_tests().await.unwrap();
             database.clear_db().await.expect("Failed to clear DB");
-            let user = CreateElementData {
+            let user = ModifyElementData {
                 element: Element::User {
                     user: "kk".to_owned(),
                     password: "ddd".to_owned(),
@@ -1969,7 +2017,7 @@ mod tests {
         async fn edit_user_password_changes() {
             let database = create_db_for_tests().await.unwrap();
             database.clear_db().await.expect("Failed to clear DB");
-            let user = CreateElementData {
+            let user = ModifyElementData {
                 element: Element::User {
                     user: "b".to_owned(),
                     password: "ddd".to_owned(),
@@ -1980,7 +2028,7 @@ mod tests {
             };
             let create_user_result = database.create_user_in_db(user).await;
 
-            let edit_user = CreateElementData {
+            let edit_user = ModifyElementData {
                 element: Element::User {
                     user: "b".to_owned(),
                     password: "ccc".to_owned(),
@@ -2002,7 +2050,7 @@ mod tests {
         async fn edit_user_password_does_not_change() {
             let database = create_db_for_tests().await.unwrap();
             database.clear_db().await.expect("Failed to clear DB");
-            let user = CreateElementData {
+            let user = ModifyElementData {
                 element: Element::User {
                     user: "A".to_owned(),
                     password: "a".to_owned(),
@@ -2012,7 +2060,7 @@ mod tests {
                 jwt: "".to_owned(),
             };
             let create_user_result = database.create_user_in_db(user).await;
-            let edit_user = CreateElementData {
+            let edit_user = ModifyElementData {
                 element: Element::User {
                     user: "A".to_owned(),
                     password: "".to_owned(),
@@ -2035,7 +2083,7 @@ mod tests {
         async fn empty_password() {
             let database = create_db_for_tests().await.unwrap();
             database.clear_db().await.expect("Failed to clear DB");
-            let user = CreateElementData {
+            let user = ModifyElementData {
                 element: Element::User {
                     user: "A".to_owned(),
                     password: "".to_owned(),
@@ -2057,7 +2105,7 @@ mod tests {
         async fn duplicate_user() {
             let database = create_db_for_tests().await.unwrap();
             database.clear_db().await.expect("Failed to clear DB");
-            let userA = CreateElementData {
+            let userA = ModifyElementData {
                 element: Element::User {
                     user: "A".to_owned(),
                     password: "test".to_owned(),
@@ -2066,7 +2114,7 @@ mod tests {
                 require_auth: true,
                 jwt: "".to_owned(),
             };
-            let userB = CreateElementData {
+            let userB = ModifyElementData {
                 element: Element::User {
                     user: "A".to_owned(),
                     password: "test".to_owned(),

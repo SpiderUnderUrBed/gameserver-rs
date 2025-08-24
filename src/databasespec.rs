@@ -25,26 +25,11 @@ pub struct RetrieveUser {
 }
 
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct RemoveElementData {
-    pub element: String,
-    pub jwt: String
-}
-
-// #[cfg(any(feature = "full-stack", feature = "database"))]
-// #[derive(Debug, Deserialize, Serialize, Clone, sqlx::FromRow)]
-// #[serde(tag = "kind", content = "data")]
-// pub enum CustomType {
-//     Custom, 
-//     Default
-// }
-
-// #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
 // #[derive(Debug, Deserialize, Serialize, Clone)]
-// #[serde(tag = "kind", content = "data")]
-// pub enum CustomType {
-//     Custom, 
-//     Default
+// pub struct ModifyElementData {
+//     pub element: String,
+//     pub jwt: String,
+//     pub(crate) require_auth: bool
 // }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -57,10 +42,10 @@ pub enum Element {
     },
     Node(Node),
     Button(Button),
-    Server
+    Server(Server)
 }
 #[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct CreateElementData {
+pub struct ModifyElementData {
     pub element: Element,
     // pub password: String,
     pub jwt: String,
@@ -78,6 +63,24 @@ pub struct Settings {
 #[derive(Debug, Deserialize, Serialize, Clone, sqlx::FromRow, Default)]
 pub struct Settings {
     pub toggled_default_buttons: bool
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+#[serde(tag = "kind", content = "data")]
+pub enum NodeStatus {
+    Enabled, 
+    Disabled, 
+    ImmutablyEnabled,
+    ImmutablyDisabled,
+    // #[serde(other)]
+    // Unknown,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+#[serde(tag = "kind", content = "data")]
+pub enum NodeType {
+    Custom,
+    Main
 }
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
@@ -101,7 +104,7 @@ pub struct User {
 pub struct Node {
     pub nodename: String,
     pub ip: String,
-    pub nodetype: String
+    pub nodestatus: Nodestatus
 }
 
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
@@ -109,7 +112,8 @@ pub struct Node {
 pub struct Node {
     pub nodename: String,
     pub ip: String,
-    pub nodetype: String
+    pub nodestatus: NodeStatus,
+    pub nodetype: NodeType
 }
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
@@ -135,40 +139,45 @@ pub struct Button {
 #[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize)]
 pub struct Server {
     pub servername: String,
+    pub provider: String,
+    pub providertype: String,
+    pub location: String
 }
 
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Server {
     pub servername: String,
-}
-
+    pub provider: String,
+    pub providertype: String,
+    pub location: String
+} 
 
 // #[async_trait]
 pub trait UserDatabase {
     async fn retrieve_user(&self, username: String) -> Option<User>;
     async fn fetch_all(&self) -> Result<Vec<User>, Box<dyn Error + Send + Sync>>;
     async fn get_from_database(&self, username: &str) -> Result<Option<User>, Box<dyn Error + Send + Sync>>;
-    async fn create_user_in_db(&self, user: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
-    async fn remove_user_in_db(&self, user: RemoveElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
-    async fn edit_user_in_db(&self, user: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn create_user_in_db(&self, user: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn remove_user_in_db(&self, user: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn edit_user_in_db(&self, user: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
 }
 
 pub trait ServerDatabase {
     async fn retrieve_server(&self, username: String) -> Option<User>;
     async fn fetch_all_servers(&self) -> Result<Vec<User>, Box<dyn Error + Send + Sync>>;
     async fn get_from_servers_database(&self, username: &str) -> Result<Option<User>, Box<dyn Error + Send + Sync>>;
-    async fn create_server_in_db(&self, user: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
-    async fn remove_server_in_db(&self, user: RemoveElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
-    async fn edit_server_in_db(&self, user: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn create_server_in_db(&self, user: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn remove_server_in_db(&self, user: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn edit_server_in_db(&self, user: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
 }
 pub trait NodesDatabase {
     async fn retrieve_nodes(&self, nodename: String) -> Option<Node>;
     async fn fetch_all_nodes(&self) -> Result<Vec<Node>, Box<dyn Error + Send + Sync>>;
     async fn get_from_nodes_database(&self, nodename: &str) -> Result<Option<Node>, Box<dyn Error + Send + Sync>>;
-    async fn create_nodes_in_db(&self, node: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
-    async fn remove_node_in_db(&self, node: RemoveElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
-    async fn edit_node_in_db(&self, node: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn create_nodes_in_db(&self, node: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn remove_node_in_db(&self, node: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn edit_node_in_db(&self, node: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
 }
 pub trait ButtonsDatabase {
     async fn retrieve_buttons(&self, name: String) -> Option<Button>;
@@ -177,5 +186,5 @@ pub trait ButtonsDatabase {
     async fn toggle_button_state(&self) -> Result<bool, Box<dyn Error + Send + Sync>>;
     async fn reset_buttons(&self) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
     async fn get_from_buttons_database(&self, name: &str) -> Result<Option<Button>, Box<dyn Error + Send + Sync>>;
-    async fn edit_button_in_db(&self, button: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn edit_button_in_db(&self, button: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
 }

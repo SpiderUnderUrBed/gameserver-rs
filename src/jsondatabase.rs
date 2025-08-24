@@ -4,7 +4,7 @@ use serde::Serialize;
 use std::error::Error;
 use std::result;
 pub mod databasespec;
-pub use databasespec::{User, Node, Element, CreateElementData, RemoveElementData, UserDatabase, NodesDatabase, RetrieveUser, DatabaseError};
+pub use databasespec::{User, Node, Element, ModifyElementData, UserDatabase, NodesDatabase, RetrieveUser, DatabaseError};
 // use std::path::Path;
 use std::path::PathBuf;
 use std::fs::OpenOptions;
@@ -13,7 +13,9 @@ use std::io::Write;
 use std::io::Read;
 use std::collections::HashMap;
 
+use crate::database::databasespec::ServerDatabase;
 use crate::database::databasespec::Settings;
+use crate::database::databasespec::NodeType;
 // use crate::database::databasespec::CustomType;
 use crate::database::databasespec::Button;
 use crate::database::databasespec::ButtonsDatabase;
@@ -196,7 +198,7 @@ impl Database {
             Ok(JsonBackendContent::default())
         } else {
             let result: Result<JsonBackendContent, String> = serde_json::from_str(&contents).map_err(|e| {
-                println!("Failed to parse JSON: {}", e); 
+                println!("Failed to parse JSON (1): {}", e); 
                 format!("Error: {}", e)
             });
             if result.is_err(){
@@ -208,6 +210,42 @@ impl Database {
         database
     }
 }
+
+impl ServerDatabase for Database {
+    async fn retrieve_server(&self, username: String) -> Option<User> {
+        todo!()
+    }
+    async fn fetch_all_servers(&self) -> Result<Vec<User>, Box<dyn Error + Send + Sync>> {
+        todo!()
+    }
+    async fn get_from_servers_database(&self, username: &str) -> Result<Option<User>, Box<dyn Error + Send + Sync>> {
+        todo!()
+    }
+    async fn create_server_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+        if let Element::Server(Server {servername, provider, providertype, location }) = element.element {
+            let mut database = self.get_database().await?;
+
+            self.write_database(database).await;  
+        } else {
+            return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+        }
+        todo!()
+    }
+    async fn remove_server_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+        if let Element::Server(Server { servername, provider, providertype, location }) = element.element {
+            
+        }
+        todo!()
+    }
+    async fn edit_server_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+        todo!()
+    }
+}
+// pub struct Server {
+//     pub servername: String,
+//     pub provider: String,
+//     pub providertype: String
+// } 
 
 impl UserDatabase for Database {
     async fn retrieve_user(&self, username: String) -> Option<User> {
@@ -244,7 +282,7 @@ impl UserDatabase for Database {
     }
   
     
-    async fn create_user_in_db(&self, element: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+    async fn create_user_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         if let Element::User { password, user, user_perms } = element.element {
             let password_hash = bcrypt::hash(password.clone(), bcrypt::DEFAULT_COST);
             let mut database = self.get_database().await?;
@@ -267,7 +305,7 @@ impl UserDatabase for Database {
         }
     }
     
-    async fn remove_user_in_db(&self, user: RemoveElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+    async fn remove_user_in_db(&self, user: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         let file_path = &self.connection.file;
     
         let mut read_file = File::open(file_path)
@@ -283,12 +321,16 @@ impl UserDatabase for Database {
                 format!("Error: {}", e)
             })?
         };
-        database.users.retain(|db_user| db_user.username != user.element);
+        if let Element::User { user, user_perms: _, password: _ } = user.element {
+            database.users.retain(|db_user| db_user.username != user);
+        } else {
+            return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
+        }
 
         self.write_database(database).await;
         Ok(StatusCode::CREATED)
     }
-    async fn edit_user_in_db(&self, element: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+    async fn edit_user_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         if let Element::User { password, user, user_perms } = element.element {
             let mut database = self.get_database().await?;
             if let Some(db_user) = database.users.iter_mut().find(|db_user| db_user.username == user) {
@@ -320,14 +362,14 @@ impl NodesDatabase for Database {
         let database = self.get_database().await?;
         Ok(database.nodes.iter().find(|node| node.nodename == nodename).cloned())
     }
-    async fn create_nodes_in_db(&self, element: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
-        if let Element::Node(Node { nodename, ip, nodetype }) = element.element {
+    async fn create_nodes_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+        if let Element::Node(Node { nodename, ip, nodetype, nodestatus }) = element.element {
             let mut database = self.get_database().await?;
     
-            if database.nodes.iter().any(|node| node.nodename == nodename) || (nodetype == "custom" && ip.is_empty()){
+            if database.nodes.iter().any(|node| node.nodename == nodename) || (nodetype == NodeType::Custom && ip.is_empty()){
                 return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
             } else {
-                let final_node = Node { nodename,ip, nodetype };
+                let final_node = Node {nodename,ip,nodetype, nodestatus };
                 database.nodes.push(final_node.clone());
             }
         
@@ -337,10 +379,10 @@ impl NodesDatabase for Database {
             Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
         }
     }
-    async fn remove_node_in_db(&self, node: RemoveElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+    async fn remove_node_in_db(&self, node: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         todo!()
     }
-    async fn edit_node_in_db(&self, node: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+    async fn edit_node_in_db(&self, node: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         todo!()
     }
 }
@@ -379,7 +421,7 @@ impl ButtonsDatabase for Database {
         Ok(StatusCode::CREATED)
     }
 
-    async fn edit_button_in_db(&self, element: CreateElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>{
+    async fn edit_button_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>{
         if let Element::Button(button) = element.element {
             if let Button { name, link, r#type } = button {
                 let mut database = self.get_database().await?;

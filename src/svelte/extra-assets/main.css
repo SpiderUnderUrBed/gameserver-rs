@@ -43,6 +43,11 @@ aside button {
   height: 3svh;
 }
 
+.dropzone {
+	display: block;
+	margin-bottom: 20px;
+}
+
 .management-buttons {
   display: none;
 }
