@@ -43,6 +43,7 @@ pub trait FsType: Clone + Send + Sync {
         start: Option<u64>,
         end: Option<u64>,
     ) -> std::io::Result<Vec<FsEntry>>;
+    async fn get_path_from_tag(&mut self, tag: &str) -> std::io::Result<Vec<String>>;
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
@@ -61,6 +62,16 @@ pub struct FsEntry {
     pub is_file: bool,
     pub is_dir: bool,
 }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BasicPath {
+    pub paths: Vec<String>
+}
+
+// #[derive(Debug, Clone, Deserialize, Serialize)]
+// pub struct BasicPath {
+//     path: String
+// }
 
 #[derive(Serialize, Deserialize)]
 pub struct FileRequestMessage {
@@ -89,6 +100,10 @@ pub enum FileRequestPayload {
         path: String,
         start: Option<u64>,
         end: Option<u64>,
+    },
+    PathFromTag {
+        path: String,
+        tag: Option<String>
     },
     FileChunk(FileChunk),
 }
@@ -697,7 +712,49 @@ impl FsType for TcpFs {
             authcode: "0".to_string(),
         })
     }
+    async fn get_path_from_tag(&mut self, tag: &str) -> std::io::Result<Vec<String>>{
+        //PathFromTag
+        let id = self
+            .send_request(FileRequestPayload::PathFromTag { path: "".to_string(), tag: Some(tag.to_string()), })
+            .await?;
 
+        let response_chunks = self.recv_response(id).await?;
+        for chunk in response_chunks.iter() {
+            if let Ok(basic_path) = serde_json::from_slice::<BasicPath>(chunk) {
+                return Ok(basic_path.paths);
+            }
+
+            if let Ok(val) = serde_json::from_slice::<Value>(chunk) {
+                if let Some(data_val) = val.get("data") {
+                    if data_val.is_object() || data_val.is_array() {
+                        if let Ok(basic_path) = serde_json::from_value::<BasicPath>(data_val.clone()) {
+                            return Ok(basic_path.paths);
+                        }
+                    }
+
+                    if let Some(s) = data_val.as_str() {
+                        if let Ok(basic_path) = serde_json::from_str::<BasicPath>(s) {
+                            return Ok(basic_path.paths);
+                        }
+                    }
+                }
+
+                if let Value::String(s) = &val {
+                    if let Ok(basic_path) = serde_json::from_str::<BasicPath>(s) {
+                        return Ok(basic_path.paths);
+                    }
+                }
+
+                if let Ok(basic_path) = serde_json::from_value::<BasicPath>(val.clone()) {
+                    return Ok(basic_path.paths);
+                }
+            }
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Failed get the path for tag '{}'", tag),
+        ))
+    }
     async fn get_metadata(&mut self, path: &str) -> std::io::Result<FsMetadata> {
         let id = self
             .send_request(FileRequestPayload::Metadata {

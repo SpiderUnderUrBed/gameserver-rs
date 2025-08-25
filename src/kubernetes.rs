@@ -10,9 +10,7 @@ use kube::{Api, Client};
 
 use crate::NodeAndTCP;
 
-pub async fn list_node_info(
-    client: Client,
-) -> Result<Vec<NodeAndTCP>, Box<dyn Error>> {
+pub async fn list_node_info(client: Client) -> Result<Vec<NodeAndTCP>, Box<dyn Error>> {
     let nodes: Api<Node> = Api::all(client);
     let node_list = nodes.list(&Default::default()).await?;
 
@@ -62,7 +60,6 @@ pub async fn list_node_info(
     Ok(result)
 }
 
-
 pub async fn list_node_names(client: Client) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let nodes: Api<Node> = Api::all(client);
     let node_list = nodes.list(&Default::default()).await?;
@@ -75,14 +72,13 @@ pub async fn list_node_names(client: Client) -> Result<Vec<String>, Box<dyn std:
 }
 
 pub async fn get_avalible_gameserver(
-_: &crate::Client,
+    _: &crate::Client,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-
 }
 
 pub async fn verify_is_k8s_gameserver(
-_: crate::Client,
-_: String
+    _: crate::Client,
+    _: String,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     Ok(false)
 }

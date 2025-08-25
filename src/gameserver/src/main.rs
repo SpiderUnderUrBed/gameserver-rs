@@ -16,6 +16,7 @@ use tokio::sync::{mpsc, Mutex};
 
 use crate::broadcast::Sender;
 use crate::filesystem::send_folder_over_broadcast;
+use crate::filesystem::BasicPath;
 
 use tokio::fs::File;
 use tokio::io::AsyncRead;
@@ -323,6 +324,10 @@ enum FileRequestPayload {
         start: Option<u64>,
         end: Option<u64>,
     },
+    PathFromTag {
+        path: String,
+        tag: Option<String>
+    },
     FileChunk(FileChunk),
 }
 
@@ -330,6 +335,23 @@ enum FileRequestPayload {
 struct FileResponseMessage {
     in_response_to: u64,
     data: serde_json::Value,
+}
+
+enum ReadMode {
+    Json,
+    MigrationFile {
+        current_file: tokio::fs::File,
+        file_name: String,
+        bytes_written: u64,
+    },
+    NormalFile {
+        current_file: tokio::fs::File,
+    },
+}
+
+#[derive(Clone)]
+struct AppState {
+    current_server: String
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -568,17 +590,7 @@ pub async fn handle_incoming(mut conn: tokio::net::TcpStream) -> anyhow::Result<
     Ok(())
 }
 
-enum ReadMode {
-    Json,
-    MigrationFile {
-        current_file: tokio::fs::File,
-        file_name: String,
-        bytes_written: u64,
-    },
-    NormalFile {
-        current_file: tokio::fs::File,
-    },
-}
+
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -595,10 +607,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Err(e) => Err(e.to_string()),
     });
 
+    let state = AppState {
+        current_server: "default".to_string()
+    };
+    let arc_state = Arc::new(state);
+
     loop {
         let (socket, addr) = listener.accept().await?;
         let stdin_ref = shared_stdin.clone();
         let hostname_ref = hostname_ref.clone();
+        let arc_state_clone = arc_state.clone();
 
         tokio::spawn(async move {
             let (mut read_half, mut write_half) = socket.into_split();
@@ -735,9 +753,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                             )
                                         {
                                             let out_tx_clone = out_tx.clone();
+                                            let arc_state_for_spawn = arc_state_clone.clone();
                                             tokio::spawn(async move {
                                                 let response_json =
-                                                    handle_file_request(request).await;
+                                                    handle_file_request(&Arc::clone(&arc_state_for_spawn), request).await;
                                                 let _ = out_tx_clone.send(response_json).await;
                                             });
                                         } else if let Ok(payload) =
@@ -780,9 +799,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                             )
                                         {
                                             handle_commands_with_metadata(
+                                                &Arc::clone(&arc_state_clone),
                                                 &msg_payload,
                                                 &cmd_tx,
-                                                &stdin_ref,
+                                                &stdin_ref, 
                                                 &hostname_ref,
                                             )
                                             .await;
@@ -866,6 +886,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                 continue;
                                             } else {
                                                 handle_command_or_console(
+                                                    &Arc::clone(&arc_state_clone),
                                                     &msg_payload,
                                                     &cmd_tx,
                                                     &stdin_ref,
@@ -1053,7 +1074,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 }
 
-async fn handle_file_request(request: FileRequestMessage) -> String {
+async fn handle_file_request(state: &Arc<AppState>, request: FileRequestMessage) -> String {
     match request.payload {
         FileRequestPayload::Metadata { path } => match get_metadata(&path).await {
             Ok(metadata) => serde_json::to_string(&FileResponseMessage {
@@ -1067,6 +1088,19 @@ async fn handle_file_request(request: FileRequestMessage) -> String {
             })
             .unwrap(),
         },
+        FileRequestPayload::PathFromTag { tag, path } => {
+            // if let Some(unwrapped_tag) = tag {
+
+            // }
+            let basic_path_response = BasicPath {
+                paths: vec![]
+                //"".to_string()
+            };
+            serde_json::to_string(&FileResponseMessage {
+                in_response_to: request.id,
+                data: serde_json::to_value(basic_path_response).unwrap(),
+            }).unwrap()
+        }
         FileRequestPayload::ListDir { path } => match list_directory(&path).await {
             Ok(entries) => serde_json::to_string(&FileResponseMessage {
                 in_response_to: request.id,
@@ -1158,133 +1192,6 @@ async fn write_file_chunk(
     }
 }
 
-async fn handle_json_message(
-    json_value: Value,
-    out_tx: &mpsc::Sender<String>,
-    cmd_tx: &mpsc::Sender<String>,
-    stdin_ref: &Arc<Mutex<Option<ChildStdin>>>,
-    hostname_ref: &Arc<Result<OsString, String>>,
-    is_migrating: &mut bool,
-    mode: &mut ReadMode,
-    addr: std::net::SocketAddr,
-) -> bool {
-    use ReadMode::*;
-
-    if let Ok(incoming) = serde_json::from_value::<IncomingMessage>(json_value.clone()) {
-        if incoming.message == "migrating" && incoming.message_type == "command" {
-            *is_migrating = true;
-            println!("[{}] Entering migration mode", addr);
-            return true;
-        } else if incoming.message == "migrating_end" && incoming.message_type == "command" {
-            *is_migrating = false;
-            println!("[{}] Exiting migration mode", addr);
-            return true;
-        }
-    }
-
-    if let Ok(request) = serde_json::from_value::<FileRequestMessage>(json_value.clone()) {
-        let out_tx_clone = out_tx.clone();
-        tokio::spawn(async move {
-            let response_json = handle_file_request(request).await;
-            let _ = out_tx_clone.send(response_json).await;
-        });
-        return true;
-    }
-
-    if let Ok(payload) = serde_json::from_value::<SrcAndDest>(json_value.clone()) {
-        if let ApiCalls::Node(dest) = payload.dest {
-            match unsure_ip_or_port_tcp_conn(Some(dest.ip.clone()), None).await {
-                Ok(conn) => {
-                    let writer_tx = tcp_to_writer(conn).await;
-                    tokio::spawn(async move {
-                        if let Err(e) = send_folder_over_broadcast("server/", writer_tx).await {
-                            eprintln!("Error sending folder: {}", e);
-                        }
-                    });
-                }
-                Err(e) => {
-                    eprintln!("[{}] Failed to connect: {}", addr, e);
-                }
-            }
-        }
-        return true;
-    }
-
-    if let Ok(msg_payload) = serde_json::from_value::<MessagePayload>(json_value.clone()) {
-        if msg_payload.r#type == "start_file" {
-            println!(
-                "[{}] Receiving file: {} ({})",
-                addr,
-                msg_payload.message,
-                if *is_migrating {
-                    "migration mode"
-                } else {
-                    "normal mode"
-                }
-            );
-
-            let file_path = format!("server/{}", msg_payload.message);
-
-            if let Err(e) = tokio::fs::create_dir_all("server").await {
-                eprintln!("[{}] Failed to create server directory: {}", addr, e);
-                return true;
-            }
-
-            if let Some(parent) = std::path::Path::new(&file_path).parent() {
-                if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                    eprintln!("[{}] Failed to create parent directory: {}", addr, e);
-                    return true;
-                }
-            }
-
-            match tokio::fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&file_path)
-                .await
-            {
-                Ok(file) => {
-                    if *is_migrating {
-                        *mode = ReadMode::MigrationFile {
-                            current_file: file,
-                            file_name: msg_payload.message.clone(),
-                            bytes_written: 0,
-                        };
-                    } else {
-                        *mode = ReadMode::NormalFile { current_file: file };
-                    }
-                    return true;
-                }
-                Err(e) => {
-                    eprintln!("[{}] Failed to open file {}: {}", addr, file_path, e);
-                    return true;
-                }
-            }
-        } else {
-            handle_command_or_console(&msg_payload, cmd_tx, stdin_ref, hostname_ref).await;
-            return true;
-        }
-    }
-
-    false
-}
-
-async fn handle_non_json_line(
-    line: &str,
-    stdin_ref: &Arc<Mutex<Option<ChildStdin>>>,
-    cmd_tx: &mpsc::Sender<String>,
-) {
-    let mut guard = stdin_ref.lock().await;
-    if let Some(stdin) = guard.as_mut() {
-        let _ = stdin.write_all(format!("{}\n", line).as_bytes()).await;
-        let _ = stdin.flush().await;
-        let _ = cmd_tx.send(format!("Sent to server: {}", line)).await;
-    } else {
-        let _ = cmd_tx.send("Server not running".into()).await;
-    }
-}
-
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || haystack.len() < needle.len() {
         return None;
@@ -1347,6 +1254,7 @@ pub async fn tcp_to_writer(stream: TcpStream) -> mpsc::Sender<Vec<u8>> {
 }
 
 async fn handle_commands_with_metadata(
+    state: &AppState,
     payload: &IncomingMessageWithMetadata,
     cmd_tx: &mpsc::Sender<String>,
     stdin_ref: &Arc<Mutex<Option<ChildStdin>>>,
@@ -1411,7 +1319,11 @@ async fn handle_commands_with_metadata(
         }
     }
 }
+async fn get_definite_path_from_tag(state: &AppState, tag: String) -> String{
+    String::new()
+}
 async fn handle_command_or_console(
+    state: &AppState,
     payload: &MessagePayload,
     cmd_tx: &mpsc::Sender<String>,
     stdin_ref: &Arc<Mutex<Option<ChildStdin>>>,
@@ -1421,6 +1333,9 @@ async fn handle_command_or_console(
     if typ == "command" {
         let cmd_str = payload.message.clone();
         match cmd_str.as_str() {
+            "delete_server" => {
+                get_definite_path_from_tag(state, state.current_server.clone());
+            }
             "stop_server" => {
                 let input = "stop";
                 let mut guard = stdin_ref.lock().await;

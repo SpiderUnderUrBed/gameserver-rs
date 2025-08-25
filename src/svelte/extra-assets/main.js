@@ -26,6 +26,7 @@ class ServerConsole {
     this.setStatuses();
     this.loadFileUpload();
 
+    window.deleteServer = () => this.deleteServer();
     window.updateServer = () => this.updateServer();
     window.configureServer = () => this.configureServer();
     window.restoreButtonDefaults = () => this.restoreButtonDefaults();
@@ -111,15 +112,12 @@ async loadFileUpload() {
           }
         } catch {
           console.log(`Invalid JSON response: ${text}`)
-          //this.addResult("", `Invalid JSON response: ${text}`, false, true);
         }
       } else {
         console.log(`Failed (${res.status}): ${text}`)
-        //this.addResult("", `Failed (${res.status}): ${text}`, false, true);
       }
     } catch (err) {
       console.log(`Error: ${err.message}`)
-      //this.addResult("", `Error: ${err.message}`, false, true);
     }   
     // let server_status = document.getElementById("server-status-indicator");
     this.updateStatus("none");
@@ -431,18 +429,14 @@ async fetchNodes() {
         try {
           const data = JSON.parse(text);
           console.log(`Server Response: ${data.response}`)
-          //this.addResult("", `Server Response: ${data.response}`, false, true);
         } catch {
           console.log(`Invalid JSON response: ${text}`)
-          //this.addResult("", `Invalid JSON response: ${text}`, false, true);
         }
       } else {
         console.log(`Failed (${res.status}): ${text}`)
-        //this.addResult("", `Failed (${res.status}): ${text}`, false, true);
       }
     } catch (err) {
       console.log(`Error: ${err.message}`)
-      //this.addResult("", `Error: ${err.message}`, false, true);
     }   
   }
   async restoreButtonDefaults(){
@@ -462,18 +456,14 @@ async fetchNodes() {
         try {
           const data = JSON.parse(text);
           console.log(`Server Response: ${data.response}`)
-          //this.addResult("", `Server Response: ${data.response}`, false, true);
         } catch {
           console.log(`Invalid JSON response: ${text}`)
-          //this.addResult("", `Invalid JSON response: ${text}`, false, true);
         }
       } else {
         console.log(`Failed (${res.status}): ${text}`)
-        //this.addResult("", `Failed (${res.status}): ${text}`, false, true);
       }
     } catch (err) {
       console.log(`Error: ${err.message}`)
-      //this.addResult("", `Error: ${err.message}`, false, true);
     }
   }
 
@@ -552,6 +542,38 @@ async fetchNodes() {
       }
   };
 
+  async deleteServer(){
+    try {
+      const res = await fetch(`${this.basePath}/api/general`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "IncomingMessage",
+          data: { 
+            type: "command", 
+            message: "delete_server", 
+            authcode: "0", 
+            // metadata: "minecraft"
+           },
+        }),
+      });
+
+      const text = await res.text();
+      if (res.ok) {
+        try {
+          const data = JSON.parse(text);
+          console.log( `Server Response: ${data.response}`);
+        } catch {
+          console.log(`Invalid JSON response: ${text}`);
+        }
+      } else {
+        console.log(`Failed (${res.status}): ${text}`)
+      }
+    } catch (err) {
+      console.log(`Error: ${err.message}`)
+    }
+  }
+
    async loadTopmostButtonsLinks() {
     // console.log("Latest");
     
@@ -599,18 +621,14 @@ async fetchNodes() {
                 });
               }
             }
-
-          //this.addResult("", `Server Response: ${data.response}`, false, true);
         } catch {
-          //this.addResult("", `Success, but invalid JSON: ${text}`, false, true);
+          console.log(`Success, but invalid JSON: ${text}`)
         }
       } else {
         console.error(`Failed (${res.status}): ${text}`)
-        //this.addResult("", `Failed (${res.status}): ${text}`, false, true);
       }
     } catch (err) {
       console.error(`Error: ${err.message}`)
-      //this.addResult("", `Error: ${err.message}`, false, true);
     }
   }
   configureTopmostButtons(){
@@ -654,19 +672,15 @@ async fetchNodes() {
             const data = JSON.parse(text);
             //console.error(text)
             console.log(`Server Response: ${data.response}`)
-            //this.addResult("", `Server Response: ${data.response}`, false, true);
           } catch {
             console.error(`Success, but invalid JSON: ${text}`)
-            //this.addResult("", `Success, but invalid JSON: ${text}`, false, true);
           }
       } else {
         const text = await res.text();
         console.error(`Failed (${res.status}): ${text}`)
-        //this.addResult("", `Failed (${res.status}): ${text}`, false, true);
       }
     } catch (err) {
       console.error(`Error: ${err.message}`)
-      //this.addResult("", `Error: ${err.message}`, false, true);
     }
   }
 
@@ -711,7 +725,12 @@ async fetchNodes() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           kind: "IncomingMessage",
-          data: { type: "command", message: "stop_server", authcode: "0" },
+          data: { 
+            type: "command", 
+            message: "stop_server", 
+            authcode: "0", 
+            // metadata: "minecraft"
+           },
         }),
       });
 
@@ -720,18 +739,14 @@ async fetchNodes() {
         try {
           const data = JSON.parse(text);
           console.log( `Server Response: ${data.response}`);
-          //this.addResult("", `Server Response: ${data.response}`, false, true);
         } catch {
           console.log(`Invalid JSON response: ${text}`);
-          //this.addResult("", `Invalid JSON response: ${text}`, false, true);
         }
       } else {
         console.log(`Failed (${res.status}): ${text}`)
-        //this.addResult("", `Failed (${res.status}): ${text}`, false, true);
       }
     } catch (err) {
       console.log(`Error: ${err.message}`)
-      //this.addResult("", `Error: ${err.message}`, false, true);
     }
   }
 
@@ -788,18 +803,14 @@ async fetchNodes() {
         try {
           const data = JSON.parse(text);
           console.log( `Server Response: ${data.response}`);
-          //this.addResult("", `Server Response: ${data.response}`, false, true);
         } catch {
           console.log(`Invalid JSON response: ${text}`);
-          //this.addResult("", `Invalid JSON response: ${text}`, false, true);
         }
       } else {
         console.log(`Failed (${res.status}): ${text}`)
-        //this.addResult("", `Failed (${res.status}): ${text}`, false, true);
       }
     } catch (err) {
       console.log(`Error: ${err.message}`)
-      //this.addResult("", `Error: ${err.message}`, false, true);
     } 
   }
 
@@ -838,15 +849,23 @@ async fetchNodes() {
   async createDefaultServer() {
     this.updateStatus("up")
     try {
-      const res = await fetch(`${this.basePath}/api/general`, {
+      const res = await fetch(`${this.basePath}/api/generalwithmetadata`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          kind: "IncomingMessage",
+          kind: "IncomingMessageWithMetadata",
           data: {
             message: "create_server",
             type: "command",
             authcode: "0",
+            //metadata: "minecraft"
+            metadata: {
+              kind: "Server",
+              data: {
+                providertype: "minecraft",
+                location: ""
+              }
+            }
           },
         }),
       });

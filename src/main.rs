@@ -43,12 +43,12 @@ use tokio::sync::RwLock;
 
 // mod databasespec;
 // use databasespec::UserDatabase;
-use crate::database::databasespec::{Button, NodeStatus};
 use crate::database::databasespec::ButtonsDatabase;
+use crate::database::databasespec::NodeType;
 use crate::database::databasespec::NodesDatabase;
 use crate::database::databasespec::UserDatabase;
+use crate::database::databasespec::{Button, NodeStatus};
 use crate::database::Node;
-use crate::database::databasespec::NodeType;
 // miscellancious imports, future traits are used because alot of the code is asyncronus and cant fully be contained in tokio
 // mime_guess as when I am serving the files, I need to serve it with the correct mime type
 // serde_json because I exchange alot of json data between the backend and frontend and to the gameserver
@@ -60,6 +60,7 @@ use chrono::{Duration as OtherDuration, Utc};
 use futures_util::{sink::SinkExt, stream::StreamExt};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, TokenData, Validation};
 use mime_guess::from_path;
+use serde;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use serial_test::serial;
@@ -91,13 +92,21 @@ mod database {
     include!("pgdatabase.rs");
 }
 
-#[cfg(all(not(feature = "full-stack"), not(feature = "docker"), not(feature = "database")))]
+#[cfg(all(
+    not(feature = "full-stack"),
+    not(feature = "docker"),
+    not(feature = "database")
+))]
 mod database {
     include!("jsondatabase.rs");
 }
 
 // JsonDatabase is only something that would be unique to Json and not any other database managed by sqlx
-#[cfg(all(not(feature = "full-stack"), not(feature = "docker"), not(feature = "database")))]
+#[cfg(all(
+    not(feature = "full-stack"),
+    not(feature = "docker"),
+    not(feature = "database")
+))]
 use database::JsonBackend;
 
 // Both database files and any more should have these structs
@@ -106,7 +115,7 @@ use database::RetrieveUser;
 use database::User;
 
 mod extra;
-use extra::{value_from_line};
+use extra::value_from_line;
 
 mod filesystem;
 use filesystem::{
@@ -148,18 +157,18 @@ mod kubernetes {
         Err("This should not be running".into())
     }
     pub async fn list_node_info(
-    _: crate::Client,
+        _: crate::Client,
     ) -> Result<Vec<NodeAndTCP>, Box<dyn std::error::Error + Send + Sync>> {
         Err("This should not be running".into())
     }
     pub async fn verify_is_k8s_gameserver(
-    _: crate::Client,
-    _: String
+        _: crate::Client,
+        _: String,
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         Ok(false)
     }
     pub async fn get_avalible_gameserver(
-    _: &crate::Client,
+        _: &crate::Client,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         Err("This should not be running in a non-k8s environemnt".into())
     }
@@ -231,7 +240,11 @@ async fn first_connection() -> Result<sqlx::Pool<sqlx::Postgres>, sqlx::Error> {
 // due to reduced complexity, and currently at the time of writing this
 // dependency issues, so unless you are testing the postgres db itself with this project
 // the json backend MIGHT be sufficent, but at the time of writing this I have not made the json backend work
-#[cfg(all(not(feature = "full-stack"), not(feature = "docker"), not(feature = "database")))]
+#[cfg(all(
+    not(feature = "full-stack"),
+    not(feature = "docker"),
+    not(feature = "database")
+))]
 async fn first_connection() -> Result<JsonBackend, String> {
     Ok(JsonBackend::new(None))
 }
@@ -254,11 +267,11 @@ struct MessagePayload {
 // #[derive(PartialEq)]
 
 struct NodeAndTCP {
-    name: String, 
-    ip: String, 
+    name: String,
+    ip: String,
     nodetype: NodeType,
     tcp_tx: Option<tokio::sync::broadcast::Sender<Vec<u8>>>,
-    tcp_rx: Option<tokio::sync::broadcast::Receiver<Vec<u8>>>
+    tcp_rx: Option<tokio::sync::broadcast::Receiver<Vec<u8>>>,
 }
 impl Clone for NodeAndTCP {
     fn clone(&self) -> NodeAndTCP {
@@ -272,13 +285,25 @@ impl Clone for NodeAndTCP {
     }
 }
 
-// console messages are for the console specifically, but this might be redundant
-#[derive(Debug, Deserialize)]
-struct ConsoleMessage {
-    data: String,
+// more modern version of incoming message, i only keep incomingMessage for now as it will take a bit of effort to change it all to support the new types
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct IncomingMessageWithMetadata {
+    message: String,
     #[serde(rename = "type")]
     message_type: String,
+    metadata: MetadataTypes,
     authcode: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(tag = "kind", content = "data")]
+enum MetadataTypes {
+    None,
+    Server {
+        providertype: String,
+        location: String,
+    },
+    String(String),
 }
 
 // console output is sometimes contained within the data feild of json, but this also might be redundant
@@ -299,7 +324,7 @@ struct ResponseMessage {
 #[derive(Debug, Deserialize, Serialize)]
 struct Statistics {
     used_memory: String,
-    core_data: Vec<String>
+    core_data: Vec<String>,
 }
 // a list for things like nodes, capabilities, etc
 #[derive(Debug, Serialize, Deserialize)]
@@ -307,36 +332,11 @@ struct List {
     list: ApiCalls,
 }
 
-// some custom web error messages to be used in the frontend, graciously provided by axum
-enum WebErrors {
-    AuthError {
-        message: String,
-        status_code: StatusCode,
-    },
-}
-impl IntoResponse for WebErrors {
-    fn into_response(self) -> Response<Body> {
-        let (status_code, message) = match self {
-            WebErrors::AuthError {
-                message,
-                status_code,
-            } => (status_code, message),
-        };
-
-        Response::builder()
-            .status(status_code)
-            .header("content-type", "application/json")
-            .body(Body::from(
-                serde_json::to_string(&json!({ "error": message })).unwrap(),
-            ))
-            .unwrap()
-    }
-}
-#[derive(Debug, serde::Deserialize)]
-struct KeywordPayload {
-    start_keyword: Option<String>,
-    stop_keyword: Option<String>,
-}
+// #[derive(Debug, serde::Deserialize)]
+// struct KeywordPayload {
+//     start_keyword: Option<String>,
+//     stop_keyword: Option<String>,
+// }
 
 // May be redundant, but this is a struct for incoming messages
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -351,10 +351,10 @@ struct IncomingMessage {
 struct SrcAndDest {
     src: ApiCalls,
     dest: ApiCalls,
-    metadata: String
+    metadata: String,
 }
 struct BrowserErrMessage {
-    err: String
+    err: String,
 }
 
 // Some common api calls which is just what might get exchanged between the frontend and backend via api
@@ -371,6 +371,7 @@ enum ApiCalls {
     UserList(Vec<User>),
     ButtonList(Vec<Button>),
     IncomingMessage(IncomingMessage),
+    IncomingMessageWithMetadata(IncomingMessageWithMetadata),
     FileList(Vec<FsItem>),
     Node(Node),
 }
@@ -413,32 +414,32 @@ impl Clone for AppState {
             client: self.client.clone(),
             database: self.database.clone(),
             //sysinfo: System::new_all(),
-            additonal_node_tcp: self.additonal_node_tcp
+            additonal_node_tcp: self
+                .additonal_node_tcp
                 .iter()
-                .map(|node| 
-                    NodeAndTCP {
-                        name: node.name.clone(),
-                        ip: node.ip.clone(),
-                        tcp_tx: node.tcp_tx.clone(),
-                        tcp_rx: {
-                            if let Some (tcp_rx) = &node.tcp_rx {
-                                Some(tcp_rx.resubscribe())
-                            } else {
-                                None
-                            }
-                        },
-                        nodetype: node.nodetype.clone(),
-                    }
-                )
+                .map(|node| NodeAndTCP {
+                    name: node.name.clone(),
+                    ip: node.ip.clone(),
+                    tcp_tx: node.tcp_tx.clone(),
+                    tcp_rx: {
+                        if let Some(tcp_rx) = &node.tcp_rx {
+                            Some(tcp_rx.resubscribe())
+                        } else {
+                            None
+                        }
+                    },
+                    nodetype: node.nodetype.clone(),
+                })
                 .collect(),
         }
     }
 }
 
-
 // for the initial connection attempt, which will determine if possibly I would need to create the container and deployment upon failure
 // i will use rusts 'timeout' for x interval determined with CONNECTION_TIMEOUT
-async fn attempt_connection(tcp_url: String) -> Result<TcpStream, Box<dyn std::error::Error + Send + Sync>> {
+async fn attempt_connection(
+    tcp_url: String,
+) -> Result<TcpStream, Box<dyn std::error::Error + Send + Sync>> {
     timeout(CONNECTION_TIMEOUT, TcpStream::connect(tcp_url))
         .await?
         .map_err(Into::into)
@@ -546,7 +547,7 @@ pub async fn handle_stream(
                                                 let node_status = if let Some(client) = client_option {
                                                     let client_clone = client.clone();
                                                     let ip_clone = ip.clone();
-                                                    
+
                                                     match tokio::time::timeout(
                                                         std::time::Duration::from_millis(100),
                                                         verify_is_k8s_gameserver(client_clone, ip_clone)
@@ -626,7 +627,6 @@ pub async fn handle_stream(
 
 // use tokio::sync::broadcast::error::RecvError::Lagged;
 // use tokio::sync::broadcast::error::RecvError::Closed;
-
 
 // does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
 async fn connect_to_server(
@@ -729,17 +729,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut tcp_url: String = TcpUrl.to_string();
     if !DONT_OVERRIDE_CONN_WITH_K8S && client.is_some() {
-        if let Ok(url_result) = &kubernetes::get_avalible_gameserver(client.as_ref().unwrap()).await {
-            tcp_url = url_result.clone();  
+        if let Ok(url_result) = &kubernetes::get_avalible_gameserver(client.as_ref().unwrap()).await
+        {
+            tcp_url = url_result.clone();
         } else {
             println!("Could not get a successful url for a existing gameserver, will try the fallback url")
         }
     }
 
-
     let mut nodes: Vec<NodeAndTCP> = vec![];
     if let Ok(db_nodes) = database.fetch_all_nodes().await {
-        nodes = db_nodes.into_iter().map(|node| NodeAndTCP { name: node.nodename, nodetype: node.nodetype, ip: node.ip, tcp_tx: None, tcp_rx: None }).collect()
+        nodes = db_nodes
+            .into_iter()
+            .map(|node| NodeAndTCP {
+                name: node.nodename,
+                nodetype: node.nodetype,
+                ip: node.ip,
+                tcp_tx: None,
+                tcp_rx: None,
+            })
+            .collect()
     }
 
     // use everything so far to make the app state
@@ -770,7 +779,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             multifaceted_state.write().await.tcp_tx.clone(),
         )
         .await
-        .is_err() || FORCE_REBUILD
+        .is_err()
+            || FORCE_REBUILD
         {
             eprintln!("Initial connection failed or force rebuild enabled");
             if BUILD_DOCKER_IMAGE {
@@ -792,7 +802,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let bridge_tx = multifaceted_state.read().await.ws_tx.clone();
 
     tokio::spawn(async move {
-        if let Err(e) = connect_to_server(server_connection_state, tcp_url.to_string(), bridge_rx, bridge_tx).await {
+        if let Err(e) = connect_to_server(
+            server_connection_state,
+            tcp_url.to_string(),
+            bridge_rx,
+            bridge_tx,
+        )
+        .await
+        {
             eprintln!("[DEBUG] Connection task failed: {}", e);
         }
     });
@@ -834,6 +851,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/getserver", post(get_server))
         .route("/api/send", post(receive_message))
         .route("/api/general", post(process_general))
+        .route(
+            "/api/generalwithmetadata",
+            post(process_general_with_metadata),
+        )
+        // the above route is supposed to be the newer version to /api/general, adding a additonal metadata feild, changing all incomingmessages to incomingmessageswithmetadata
+        // will take awhile, so temporarially ill have this route
         .route("/api/signin", post(sign_in))
         .route("/api/createuser", post(create_user))
         .route("/api/deleteuser", post(delete_user))
@@ -983,9 +1006,9 @@ async fn button_reset(
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct ConsoleData {
-    authcode: String, 
-    data: String, 
-    r#type: String
+    authcode: String,
+    data: String,
+    r#type: String,
 }
 
 async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
@@ -1082,7 +1105,6 @@ async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
 
     println!("[Conn {}] DISCONNECTED", conn_id);
 }
-
 
 async fn ws_handler(
     ws: WebSocketUpgrade,
@@ -1183,19 +1205,24 @@ async fn statistics(
             // let mut system = state.sysinfo;
             // system.refresh_all();
 
-            let core_data: Vec<String> = system.cpus().into_iter().map(|core| core.cpu_usage().to_string()).collect();
+            let core_data: Vec<String> = system
+                .cpus()
+                .into_iter()
+                .map(|core| core.cpu_usage().to_string())
+                .collect();
             let statistics = Statistics {
                 used_memory: system.total_memory().to_string(),
                 core_data,
             };
             let event = match serde_json::to_string(&statistics) {
                 Ok(json) => Ok(Event::default().data(json)),
-                Err(_) => Err("Error".into()), 
+                Err(_) => Err("Error".into()),
             };
             Some((event, (interval, system)))
             // drop(state);
             //Some((Ok(Event::default().data(serde_json::to_string(statistics)), (interval, system))))
-        });
+        },
+    );
     Sse::new(updates).keep_alive(axum::response::sse::KeepAlive::default())
 }
 async fn ongoing_server_status(
@@ -1357,7 +1384,63 @@ async fn process_general(
         ))
     }
 }
+//process_general_with_metadata
 
+// as I said in main, this is temporary, because IncomingMessageWithMetadata is supposed to replace IncomingMessage
+// but for now I will have it as a seprate route for new routes which need a metadata feild until a replace everything
+async fn process_general_with_metadata(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    Json(res): Json<ApiCalls>,
+) -> Result<Json<ResponseMessage>, (StatusCode, String)> {
+    let state = arc_state.write().await;
+    if let ApiCalls::IncomingMessageWithMetadata(payload) = res {
+        println!("Processing general message: {:?}", payload);
+
+        let json_payload = IncomingMessageWithMetadata {
+            message_type: payload.message_type.clone(),
+            message: payload.message.clone(),
+            authcode: payload.authcode.clone(),
+            metadata: payload.metadata.clone(),
+        };
+
+        match serde_json::to_vec(&json_payload) {
+            Ok(mut json_bytes) => {
+                json_bytes.push(b'\n');
+
+                let tx = state.tcp_tx.clone();
+                let tx_guard = tx;
+
+                match tx_guard.send(json_bytes) {
+                    Ok(_) => {
+                        println!("Successfully forwarded message to TCP server");
+                        Ok(Json(ResponseMessage {
+                            response: format!("Processed: {}", payload.message),
+                        }))
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to send message to TCP channel: {}", e);
+                        Err((
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "Failed to forward message to server".to_string(),
+                        ))
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Serialization error: {}", e);
+                Err((
+                    StatusCode::BAD_REQUEST,
+                    "Invalid message format".to_string(),
+                ))
+            }
+        }
+    } else {
+        Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to forward message to server".to_string(),
+        ))
+    }
+}
 // a list of users is returned, like alot of other routes, I need to add permissions, and check against those permissions to see if a user
 // can see all the other users, it will delegate the retrival to the database and pass it in as a ApiCalls
 async fn users(
@@ -1381,7 +1464,7 @@ async fn fetch_node(
 ) -> Result<Json<Node>, StatusCode> {
     let mut state = arc_state.write().await;
     let option_node = state.database.retrieve_nodes(request.message).await;
-    if let Some(node) = option_node { 
+    if let Some(node) = option_node {
         Ok(Json(node))
     } else {
         Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -1743,6 +1826,7 @@ pub async fn get_files(
         let state = state.read().await;
         (state.tcp_tx.clone(), state.tcp_tx.subscribe())
     };
+    
     let tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
 
     let user_input = request.message.trim_start_matches('/');
@@ -1845,7 +1929,6 @@ pub async fn get_files(
     })
     .into_response()
 }
-
 
 // This is crucial for authentication, it will take a next for redirects, and a jwk to verify the claim with, then it grants the claim for the current session
 // and redirects the user to their original destination
@@ -1962,7 +2045,11 @@ mod tests {
         use super::*;
         use crate::database::{Database, Element};
 
-        #[cfg(all(not(feature = "full-stack"), not(feature = "docker"), not(feature = "database")))]
+        #[cfg(all(
+            not(feature = "full-stack"),
+            not(feature = "docker"),
+            not(feature = "database")
+        ))]
         async fn create_db_for_tests() -> Result<Database, String> {
             Ok(Database::new(None))
         }
@@ -1997,10 +2084,10 @@ mod tests {
                     element: Element::User {
                         user: "kk".to_owned(),
                         password: "ddd".to_owned(),
-                        user_perms: vec![], 
+                        user_perms: vec![],
                     },
                     jwt: "".to_string(),
-                    require_auth: false
+                    require_auth: false,
                 })
                 .await;
             if remove_user_result.is_ok() {

@@ -1,12 +1,6 @@
-
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures_util::StreamExt;
-use serde::de::DeserializeOwned;
-use serde_json::Value;
-use tokio::sync::RwLock;
-use tokio::time::Instant;
 use crate::filesystem::FileResponseMessage;
 use crate::AppState;
 use crate::ConsoleData;
@@ -14,15 +8,20 @@ use crate::Debug;
 use crate::InnerData;
 use crate::List;
 use crate::MessagePayload;
+use futures_util::StreamExt;
+use serde::de::DeserializeOwned;
+use serde_json::Value;
+use tokio::sync::RwLock;
+use tokio::time::Instant;
 
-use tokio::sync::Mutex;
 use crate::Message;
-use futures_util::stream;
-use axum::extract::ws::WebSocket;
 use crate::WsMessage;
-use tokio::time::interval;
 use axum::body::Bytes;
+use axum::extract::ws::WebSocket;
+use futures_util::stream;
 use futures_util::SinkExt;
+use tokio::sync::Mutex;
+use tokio::time::interval;
 
 pub struct JsonAssembler {
     pub(crate) buffer: String,
@@ -181,7 +180,6 @@ impl JsonAssembler {
     }
 }
 
-
 pub fn parse_json_objects_in_str<T>(input: &str) -> Vec<Result<T, serde_json::Error>>
 where
     T: DeserializeOwned + Debug,
@@ -235,8 +233,10 @@ where
     results
 }
 
-
-pub async fn value_from_line<T, F>(gameserver_str: &str, filter: F) -> Vec<Result<T, serde_json::Error>>
+pub async fn value_from_line<T, F>(
+    gameserver_str: &str,
+    filter: F,
+) -> Vec<Result<T, serde_json::Error>>
 where
     T: DeserializeOwned + Debug,
     F: Fn(&str) -> bool,
@@ -254,7 +254,9 @@ where
                 let mut parsed = false;
 
                 if !parsed {
-                    if let Ok(resp_msg) = serde_json::from_value::<FileResponseMessage>(line_val.clone()) {
+                    if let Ok(resp_msg) =
+                        serde_json::from_value::<FileResponseMessage>(line_val.clone())
+                    {
                         if let Ok(data_str) = String::from_utf8(resp_msg.data.clone()) {
                             if let Ok(result) = serde_json::from_str::<T>(&data_str) {
                                 final_values.push(Ok(result));
@@ -270,7 +272,9 @@ where
                     if let Ok(inner_data) = serde_json::from_value::<InnerData>(line_val.clone()) {
                         if let Ok(result) = serde_json::from_str::<T>(&inner_data.data) {
                             final_values.push(Ok(result));
-                        } else if let Ok(result) = serde_json::from_value::<T>(serde_json::to_value(&inner_data).unwrap()) {
+                        } else if let Ok(result) =
+                            serde_json::from_value::<T>(serde_json::to_value(&inner_data).unwrap())
+                        {
                             final_values.push(Ok(result));
                         } else {
                             final_values.push(Err(serde_json::from_str::<T>("").unwrap_err()));
@@ -280,10 +284,14 @@ where
                 }
 
                 if !parsed {
-                    if let Ok(console_data) = serde_json::from_value::<ConsoleData>(line_val.clone()) {
+                    if let Ok(console_data) =
+                        serde_json::from_value::<ConsoleData>(line_val.clone())
+                    {
                         if let Ok(result) = serde_json::from_str::<T>(&console_data.data) {
                             final_values.push(Ok(result));
-                        } else if let Ok(result) = serde_json::from_value::<T>(serde_json::to_value(&console_data).unwrap()) {
+                        } else if let Ok(result) = serde_json::from_value::<T>(
+                            serde_json::to_value(&console_data).unwrap(),
+                        ) {
                             final_values.push(Ok(result));
                         } else {
                             final_values.push(Err(serde_json::from_str::<T>("").unwrap_err()));
@@ -294,7 +302,9 @@ where
 
                 if !parsed {
                     if let Ok(list) = serde_json::from_value::<List>(line_val.clone()) {
-                        if let Ok(result) = serde_json::from_value::<T>(serde_json::to_value(&list).unwrap()) {
+                        if let Ok(result) =
+                            serde_json::from_value::<T>(serde_json::to_value(&list).unwrap())
+                        {
                             final_values.push(Ok(result));
                         }
                         parsed = true;
@@ -328,7 +338,6 @@ where
 
     final_values
 }
-
 
 async fn ws_debug(
     conn_id: usize,
