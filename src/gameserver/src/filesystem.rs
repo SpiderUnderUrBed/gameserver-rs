@@ -1,4 +1,9 @@
+use crate::extra::JsonAssembler;
+use crate::MessagePayload;
+use crate::Sender;
+use crate::{extra, IncomingMessage};
 use async_trait::async_trait;
+use multer::Multipart;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -10,15 +15,12 @@ use std::{
         Arc,
     },
 };
-use tokio::sync::broadcast;
-use tokio::time::timeout;
-use crate::extra::JsonAssembler;
-use crate::MessagePayload;
-use crate::Sender;
-use crate::{extra, IncomingMessage};
-use multer::Multipart;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
+use tokio::sync::broadcast;
+use tokio::time::timeout;
+
+use tokio::sync::mpsc;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(tag = "kind", content = "data")]
@@ -35,6 +37,12 @@ pub trait FsType: Clone + Send + Sync {
     ) -> std::io::Result<IncomingMessage>;
     async fn get_metadata(&mut self, path: &str) -> std::io::Result<FsMetadata>;
     async fn list_directory(&mut self, path: &str) -> std::io::Result<Vec<FsEntry>>;
+    async fn list_directory_within_range(
+        &mut self,
+        path: &str,
+        start: Option<u64>,
+        end: Option<u64>,
+    ) -> std::io::Result<Vec<FsEntry>>;
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
@@ -71,8 +79,17 @@ pub struct FileChunk {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum FileRequestPayload {
-    Metadata { path: String },
-    ListDir { path: String },
+    Metadata {
+        path: String,
+    },
+    ListDir {
+        path: String,
+    },
+    ListDirWithRange {
+        path: String,
+        start: Option<u64>,
+        end: Option<u64>,
+    },
     FileChunk(FileChunk),
 }
 
@@ -414,7 +431,200 @@ fn collect_files(
 
     Ok(())
 }
-use tokio::sync::mpsc;
+
+fn extract_entries_from_value(val: &Value) -> std::io::Result<Option<Vec<FsEntry>>> {
+    if val.is_array() {
+        if let Ok(entries) = serde_json::from_value::<Vec<FsEntry>>(val.clone()) {
+            return Ok(Some(entries));
+        }
+        if let Some(arr) = val.as_array() {
+            let mut out = Vec::new();
+            for item in arr {
+                if let Some(name) = item.as_str() {
+                    out.push(FsEntry {
+                        name: name.to_string(),
+                        is_file: true,
+                        is_dir: false,
+                    });
+                } else {
+                    return Ok(None);
+                }
+            }
+            return Ok(Some(out));
+        }
+    }
+
+    if let Some(data_val) = val.get("data") {
+        if data_val.is_array() || data_val.is_object() {
+            if let Ok(entries) = serde_json::from_value::<Vec<FsEntry>>(data_val.clone()) {
+                return Ok(Some(entries));
+            }
+            if let Some(arr) = data_val.as_array() {
+                let mut out = Vec::new();
+                for item in arr {
+                    if let Some(name) = item.as_str() {
+                        out.push(FsEntry {
+                            name: name.to_string(),
+                            is_file: true,
+                            is_dir: false,
+                        });
+                    } else {
+                        return Ok(None);
+                    }
+                }
+                return Ok(Some(out));
+            }
+        }
+
+        if let Some(s) = data_val.as_str() {
+            if let Ok(entries) = serde_json::from_str::<Vec<FsEntry>>(s) {
+                return Ok(Some(entries));
+            }
+            if let Ok(val2) = serde_json::from_str::<Value>(s) {
+                if let Some(arr) = val2.as_array() {
+                    let mut out = Vec::new();
+                    for item in arr {
+                        if let Some(name) = item.as_str() {
+                            out.push(FsEntry {
+                                name: name.to_string(),
+                                is_file: true,
+                                is_dir: false,
+                            });
+                        } else {
+                            return Ok(None);
+                        }
+                    }
+                    return Ok(Some(out));
+                }
+            }
+        }
+    }
+
+    if let Some(list_val) = val.get("list") {
+        if list_val.is_array() {
+            if let Ok(entries) = serde_json::from_value::<Vec<FsEntry>>(list_val.clone()) {
+                return Ok(Some(entries));
+            }
+            if let Some(arr) = list_val.as_array() {
+                let mut out = Vec::new();
+                for item in arr {
+                    if let Some(name) = item.as_str() {
+                        out.push(FsEntry {
+                            name: name.to_string(),
+                            is_file: true,
+                            is_dir: false,
+                        });
+                    } else {
+                        return Ok(None);
+                    }
+                }
+                return Ok(Some(out));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+fn parse_directory_response(response_chunks: &[Vec<u8>], id: u64) -> std::io::Result<Vec<FsEntry>> {
+    for chunk in response_chunks.iter() {
+        if let Ok(entries) = serde_json::from_slice::<Vec<FsEntry>>(chunk) {
+            return Ok(entries);
+        }
+
+        if let Ok(val) = serde_json::from_slice::<Value>(chunk) {
+            if let Some(entries) = extract_entries_from_value(&val)? {
+                return Ok(entries);
+            }
+        }
+
+        if let Ok(as_str) = std::str::from_utf8(chunk) {
+            let trimmed = as_str.trim();
+            if trimmed.contains('\n') {
+                let out: Vec<FsEntry> = trimmed
+                    .lines()
+                    .map(|l| FsEntry {
+                        name: l.trim().to_string(),
+                        is_file: true,
+                        is_dir: false,
+                    })
+                    .collect();
+                if !out.is_empty() {
+                    return Ok(out);
+                }
+            }
+        }
+    }
+
+    let response: Vec<u8> = response_chunks.concat();
+    let raw_text = String::from_utf8_lossy(&response).to_string();
+
+    if let Ok(entries) = serde_json::from_slice::<Vec<FsEntry>>(&response) {
+        return Ok(entries);
+    }
+
+    let val: Value = serde_json::from_str(&raw_text).map_err(|e| {
+        println!(
+            "[list_directory:{}] final parse into Value failed: {}",
+            id, e
+        );
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Failed to parse response as JSON Value: {}", e),
+        )
+    })?;
+
+    if val.is_array() {
+        let entries: Vec<FsEntry> = serde_json::from_value(val).map_err(|e| {
+            println!(
+                "[list_directory:{}] from_value into Vec<FsEntry> failed: {}",
+                id, e
+            );
+            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+        })?;
+        return Ok(entries);
+    }
+
+    if let Value::String(s) = val {
+        let inner = s.trim();
+        let entries: Vec<FsEntry> = serde_json::from_str(inner).map_err(|e| {
+            println!(
+                "[list_directory:{}] parsing inner string into Vec<FsEntry> failed: {}",
+                id, e
+            );
+            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+        })?;
+        return Ok(entries);
+    }
+
+    if let Value::Object(mut map) = val {
+        if let Some(data_val) = map.remove("data") {
+            if data_val.is_array() || data_val.is_object() {
+                let entries: Vec<FsEntry> = serde_json::from_value(data_val).map_err(|e| {
+                    println!(
+                        "[list_directory:{}] parsing data field into Vec<FsEntry> failed: {}",
+                        id, e
+                    );
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+                })?;
+                return Ok(entries);
+            }
+            if let Value::String(s) = data_val {
+                let inner = s.trim();
+                let entries: Vec<FsEntry> = serde_json::from_str(inner).map_err(|e| {
+                        println!("[list_directory:{}] parsing inner data string into Vec<FsEntry> failed: {}", id, e);
+                        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+                    })?;
+                return Ok(entries);
+            }
+        }
+    }
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "Failed to parse directory listing into Vec<FsEntry>",
+    ))
+}
 
 #[async_trait::async_trait]
 impl FsType for TcpFs {
@@ -497,7 +707,7 @@ impl FsType for TcpFs {
 
         let response_chunks = self.recv_response(id).await?;
 
-        for (i, chunk) in response_chunks.iter().enumerate() {
+        for chunk in response_chunks.iter() {
             if let Ok(meta) = serde_json::from_slice::<FsMetadata>(chunk) {
                 return Ok(meta);
             }
@@ -509,36 +719,61 @@ impl FsType for TcpFs {
                             return Ok(meta);
                         }
                     }
+
                     if let Some(s) = data_val.as_str() {
                         if let Ok(meta) = serde_json::from_str::<FsMetadata>(s) {
                             return Ok(meta);
                         }
                     }
                 }
-                if let Value::String(s) = val {
-                    if let Ok(meta) = serde_json::from_str::<FsMetadata>(&s) {
+
+                if let Value::String(s) = &val {
+                    if let Ok(meta) = serde_json::from_str::<FsMetadata>(s) {
                         return Ok(meta);
                     }
                 }
-            }
 
-            println!(
-                "[get_metadata:{}] chunk[{}] did not parse as metadata",
-                id, i
-            );
+                if let Ok(meta) = serde_json::from_value::<FsMetadata>(val.clone()) {
+                    return Ok(meta);
+                }
+            }
         }
 
-        let response: Vec<u8> = response_chunks.concat();
+        println!(
+            "[get_metadata:{}] final parse error: missing field `is_file` at line 1 column 58",
+            id
+        );
 
-        serde_json::from_slice::<FsMetadata>(&response).map_err(|e| {
-            println!("[get_metadata:{}] final parse error: {}", id, e);
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-        })
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Failed to parse metadata response for path '{}'", path),
+        ))
+    }
+    async fn list_directory_within_range(
+        &mut self,
+        path: &str,
+        start: Option<u64>,
+        end: Option<u64>,
+    ) -> std::io::Result<Vec<FsEntry>> {
+        let id = self
+            .send_request(FileRequestPayload::ListDirWithRange {
+                path: path.to_string(),
+                start,
+                end,
+            })
+            .await?;
+
+        let response_chunks = match self.recv_response(id).await {
+            Ok(b) => b,
+            Err(e) => {
+                println!("[list_directory:{}] recv_response error: {}", id, e);
+                return Err(e);
+            }
+        };
+        parse_directory_response(&response_chunks, id)
     }
 
     async fn list_directory(&mut self, path: &str) -> std::io::Result<Vec<FsEntry>> {
-        use serde_json::Value;
-
         let id = self
             .send_request(FileRequestPayload::ListDir {
                 path: path.to_string(),
@@ -553,213 +788,7 @@ impl FsType for TcpFs {
             }
         };
 
-        for (i, chunk) in response_chunks.iter().enumerate() {
-            let preview = String::from_utf8_lossy(chunk);
-
-            if let Ok(entries) = serde_json::from_slice::<Vec<FsEntry>>(chunk) {
-                return Ok(entries);
-            }
-
-            if let Ok(val) = serde_json::from_slice::<Value>(chunk) {
-                if val.is_array() {
-                    if let Ok(entries) = serde_json::from_value::<Vec<FsEntry>>(val.clone()) {
-                        return Ok(entries);
-                    }
-                    if let Some(arr) = val.as_array() {
-                        let mut out = Vec::new();
-                        let mut ok = true;
-                        for item in arr {
-                            if let Some(name) = item.as_str() {
-                                out.push(FsEntry {
-                                    name: name.to_string(),
-                                    is_file: true,
-                                    is_dir: false,
-                                });
-                            } else {
-                                ok = false;
-                                break;
-                            }
-                        }
-                        if ok {
-                            return Ok(out);
-                        }
-                    }
-                }
-
-                if let Some(data_val) = val.get("data") {
-                    if data_val.is_array() || data_val.is_object() {
-                        if let Ok(entries) =
-                            serde_json::from_value::<Vec<FsEntry>>(data_val.clone())
-                        {
-                            return Ok(entries);
-                        }
-                        if let Some(arr) = data_val.as_array() {
-                            let mut out = Vec::new();
-                            let mut ok = true;
-                            for item in arr {
-                                if let Some(name) = item.as_str() {
-                                    out.push(FsEntry {
-                                        name: name.to_string(),
-                                        is_file: true,
-                                        is_dir: false,
-                                    });
-                                } else {
-                                    ok = false;
-                                    break;
-                                }
-                            }
-                            if ok {
-                                return Ok(out);
-                            }
-                        }
-                    }
-
-                    if let Some(s) = data_val.as_str() {
-                        if let Ok(entries) = serde_json::from_str::<Vec<FsEntry>>(s) {
-                            return Ok(entries);
-                        }
-                        if let Ok(val2) = serde_json::from_str::<Value>(s) {
-                            if val2.is_array() {
-                                if let Some(arr) = val2.as_array() {
-                                    let mut out = Vec::new();
-                                    let mut ok = true;
-                                    for item in arr {
-                                        if let Some(name) = item.as_str() {
-                                            out.push(FsEntry {
-                                                name: name.to_string(),
-                                                is_file: true,
-                                                is_dir: false,
-                                            });
-                                        } else {
-                                            ok = false;
-                                            break;
-                                        }
-                                    }
-                                    if ok {
-                                        return Ok(out);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if let Some(list_val) = val.get("list") {
-                    if list_val.is_array() {
-                        if let Ok(entries) =
-                            serde_json::from_value::<Vec<FsEntry>>(list_val.clone())
-                        {
-                            return Ok(entries);
-                        }
-                        if let Some(arr) = list_val.as_array() {
-                            let mut out = Vec::new();
-                            let mut ok = true;
-                            for item in arr {
-                                if let Some(name) = item.as_str() {
-                                    out.push(FsEntry {
-                                        name: name.to_string(),
-                                        is_file: true,
-                                        is_dir: false,
-                                    });
-                                } else {
-                                    ok = false;
-                                    break;
-                                }
-                            }
-                            if ok {
-                                return Ok(out);
-                            }
-                        }
-                    }
-                }
-            }
-
-            if let Ok(as_str) = std::str::from_utf8(chunk) {
-                let trimmed = as_str.trim();
-                if trimmed.contains('\n') {
-                    let out: Vec<FsEntry> = trimmed
-                        .lines()
-                        .map(|l| FsEntry {
-                            name: l.trim().to_string(),
-                            is_file: true,
-                            is_dir: false,
-                        })
-                        .collect();
-                    if !out.is_empty() {
-                        return Ok(out);
-                    }
-                }
-            }
-        }
-
-        let response: Vec<u8> = response_chunks.concat();
-        let raw_text = String::from_utf8_lossy(&response).to_string();
-
-        if let Ok(entries) = serde_json::from_slice::<Vec<FsEntry>>(&response) {
-            return Ok(entries);
-        }
-
-        let val: Value = serde_json::from_str(&raw_text).map_err(|e| {
-            println!(
-                "[list_directory:{}] final parse into Value failed: {}",
-                id, e
-            );
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("Failed to parse response as JSON Value: {}", e),
-            )
-        })?;
-
-        if val.is_array() {
-            let entries: Vec<FsEntry> = serde_json::from_value(val).map_err(|e| {
-                println!(
-                    "[list_directory:{}] from_value into Vec<FsEntry> failed: {}",
-                    id, e
-                );
-                std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-            })?;
-            return Ok(entries);
-        }
-
-        if let Value::String(s) = val {
-            let inner = s.trim();
-            let entries: Vec<FsEntry> = serde_json::from_str(inner).map_err(|e| {
-                println!(
-                    "[list_directory:{}] parsing inner string into Vec<FsEntry> failed: {}",
-                    id, e
-                );
-                std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-            })?;
-            return Ok(entries);
-        }
-
-        if let Value::Object(mut map) = val {
-            if let Some(data_val) = map.remove("data") {
-                if data_val.is_array() || data_val.is_object() {
-                    let entries: Vec<FsEntry> = serde_json::from_value(data_val).map_err(|e| {
-                        println!(
-                            "[list_directory:{}] parsing data field into Vec<FsEntry> failed: {}",
-                            id, e
-                        );
-                        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-                    })?;
-                    return Ok(entries);
-                }
-                if let Value::String(s) = data_val {
-                    let inner = s.trim();
-                    let entries: Vec<FsEntry> = serde_json::from_str(inner).map_err(|e| {
-                        println!("[list_directory:{}] parsing inner data string into Vec<FsEntry> failed: {}", id, e);
-                        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-                    })?;
-                    return Ok(entries);
-                }
-            }
-        }
-
-        Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "Failed to parse directory listing into Vec<FsEntry>",
-        ))
+        parse_directory_response(&response_chunks, id)
     }
 }
 
