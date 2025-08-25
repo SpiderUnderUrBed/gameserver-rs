@@ -1334,7 +1334,20 @@ async fn handle_command_or_console(
         let cmd_str = payload.message.clone();
         match cmd_str.as_str() {
             "delete_server" => {
-                get_definite_path_from_tag(state, state.current_server.clone());
+                let mut path = get_definite_path_from_tag(state, state.current_server.clone()).await;
+                
+                if !path.starts_with("server/") {
+                    path = format!("server/{}", path);
+                }
+                if let Err(errro) = fs::remove_dir_all(&path).await {
+                    eprintln!("Failed to delete directory {}: {}", path, errro);
+                } else {
+                    if let Err(errro) = fs::create_dir(&path).await {
+                        eprintln!("Failed to recreate directory {}: {}", path, errro);
+                    } else {
+                        println!("Successfully cleared directory: {}", path);
+                    }
+                }
             }
             "stop_server" => {
                 let input = "stop";
