@@ -848,6 +848,9 @@ async fetchNodes() {
 
   async createDefaultServer() {
     this.updateStatus("up")
+
+    let providertype = document.getElementById("providertype-selector").value;
+
     try {
       const res = await fetch(`${this.basePath}/api/generalwithmetadata`, {
         method: "POST",
@@ -862,7 +865,10 @@ async fetchNodes() {
             metadata: {
               kind: "Server",
               data: {
-                providertype: "minecraft",
+                // providertype, location, provider, servername
+                servername: providertype,
+                providertype,
+                provider: "",
                 location: ""
               }
             }

@@ -43,7 +43,7 @@ use tokio::sync::RwLock;
 
 // mod databasespec;
 // use databasespec::UserDatabase;
-use crate::database::databasespec::ButtonsDatabase;
+use crate::database::databasespec::{ButtonsDatabase, Server, ServerDatabase};
 use crate::database::databasespec::NodeType;
 use crate::database::databasespec::NodesDatabase;
 use crate::database::databasespec::UserDatabase;
@@ -111,7 +111,7 @@ use database::JsonBackend;
 
 // Both database files and any more should have these structs
 use database::ModifyElementData;
-use database::RetrieveUser;
+use crate::database::databasespec::RetrieveElement;
 use database::User;
 
 mod extra;
@@ -300,6 +300,8 @@ struct IncomingMessageWithMetadata {
 enum MetadataTypes {
     None,
     Server {
+        servername: String,
+        provider: String,
         providertype: String,
         location: String,
     },
@@ -353,9 +355,6 @@ struct SrcAndDest {
     dest: ApiCalls,
     metadata: String,
 }
-struct BrowserErrMessage {
-    err: String,
-}
 
 // Some common api calls which is just what might get exchanged between the frontend and backend via api
 // this is needed rather than a bunch of structs or however else I might do it because in some cases I might not know what api call to expect
@@ -369,12 +368,19 @@ enum ApiCalls {
     NodeList(Vec<String>),
     UserData(LoginData),
     UserList(Vec<User>),
+    ServerList(Vec<Server>),
     ButtonList(Vec<Button>),
     IncomingMessage(IncomingMessage),
     IncomingMessageWithMetadata(IncomingMessageWithMetadata),
     FileList(Vec<FsItem>),
     Node(Node),
 }
+
+// struct ApiCallsWithAuth {
+//     jwt: String,
+//     require_auth: String,
+//     api_call: ApiCalls
+// }
 
 #[derive(Clone)]
 enum Status {
@@ -846,6 +852,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/buttonreset", post(button_reset))
         .route("/api/editbuttons", post(edit_buttons))
         .route("/api/addnode", post(add_node))
+        .route("/api/addserver", post(add_server))
         .route("/api/edituser", post(edit_user))
         .route("/api/getuser", post(get_user))
         .route("/api/getserver", post(get_server))
@@ -1264,6 +1271,19 @@ async fn add_node(
     result
 }
 
+async fn add_server(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    Json(request): Json<ModifyElementData>,
+) -> impl IntoResponse {
+    let state = arc_state.write().await;
+    let result = state
+        .database
+        .create_server_in_db(request)
+        .await
+        .map_err(|e| StatusCode::INTERNAL_SERVER_ERROR);
+    result
+}
+
 // delegate user creation to the DB and return with relevent status code
 async fn create_user(
     State(arc_state): State<Arc<RwLock<AppState>>>,
@@ -1292,7 +1312,7 @@ async fn edit_user(
 }
 async fn get_server(
     State(arc_state): State<Arc<RwLock<AppState>>>,
-    Json(request): Json<RetrieveUser>,
+    Json(request): Json<RetrieveElement>,
 ) -> impl IntoResponse {
     Json({})
 }
@@ -1300,12 +1320,12 @@ async fn get_server(
 // get the user from the db
 async fn get_user(
     State(arc_state): State<Arc<RwLock<AppState>>>,
-    Json(request): Json<RetrieveUser>,
+    Json(request): Json<RetrieveElement>,
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
     let result = state
         .database
-        .get_from_database(&request.user)
+        .get_from_database(&request.element)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
         .unwrap();
@@ -1388,12 +1408,15 @@ async fn process_general(
 
 // as I said in main, this is temporary, because IncomingMessageWithMetadata is supposed to replace IncomingMessage
 // but for now I will have it as a seprate route for new routes which need a metadata feild until a replace everything
+// or ill remove both in favor of individual routes
 async fn process_general_with_metadata(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     Json(res): Json<ApiCalls>,
 ) -> Result<Json<ResponseMessage>, (StatusCode, String)> {
     let state = arc_state.write().await;
+    let database = &state.database;
     if let ApiCalls::IncomingMessageWithMetadata(payload) = res {
+
         println!("Processing general message: {:?}", payload);
 
         let json_payload = IncomingMessageWithMetadata {
@@ -1402,6 +1425,29 @@ async fn process_general_with_metadata(
             authcode: payload.authcode.clone(),
             metadata: payload.metadata.clone(),
         };
+
+       if payload.message == "create_server" {
+        let db_result = database.get_from_servers_database(&payload.message.clone()).await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR ,"Error connecting to database".to_string()));
+        if db_result?.is_none() {
+           if let MetadataTypes::Server { providertype, location, provider, servername } = payload.metadata.clone() {
+            let _ = database.create_server_in_db(
+                ModifyElementData {
+                    element: Element::Server(
+                        Server {
+                            servername: payload.message.clone(),
+                            provider: String::new(),
+                            providertype,
+                            location,
+                        }
+                    ),
+                    jwt: payload.authcode,
+                    require_auth: false,
+                }
+            ).await;
+            }
+        }
+       }
 
         match serde_json::to_vec(&json_payload) {
             Ok(mut json_bytes) => {
@@ -1521,10 +1567,18 @@ async fn get_nodes(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl IntoR
     })
 }
 
-async fn get_servers(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl IntoResponse {
-    Json(List {
-        list: ApiCalls::None,
-    })
+async fn get_servers(State(arc_state): State<Arc<RwLock<AppState>>>) -> Result<Json<List>, StatusCode> {
+    let mut state = arc_state.write().await;
+    match state.database.fetch_all_servers().await {
+        Ok(servers) => {
+            Ok(Json(List {
+                list: ApiCalls::ServerList(servers)
+            }))    
+        },
+        Err(_) => {
+            return Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }
 // TODO:, REMOVE THIS
 async fn receive_message(
@@ -1826,7 +1880,7 @@ pub async fn get_files(
         let state = state.read().await;
         (state.tcp_tx.clone(), state.tcp_tx.subscribe())
     };
-    
+
     let tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
 
     let user_input = request.message.trim_start_matches('/');

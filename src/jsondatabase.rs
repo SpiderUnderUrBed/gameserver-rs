@@ -4,7 +4,7 @@ use serde::Serialize;
 use std::error::Error;
 use std::result;
 pub mod databasespec;
-pub use databasespec::{User, Node, Element, ModifyElementData, UserDatabase, NodesDatabase, RetrieveUser, DatabaseError};
+pub use databasespec::{User, Node, Element, ModifyElementData, UserDatabase, NodesDatabase, RetrieveElement, DatabaseError};
 // use std::path::Path;
 use std::path::PathBuf;
 use std::fs::OpenOptions;
@@ -13,13 +13,13 @@ use std::io::Write;
 use std::io::Read;
 use std::collections::HashMap;
 
+use crate::database::databasespec::Server;
 use crate::database::databasespec::ServerDatabase;
 use crate::database::databasespec::Settings;
 use crate::database::databasespec::NodeType;
 // use crate::database::databasespec::CustomType;
 use crate::database::databasespec::Button;
 use crate::database::databasespec::ButtonsDatabase;
-use crate::database::databasespec::Server;
 
 // use crate::database::Database;
 use crate::StatusCode;
@@ -212,33 +212,60 @@ impl Database {
 }
 
 impl ServerDatabase for Database {
-    async fn retrieve_server(&self, username: String) -> Option<User> {
-        todo!()
+    async fn retrieve_server(&self, servername: String) -> Option<Server> {
+         let database = self.get_database().await;
+        database.unwrap().servers.iter().find(|server| server.servername == servername).cloned()
     }
-    async fn fetch_all_servers(&self) -> Result<Vec<User>, Box<dyn Error + Send + Sync>> {
-        todo!()
+    async fn fetch_all_servers(&self) -> Result<Vec<Server>, Box<dyn Error + Send + Sync>> {
+        let database = self.get_database().await?;
+        Ok(database.servers)
     }
-    async fn get_from_servers_database(&self, username: &str) -> Result<Option<User>, Box<dyn Error + Send + Sync>> {
-        todo!()
+    async fn get_from_servers_database(&self, servername: &str) -> Result<Option<Server>, Box<dyn Error + Send + Sync>> {
+        let database = self.get_database().await?;
+        Ok(database.servers.iter().find(|server| server.servername == servername).cloned())  
     }
     async fn create_server_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         if let Element::Server(Server {servername, provider, providertype, location }) = element.element {
             let mut database = self.get_database().await?;
-
+    
+            if database.servers.iter().any(|server| server.servername == servername){
+                return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
+            } else {
+                let server = Server { servername, provider, providertype, location };
+                database.servers.push(server.clone());
+            }
+        
             self.write_database(database).await;  
+            Ok(StatusCode::CREATED)
         } else {
-            return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
         }
-        todo!()
     }
     async fn remove_server_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
-        if let Element::Server(Server { servername, provider, providertype, location }) = element.element {
-            
+        let mut database = self.get_database().await?;
+        if let Element::Server(Server {servername, provider, providertype, location }) = element.element {
+            database.servers.retain(|db_server| db_server.servername != servername);
+        } else {
+            return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
         }
-        todo!()
+
+        self.write_database(database).await;
+
+        Ok(StatusCode::CREATED)
     }
     async fn edit_server_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
-        todo!()
+        if let Element::Server(Server {servername, provider, providertype, location }) = element.element {
+            let mut database = self.get_database().await?;
+            if let Some(db_server) = database.servers.iter_mut().find(|db_server| db_server.servername == servername) {
+                // db_server.user_perms = user_perms.clone();
+                // db_server.username = user.clone();
+            }
+
+            self.write_database(database).await;
+            Ok(StatusCode::CREATED)
+        } else {
+            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+        }
     }
 }
 // pub struct Server {

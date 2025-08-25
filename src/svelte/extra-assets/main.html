@@ -81,6 +81,10 @@
 					<div action="" class="dropzone" id="myDropzone"></div>
 					<button id="uploadBtn" type="button">Upload</button>
 				</div>
+				<select id="providertype-selector" name="providertype-selector">
+						<option value="custom">Custom</option>
+						<option value="minecraft" selected="selected">Vanilla minecraft</option>
+				</select>
 				<div class="dialog-buttons">
 					<button type="button" onclick="createDefaultServer()">Standard Create Server</button>
 					<button type="button" onclick="this.closest('dialog').close()">Cancel</button>

@@ -18,6 +18,12 @@ use crate::broadcast::Sender;
 use crate::filesystem::send_folder_over_broadcast;
 use crate::filesystem::BasicPath;
 
+use crate::providers::ProviderType;
+use crate::providers::Provider;
+use crate::providers::Minecraft;
+use crate::providers::Custom;
+use crate::providers::ProviderConfig;
+
 use tokio::fs::File;
 use tokio::io::AsyncRead;
 use tokio::net::TcpStream;
@@ -28,11 +34,10 @@ use tokio::sync::broadcast;
 
 mod extra;
 mod filesystem;
+mod providers;
 
 const ENABLE_BROADCAST_LOGS: bool = true;
 const SERVER_DIR: &str = "server";
-
-struct Minecraft;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 struct IncomingMessage {
@@ -56,6 +61,8 @@ struct IncomingMessageWithMetadata {
 enum MetadataTypes {
     None,
     Server {
+        servername: String,
+        provider: String,
         providertype: String,
         location: String,
     },
@@ -140,93 +147,16 @@ static PORT: &str = "8080";
 #[cfg(not(feature = "full-stack"))]
 static PORT: &str = "8082";
 
-trait Provider {
-    fn pre_hook(&self) -> Option<Command>;
-    fn install(&self) -> Option<Command>;
-    fn post_hook(&self) -> Option<Command>;
-    fn start(&self) -> Option<Command>;
-}
-
-impl Provider for Minecraft {
-    fn pre_hook(&self) -> Option<Command> {
-        if cfg!(target_os = "linux") {
-            let mut cmd = Command::new("sh");
-            cmd.arg("-c")
-                .arg("apt-get update && apt-get install -y libssl-dev pkg-config wget");
-            Some(cmd)
-        } else if cfg!(target_os = "windows") {
-            let mut cmd = Command::new("powershell");
-            cmd.arg("-Command").arg("choco install -y wget");
-            Some(cmd)
-        } else {
-            None
-        }
-    }
-
-    fn install(&self) -> Option<Command> {
-        if cfg!(target_os = "linux") {
-            let mut cmd = Command::new("sh");
-            cmd.arg("-c").arg(
-                "apt-get install -y openjdk-17-jre-headless && update-alternatives --set java /usr/lib/jvm/java-17-openjdk-amd64/bin/java"
-            );
-            Some(cmd)
-        } else if cfg!(target_os = "windows") {
-            let mut cmd = Command::new("powershell");
-            cmd.arg("-Command").arg("choco install -y openjdk");
-            Some(cmd)
-        } else {
-            None
-        }
-    }
-
-    fn post_hook(&self) -> Option<Command> {
-        if cfg!(target_os = "linux") {
-            let mut cmd = Command::new("sh");
-            cmd.arg("-c").arg(format!(
-                "mkdir -p {dir} && cd {dir} && wget -O server.jar https://piston-data.mojang.com/v1/objects/84194a2f286ef7c14ed7ce0090dba59902951553/server.jar && echo 'eula=true' > eula.txt",
-                dir = SERVER_DIR
-            ));
-            Some(cmd)
-        } else if cfg!(target_os = "windows") {
-            let mut cmd = Command::new("powershell");
-            cmd.arg("-Command").arg(format!(
-                "New-Item -ItemType Directory -Force -Path {dir}; cd {dir}; Invoke-WebRequest -Uri https://piston-data.mojang.com/v1/objects/84194a2f286ef7c14ed7ce0090dba59902951553/server.jar -OutFile server.jar; 'eula=true' | Out-File -Encoding ASCII eula.txt",
-                dir = SERVER_DIR
-            ));
-            Some(cmd)
-        } else {
-            None
-        }
-    }
-
-    fn start(&self) -> Option<Command> {
-        if cfg!(target_os = "linux") {
-            let mut cmd = Command::new("java");
-            cmd.args(&["-Xmx1024M", "-Xms1024M", "-jar", "server.jar", "nogui"])
-                .current_dir(SERVER_DIR);
-            Some(cmd)
-        } else if cfg!(target_os = "windows") {
-            let mut cmd = Command::new("java");
-            cmd.args(&["-Xmx1024M", "-Xms1024M", "-jar", "server.jar", "nogui"])
-                .current_dir(SERVER_DIR);
-            Some(cmd)
-        } else {
-            None
-        }
-    }
-}
+// const SERVER_DIR: &str = if cfg!(target_os = "windows") {
+//     "C:\\minecraft_server"
+// } else {
+//     "/opt/minecraft_server"
+// };
 
 #[derive(serde::Serialize)]
 struct GetState {
     start_keyword: String,
     stop_keyword: String,
-}
-
-fn get_provider(name: &str) -> Option<Minecraft> {
-    match name {
-        "minecraft" => Some(Minecraft),
-        _ => None,
-    }
 }
 
 async fn run_command_live_output(
@@ -326,7 +256,7 @@ enum FileRequestPayload {
     },
     PathFromTag {
         path: String,
-        tag: Option<String>
+        tag: Option<String>,
     },
     FileChunk(FileChunk),
 }
@@ -351,7 +281,7 @@ enum ReadMode {
 
 #[derive(Clone)]
 struct AppState {
-    current_server: String
+    current_server: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -590,8 +520,6 @@ pub async fn handle_incoming(mut conn: tokio::net::TcpStream) -> anyhow::Result<
     Ok(())
 }
 
-
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     const FILE_DELIMITER: &[u8] = b"<|END_OF_FILE|>";
@@ -608,7 +536,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     });
 
     let state = AppState {
-        current_server: "default".to_string()
+        current_server: "default".to_string(),
     };
     let arc_state = Arc::new(state);
 
@@ -755,8 +683,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                             let out_tx_clone = out_tx.clone();
                                             let arc_state_for_spawn = arc_state_clone.clone();
                                             tokio::spawn(async move {
-                                                let response_json =
-                                                    handle_file_request(&Arc::clone(&arc_state_for_spawn), request).await;
+                                                let response_json = handle_file_request(
+                                                    &Arc::clone(&arc_state_for_spawn),
+                                                    request,
+                                                )
+                                                .await;
                                                 let _ = out_tx_clone.send(response_json).await;
                                             });
                                         } else if let Ok(payload) =
@@ -802,7 +733,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                 &Arc::clone(&arc_state_clone),
                                                 &msg_payload,
                                                 &cmd_tx,
-                                                &stdin_ref, 
+                                                &stdin_ref,
                                                 &hostname_ref,
                                             )
                                             .await;
@@ -1089,17 +1020,12 @@ async fn handle_file_request(state: &Arc<AppState>, request: FileRequestMessage)
             .unwrap(),
         },
         FileRequestPayload::PathFromTag { tag, path } => {
-            // if let Some(unwrapped_tag) = tag {
-
-            // }
-            let basic_path_response = BasicPath {
-                paths: vec![]
-                //"".to_string()
-            };
+            let basic_path_response = BasicPath { paths: vec![] };
             serde_json::to_string(&FileResponseMessage {
                 in_response_to: request.id,
                 data: serde_json::to_value(basic_path_response).unwrap(),
-            }).unwrap()
+            })
+            .unwrap()
         }
         FileRequestPayload::ListDir { path } => match list_directory(&path).await {
             Ok(entries) => serde_json::to_string(&FileResponseMessage {
@@ -1265,8 +1191,14 @@ async fn handle_commands_with_metadata(
         let cmd_str = payload.message.clone();
         match cmd_str.as_str() {
             "create_server" => {
-                if let MetadataTypes::Server { providertype, location } = &payload.metadata.clone() {
-                    if let Some(prov) = get_provider(providertype) {
+                if let MetadataTypes::Server {
+                    providertype,
+                    location,
+                    provider,
+                    servername,
+                } = &payload.metadata.clone()
+                {
+                    if let Some(prov) = get_provider(providertype, &get_definite_path_from_tag(state, get_provider_from_servername(&state, state.current_server.clone()).await).await) {
                         if let Some(cmd) = prov.pre_hook() {
                             run_command_live_output(
                                 cmd,
@@ -1319,7 +1251,73 @@ async fn handle_commands_with_metadata(
         }
     }
 }
-async fn get_definite_path_from_tag(state: &AppState, tag: String) -> String{
+fn get_provider(name: &str, pre_path: &str) -> Option<ProviderType> {
+    let mut path = pre_path.to_string();
+    if !path.starts_with("server/") {
+        path = format!("server/{}", path);
+        println!("[DEBUG] Adjusted path to: {}", path);
+    }
+
+    match name {
+        "minecraft" => {
+            println!("[INFO] Selected provider: Minecraft");
+            Some(Minecraft.into())
+        }
+        "custom" => {
+            let provider_json_path = format!("{}/provider.json", path);
+            println!("[INFO] Looking for custom provider config at: {}", provider_json_path);
+
+            match std::fs::read_to_string(&provider_json_path) {
+                Ok(json_content) => {
+                    println!("[DEBUG] Successfully read provider.json");
+                    match serde_json::from_str::<ProviderConfig>(&json_content) {
+                        Ok(config) => {
+                            println!("[INFO] Loaded custom provider config successfully");
+                            let mut custom = Custom::new();
+
+                            if let Some(cmd) = config.pre_hook {
+                                println!("[INFO] Adding pre_hook: {}", cmd);
+                                custom = custom.with_pre_hook(cmd);
+                            }
+                            if let Some(cmd) = config.install {
+                                println!("[INFO] Adding install: {}", cmd);
+                                custom = custom.with_install(cmd);
+                            }
+                            if let Some(cmd) = config.post_hook {
+                                println!("[INFO] Adding post_hook: {}", cmd);
+                                custom = custom.with_post_hook(cmd);
+                            }
+                            if let Some(cmd) = config.start {
+                                println!("[INFO] Adding start: {}", cmd);
+                                custom = custom.with_start(cmd);
+                            }
+
+                            Some(custom.into())
+                        }
+                        Err(e) => {
+                            println!("[ERROR] Failed to parse provider.json: {}", e);
+                            Some(Custom::new().into())
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("[WARN] Could not read provider.json at {}: {}", provider_json_path, e);
+                    None
+                }
+            }
+        }
+        _ => {
+            println!("[WARN] Unknown provider: {}", name);
+            None
+        }
+    }
+}
+
+
+async fn get_provider_from_servername(state: &AppState, servername: String) -> String {
+    servername
+}
+async fn get_definite_path_from_tag(state: &AppState, tag: String) -> String {
     String::new()
 }
 async fn handle_command_or_console(
@@ -1334,8 +1332,9 @@ async fn handle_command_or_console(
         let cmd_str = payload.message.clone();
         match cmd_str.as_str() {
             "delete_server" => {
-                let mut path = get_definite_path_from_tag(state, state.current_server.clone()).await;
-                
+                let mut path = get_definite_path_from_tag(state, get_provider_from_servername(&state, state.current_server.clone()).await)
+                .await;
+
                 if !path.starts_with("server/") {
                     path = format!("server/{}", path);
                 }
@@ -1350,16 +1349,22 @@ async fn handle_command_or_console(
                 }
             }
             "stop_server" => {
-                let input = "stop";
-                let mut guard = stdin_ref.lock().await;
-                if let Some(stdin) = guard.as_mut() {
-                    let _ = stdin.write_all(format!("{}\n", input).as_bytes()).await;
-                    let _ = stdin.flush().await;
-                    let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
+                if let Some(prov) =
+                    get_provider(&get_provider_from_servername(&state, state.current_server.clone()).await, &get_definite_path_from_tag(state, get_provider_from_servername(&state, state.current_server.clone()).await).await)
+                {
+                    let input = "stop";
+                    let mut guard = stdin_ref.lock().await;
+                    if let Some(stdin) = guard.as_mut() {
+                        let _ = stdin.write_all(format!("{}\n", input).as_bytes()).await;
+                        let _ = stdin.flush().await;
+                        let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
+                    }
                 }
             }
             "start_server" => {
-                if let Some(prov) = get_provider("minecraft") {
+                if let Some(prov) =
+                    get_provider(&get_provider_from_servername(&state, state.current_server.clone()).await, &get_definite_path_from_tag(state, get_provider_from_servername(&state, state.current_server.clone()).await).await)
+                {
                     if let Some(cmd) = prov.start() {
                         let tx = cmd_tx.clone();
                         let stdin_clone = stdin_ref.clone();

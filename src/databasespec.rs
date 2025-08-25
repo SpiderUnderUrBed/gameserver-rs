@@ -19,10 +19,17 @@ impl Error for DatabaseError {}
 
 
 
+// #[derive(Debug, Deserialize, Serialize, Clone)]
+// pub struct RetrieveUser {
+//     pub user: String
+// }
+
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct RetrieveUser {
-    pub user: String
+pub struct RetrieveElement {
+    pub element: String
 }
+
 
 
 // #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -164,9 +171,9 @@ pub trait UserDatabase {
 }
 
 pub trait ServerDatabase {
-    async fn retrieve_server(&self, username: String) -> Option<User>;
-    async fn fetch_all_servers(&self) -> Result<Vec<User>, Box<dyn Error + Send + Sync>>;
-    async fn get_from_servers_database(&self, username: &str) -> Result<Option<User>, Box<dyn Error + Send + Sync>>;
+    async fn retrieve_server(&self, username: String) -> Option<Server>;
+    async fn fetch_all_servers(&self) -> Result<Vec<Server>, Box<dyn Error + Send + Sync>>;
+    async fn get_from_servers_database(&self, username: &str) -> Result<Option<Server>, Box<dyn Error + Send + Sync>>;
     async fn create_server_in_db(&self, user: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
     async fn remove_server_in_db(&self, user: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
     async fn edit_server_in_db(&self, user: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
