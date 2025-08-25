@@ -12,6 +12,12 @@ chrono = "0.4.41"
 use = "0.0.1-pre.0"
 hostname = "0.4.1"
 file-transfer-system = "0.3.1"
+uuid = { version = "1.18.0", features = ["v4"] }
+multer = "3.1.0"
+async-trait = "0.1.89"
+walkdir = "2.5.0"
+anyhow = "1.0.99"
+futures = "0.3.31"
 
 [[bin]]
 name = "myapp"

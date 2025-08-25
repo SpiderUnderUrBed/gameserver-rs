@@ -37,6 +37,17 @@ aside button {
   cursor: pointer;
 }
 
+.server-status-indicator {
+  background-color: grey;
+  width: 2svw;
+  height: 3svh;
+}
+
+.dropzone {
+	display: block;
+	margin-bottom: 20px;
+}
+
 .management-buttons {
   display: none;
 }

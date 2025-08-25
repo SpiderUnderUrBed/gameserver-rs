@@ -245,15 +245,28 @@ async function editPermissions(button){
         alert('An error occurred while editing the user.');
     }
 }
-async function deleteUser(user){
+
+async function deleteUser(username) {
     const jwt = "";
+
     try {
         const response = await fetch(`${basePath}/api/deleteuser`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ element: user, jwt })
+            body: JSON.stringify({
+                element: {
+                    kind: "User",
+                    data: {
+                        user: username,
+                        password: "",   
+                        user_perms: []  
+                    }
+                },
+                jwt,
+                require_auth: false
+            })
         });
 
         if (!response.ok) {
@@ -263,14 +276,15 @@ async function deleteUser(user){
         } else {
             const result = await response.text();
             console.log('User deleted:', result);
-            alert('User delete successfully!');
-            fetchUsers()
+            alert('User deleted successfully!');
+            fetchUsers();
         }
     } catch (err) {
         console.error('Request failed:', err);
-        alert('An error occurred while creating the user.');
+        alert('An error occurred while deleting the user.');
     }
 }
+
 async function deleteUserByDialog(){
     event.preventDefault()
     

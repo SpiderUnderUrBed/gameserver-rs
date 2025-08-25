@@ -24,7 +24,10 @@ class ServerConsole {
     this.selectedNodeType();
     this.loadTopmostButtonsLinks();
     this.setStatuses();
-    
+    this.loadFileUpload();
+
+    window.updateServer = () => this.updateServer();
+    window.configureServer = () => this.configureServer();
     window.restoreButtonDefaults = () => this.restoreButtonDefaults();
     window.temporaryButtonReset = () => this.temporaryButtonReset();
     window.toggleButtons = () => this.toggleButtons();
@@ -40,6 +43,51 @@ class ServerConsole {
     window.enableDeveloperOptions = () => this.enableDeveloperOptions();
   }
   
+async loadFileUpload() {
+  // if (typeof Dropzone === "undefined") {
+  //   console.error("Dropzone not loaded");
+  //   return;
+  // }
+
+  // if (Dropzone.instances.length) {
+  //   Dropzone.instances.forEach(dz => dz.destroy());
+  // }
+
+  const dz = new Dropzone("#myDropzone", {
+    url: `${this.basePath}/api/upload`,
+    paramName: "file",
+    method: "post",
+    autoProcessQueue: false,  
+    maxFilesize: 1024,         
+    parallelUploads: 10,
+    uploadMultiple: false,
+    addRemoveLinks: true,
+    dictDefaultMessage: "Drop files or folders here to upload",
+    init: function () {
+      this.on("success", (file, response) => {
+        console.log("Upload success:", file.name, response);
+      });
+      this.on("error", (file, errorMessage) => {
+        console.error("Upload error:", file.name, errorMessage);
+      });
+      this.on("queuecomplete", () => {
+        console.log("All uploads complete");
+      });
+    }
+  });
+
+  dz.hiddenFileInput.setAttribute("webkitdirectory", true);
+
+  document.getElementById("uploadBtn").addEventListener("click", () => {
+    if (dz.getQueuedFiles().length === 0) {
+      alert("No files to upload.");
+      return;
+    }
+    dz.processQueue();
+  });
+  }
+
+
   async setStatuses(){
     let button_status = document.getElementById("temp-enable-defaults");
       try {
@@ -73,6 +121,8 @@ class ServerConsole {
       console.log(`Error: ${err.message}`)
       //this.addResult("", `Error: ${err.message}`, false, true);
     }   
+    // let server_status = document.getElementById("server-status-indicator");
+    this.updateStatus("none");
   }
   selectedNodeType(){
     const selector = document.getElementById("nodetype-selector");
@@ -92,31 +142,52 @@ class ServerConsole {
     });
   }
 
-  async fetchNodes() {
+async fetchNodes() {
     try {
         const response = await fetch(`${this.basePath}/api/nodes`);
-        if (response.ok) {
-            const data = await response.json();
-            const nodes = data.list.data;
+        if (!response.ok) throw new Error("Failed to fetch nodes");
 
-            const nodesBar = document.querySelector("#nodes-bar");
-            nodesBar.innerHTML = ""; 
+        const data = await response.json();
+        const nodes = data.list.data;
 
-            nodes.forEach((node, index) => {
+        const nodesBar = document.querySelector("#nodes-bar");
+        if (nodesBar) nodesBar.innerHTML = "";
+        nodes.forEach((node) => {
+            if (nodesBar) {
                 const button = document.createElement("button");
                 button.textContent = node;
                 button.className = "nodes-element";
                 button.onclick = () => alert(`Node clicked: ${node}`);
                 nodesBar.appendChild(button);
-            });
-        } else {
-            // document.getElementById('message').innerText = 'Failed to get nodes from the server.';
+            }
+        });
+
+        const migrateto = document.getElementById("migrate-to");
+        const migratefrom = document.getElementById("migrate-from");
+
+        if (!migrateto || !migratefrom) {
+            console.warn("Migration selects not found in DOM yet. Will retry when dialog opens.");
+            return;
         }
+
+        migrateto.innerHTML = "";
+        migratefrom.innerHTML = "";
+
+        nodes.forEach((node) => {
+            const option = document.createElement("option");
+            option.value = node;
+            option.text = node;
+
+            migrateto.appendChild(option);
+            migratefrom.appendChild(option.cloneNode(true));
+        });
+
     } catch (error) {
-        // document.getElementById('message').innerText = 'Error connecting to the server.';
-        console.log('Error fetching nodes:', error);
+        console.error("Error fetching nodes:", error);
     }
 }
+
+
 
 //   setupNodeBar(){
 //     const nodesBar = document.querySelector("#nodes-bar");
@@ -375,6 +446,7 @@ class ServerConsole {
     }   
   }
   async restoreButtonDefaults(){
+    let button_status = document.getElementById("temp-enable-defaults");
     try {
       const res = await fetch(`${this.basePath}/api/buttonreset`, {
         method: "POST",
@@ -382,8 +454,10 @@ class ServerConsole {
         body: JSON.stringify({type: "command", message: "restore", authcode: "0"}),
       });
 
+      
       const text = await res.text();
       if (res.ok) {
+        button_status.style.backgroundColor = "red"
         await this.loadTopmostButtonsLinks();
         try {
           const data = JSON.parse(text);
@@ -438,25 +512,28 @@ class ServerConsole {
       const jwt = "";
 
       try {
-          const response = await fetch(`${this.basePath}/api/addnode`, {
-          method: 'POST',
-          headers: {
-              'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-              element: { 
-                  kind: "Node", 
-                  data: { 
-                      nodename, ip: nodeip, nodetype
-                  }
-              },
-              jwt,
-              // To be clear, just because its set to true at this point in the code, does not mean it gets to 
-              // demand the server to not require auth to prevent spoofing, the only time it respects that request is if its
-              // made internally
-              require_auth: true
-          })
-          });
+        const response = await fetch(`${this.basePath}/api/addnode`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                element: {
+                    kind: "Node",
+                    data: {
+                        nodename, 
+                        ip: nodeip, 
+                        nodetype: { kind: nodetype, data: null }, 
+                        nodestatus: { kind: "Enabled", data: null }
+                    }
+                },
+                jwt,
+                require_auth: true
+            })
+        });
+          // To be clear, just because its set to true at this point in the code, does not mean it gets to 
+          // demand the server to not require auth to prevent spoofing, the only time it respects that request is if its
+          // made internally
 
           if (!response.ok) {
           const error = await response.text();
@@ -509,7 +586,7 @@ class ServerConsole {
                 originalButton.replaceWith(newbutton);
 
                 newbutton.addEventListener("click", () => {
-                  if (button.type.kind == "Default") {
+                  if (button.type.toLowerCase() == "default") {
                     const buttonLower = button.name.toLowerCase();
                     window.location.href = `${button.name.toLowerCase()}.html`;
                   } else if (button.link) {
@@ -554,14 +631,15 @@ class ServerConsole {
             data: { 
               name: topmostButtonValue,
               link: topmostButtonLink,
-              type: {
-                kind: "Custom",
-                // data: {
-                //   message: "create_server",
-                //   type: "command",
-                //   authcode: "0",
-                // },
-              }
+              type: "custom"
+              // type: {
+              //   kind: "Custom",
+              //   // data: {
+              //   //   message: "create_server",
+              //   //   type: "command",
+              //   //   authcode: "0",
+              //   // },
+              // }
             }
           },
           jwt: "",
@@ -605,15 +683,22 @@ class ServerConsole {
   }
   updateStatus(state) {
     const loading = document.getElementById("loading");
-    loading.style.display = "block";
+    let server_status = document.getElementById("server-status-indicator");
+    if (state != "none") {
+      loading.style.display = "block";
+    }
     const statusEvent = new EventSource(`${this.basePath}/api/awaitserverstatus`);
     statusEvent.onmessage = (e) => {
+      console.log(e.data)
       if ((e.data == "healthy" || e.data == "up") && state == "up"){
         loading.style.display = "none";
       } else if (e.data == "down" && state == "down"){
         loading.style.display = "none";
-      } else {
-       // console.error("error");
+      }
+      if ((e.data == "healthy" || e.data == "up")) {
+        server_status.style.backgroundColor = "green";
+      } else if (e.data == "down") {
+        server_status.style.backgroundColor = "red";
       }
     };
   }
@@ -648,6 +733,79 @@ class ServerConsole {
       console.log(`Error: ${err.message}`)
       //this.addResult("", `Error: ${err.message}`, false, true);
     }
+  }
+
+  async updateServer(){
+    let migratingto = document.getElementById("migrate-to").value;
+    let migratingfrom = document.getElementById("migrate-from").value;
+    try {
+      const res_migrate_to = await fetch(`${this.basePath}/api/fetchnode`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "", message: migratingto, authcode: "0",
+        }),
+      });
+      const res_migrate_from = await fetch(`${this.basePath}/api/fetchnode`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "", message: migratingfrom, authcode: "0",
+        }),
+      });
+      // console.log(res_migrate_from)
+      // console.log(res_migrate_to)
+      const res_migrate_to_json = await res_migrate_to.json();
+      const res_migrate_from_json = await res_migrate_from.json();
+        const res = await fetch(`${this.basePath}/api/migrate`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                src: {
+                    kind: "Node",
+                    data: { 
+                        nodename: res_migrate_from_json.nodename, 
+                        nodetype: { kind: "Custom", data: null }, 
+                        ip: res_migrate_from_json.ip,
+                        nodestatus: { kind: "Enabled", data: null }
+                    },
+                },
+                dest: {
+                    kind: "Node",
+                    data: { 
+                        nodename: res_migrate_to_json.nodename, 
+                        nodetype: { kind: "Custom", data: null }, 
+                        ip: res_migrate_to_json.ip,
+                        nodestatus: { kind: "Enabled", data: null }
+                    },
+                },
+                metadata: ""
+            }),
+        });
+
+      const text = await res.text();
+      if (res.ok) {
+        try {
+          const data = JSON.parse(text);
+          console.log( `Server Response: ${data.response}`);
+          //this.addResult("", `Server Response: ${data.response}`, false, true);
+        } catch {
+          console.log(`Invalid JSON response: ${text}`);
+          //this.addResult("", `Invalid JSON response: ${text}`, false, true);
+        }
+      } else {
+        console.log(`Failed (${res.status}): ${text}`)
+        //this.addResult("", `Failed (${res.status}): ${text}`, false, true);
+      }
+    } catch (err) {
+      console.log(`Error: ${err.message}`)
+      //this.addResult("", `Error: ${err.message}`, false, true);
+    } 
+  }
+
+  configureServer(){
+    const serverDialog = document.getElementById("configureServerDialog");
+    serverDialog.showModal()
   }
   async startServer() {
     this.updateStatus("up")

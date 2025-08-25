@@ -1,34 +1,25 @@
-use std::any::Any;
-use std::cell::RefCell;
 // ALOT of imports, needed given the size of this project in what it covers
 // first imports are std ones
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::ffi::OsStr;
-use std::fmt::{self, Debug};
-// use std::fs;
-// use std::rc::Rc;
-use std::borrow::BorrowMut;
-use std::fs;
-use std::ops::Deref;
-use std::path::{Component, Components, PathBuf};
+use std::fmt::Debug;
 use std::{net::SocketAddr, path::Path, sync::Arc};
-
-use tracing::{debug, error};
 
 // Axum is the routing framework, and the backbone to this project helping intergrate the backend with the frontend
 // and the general api, redirections, it will take form data and queries and make it easily accessible
 // I also use axum_login to take off alot of effort that would be required for authentication
 use crate::database::Element;
+use crate::filesystem::{send_multipart_over_broadcast, FsType};
 use crate::http::HeaderMap;
+use crate::kubernetes::verify_is_k8s_gameserver;
 use crate::middleware::from_fn;
 use axum::extract::ws::Message as WsMessage;
-use axum::extract::FromRequest;
+use axum::extract::Multipart;
 use axum::extract::Query;
-use axum::http::header::AUTHORIZATION;
 use axum::http::Uri;
 use axum::middleware::{self, Next};
 use axum::response::Redirect;
+use axum::Form;
 use axum::{
     body::Body,
     extract::{
@@ -43,22 +34,21 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use axum::{Extension, Form};
 use axum_login::tower_sessions::{MemoryStore, SessionManagerLayer};
 use axum_login::AuthUser;
-use axum_login::{login_required, AuthManagerLayerBuilder, AuthnBackend, UserId};
-use futures_util::stream::once;
+use axum_login::{AuthManagerLayerBuilder, AuthnBackend};
 use serde::de::DeserializeOwned;
+use tokio::fs::File;
 use tokio::sync::RwLock;
 
 // mod databasespec;
 // use databasespec::UserDatabase;
-use crate::broadcast::Receiver;
-use crate::database::databasespec::Button;
+use crate::database::databasespec::{Button, NodeStatus};
 use crate::database::databasespec::ButtonsDatabase;
 use crate::database::databasespec::NodesDatabase;
 use crate::database::databasespec::UserDatabase;
 use crate::database::Node;
+use crate::database::databasespec::NodeType;
 // miscellancious imports, future traits are used because alot of the code is asyncronus and cant fully be contained in tokio
 // mime_guess as when I am serving the files, I need to serve it with the correct mime type
 // serde_json because I exchange alot of json data between the backend and frontend and to the gameserver
@@ -66,8 +56,6 @@ use crate::database::Node;
 // chrono for time, tower for cors (TODO:: use less permissive CORS due to potential security risks)
 // jsonwebtokens is standard when working with authentication, and bcrypt so I can use password hashs, I explain the authentication methods later
 use async_trait::async_trait;
-use bcrypt::BcryptError;
-use bcrypt::{hash, verify, DEFAULT_COST};
 use chrono::{Duration as OtherDuration, Utc};
 use futures_util::{sink::SinkExt, stream::StreamExt};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, TokenData, Validation};
@@ -76,50 +64,54 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use serial_test::serial;
 use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::time::interval;
 use tokio::{
     fs as tokio_fs,
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    sync::{broadcast, mpsc, Mutex},
+    sync::{broadcast, Mutex},
     time::{timeout, Duration},
 };
-use tower_http::add_extension::AddExtensionLayer;
 use tower_http::cors::{Any as CorsAny, CorsLayer};
 
-use futures_util::{stream, Stream};
+use futures_util::{stream, Stream, TryFutureExt};
 
+use std::error::Error;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio_util::bytes::Bytes;
+
+use sysinfo::System;
+
 static CONNECTION_COUNTER: AtomicUsize = AtomicUsize::new(0);
-use tokio::time::interval;
-use tokio::time::Instant;
 
 // For now I only restrict the json backend for running this without kubernetes
 // the json backend is only for testing in most cases, simple deployments would use full-stack feature flag
 // and you can use postgres manually with the database feature flag
-#[cfg(any(feature = "full-stack", feature = "database"))]
+#[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
 mod database {
     include!("pgdatabase.rs");
 }
 
-#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
+#[cfg(all(not(feature = "full-stack"), not(feature = "docker"), not(feature = "database")))]
 mod database {
     include!("jsondatabase.rs");
 }
 
 // JsonDatabase is only something that would be unique to Json and not any other database managed by sqlx
-#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
+#[cfg(all(not(feature = "full-stack"), not(feature = "docker"), not(feature = "database")))]
 use database::JsonBackend;
 
 // Both database files and any more should have these structs
-use database::CreateElementData;
-use database::RemoveElementData;
+use database::ModifyElementData;
 use database::RetrieveUser;
 use database::User;
-// use databasespec::{User, CreateUserData, RemoveUserData};
+
+mod extra;
+use extra::{value_from_line};
 
 mod filesystem;
-use filesystem::{FsItem, RemoteFileSystem, TcpFs, FsEntry, FileResponseMessage, FsMetadata};
+use filesystem::{
+    FileChunk, FileResponseMessage, FsEntry, FsItem, FsMetadata, RemoteFileSystem, TcpFs,
+};
 
 // Docker AND kubernetes would be enabled with a standard deployment
 // as you wouldnt need the docker module (or the k8s module) for barebones testing
@@ -143,6 +135,8 @@ mod docker {
 }
 #[cfg(not(feature = "full-stack"))]
 mod kubernetes {
+    use crate::NodeAndTCP;
+
     pub async fn create_k8s_deployment(
         _: &crate::Client,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -152,6 +146,22 @@ mod kubernetes {
         _: crate::Client,
     ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
         Err("This should not be running".into())
+    }
+    pub async fn list_node_info(
+    _: crate::Client,
+    ) -> Result<Vec<NodeAndTCP>, Box<dyn std::error::Error + Send + Sync>> {
+        Err("This should not be running".into())
+    }
+    pub async fn verify_is_k8s_gameserver(
+    _: crate::Client,
+    _: String
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(false)
+    }
+    pub async fn get_avalible_gameserver(
+    _: &crate::Client,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        Err("This should not be running in a non-k8s environemnt".into())
     }
 }
 
@@ -167,6 +177,9 @@ static LocalUrl: &str = "127.0.0.1:8081";
 #[cfg(not(feature = "full-stack"))]
 static K8S_WORKS: bool = false;
 
+#[cfg(not(feature = "docker"))]
+static DOCKER_WORKS: bool = false;
+
 #[cfg(feature = "full-stack")]
 static TcpUrl: &str = "gameserver-service:8080";
 
@@ -178,6 +191,9 @@ static WEBSOCKET_DEBUGGING: bool = false;
 // to avoid calling the dummy functions
 #[cfg(feature = "full-stack")]
 static K8S_WORKS: bool = true;
+
+#[cfg(feature = "docker")]
+static DOCKER_WORKS: bool = true;
 
 // dummy client and function
 #[cfg(not(feature = "full-stack"))]
@@ -193,7 +209,7 @@ impl Client {
 
 // The database connection would be avalible in the full-stack or explicit database testing
 // which in this case means postgres
-#[cfg(any(feature = "full-stack", feature = "database"))]
+#[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
 async fn first_connection() -> Result<sqlx::Pool<sqlx::Postgres>, sqlx::Error> {
     // The user should be able to customize alot about where the database is, how to authenticate with it,
     // whether it is being ran with the full stack or not, hence the env varibles with sensible defaults
@@ -215,7 +231,7 @@ async fn first_connection() -> Result<sqlx::Pool<sqlx::Postgres>, sqlx::Error> {
 // due to reduced complexity, and currently at the time of writing this
 // dependency issues, so unless you are testing the postgres db itself with this project
 // the json backend MIGHT be sufficent, but at the time of writing this I have not made the json backend work
-#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
+#[cfg(all(not(feature = "full-stack"), not(feature = "docker"), not(feature = "database")))]
 async fn first_connection() -> Result<JsonBackend, String> {
     Ok(JsonBackend::new(None))
 }
@@ -233,6 +249,27 @@ struct MessagePayload {
     r#type: String,
     message: String,
     authcode: String,
+}
+
+// #[derive(PartialEq)]
+
+struct NodeAndTCP {
+    name: String, 
+    ip: String, 
+    nodetype: NodeType,
+    tcp_tx: Option<tokio::sync::broadcast::Sender<Vec<u8>>>,
+    tcp_rx: Option<tokio::sync::broadcast::Receiver<Vec<u8>>>
+}
+impl Clone for NodeAndTCP {
+    fn clone(&self) -> NodeAndTCP {
+        NodeAndTCP {
+            name: self.name.clone(),
+            ip: self.ip.clone(),
+            nodetype: self.nodetype.clone(),
+            tcp_tx: self.tcp_tx.clone(),
+            tcp_rx: self.tcp_tx.as_ref().map(|tx| tx.subscribe()),
+        }
+    }
 }
 
 // console messages are for the console specifically, but this might be redundant
@@ -259,6 +296,11 @@ struct ResponseMessage {
     response: String,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+struct Statistics {
+    used_memory: String,
+    core_data: Vec<String>
+}
 // a list for things like nodes, capabilities, etc
 #[derive(Debug, Serialize, Deserialize)]
 struct List {
@@ -305,6 +347,15 @@ struct IncomingMessage {
     authcode: String,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct SrcAndDest {
+    src: ApiCalls,
+    dest: ApiCalls,
+    metadata: String
+}
+struct BrowserErrMessage {
+    err: String
+}
 
 // Some common api calls which is just what might get exchanged between the frontend and backend via api
 // this is needed rather than a bunch of structs or however else I might do it because in some cases I might not know what api call to expect
@@ -321,6 +372,7 @@ enum ApiCalls {
     ButtonList(Vec<Button>),
     IncomingMessage(IncomingMessage),
     FileList(Vec<FsItem>),
+    Node(Node),
 }
 
 #[derive(Clone)]
@@ -337,17 +389,17 @@ enum Status {
 // for user information and etc
 // #[derive(Clone)]
 struct AppState {
-    // tcp_tx: Arc<Mutex<mpsc::Sender<Vec<u8>>>>,
     tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
     tcp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
-    // tcp_rx: Arc<Mutex<mpsc::Receiver<Vec<u8>>>>,
+    additonal_node_tcp: Vec<NodeAndTCP>,
+    //additonal_node_tcp: Vec<(tokio::sync::broadcast::Sender<Vec<u8>>, tokio::sync::broadcast::Receiver<Vec<u8>>)>,
     gameserver: Value,
     status: Status,
     ws_tx: broadcast::Sender<String>,
-    // peer_addr: Option<String>,
     base_path: String,
     client: Option<Client>,
     database: database::Database,
+    //sysinfo: System
 }
 impl Clone for AppState {
     fn clone(&self) -> Self {
@@ -360,459 +412,236 @@ impl Clone for AppState {
             base_path: self.base_path.clone(),
             client: self.client.clone(),
             database: self.database.clone(),
+            //sysinfo: System::new_all(),
+            additonal_node_tcp: self.additonal_node_tcp
+                .iter()
+                .map(|node| 
+                    NodeAndTCP {
+                        name: node.name.clone(),
+                        ip: node.ip.clone(),
+                        tcp_tx: node.tcp_tx.clone(),
+                        tcp_rx: {
+                            if let Some (tcp_rx) = &node.tcp_rx {
+                                Some(tcp_rx.resubscribe())
+                            } else {
+                                None
+                            }
+                        },
+                        nodetype: node.nodetype.clone(),
+                    }
+                )
+                .collect(),
         }
     }
 }
-// static ACCEPT_NON_ID_MESSAGE: bool = false;
+
 
 // for the initial connection attempt, which will determine if possibly I would need to create the container and deployment upon failure
 // i will use rusts 'timeout' for x interval determined with CONNECTION_TIMEOUT
-async fn attempt_connection() -> Result<TcpStream, Box<dyn std::error::Error + Send + Sync>> {
-    timeout(CONNECTION_TIMEOUT, TcpStream::connect(TcpUrl))
+async fn attempt_connection(tcp_url: String) -> Result<TcpStream, Box<dyn std::error::Error + Send + Sync>> {
+    timeout(CONNECTION_TIMEOUT, TcpStream::connect(tcp_url))
         .await?
         .map_err(Into::into)
 }
-fn parse_json_objects_in_str<T>(input: &str) -> Vec<Result<T, serde_json::Error>>
-where
-    T: DeserializeOwned + Debug,
-{
-    let mut results = Vec::new();
-    let mut remaining = input;
 
-    while let Some(start) = remaining.find('{') {
-        let mut open_braces = 0usize;
-        let mut end_index = None;
-
-        for (i, c) in remaining[start..].chars().enumerate() {
-            if c == '{' {
-                open_braces += 1;
-            } else if c == '}' {
-                open_braces -= 1;
-                if open_braces == 0 {
-                    end_index = Some(start + i + 1);
-                    break;
-                }
-            }
-        }
-
-        if let Some(end) = end_index {
-            let candidate = &remaining[start..end];
-            match serde_json::from_str::<Value>(candidate) {
-                Ok(val) => {
-                    if let Ok(inner_data) = serde_json::from_value::<InnerData>(val.clone()) {
-                        match serde_json::from_str::<T>(&inner_data.data) {
-                            Ok(parsed) => results.push(Ok(parsed)),
-                            Err(e) => results.push(Err(e)),
-                        }
-                    } else {
-                        match serde_json::from_value::<T>(val) {
-                            Ok(parsed) => results.push(Ok(parsed)),
-                            Err(e) => results.push(Err(e)),
-                        }
-                    }
-                }
-                Err(e) => {
-                    results.push(Err(e));
-                }
-            }
-
-            remaining = &remaining[end..];
-        } else {
-            break;
-        }
-    }
-
-    results
-}
-
-async fn value_from_line<T, F>(gameserver_str: &str, filter: F) -> Vec<Result<T, serde_json::Error>>
-where
-    T: DeserializeOwned + Debug,
-    F: Fn(&str) -> bool,
-{
-    let mut final_values = vec![];
-
-    for line in gameserver_str.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if !filter(line) {
-            continue;
-        }
-
-        match serde_json::from_str::<Value>(line) {
-            Ok(line_val) => {
-                if let Ok(resp_msg) =
-                    serde_json::from_value::<FileResponseMessage>(line_val.clone())
-                {
-                    match String::from_utf8(resp_msg.data) {
-                        Ok(data_str) => match serde_json::from_str::<T>(&data_str) {
-                            Ok(result) => {
-                                final_values.push(Ok(result));
-                            }
-                            Err(e) => {
-                                final_values.push(Err(e));
-                            }
-                        },
-                        Err(e) => {
-                            final_values.push(Err(serde_json::from_str::<T>("").unwrap_err()));
-                        }
-                    }
-                } else if let Ok(inner_data) = serde_json::from_value::<InnerData>(line_val.clone())
-                {
-                    match serde_json::from_str::<T>(&inner_data.data) {
-                        Ok(result) => {
-                            final_values.push(Ok(result));
-                        }
-                        Err(e) => {
-                            final_values.push(Err(e));
-                        }
-                    }
-                } else {
-                    match serde_json::from_value::<T>(line_val) {
-                        Ok(result) => {
-                            final_values.push(Ok(result));
-                        }
-                        Err(e) => {
-                            final_values.push(Err(e));
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                println!("Failed to parse line as JSON: {}", e);
-                let partials = parse_json_objects_in_str::<T>(line);
-                if partials.is_empty() {
-                    println!(
-                        "Failed to parse line as JSON and no valid JSON objects found inside."
-                    );
-                }
-                final_values.extend(partials);
-            }
-        }
-    }
-
-    final_values
-}
-async fn handle_server_data(
-    state: Arc<RwLock<AppState>>,
-    data: &[u8],
-    ws_tx: &broadcast::Sender<String>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let text = String::from_utf8_lossy(data);
-
-    let bytes: Vec<u8> = text
-        .split(|c: char| !c.is_ascii_digit())
-        .filter_map(|s| {
-            s.parse::<u64>()
-                .ok()
-                .and_then(|n| if n <= 255 { Some(n as u8) } else { None })
-        })
-        .collect();
-
-    if let Ok(resp_msg) = serde_json::from_str::<FileResponseMessage>(&text) {
-        let state_guard = state.read().await;
-        if let Err(e) = state_guard.tcp_tx.send(serde_json::to_vec(&resp_msg)?) {
-            println!("Failed to forward FileResponseMessage: {}", e);
-        }
-        return Ok(());
-    }
-
-    if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&text) {
-        if let Some(in_response_to) = json_value.get("in_response_to") {
-            let resp_msg = FileResponseMessage {
-                in_response_to: in_response_to.as_u64().unwrap_or(0),
-                data: if let Some(data) = json_value.get("data") {
-                    serde_json::to_vec(data)?
-                } else {
-                    serde_json::to_vec(&json_value)?
-                },
-            };
-            let state_guard = state.read().await;
-            if let Err(e) = state_guard.tcp_tx.send(serde_json::to_vec(&resp_msg)?) {
-                println!("Failed to forward wrapped response: {}", e);
-            }
-            return Ok(());
-        }
-    }
-
-    // Handle raw metadata or entries
-    if let Ok(metadata) = serde_json::from_slice::<FsMetadata>(data) {
-        let resp_msg = FileResponseMessage {
-            in_response_to: 0, // Assuming 0 is metadata request ID
-            data: serde_json::to_vec(&metadata)?,
-        };
-        let state_guard = state.read().await;
-        if let Err(e) = state_guard.tcp_tx.send(serde_json::to_vec(&resp_msg)?) {
-            println!("Failed to forward metadata: {}", e);
-        }
-    } else if let Ok(entries) = serde_json::from_slice::<Vec<FsEntry>>(data) {
-        let resp_msg = FileResponseMessage {
-            in_response_to: 1, // Assuming 1 is list directory request ID
-            data: serde_json::to_vec(&entries)?,
-        };
-        let state_guard = state.read().await;
-        if let Err(e) = state_guard.tcp_tx.send(serde_json::to_vec(&resp_msg)?) {
-            println!("Failed to forward entries: {}", e);
-        }
-    }
-
-    if let Ok(outer_msg) = serde_json::from_str::<InnerData>(&text) {
-        let inner_data_str = outer_msg.data.as_str();
-        let mut borrowed_state = state.write().await;
-
-        let mut keyword_detected = false;
-        if let Ok(keyword_payload) = serde_json::from_str::<KeywordPayload>(inner_data_str) {
-            if let Some(start_keyword) = &keyword_payload.start_keyword {
-                if inner_data_str.contains(start_keyword) {
-                    println!("Changed state to Up (current line)");
-                    borrowed_state.status = Status::Up;
-                    keyword_detected = true;
-                }
-            }
-
-            if let Some(stop_keyword) = &keyword_payload.stop_keyword {
-                if inner_data_str.contains(stop_keyword) {
-                    println!("Changed state to Down (current line)");
-                    borrowed_state.status = Status::Down;
-                    keyword_detected = true;
-                }
-            }
-        }
-
-        let filter = |line: &str| line.contains("start_keyword") || line.contains("stop_keyword");
-        if !keyword_detected {
-            if let Some(gameserver_str) = borrowed_state.gameserver.as_str() {
-                if let Some(last_keyword_line) = gameserver_str
-                    .lines()
-                    .rev()
-                    .find(|l| l.contains("start_keyword") || l.contains("stop_keyword"))
-                {
-                    let values =
-                        value_from_line::<KeywordPayload, _>(last_keyword_line, filter).await;
-                    for value in values {
-                        if let Ok(parsed_data) = value {
-                            if let Some(start_keyword) = &parsed_data.start_keyword {
-                                if inner_data_str.contains(start_keyword) {
-                                    println!("Changed state to Up (from log)");
-                                    borrowed_state.status = Status::Up;
-                                }
-                            }
-                            if let Some(stop_keyword) = &parsed_data.stop_keyword {
-                                if inner_data_str.contains(stop_keyword) {
-                                    println!("Changed state to Down (from log)");
-                                    borrowed_state.status = Status::Down;
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                eprintln!("gameserver is not a string");
-            }
-        }
-
-        if let Ok(inner_data) = serde_json::from_str::<serde_json::Value>(inner_data_str) {
-            if ALLOW_NONJSON_DATA {
-                if let Some(message_content) = inner_data["data"].as_str() {
-                    println!("Extracted message: {}", message_content);
-                    let _ = ws_tx.send(message_content.to_string());
-                }
-            } else {
-                println!("Sending raw inner data: {}", inner_data_str);
-                let _ = ws_tx.send(inner_data_str.to_string());
-            }
-        } else {
-            println!("Sending raw inner data: {}", inner_data_str);
-            let _ = ws_tx.send(inner_data_str.to_string());
-        }
-    } else {
-        println!("Sending raw text: {}", text);
-        let _ = ws_tx.send(text.to_string());
-    }
-
-    Ok(())
-}
-
-// this handles the main tcp stream between the gameserver and the client console, more specifically the data exchanged
-// as well as notifying the gameserver of its capabilities which at some point ill make dependent on what feature flag is set
-// `tokio::select!` is used to concurrently wait for either incoming TCP data or messages from the channel to send.
-async fn handle_stream(
-    state: Arc<RwLock<AppState>>,
+// use tokio::sync::broadcast::error::RecvError::Lagged;
+// use tokio::sync::broadcast::error::RecvError::Closed;
+pub async fn handle_stream(
+    arc_state: Arc<RwLock<AppState>>,
     rx: &mut tokio::sync::broadcast::Receiver<Vec<u8>>,
     stream: &mut TcpStream,
     ws_tx: broadcast::Sender<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let ip = stream.peer_addr()?.to_string();
-    let (mut reader, mut writer) = stream.split();
-    let mut buf = vec![0u8; 1024];
+    let (reader, mut writer) = stream.split();
     let mut buf_reader = BufReader::new(reader);
-    let mut line = String::new();
+    let mut buf = vec![0u8; 4096];
 
     let capability_msg = serde_json::to_string(&List {
         list: ApiCalls::Capabilities(vec!["all".to_string()]),
     })? + "\n";
-
     writer.write_all(capability_msg.as_bytes()).await?;
-    match buf_reader.read_line(&mut line).await {
-        Ok(0) => {
-            println!("Error, possibly connection closed");
-        }
-        Ok(_) => {
-            println!("Received line: {}", line.trim_end());
-        }
-        Err(e) => {
-            println!("Error reading line: {:?}", e);
-            return Err(e.into());
-        }
+
+    for command in &["server_data", "server_name"] {
+        let cmd_msg = serde_json::to_string(&MessagePayload {
+            r#type: "command".to_string(),
+            message: command.to_string(),
+            authcode: "0".to_string(),
+        })? + "\n";
+        writer.write_all(cmd_msg.as_bytes()).await?;
     }
 
-    let server_data_msg = serde_json::to_string(&MessagePayload {
-        r#type: "command".to_string(),
-        message: "server_data".to_string(),
-        authcode: "0".to_string(),
-    })? + "\n";
-
-    writer.write_all(server_data_msg.as_bytes()).await?;
-    match buf_reader.read_line(&mut line).await {
-        Ok(0) => {
-            println!("Error, possibly connection closed");
-        }
-        Ok(_) => {
-            println!("Received line: {}", line.trim_end());
-            state.write().await.gameserver = serde_json::Value::String(line.clone());
-        }
-        Err(e) => {
-            println!("Error reading line: {:?}", e);
-            return Err(e.into());
-        }
-    }
-    println!("State: {:#?}", state.read().await.gameserver);
-
-    let server_node_name_msg = serde_json::to_string(&MessagePayload {
-        r#type: "command".to_string(),
-        message: "server_name".to_string(),
-        authcode: "0".to_string(),
-    })? + "\n";
-
-    writer.write_all(server_node_name_msg.as_bytes()).await?;
-    match buf_reader.read_line(&mut line).await {
-        Ok(0) => {
-            println!("Error, possibly connection closed");
-        }
-        Ok(_) => {
-            println!("Received line: {}", line.trim_end());
-            //let outer: ConsoleMessage = serde_json::from_str(&line)?;
-            //let nodename_result = serde_json::from_str::<MessagePayload>(&outer.data);
-            //if let Ok(name_struct_option) = value_from_line::<ConsoleMessage>(&line).await {
-            for value in value_from_line::<ConsoleMessage, _>(&line, |_| true).await {
-                if let Ok(potential_name_struct) = value {
-                    if let Ok(name_struct) =
-                        serde_json::from_str::<MessagePayload>(&potential_name_struct.data)
-                    {
-                        println!("Got the name");
-                        let db_state = &state.write().await.database;
-
-                        if let Ok(nodes) = db_state.fetch_all_nodes().await {
-                            println!("{:#?}", name_struct.message);
-                            println!("Got nodes");
-
-                            let node = Node {
-                                ip: ip.clone(),
-                                nodename: name_struct.message,
-                                nodetype: "main".to_string(),
-                            };
-
-                            if !nodes
-                                .iter()
-                                .any(|n| n.ip == node.ip && n.nodename == node.nodename)
-                            {
-                                //.contains(&node) {
-                                println!("Making node");
-                                let _ = db_state
-                                    .create_nodes_in_db(CreateElementData {
-                                        element: Element::Node(node),
-                                        jwt: "".to_string(),
-                                        require_auth: false,
-                                    })
-                                    .await;
-                            }
-                        }
-                    } else {
-                        println!("No nodes");
-                    }
-                } else {
-                    println!("No options");
-                    // optional: log error
-                }
-            }
-            // else if let Err(errs) = value_from_line::<MessagePayload>(&line).await {
-            //     for err in errs {
-            //         println!("{:#?}", err);
-            //     }
-            // }
-            //state.write().await.gameserver = serde_json::Value::String(line.clone());
-        }
-        Err(e) => {
-            println!("Error reading line: {:?}", e);
-            return Err(e.into());
-        }
-    }
-
-    reader = buf_reader.into_inner();
+    let mut server_start_keyword = String::new();
+    let mut server_stop_keyword = String::new();
 
     loop {
-        let res: Result<(), Box<dyn std::error::Error + Send + Sync>> = tokio::select! {
-            result = reader.read(&mut buf) => {
-                match result {
-                    Ok(0) => break Ok(()),
+        tokio::select! {
+            read_result = buf_reader.read(&mut buf) => {
+                match read_result {
+                    Ok(0) => break,
                     Ok(n) => {
-                        handle_server_data(state.clone(), &buf[..n], &ws_tx).await?;
-                        Ok(())
+                        let raw_data = &buf[..n];
+                        {
+                            let state_guard = arc_state.read().await;
+                            let _ = state_guard.tcp_tx.send(raw_data.to_vec());
+                        }
+
+                        if let Ok(text) = std::str::from_utf8(raw_data) {
+                            let line_content = text.trim();
+                            if line_content.is_empty() { continue; }
+
+                            let mut final_data: Vec<ConsoleData> = vec![];
+
+                            let list_parsed: Vec<Result<List, serde_json::Error>> =
+                                value_from_line::<List, _>(line_content, |line| line.contains("\"list\"")).await;
+
+                            let mut list_values: Vec<ConsoleData> = vec![];
+                            for item in list_parsed {
+                                if let Ok(list_item) = item {
+                                    let serialized = serde_json::to_string(&list_item)?;
+                                    list_values.push(ConsoleData {
+                                        data: serialized,
+                                        r#type: "list_item".to_string(),
+                                        authcode: "0".to_string(),
+                                    });
+                                }
+                            }
+                            let mut list_lines: Vec<String> = list_values.iter().map(|v| v.data.clone()).collect();
+
+                            let console_parsed: Vec<Result<ConsoleData, serde_json::Error>> =
+                                value_from_line::<ConsoleData, _>(line_content, |line| !line.contains("\"list\"")).await;
+
+                            let mut console_values: Vec<ConsoleData> = vec![];
+                            for item in console_parsed {
+                                if let Ok(data) = item {
+                                    if !list_lines.contains(&data.data) {
+                                        console_values.push(data);
+                                    }
+                                }
+                            }
+
+                            final_data.extend(list_values);
+                            final_data.extend(console_values);
+
+                            for data_clone in final_data.iter() {
+                                if let Ok(inner) = serde_json::from_str::<serde_json::Value>(&data_clone.data) {
+                                    if let (Some(start_kw), Some(stop_kw)) = (
+                                        inner.get("start_keyword").and_then(|v| v.as_str()),
+                                        inner.get("stop_keyword").and_then(|v| v.as_str()),
+                                    ) {
+                                        server_start_keyword = start_kw.to_string();
+                                        server_stop_keyword = stop_kw.to_string();
+                                    }
+                                }
+
+                                if data_clone.data.contains("\"type\":\"command\"") {
+                                    if let Ok(inner_msg) = serde_json::from_str::<MessagePayload>(&data_clone.data) {
+                                        if inner_msg.r#type == "command" {
+                                            let (client_option, database) = {
+                                                let state_guard = arc_state.read().await;
+                                                (state_guard.client.clone(), state_guard.database.clone())
+                                            };
+
+                                            if let Ok(nodes) = database.fetch_all_nodes().await {
+                                                let node_status = if let Some(client) = client_option {
+                                                    let client_clone = client.clone();
+                                                    let ip_clone = ip.clone();
+                                                    
+                                                    match tokio::time::timeout(
+                                                        std::time::Duration::from_millis(100),
+                                                        verify_is_k8s_gameserver(client_clone, ip_clone)
+                                                    ).await {
+                                                        Ok(Ok(true)) => NodeStatus::ImmutablyEnabled,
+                                                        _ => NodeStatus::Enabled,
+                                                    }
+                                                } else {
+                                                    NodeStatus::Enabled
+                                                };
+
+                                                let node = Node {
+                                                    ip: ip.clone(),
+                                                    nodename: inner_msg.message,
+                                                    nodetype: NodeType::Custom,
+                                                    nodestatus: node_status,
+                                                };
+
+                                                if !nodes.iter().any(|n| n.ip == node.ip && n.nodename == node.nodename) {
+                                                    let _ = database.create_nodes_in_db(ModifyElementData {
+                                                        element: Element::Node(node),
+                                                        jwt: "".to_string(),
+                                                        require_auth: false,
+                                                    }).await;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if data_clone.data.contains("\"type\":\"stdout\"") {
+                                    if let Ok(output_msg) = serde_json::from_str::<serde_json::Value>(&data_clone.data) {
+                                        if let Some(server_output) = output_msg.get("data").and_then(|v| v.as_str()) {
+                                            if !server_start_keyword.is_empty() && server_output.contains(&server_start_keyword) {
+                                                let _ = ws_tx.send("Server is ready for connections!".to_string());
+                                                {
+                                                    let mut state_guard = arc_state.write().await;
+                                                    state_guard.status = Status::Up;
+                                                }
+                                            } else if !server_stop_keyword.is_empty() && server_output.contains(&server_stop_keyword) {
+                                                {
+                                                    let mut state_guard = arc_state.write().await;
+                                                    state_guard.status = Status::Down;
+                                                }
+                                            }
+                                            let _ = ws_tx.send(server_output.to_string());
+                                            continue;
+                                        }
+                                    }
+                                }
+
+                                if !data_clone.data.contains("\"type\":\"stdout\"") && !data_clone.data.contains("\"type\":\"command\"") {
+                                    let _ = ws_tx.send(data_clone.data.clone());
+                                }
+                            }
+                        }
                     }
-                    Err(e) => break Err(e.into()),
+                    Err(e) => return Err(e.into()),
                 }
             }
-            result = rx.recv() => {
-                match result {
+
+            broadcast_result = rx.recv() => {
+                match broadcast_result {
                     Ok(data) => {
                         writer.write_all(&data).await?;
                         writer.write_all(b"\n").await?;
                         writer.flush().await?;
-                        Ok(())
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                        eprintln!("Lagged: missed {} messages", skipped);
-                        Ok(())
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        break Ok(());
-                    }
+                    Err(_) => {}
                 }
             }
-        };
-        res?;
+        }
     }
+
+    Ok(())
 }
+
+// use tokio::sync::broadcast::error::RecvError::Lagged;
+// use tokio::sync::broadcast::error::RecvError::Closed;
+
 
 // does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
 async fn connect_to_server(
     state: Arc<RwLock<AppState>>,
+    tcp_url: String,
     mut rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
     ws_tx: broadcast::Sender<String>,
 ) -> Result<SocketAddr, Box<dyn std::error::Error + Send + Sync>> {
     loop {
-        match timeout(CONNECTION_TIMEOUT, TcpStream::connect(TcpUrl)).await {
+        match timeout(CONNECTION_TIMEOUT, TcpStream::connect(tcp_url.clone())).await {
             Ok(Ok(mut stream)) => {
                 let stream_result =
                     handle_stream(state.clone(), &mut rx, &mut stream, ws_tx.clone()).await;
                 if stream_result.is_ok() {
                     return Ok(stream.peer_addr()?);
-                    // Node {
-                    //     nodename: "".to_string(),
-                    //     ip: stream.peer_addr(),
-                    // }
                 } else if let Err(error) = stream_result {
                     return Err(error);
                 }
@@ -831,20 +660,16 @@ async fn connect_to_server(
 // try to connect upon failing but it should not try to create the container and deployment every time it fails)
 async fn try_initial_connection(
     state: Arc<RwLock<AppState>>,
+    tcp_url: String,
     ws_tx: broadcast::Sender<String>,
     tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    match attempt_connection().await {
+    match attempt_connection(tcp_url).await {
         Ok(mut stream) => {
             println!("Initial connection succeeded!");
 
             let (temp_tx, temp_rx) =
                 tokio::sync::broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
-
-            // {
-            //     let mut guard = tcp_tx;
-            //     *guard = temp_tx;
-            // }
 
             let mut temp_rx = temp_rx; // make receiver mutable
             handle_stream(state, &mut temp_rx, &mut stream, ws_tx).await
@@ -889,6 +714,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     const FORCE_REBUILD: bool = false;
     const BUILD_DOCKER_IMAGE: bool = true;
     const BUILD_DEPLOYMENT: bool = true;
+    const DONT_OVERRIDE_CONN_WITH_K8S: bool = false;
 
     // creates a websocket broadcase and tcp channels
     let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
@@ -901,8 +727,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         client = Some(Client::try_default().await?);
     }
 
+    let mut tcp_url: String = TcpUrl.to_string();
+    if !DONT_OVERRIDE_CONN_WITH_K8S && client.is_some() {
+        if let Ok(url_result) = &kubernetes::get_avalible_gameserver(client.as_ref().unwrap()).await {
+            tcp_url = url_result.clone();  
+        } else {
+            println!("Could not get a successful url for a existing gameserver, will try the fallback url")
+        }
+    }
+
+
+    let mut nodes: Vec<NodeAndTCP> = vec![];
+    if let Ok(db_nodes) = database.fetch_all_nodes().await {
+        nodes = db_nodes.into_iter().map(|node| NodeAndTCP { name: node.nodename, nodetype: node.nodetype, ip: node.ip, tcp_tx: None, tcp_rx: None }).collect()
+    }
+
     // use everything so far to make the app state
-    let state = AppState {
+    let state: AppState = AppState {
         gameserver: json!({}),
         status: Status::Down,
         tcp_tx: tcp_tx,
@@ -912,6 +753,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         base_path: base_path.clone(),
         database,
         client,
+        additonal_node_tcp: nodes,
+        //sysinfo: System::new_all()
     };
 
     let multifaceted_state = Arc::new(RwLock::new(state));
@@ -922,12 +765,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         println!("Trying initial connection...");
         if try_initial_connection(
             multifaceted_state.clone(),
+            tcp_url.to_string(),
             ws_tx.clone(),
             multifaceted_state.write().await.tcp_tx.clone(),
         )
         .await
-        .is_err()
-            || FORCE_REBUILD
+        .is_err() || FORCE_REBUILD
         {
             eprintln!("Initial connection failed or force rebuild enabled");
             if BUILD_DOCKER_IMAGE {
@@ -949,7 +792,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let bridge_tx = multifaceted_state.read().await.ws_tx.clone();
 
     tokio::spawn(async move {
-        if let Err(e) = connect_to_server(server_connection_state, bridge_rx, bridge_tx).await {
+        if let Err(e) = connect_to_server(server_connection_state, tcp_url.to_string(), bridge_rx, bridge_tx).await {
             eprintln!("[DEBUG] Connection task failed: {}", e);
         }
     });
@@ -974,14 +817,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/users", get(users))
         .route("/api/ws", get(ws_handler))
         // .route("getfiles", get(get_files))
+        .route("/api/upload", post(upload))
+        //.route("/api/uploadcontent", post(upload))
+        .route("/api/statistics", get(statistics))
         .route("/api/awaitserverstatus", get(ongoing_server_status))
+        .route("/api/fetchnode", post(fetch_node))
+        .route("/api/migrate", post(migrate))
         .route("/api/getstatus", post(get_status))
         .route("/api/getfiles", post(get_files))
+        .route("/api/getfilescontent", post(get_files_content))
         .route("/api/buttonreset", post(button_reset))
         .route("/api/editbuttons", post(edit_buttons))
         .route("/api/addnode", post(add_node))
         .route("/api/edituser", post(edit_user))
         .route("/api/getuser", post(get_user))
+        .route("/api/getserver", post(get_server))
         .route("/api/send", post(receive_message))
         .route("/api/general", post(process_general))
         .route("/api/signin", post(sign_in))
@@ -989,12 +839,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/deleteuser", post(delete_user))
         .merge(fallback_router)
         .with_state(multifaceted_state.clone());
-    // let inner_async = Router::new()
-    //    .route("/api/ws", get(ws_handler))
-    //    .with_state(Arc::new(state.clone()));
 
     let normal_routes = Router::new().merge(inner);
-    // .merge(inner_async);
 
     // Does nesting of routes behind a base path if configured, otherwise use defaults
     let app = if base_path.is_empty() || base_path == "/" {
@@ -1012,6 +858,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     Ok(())
 }
+
+// async fn uploadcontent(
+//     State(arc_state): State<Arc<RwLock<AppState>>>,
+//     multipart: Multipart,
+// ) -> StatusCode {
+
+// }
+
+async fn upload(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    multipart: Multipart,
+) -> StatusCode {
+    let state = arc_state.read().await;
+    let tcp_tx = state.tcp_tx.clone();
+
+    match send_multipart_over_broadcast(multipart, tcp_tx).await {
+        Ok(_) => StatusCode::OK,
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+//SrcAndDest
+async fn migrate(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    Json(request): Json<SrcAndDest>,
+) -> impl IntoResponse {
+    let state = arc_state.read().await;
+
+    //println!("{:#?}", request.clone());
+    // &state.tcp_tx {
+    match serde_json::to_vec(&request) {
+        Ok(bytes) => {
+            if let Err(err) = state.tcp_tx.send(bytes) {
+                eprintln!("Failed to send request over broadcast: {}", err);
+            }
+        }
+        Err(err) => eprintln!("Failed to serialize request: {}", err),
+    }
+    //}
+
+    "ok"
+}
+
 // TODO: maybe split this function and route into several routes with statuses for diffrent states/nodes/settings?
 async fn get_status(
     State(arc_state): State<Arc<RwLock<AppState>>>,
@@ -1042,23 +930,14 @@ async fn get_status(
     }
 }
 
-
 async fn get_buttons(State(state): State<Arc<RwLock<AppState>>>) -> impl IntoResponse {
     let mut button_list = vec![];
     match state.read().await.database.fetch_all_buttons().await {
         Ok(buttons) => {
-            //println!("{:#?}", buttons);
-            // let buttonname_list: Vec<String> = buttons.iter().map(|button| button.name.clone()).collect();
-            // for button in buttonname_list {
-            //     if !button_list.contains(&button){
-            //         button_list.push(button);
-            //     }
-            // }
             button_list.extend(buttons);
         }
         Err(err) => eprintln!("Error fetching DB buttons: {}", err),
     }
-    //println!("{:#?}", List { list: ApiCalls::ButtonList(button_list.clone()) });
     Json(List {
         list: ApiCalls::ButtonList(button_list),
     })
@@ -1066,7 +945,7 @@ async fn get_buttons(State(state): State<Arc<RwLock<AppState>>>) -> impl IntoRes
 
 async fn edit_buttons(
     State(arc_state): State<Arc<RwLock<AppState>>>,
-    Json(request): Json<CreateElementData>,
+    Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
     //println!("Got request");
     let state = arc_state.write().await;
@@ -1100,6 +979,13 @@ async fn button_reset(
     } else {
         StatusCode::INTERNAL_SERVER_ERROR
     }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct ConsoleData {
+    authcode: String, 
+    data: String, 
+    r#type: String
 }
 
 async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
@@ -1197,128 +1083,7 @@ async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
     println!("[Conn {}] DISCONNECTED", conn_id);
 }
 
-async fn ws_debug(
-    conn_id: usize,
-    arc_state: Arc<RwLock<AppState>>,
-    sender: Arc<Mutex<stream::SplitSink<WebSocket, WsMessage>>>,
-    receiver: &mut stream::SplitStream<WebSocket>,
-) {
-    let state = arc_state.write().await;
-    // Ping task with more visible logging
-    let ping_task = {
-        let conn_id = conn_id;
-        let sender = Arc::clone(&sender);
-        let mut interval = interval(Duration::from_secs(30));
 
-        tokio::spawn(async move {
-            println!("[Conn {}] PING TASK STARTED", conn_id);
-
-            loop {
-                interval.tick().await;
-                println!("[Conn {}] SENDING PING", conn_id); // <-- Log ping attempts
-
-                let mut sender = sender.lock().await;
-                match sender.send(Message::Ping(Bytes::new())).await {
-                    Ok(_) => println!("[Conn {}] PING SENT SUCCESSFULLY", conn_id),
-                    Err(e) => {
-                        println!("[Conn {}] PING FAILED: {}", conn_id, e);
-                        break;
-                    }
-                }
-            }
-
-            println!("[Conn {}] PING TASK EXITING", conn_id);
-        })
-    };
-
-    // Broadcast receiver task with more visible logging
-    let broadcast_task = {
-        let conn_id = conn_id;
-        let sender = Arc::clone(&sender);
-        let mut broadcast_rx = state.ws_tx.subscribe();
-
-        tokio::spawn(async move {
-            println!("[Conn {}] BROADCAST TASK STARTED", conn_id);
-
-            while let Ok(msg) = broadcast_rx.recv().await {
-                println!("[Conn {}] RECEIVED BROADCAST: {}", conn_id, msg);
-
-                let mut sender = sender.lock().await;
-                match sender.send(Message::Text(msg.into())).await {
-                    Ok(_) => println!("[Conn {}] FORWARDED MESSAGE", conn_id),
-                    Err(e) => {
-                        println!("[Conn {}] FAILED TO FORWARD: {}", conn_id, e);
-                        break;
-                    }
-                }
-            }
-
-            println!("[Conn {}] BROADCAST TASK EXITING", conn_id);
-        })
-    };
-
-    // Main message processing loop with more visible logging
-    println!("[Conn {}] STARTING MESSAGE PROCESSING", conn_id);
-
-    while let Some(result) = receiver.next().await {
-        match result {
-            Ok(Message::Text(text)) => {
-                println!("[Conn {}] RECEIVED TEXT: {}", conn_id, text);
-
-                match serde_json::from_str::<MessagePayload>(&text) {
-                    Ok(payload) => {
-                        println!("[Conn {}] PARSED PAYLOAD: {:?}", conn_id, payload);
-
-                        match serde_json::to_vec(&payload) {
-                            Ok(mut bytes) => {
-                                bytes.push(b'\n');
-                                println!("[Conn {}] SERIALIZED TO {} BYTES", conn_id, bytes.len());
-
-                                match state.tcp_tx.send(bytes) {
-                                    Ok(_) => println!("[Conn {}] SENT TO TCP", conn_id),
-                                    Err(e) => println!("[Conn {}] TCP SEND FAILED: {}", conn_id, e),
-                                }
-                            }
-                            Err(e) => println!("[Conn {}] SERIALIZATION FAILED: {}", conn_id, e),
-                        }
-                    }
-                    Err(e) => println!("[Conn {}] PARSE FAILED: {}", conn_id, e),
-                }
-            }
-            Ok(Message::Binary(bin)) => {
-                println!("[Conn {}] RECEIVED BINARY ({} bytes)", conn_id, bin.len());
-            }
-            Ok(Message::Ping(data)) => {
-                println!("[Conn {}] RECEIVED PING ({} bytes)", conn_id, data.len());
-            }
-            Ok(Message::Pong(data)) => {
-                println!("[Conn {}] RECEIVED PONG ({} bytes)", conn_id, data.len());
-            }
-            Ok(Message::Close(frame)) => {
-                println!("[Conn {}] CLOSE FRAME: {:?}", conn_id, frame);
-                break;
-            }
-            Err(e) => {
-                println!("[Conn {}] WEBSOCKET ERROR: {}", conn_id, e);
-                break;
-            }
-        }
-    }
-
-    println!("[Conn {}] SHUTTING DOWN", conn_id);
-    ping_task.abort();
-    broadcast_task.abort();
-
-    match ping_task.await {
-        Ok(_) => println!("[Conn {}] PING TASK SHUT DOWN", conn_id),
-        Err(e) => println!("[Conn {}] PING TASK ERROR: {:?}", conn_id, e),
-    }
-
-    match broadcast_task.await {
-        Ok(_) => println!("[Conn {}] BROADCAST TASK SHUT DOWN", conn_id),
-        Err(e) => println!("[Conn {}] BROADCAST TASK ERROR: {:?}", conn_id, e),
-    }
-}
 async fn ws_handler(
     ws: WebSocketUpgrade,
     State(arc_state): State<Arc<RwLock<AppState>>>,
@@ -1401,6 +1166,38 @@ fn routes_static(state: Arc<RwLock<AppState>>) -> Router<Arc<RwLock<AppState>>> 
 // async fn status(state: &AppState) -> String {
 //     state.status
 // }
+
+async fn statistics(
+    State(_): State<Arc<RwLock<AppState>>>,
+) -> Sse<impl Stream<Item = Result<Event, Box<dyn Error + Send + Sync>>>> {
+    let interval = interval(Duration::from_secs(3));
+    let system = System::new_all();
+    //let state_clone = arc_state.clone();
+
+    let updates = stream::unfold(
+        (interval, system),
+        move |(mut interval, mut system)| async move {
+            interval.tick().await;
+            system.refresh_all();
+            // let state = arc_state.write().await;
+            // let mut system = state.sysinfo;
+            // system.refresh_all();
+
+            let core_data: Vec<String> = system.cpus().into_iter().map(|core| core.cpu_usage().to_string()).collect();
+            let statistics = Statistics {
+                used_memory: system.total_memory().to_string(),
+                core_data,
+            };
+            let event = match serde_json::to_string(&statistics) {
+                Ok(json) => Ok(Event::default().data(json)),
+                Err(_) => Err("Error".into()), 
+            };
+            Some((event, (interval, system)))
+            // drop(state);
+            //Some((Ok(Event::default().data(serde_json::to_string(statistics)), (interval, system))))
+        });
+    Sse::new(updates).keep_alive(axum::response::sse::KeepAlive::default())
+}
 async fn ongoing_server_status(
     State(arc_state): State<Arc<RwLock<AppState>>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
@@ -1429,7 +1226,7 @@ async fn ongoing_server_status(
 
 async fn add_node(
     State(arc_state): State<Arc<RwLock<AppState>>>,
-    Json(request): Json<CreateElementData>,
+    Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
     let result = state
@@ -1443,7 +1240,7 @@ async fn add_node(
 // delegate user creation to the DB and return with relevent status code
 async fn create_user(
     State(arc_state): State<Arc<RwLock<AppState>>>,
-    Json(request): Json<CreateElementData>,
+    Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
     let result = state
@@ -1456,7 +1253,7 @@ async fn create_user(
 // edits the user data in the db
 async fn edit_user(
     State(arc_state): State<Arc<RwLock<AppState>>>,
-    Json(request): Json<CreateElementData>,
+    Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
     let result = state
@@ -1465,6 +1262,12 @@ async fn edit_user(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
     result
+}
+async fn get_server(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    Json(request): Json<RetrieveUser>,
+) -> impl IntoResponse {
+    Json({})
 }
 
 // get the user from the db
@@ -1485,7 +1288,7 @@ async fn get_user(
 // delegate user delection to the DB and returns with relevent status code
 async fn delete_user(
     State(arc_state): State<Arc<RwLock<AppState>>>,
-    Json(request): Json<RemoveElementData>,
+    Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
     let result = state
@@ -1572,12 +1375,25 @@ async fn users(
     }))
 }
 
+async fn fetch_node(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    Json(request): Json<IncomingMessage>,
+) -> Result<Json<Node>, StatusCode> {
+    let mut state = arc_state.write().await;
+    let option_node = state.database.retrieve_nodes(request.message).await;
+    if let Some(node) = option_node { 
+        Ok(Json(node))
+    } else {
+        Err(StatusCode::INTERNAL_SERVER_ERROR)
+    }
+}
 // A list of nodes in a k8s cluster is returned, nothing is returned if there is not a client (k8s support is off)
 async fn get_nodes(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl IntoResponse {
-    let state = arc_state.write().await;
-    let mut node_list = vec![];
-    if state.client.is_some() {
-        match kubernetes::list_node_names(state.client.clone().unwrap()).await {
+    let mut state = arc_state.write().await;
+    let mut node_list: Vec<NodeAndTCP> = vec![];
+
+    if let Some(client) = state.client.clone() {
+        match kubernetes::list_node_info(client).await {
             Ok(nodes) => {
                 node_list.extend(nodes.clone());
             }
@@ -1586,22 +1402,42 @@ async fn get_nodes(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl IntoR
             }
         }
     }
+
     match state.database.fetch_all_nodes().await {
         Ok(nodes) => {
-            let nodename_list: Vec<String> =
-                nodes.iter().map(|node| node.nodename.clone()).collect();
-            for node in nodename_list {
-                if !node_list.contains(&node) {
-                    node_list.push(node);
+            for node in nodes {
+                let new_node = NodeAndTCP {
+                    name: node.nodename,
+                    ip: node.ip,
+                    nodetype: node.nodetype,
+                    tcp_tx: None,
+                    tcp_rx: None,
+                };
+
+                let exists = node_list.iter().any(|n| n.name == new_node.name);
+
+                if !exists {
+                    node_list.push(new_node);
                 }
             }
         }
         Err(err) => eprintln!("Error fetching DB nodes: {}", err),
     }
+
+    for node in node_list.clone() {
+        let exists = state.additonal_node_tcp.iter().any(|n| n.name == node.name);
+        if !exists {
+            state.additonal_node_tcp.push(node);
+        }
+    }
+
+    let node_name_list: Vec<String> = node_list.into_iter().map(|node| node.name).collect();
+
     Json(List {
-        list: ApiCalls::NodeList(node_list),
+        list: ApiCalls::NodeList(node_name_list),
     })
 }
+
 async fn get_servers(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl IntoResponse {
     Json(List {
         list: ApiCalls::None,
@@ -1853,91 +1689,163 @@ async fn handle_static_request(
             .unwrap()),
     }
 }
+async fn get_files_content(
+    State(state): State<Arc<RwLock<AppState>>>,
+    Json(request): Json<FileChunk>,
+) -> Result<impl IntoResponse, impl IntoResponse> {
+    let (tcp_tx, tcp_rx) = {
+        let state = state.read().await;
+        (state.tcp_tx.clone(), state.tcp_tx.subscribe())
+    };
+
+    let mut tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
+    let mut base_path = RemoteFileSystem::new("server", Some(tcp_fs.clone()));
+
+    let user_input = request.file_name.trim_start_matches('/');
+
+    let requested_path = base_path
+        .join(user_input)
+        .canonicalize()
+        .await
+        .map_err(|e| {
+            eprintln!("[get_files] Invalid path: {}", e);
+            (StatusCode::BAD_REQUEST, "Invalid path").into_response()
+        })?;
+
+    let (dir_path, file_name) = match (requested_path.parent(), requested_path.file_name()) {
+        (Some(dir), Some(file)) => (dir.to_path_buf(), file.to_os_string()),
+        _ => {
+            eprintln!("[get_files] Could not split path into directory and file");
+            return Err((StatusCode::BAD_REQUEST, "Invalid path structure").into_response());
+        }
+    };
+
+    let full_path = dir_path.join(&file_name);
+    let file_chunk = FileChunk {
+        file_name: full_path.to_string_lossy().to_string(),
+        file_chunk_offet: request.file_chunk_offet,
+        file_chunk_size: request.file_chunk_size,
+    };
+
+    let content = tcp_fs
+        .get_files_content(file_chunk)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read file").into_response())?;
+
+    Ok(Json(content))
+}
+
 pub async fn get_files(
     State(state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<IncomingMessage>,
 ) -> impl IntoResponse {
-    // Acquire read lock on state
     let (tcp_tx, tcp_rx) = {
         let state = state.read().await;
-
-        // IMPORTANT: create fresh receiver from sender (not from existing receiver)
         (state.tcp_tx.clone(), state.tcp_tx.subscribe())
     };
-
-
-    // Create TcpFs instance directly with the broadcast sender and receiver
     let tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
 
-    // Initialize RemoteFileSystem
-    let mut base_path = RemoteFileSystem::new("server", Some(tcp_fs));
-
     let user_input = request.message.trim_start_matches('/');
-    // Canonicalize requested path with logging
-    let mut requested_path = match base_path.join(user_input).canonicalize().await {
-        Ok(path) => {
-            path
-        }
-        Err(e) => {
-            eprintln!("[get_files] Invalid path: {}", e);
+
+    let fs_path = if user_input.is_empty() {
+        "server".to_string()
+    } else if user_input == "server" {
+        "server".to_string()
+    } else if user_input.starts_with("server/") {
+        user_input.to_string()
+    } else {
+        format!("server/{}", user_input)
+    };
+
+    let mut requested_path = match timeout(
+        Duration::from_secs(5),
+        RemoteFileSystem::new(&fs_path, Some(tcp_fs)).canonicalize(),
+    )
+    .await
+    {
+        Ok(Ok(p)) => p,
+        Ok(Err(e)) => {
+            eprintln!("[get_files] Invalid path '{}': {}", fs_path, e);
             return (StatusCode::BAD_REQUEST, "Invalid path").into_response();
+        }
+        Err(_) => {
+            eprintln!("[get_files] Timeout resolving '{}'", fs_path);
+            return (StatusCode::GATEWAY_TIMEOUT, "Request timed out").into_response();
         }
     };
 
-    // Security check
-    // if !requested_path.to_string().starts_with(&base_path.to_string()) {
-    //     eprintln!(
-    //         "[get_files] Security check failed: {} not in {}",
-    //         requested_path.to_string(),
-    //         base_path.to_string()
-    //     );
-    //     return (StatusCode::FORBIDDEN, "Forbidden: escape attempt").into_response();
-    // }
-
-    // Read directory with detailed logging
-    match requested_path.read_dir().await {
-        Ok(entries) => {
-
-
-            let mut items = Vec::new();
-            for mut entry in entries {
-                if let Some(name) = entry.file_name() {
-                    let name_str = name.to_string_lossy().into_owned();
-                    if entry.is_dir().await.unwrap_or(false) {
-                        items.push(FsItem::Folder(name_str));
-                    } else if entry.is_file().await.unwrap_or(false) {
-                        items.push(FsItem::File(name_str));
-                    } else {
-                    }
-                } 
-            }
-
-            Json(List {
-                list: ApiCalls::FileList(items),
-            })
-            .into_response()
+    let is_dir = match timeout(Duration::from_secs(3), requested_path.is_dir()).await {
+        Ok(Ok(true)) => true,
+        Ok(Ok(false)) => {
+            eprintln!(
+                "[get_files] Path is not a directory: '{}'",
+                requested_path.to_string()
+            );
+            return (StatusCode::BAD_REQUEST, "Path is not a directory").into_response();
         }
-        Err(e) => {
-            eprintln!("[get_files] Failed to read directory: {}", e);
-            (
+        Ok(Err(e)) => {
+            eprintln!(
+                "[get_files] Error checking dir '{}': {}",
+                requested_path.to_string(),
+                e
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to check directory",
+            )
+                .into_response();
+        }
+        Err(_) => {
+            eprintln!(
+                "[get_files] Timeout checking dir '{}'",
+                requested_path.to_string()
+            );
+            return (StatusCode::GATEWAY_TIMEOUT, "Request timed out").into_response();
+        }
+    };
+
+    let entries = match timeout(Duration::from_secs(20), requested_path.read_dir()).await {
+        Ok(Ok(list)) => list,
+        Ok(Err(e)) => {
+            eprintln!(
+                "[get_files] Failed to read directory '{}': {}",
+                requested_path.to_string(),
+                e
+            );
+            return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to read directory",
             )
-                .into_response()
+                .into_response();
+        }
+        Err(_) => {
+            eprintln!(
+                "[get_files] Timeout reading dir '{}'",
+                requested_path.to_string()
+            );
+            return (StatusCode::GATEWAY_TIMEOUT, "Request timed out").into_response();
+        }
+    };
+
+    let mut items = Vec::with_capacity(entries.len());
+    for mut entry in entries {
+        if let Some(entry_name) = entry.file_name().unwrap().to_str() {
+            if let Ok(is_dir) = entry.is_dir().await {
+                items.push(if is_dir {
+                    FsItem::Folder(entry_name.to_string())
+                } else {
+                    FsItem::File(entry_name.to_string())
+                });
+            }
         }
     }
+
+    Json(List {
+        list: ApiCalls::FileList(items),
+    })
+    .into_response()
 }
 
-// async fn get_files(
-//     State(arc_state): State<Arc<RwLock<AppState>>>,
-//     Query(params): Query<FileParams>
-// ){
-
-// }
-// #[derive(Deserialize)]
-// pub struct FileParams {
-//     file: String,
-// }
 
 // This is crucial for authentication, it will take a next for redirects, and a jwk to verify the claim with, then it grants the claim for the current session
 // and redirects the user to their original destination
@@ -2054,12 +1962,12 @@ mod tests {
         use super::*;
         use crate::database::{Database, Element};
 
-        #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
+        #[cfg(all(not(feature = "full-stack"), not(feature = "docker"), not(feature = "database")))]
         async fn create_db_for_tests() -> Result<Database, String> {
             Ok(Database::new(None))
         }
 
-        #[cfg(any(feature = "full-stack", feature = "database"))]
+        #[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
         async fn create_db_for_tests() -> Result<Database, sqlx::Error> {
             let conn = first_connection().await?;
             let database = database::Database::new(Some(conn));
@@ -2071,7 +1979,7 @@ mod tests {
         async fn remove_user() {
             let database = create_db_for_tests().await.unwrap();
             database.clear_db().await.expect("Failed to clear DB");
-            let user = CreateElementData {
+            let user = ModifyElementData {
                 element: Element::User {
                     user: "kk".to_owned(),
                     password: "ddd".to_owned(),
@@ -2085,9 +1993,14 @@ mod tests {
                 .await
                 .expect("Failed to clear DB");
             let remove_user_result = database
-                .remove_user_in_db(RemoveElementData {
-                    element: "kk".to_string(),
+                .remove_user_in_db(ModifyElementData {
+                    element: Element::User {
+                        user: "kk".to_owned(),
+                        password: "ddd".to_owned(),
+                        user_perms: vec![], 
+                    },
                     jwt: "".to_string(),
+                    require_auth: false
                 })
                 .await;
             if remove_user_result.is_ok() {
@@ -2102,7 +2015,7 @@ mod tests {
         async fn create_user_perms() {
             let database = create_db_for_tests().await.unwrap();
             database.clear_db().await.expect("Failed to clear DB");
-            let user = CreateElementData {
+            let user = ModifyElementData {
                 element: Element::User {
                     user: "kk".to_owned(),
                     password: "ddd".to_owned(),
@@ -2125,7 +2038,7 @@ mod tests {
         async fn create_user() {
             let database = create_db_for_tests().await.unwrap();
             database.clear_db().await.expect("Failed to clear DB");
-            let user = CreateElementData {
+            let user = ModifyElementData {
                 element: Element::User {
                     user: "kk".to_owned(),
                     password: "ddd".to_owned(),
@@ -2147,7 +2060,7 @@ mod tests {
         async fn edit_user_password_changes() {
             let database = create_db_for_tests().await.unwrap();
             database.clear_db().await.expect("Failed to clear DB");
-            let user = CreateElementData {
+            let user = ModifyElementData {
                 element: Element::User {
                     user: "b".to_owned(),
                     password: "ddd".to_owned(),
@@ -2157,8 +2070,8 @@ mod tests {
                 jwt: "".to_owned(),
             };
             let create_user_result = database.create_user_in_db(user).await;
-            println!("{:#?}", create_user_result);
-            let edit_user = CreateElementData {
+
+            let edit_user = ModifyElementData {
                 element: Element::User {
                     user: "b".to_owned(),
                     password: "ccc".to_owned(),
@@ -2180,7 +2093,7 @@ mod tests {
         async fn edit_user_password_does_not_change() {
             let database = create_db_for_tests().await.unwrap();
             database.clear_db().await.expect("Failed to clear DB");
-            let user = CreateElementData {
+            let user = ModifyElementData {
                 element: Element::User {
                     user: "A".to_owned(),
                     password: "a".to_owned(),
@@ -2190,7 +2103,7 @@ mod tests {
                 jwt: "".to_owned(),
             };
             let create_user_result = database.create_user_in_db(user).await;
-            let edit_user = CreateElementData {
+            let edit_user = ModifyElementData {
                 element: Element::User {
                     user: "A".to_owned(),
                     password: "".to_owned(),
@@ -2213,7 +2126,7 @@ mod tests {
         async fn empty_password() {
             let database = create_db_for_tests().await.unwrap();
             database.clear_db().await.expect("Failed to clear DB");
-            let user = CreateElementData {
+            let user = ModifyElementData {
                 element: Element::User {
                     user: "A".to_owned(),
                     password: "".to_owned(),
@@ -2235,7 +2148,7 @@ mod tests {
         async fn duplicate_user() {
             let database = create_db_for_tests().await.unwrap();
             database.clear_db().await.expect("Failed to clear DB");
-            let userA = CreateElementData {
+            let userA = ModifyElementData {
                 element: Element::User {
                     user: "A".to_owned(),
                     password: "test".to_owned(),
@@ -2244,7 +2157,7 @@ mod tests {
                 require_auth: true,
                 jwt: "".to_owned(),
             };
-            let userB = CreateElementData {
+            let userB = ModifyElementData {
                 element: Element::User {
                     user: "A".to_owned(),
                     password: "test".to_owned(),
