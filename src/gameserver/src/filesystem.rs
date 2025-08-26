@@ -16,7 +16,9 @@ use std::{
     },
 };
 use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
 use tokio::io::AsyncReadExt;
+use tokio::io::AsyncSeekExt;
 use tokio::sync::broadcast;
 use tokio::time::timeout;
 
@@ -65,13 +67,8 @@ pub struct FsEntry {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BasicPath {
-    pub paths: Vec<String>
+    pub paths: Vec<String>,
 }
-
-// #[derive(Debug, Clone, Deserialize, Serialize)]
-// pub struct BasicPath {
-//     path: String
-// }
 
 #[derive(Serialize, Deserialize)]
 pub struct FileRequestMessage {
@@ -103,7 +100,7 @@ pub enum FileRequestPayload {
     },
     PathFromTag {
         path: String,
-        tag: Option<String>
+        tag: Option<String>,
     },
     FileChunk(FileChunk),
 }
@@ -422,6 +419,95 @@ pub async fn send_folder_over_broadcast<P: AsRef<Path>>(
     );
     Ok(())
 }
+pub async fn cleanup_end_file_markers(
+    file_path: &str,
+    expected_filename: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut file = tokio::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(file_path)
+        .await?;
+
+    let mut contents = Vec::new();
+    file.read_to_end(&mut contents).await?;
+
+    if contents.is_empty() {
+        return Ok(());
+    }
+
+    let mut new_end = contents.len();
+
+    while new_end > 0 {
+        let current_pos = new_end - 1;
+
+        if !contents[current_pos].is_ascii_whitespace() {
+            if let Some(json_end) = find_last_json_end(&contents[..new_end]) {
+                if let Some(json_start) = find_json_start_before(&contents[..=json_end], json_end) {
+                    if let Ok(json_str) = std::str::from_utf8(&contents[json_start..=json_end]) {
+                        if let Ok(json_value) = serde_json::from_str::<Value>(json_str) {
+                            if is_end_file_message(&json_value, expected_filename) {
+                                new_end = json_start;
+                                while new_end > 0 && contents[new_end - 1].is_ascii_whitespace() {
+                                    new_end -= 1;
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+            break;
+        } else {
+            new_end -= 1;
+        }
+    }
+
+    if new_end < contents.len() {
+        file.seek(std::io::SeekFrom::Start(0)).await?;
+        file.set_len(new_end as u64).await?;
+        file.write_all(&contents[..new_end]).await?;
+        file.flush().await?;
+    }
+
+    Ok(())
+}
+
+fn find_last_json_end(data: &[u8]) -> Option<usize> {
+    data.iter().rposition(|&b| b == b'}')
+}
+
+fn find_json_start_before(data: &[u8], end_pos: usize) -> Option<usize> {
+    let mut brace_count = 1;
+    let mut pos = end_pos;
+
+    while pos > 0 {
+        pos -= 1;
+        match data[pos] {
+            b'}' => brace_count += 1,
+            b'{' => {
+                brace_count -= 1;
+                if brace_count == 0 {
+                    return Some(pos);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn is_end_file_message(json_value: &Value, expected_filename: &str) -> bool {
+    if let (Some(msg_type), Some(message)) = (
+        json_value.get("type").and_then(|v| v.as_str()),
+        json_value.get("message").and_then(|v| v.as_str()),
+    ) {
+        msg_type == "end_file" && message == expected_filename
+    } else {
+        false
+    }
+}
 
 fn collect_files(
     current_dir: &Path,
@@ -712,10 +798,12 @@ impl FsType for TcpFs {
             authcode: "0".to_string(),
         })
     }
-    async fn get_path_from_tag(&mut self, tag: &str) -> std::io::Result<Vec<String>>{
-        //PathFromTag
+    async fn get_path_from_tag(&mut self, tag: &str) -> std::io::Result<Vec<String>> {
         let id = self
-            .send_request(FileRequestPayload::PathFromTag { path: "".to_string(), tag: Some(tag.to_string()), })
+            .send_request(FileRequestPayload::PathFromTag {
+                path: "".to_string(),
+                tag: Some(tag.to_string()),
+            })
             .await?;
 
         let response_chunks = self.recv_response(id).await?;
@@ -727,7 +815,9 @@ impl FsType for TcpFs {
             if let Ok(val) = serde_json::from_slice::<Value>(chunk) {
                 if let Some(data_val) = val.get("data") {
                     if data_val.is_object() || data_val.is_array() {
-                        if let Ok(basic_path) = serde_json::from_value::<BasicPath>(data_val.clone()) {
+                        if let Ok(basic_path) =
+                            serde_json::from_value::<BasicPath>(data_val.clone())
+                        {
                             return Ok(basic_path.paths);
                         }
                     }

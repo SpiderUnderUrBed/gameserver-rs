@@ -17,12 +17,13 @@ use tokio::sync::{mpsc, Mutex};
 use crate::broadcast::Sender;
 use crate::filesystem::send_folder_over_broadcast;
 use crate::filesystem::BasicPath;
+use crate::filesystem::cleanup_end_file_markers;
 
-use crate::providers::ProviderType;
-use crate::providers::Provider;
-use crate::providers::Minecraft;
 use crate::providers::Custom;
+use crate::providers::Minecraft;
+use crate::providers::Provider;
 use crate::providers::ProviderConfig;
+use crate::providers::ProviderType;
 
 use tokio::fs::File;
 use tokio::io::AsyncRead;
@@ -536,7 +537,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     });
 
     let state = AppState {
-        current_server: "default".to_string(),
+        current_server: "minecraft".to_string(),
     };
     let arc_state = Arc::new(state);
 
@@ -886,6 +887,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                         addr, file_name, e
                                     );
                                 } else {
+                                    // Clean up after successful flush
+                                    let file_path = format!("server/{}", file_name);
+                                    if let Err(e) =
+                                        cleanup_end_file_markers(&file_path, file_name).await
+                                    {
+                                        eprintln!(
+                                            "[{}] File {}: Error cleaning up end markers: {}",
+                                            addr, file_name, e
+                                        );
+                                    }
                                 }
 
                                 let drain_end = delim_pos + FILE_DELIMITER.len();
@@ -933,6 +944,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                     addr, file_name, e
                                                 );
                                             } else {
+                                                // Clean up after successful flush
+                                                let file_path = format!("server/{}", file_name);
+                                                if let Err(e) =
+                                                    cleanup_end_file_markers(&file_path, file_name)
+                                                        .await
+                                                {
+                                                    eprintln!("[{}] File {}: Error cleaning up end markers: {}", addr, file_name, e);
+                                                }
                                             }
 
                                             let drain_end = newline_pos + 1;
@@ -1198,7 +1217,15 @@ async fn handle_commands_with_metadata(
                     servername,
                 } = &payload.metadata.clone()
                 {
-                    if let Some(prov) = get_provider(providertype, &get_definite_path_from_tag(state, get_provider_from_servername(&state, state.current_server.clone()).await).await) {
+                    if let Some(prov) = get_provider(
+                        providertype,
+                        &get_definite_path_from_tag(
+                            state,
+                            get_provider_from_servername(&state, state.current_server.clone())
+                                .await,
+                        )
+                        .await,
+                    ) {
                         if let Some(cmd) = prov.pre_hook() {
                             run_command_live_output(
                                 cmd,
@@ -1265,7 +1292,10 @@ fn get_provider(name: &str, pre_path: &str) -> Option<ProviderType> {
         }
         "custom" => {
             let provider_json_path = format!("{}/provider.json", path);
-            println!("[INFO] Looking for custom provider config at: {}", provider_json_path);
+            println!(
+                "[INFO] Looking for custom provider config at: {}",
+                provider_json_path
+            );
 
             match std::fs::read_to_string(&provider_json_path) {
                 Ok(json_content) => {
@@ -1301,7 +1331,10 @@ fn get_provider(name: &str, pre_path: &str) -> Option<ProviderType> {
                     }
                 }
                 Err(e) => {
-                    println!("[WARN] Could not read provider.json at {}: {}", provider_json_path, e);
+                    println!(
+                        "[WARN] Could not read provider.json at {}: {}",
+                        provider_json_path, e
+                    );
                     None
                 }
             }
@@ -1312,7 +1345,6 @@ fn get_provider(name: &str, pre_path: &str) -> Option<ProviderType> {
         }
     }
 }
-
 
 async fn get_provider_from_servername(state: &AppState, servername: String) -> String {
     servername
@@ -1332,7 +1364,10 @@ async fn handle_command_or_console(
         let cmd_str = payload.message.clone();
         match cmd_str.as_str() {
             "delete_server" => {
-                let mut path = get_definite_path_from_tag(state, get_provider_from_servername(&state, state.current_server.clone()).await)
+                let mut path = get_definite_path_from_tag(
+                    state,
+                    get_provider_from_servername(&state, state.current_server.clone()).await,
+                )
                 .await;
 
                 if !path.starts_with("server/") {
@@ -1349,9 +1384,16 @@ async fn handle_command_or_console(
                 }
             }
             "stop_server" => {
-                if let Some(prov) =
-                    get_provider(&get_provider_from_servername(&state, state.current_server.clone()).await, &get_definite_path_from_tag(state, get_provider_from_servername(&state, state.current_server.clone()).await).await)
-                {
+                //println!("on stop");
+                if let Some(prov) = get_provider(
+                    &get_provider_from_servername(&state, state.current_server.clone()).await,
+                    &get_definite_path_from_tag(
+                        state,
+                        get_provider_from_servername(&state, state.current_server.clone()).await,
+                    )
+                    .await,
+                ) {
+                    //println!("stopping");
                     let input = "stop";
                     let mut guard = stdin_ref.lock().await;
                     if let Some(stdin) = guard.as_mut() {
@@ -1362,9 +1404,16 @@ async fn handle_command_or_console(
                 }
             }
             "start_server" => {
-                if let Some(prov) =
-                    get_provider(&get_provider_from_servername(&state, state.current_server.clone()).await, &get_definite_path_from_tag(state, get_provider_from_servername(&state, state.current_server.clone()).await).await)
-                {
+                //println!("on start");
+                if let Some(prov) = get_provider(
+                    &get_provider_from_servername(&state, state.current_server.clone()).await,
+                    &get_definite_path_from_tag(
+                        state,
+                        get_provider_from_servername(&state, state.current_server.clone()).await,
+                    )
+                    .await,
+                ) {
+                    //println!("Starting");
                     if let Some(cmd) = prov.start() {
                         let tx = cmd_tx.clone();
                         let stdin_clone = stdin_ref.clone();

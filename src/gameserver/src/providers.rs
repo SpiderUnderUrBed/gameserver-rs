@@ -1,8 +1,8 @@
-use std::process::Command;
-use std::collections::HashMap;
-use serde::Serialize;
-use serde::Deserialize;
 use serde;
+use serde::Deserialize;
+use serde::Serialize;
+use std::collections::HashMap;
+use std::process::Command;
 
 // const SERVER_DIR: &str = if cfg!(target_os = "windows") {
 //     "C:\\minecraft_server"
@@ -161,7 +161,7 @@ impl From<ProviderType> for Custom {
 impl From<Custom> for ProviderType {
     fn from(custom: Custom) -> Self {
         let mut provider = ProviderType::new("custom");
-        
+
         if let Some(cmd) = custom.pre_hook_cmd {
             provider = provider.with_config("pre_hook", cmd);
         }
@@ -174,7 +174,7 @@ impl From<Custom> for ProviderType {
         if let Some(cmd) = custom.start_cmd {
             provider = provider.with_config("start", cmd);
         }
-        
+
         provider
     }
 }
@@ -354,12 +354,12 @@ fn get_provider(name: &str) -> Option<ProviderType> {
 // Helper function to create a custom provider with specific commands
 fn create_custom_provider(
     pre_hook: Option<&str>,
-    install: Option<&str>, 
+    install: Option<&str>,
     post_hook: Option<&str>,
     start: Option<&str>,
 ) -> ProviderType {
     let mut custom = Custom::new();
-    
+
     if let Some(cmd) = pre_hook {
         custom = custom.with_pre_hook(cmd);
     }
@@ -372,7 +372,6 @@ fn create_custom_provider(
     if let Some(cmd) = start {
         custom = custom.with_start(cmd);
     }
-    
+
     custom.into()
 }
-
