@@ -16,9 +16,9 @@ use std::{
     },
 };
 use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncSeekExt;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::broadcast;
 use tokio::time::timeout;
 
@@ -419,55 +419,42 @@ pub async fn send_folder_over_broadcast<P: AsRef<Path>>(
     );
     Ok(())
 }
-pub async fn cleanup_end_file_markers(
-    file_path: &str,
-    expected_filename: &str,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+
+pub async fn cleanup_end_file_markers(file_path: &str, file_name: &str) -> std::io::Result<()> {
+    use tokio::io::AsyncReadExt;
+    use tokio::io::AsyncWriteExt;
+
     let mut file = tokio::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(file_path)
         .await?;
 
-    let mut contents = Vec::new();
-    file.read_to_end(&mut contents).await?;
+    let mut content = Vec::new();
+    file.read_to_end(&mut content).await?;
 
-    if contents.is_empty() {
-        return Ok(());
-    }
+    let mut content_str = String::from_utf8_lossy(&content).to_string();
 
-    let mut new_end = contents.len();
+    content_str = content_str.trim_end().to_string();
 
-    while new_end > 0 {
-        let current_pos = new_end - 1;
+    if let Some(last_brace_pos) = content_str.rfind('}') {
+        let slice_up_to_last = &content_str[..=last_brace_pos];
+        if let Some(open_brace_pos) = slice_up_to_last.rfind('{') {
+            let candidate_json = &slice_up_to_last[open_brace_pos..=last_brace_pos];
 
-        if !contents[current_pos].is_ascii_whitespace() {
-            if let Some(json_end) = find_last_json_end(&contents[..new_end]) {
-                if let Some(json_start) = find_json_start_before(&contents[..=json_end], json_end) {
-                    if let Ok(json_str) = std::str::from_utf8(&contents[json_start..=json_end]) {
-                        if let Ok(json_value) = serde_json::from_str::<Value>(json_str) {
-                            if is_end_file_message(&json_value, expected_filename) {
-                                new_end = json_start;
-                                while new_end > 0 && contents[new_end - 1].is_ascii_whitespace() {
-                                    new_end -= 1;
-                                }
-                                continue;
-                            }
-                        }
-                    }
+            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(candidate_json) {
+                if json_value.get("type")
+                    == Some(&serde_json::Value::String("end_file".to_string()))
+                    && json_value.get("message")
+                        == Some(&serde_json::Value::String(file_name.to_string()))
+                {
+                    let truncate_len = open_brace_pos;
+                    file.set_len(truncate_len as u64).await?;
+                    file.sync_all().await?;
+                    return Ok(());
                 }
             }
-            break;
-        } else {
-            new_end -= 1;
         }
-    }
-
-    if new_end < contents.len() {
-        file.seek(std::io::SeekFrom::Start(0)).await?;
-        file.set_len(new_end as u64).await?;
-        file.write_all(&contents[..new_end]).await?;
-        file.flush().await?;
     }
 
     Ok(())

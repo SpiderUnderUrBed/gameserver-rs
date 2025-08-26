@@ -47,9 +47,8 @@ pub trait FsType: Clone + Send + Sync {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BasicPath {
-    pub paths: Vec<String>
+    pub paths: Vec<String>,
 }
-
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FsMetadata {
@@ -96,7 +95,7 @@ pub enum FileRequestPayload {
     },
     PathFromTag {
         path: String,
-        tag: Option<String>
+        tag: Option<String>,
     },
     FileChunk(FileChunk),
 }
@@ -290,24 +289,33 @@ pub async fn send_folder_over_broadcast<P: AsRef<Path>>(
 
     Ok(())
 }
+
 pub async fn send_multipart_over_broadcast(
     mut multipart: Multipart,
     tx: broadcast::Sender<Vec<u8>>,
 ) -> std::io::Result<()> {
+    const FILE_DELIMITER: &[u8] = b"<|END_OF_FILE|>";
+
+    let mut processed_files = Vec::new();
+
     while let Some(mut field) = multipart
         .next_field()
         .await
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
     {
         let file_name = field.file_name().unwrap_or("file.bin").to_string();
+        processed_files.push(file_name.clone());
 
         let start_json = MessagePayload {
             r#type: "start_file".into(),
-            message: format!("{}", file_name),
+            message: file_name.clone(),
             authcode: "0".into(),
         };
         tx.send(serde_json::to_vec(&start_json)?)
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed"))?;
+
+        let mut sent_chunks = false;
+
         while let Some(chunk) = field
             .chunk()
             .await
@@ -316,14 +324,35 @@ pub async fn send_multipart_over_broadcast(
             tx.send(chunk.to_vec()).map_err(|_| {
                 std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed")
             })?;
+
+            sent_chunks = true;
+        }
+
+        if sent_chunks {
+            tx.send(FILE_DELIMITER.to_vec()).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed")
+            })?;
         }
 
         let end_json = MessagePayload {
             r#type: "end_file".into(),
-            message: format!("{}", file_name),
+            message: file_name.clone(),
             authcode: "0".into(),
         };
         tx.send(serde_json::to_vec(&end_json)?)
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed"))?;
+    }
+
+    for file_name in processed_files {
+        tx.send(FILE_DELIMITER.to_vec())
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed"))?;
+
+        let clean_json = MessagePayload {
+            r#type: "clean_file".into(),
+            message: file_name,
+            authcode: "0".into(),
+        };
+        tx.send(serde_json::to_vec(&clean_json)?)
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed"))?;
     }
 
@@ -533,9 +562,11 @@ impl FsType for TcpFs {
         self
     }
     async fn get_path_from_tag(&mut self, tag: &str) -> std::io::Result<Vec<String>> {
-        //PathFromTag
         let id = self
-            .send_request(FileRequestPayload::PathFromTag { path: "".to_string(), tag: Some(tag.to_string()), })
+            .send_request(FileRequestPayload::PathFromTag {
+                path: "".to_string(),
+                tag: Some(tag.to_string()),
+            })
             .await?;
 
         let response_chunks = self.recv_response(id).await?;
@@ -547,7 +578,9 @@ impl FsType for TcpFs {
             if let Ok(val) = serde_json::from_slice::<Value>(chunk) {
                 if let Some(data_val) = val.get("data") {
                     if data_val.is_object() || data_val.is_array() {
-                        if let Ok(basic_path) = serde_json::from_value::<BasicPath>(data_val.clone()) {
+                        if let Ok(basic_path) =
+                            serde_json::from_value::<BasicPath>(data_val.clone())
+                        {
                             return Ok(basic_path.paths);
                         }
                     }
@@ -575,7 +608,6 @@ impl FsType for TcpFs {
             format!("Failed get the path for tag '{}'", tag),
         ))
     }
-
 
     async fn get_files_content(
         &mut self,
