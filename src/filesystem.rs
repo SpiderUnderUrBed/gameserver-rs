@@ -835,10 +835,34 @@ impl<S: FsType> RemoteFileSystem<S> {
         Ok(())
     }
 
+    //self.cached_entries = Some(state.list_directory(&self.path).await?);
     pub async fn ensure_entries(&mut self) -> std::io::Result<()> {
         if self.cached_entries.is_none() {
             if let Some(state) = &mut self.state {
-                self.cached_entries = Some(state.list_directory(&self.path).await?);
+                let dir_item_count = state
+                    .get_metadata(&self.path)
+                    .await?
+                    .optional_folder_children
+                    .unwrap_or(0);
+
+                let chunk_size = ((dir_item_count as f64) / 2.0).ceil() as u64; 
+
+                let mut all_entries = Vec::new();
+                let mut start = 0;
+
+                while start < dir_item_count {
+                    let end = (start + chunk_size).min(dir_item_count);
+
+                    let mut entries = state
+                        .list_directory_within_range(&self.path, Some(start), Some(end))
+                        .await?;
+
+                    all_entries.append(&mut entries);
+
+                    start = end;
+                }
+
+                self.cached_entries = Some(all_entries);
             } else {
                 println!("[RemoteFileSystem] No state instance available to fetch entries");
             }
