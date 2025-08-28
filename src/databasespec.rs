@@ -83,9 +83,11 @@ pub enum NodeStatus {
     // Unknown,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 #[serde(tag = "kind", content = "data")]
 pub enum NodeType {
+    #[default]
+    Unknown,
     Custom,
     Main
 }

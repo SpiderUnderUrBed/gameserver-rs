@@ -2,6 +2,7 @@
 // first imports are std ones
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::default;
 use std::fmt::Debug;
 use std::{net::SocketAddr, path::Path, sync::Arc};
 
@@ -37,9 +38,9 @@ use axum::{
 use axum_login::tower_sessions::{MemoryStore, SessionManagerLayer};
 use axum_login::AuthUser;
 use axum_login::{AuthManagerLayerBuilder, AuthnBackend};
-use serde::de::DeserializeOwned;
+use serde::de::{self, DeserializeOwned};
 use tokio::fs::File;
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
 
 // mod databasespec;
 // use databasespec::UserDatabase;
@@ -65,7 +66,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use serial_test::serial;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::time::interval;
+use tokio::time::{interval, sleep, Instant};
 use tokio::{
     fs as tokio_fs,
     io::{AsyncReadExt, AsyncWriteExt},
@@ -265,11 +266,13 @@ struct MessagePayload {
 }
 
 // #[derive(PartialEq)]
-
+#[derive(Default)]
 struct NodeAndTCP {
     name: String,
     ip: String,
+    status: Status,
     nodetype: NodeType,
+    gameserver: Value,
     tcp_tx: Option<tokio::sync::broadcast::Sender<Vec<u8>>>,
     tcp_rx: Option<tokio::sync::broadcast::Receiver<Vec<u8>>>,
 }
@@ -279,6 +282,8 @@ impl Clone for NodeAndTCP {
             name: self.name.clone(),
             ip: self.ip.clone(),
             nodetype: self.nodetype.clone(),
+            status: self.status.clone(),
+            gameserver: self.gameserver.clone(),
             tcp_tx: self.tcp_tx.clone(),
             tcp_rx: self.tcp_tx.as_ref().map(|tx| tx.subscribe()),
         }
@@ -384,10 +389,11 @@ enum ApiCalls {
 //     api_call: ApiCalls
 // }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 enum Status {
     Up,
     Healthy,
+    #[default]
     Down,
     Unhealthy,
 }
@@ -400,10 +406,13 @@ enum Status {
 struct AppState {
     tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
     tcp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
+    internal_rx: Option<broadcast::Receiver<Vec<u8>>>,
+    internal_tx: Option<broadcast::Sender<Vec<u8>>>,
     additonal_node_tcp: Vec<NodeAndTCP>,
     //additonal_node_tcp: Vec<(tokio::sync::broadcast::Sender<Vec<u8>>, tokio::sync::broadcast::Receiver<Vec<u8>>)>,
-    gameserver: Value,
-    status: Status,
+    current_node: NodeAndTCP,
+    //gameserver: Value,
+    //status: Status,
     ws_tx: broadcast::Sender<String>,
     base_path: String,
     client: Option<Client>,
@@ -415,11 +424,14 @@ impl Clone for AppState {
         AppState {
             tcp_tx: self.tcp_tx.clone(),
             tcp_rx: self.tcp_rx.resubscribe(),
-            gameserver: self.gameserver.clone(),
-            status: self.status.clone(),
+            internal_rx: self.internal_rx.as_ref().map(|r| r.resubscribe()),
+            internal_tx: self.internal_tx.clone(),
+            //gameserver: self.gameserver.clone(),
+            //status: self.status.clone(),
             ws_tx: self.ws_tx.clone(),
             base_path: self.base_path.clone(),
             client: self.client.clone(),
+            current_node: self.current_node.clone(),
             database: self.database.clone(),
             //sysinfo: System::new_all(),
             additonal_node_tcp: self
@@ -437,6 +449,8 @@ impl Clone for AppState {
                         }
                     },
                     nodetype: node.nodetype.clone(),
+                    status: node.status.clone(),
+                    gameserver: node.gameserver.clone(),
                 })
                 .collect(),
         }
@@ -460,6 +474,7 @@ pub async fn handle_stream(
     rx: &mut tokio::sync::broadcast::Receiver<Vec<u8>>,
     stream: &mut TcpStream,
     ws_tx: broadcast::Sender<String>,
+    mut internal_stream: Option<broadcast::Receiver<Vec<u8>>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let ip = stream.peer_addr()?.to_string();
     let (reader, mut writer) = stream.split();
@@ -483,148 +498,224 @@ pub async fn handle_stream(
     let mut server_start_keyword = String::new();
     let mut server_stop_keyword = String::new();
 
-    loop {
-        tokio::select! {
-            read_result = buf_reader.read(&mut buf) => {
-                match read_result {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        let raw_data = &buf[..n];
-                        {
-                            let state_guard = arc_state.read().await;
-                            let _ = state_guard.tcp_tx.send(raw_data.to_vec());
-                        }
+    async fn process_stream_data(
+        raw_data: &[u8],
+        arc_state: &Arc<RwLock<AppState>>,
+        ws_tx: &broadcast::Sender<String>,
+        ip: &str,
+        server_start_keyword: &mut String,
+        server_stop_keyword: &mut String,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        {
+            let state_guard = arc_state.read().await;
+            let _ = state_guard.tcp_tx.send(raw_data.to_vec());
+        }
 
-                        if let Ok(text) = std::str::from_utf8(raw_data) {
-                            let line_content = text.trim();
-                            if line_content.is_empty() { continue; }
+        if let Ok(text) = std::str::from_utf8(raw_data) {
+            let line_content = text.trim();
+            if line_content.is_empty() { return Ok(false); }
 
-                            let mut final_data: Vec<ConsoleData> = vec![];
+            let mut final_data: Vec<Value> = vec![];
 
-                            let list_parsed: Vec<Result<List, serde_json::Error>> =
-                                value_from_line::<List, _>(line_content, |line| line.contains("\"list\"")).await;
+            let list_parsed: Vec<Result<List, serde_json::Error>> =
+                value_from_line::<List, _>(line_content, |line| line.contains("\"list\"")).await;
 
-                            let mut list_values: Vec<ConsoleData> = vec![];
-                            for item in list_parsed {
-                                if let Ok(list_item) = item {
-                                    let serialized = serde_json::to_string(&list_item)?;
-                                    list_values.push(ConsoleData {
-                                        data: serialized,
-                                        r#type: "list_item".to_string(),
-                                        authcode: "0".to_string(),
-                                    });
-                                }
-                            }
-                            let mut list_lines: Vec<String> = list_values.iter().map(|v| v.data.clone()).collect();
+            let mut list_values: Vec<Value> = vec![];
+            for item in list_parsed {
+                if let Ok(list_item) = item {
+                    let serialized = serde_json::to_string(&list_item)?;
+                    if let Ok(seralized_value) = serde_json::to_value(ConsoleData {
+                        data: serialized,
+                        r#type: "list_item".to_string(),
+                        authcode: "0".to_string(),
+                    }) {
+                        list_values.push(seralized_value)
+                    }
+                }
+            }
+            let mut list_lines: Vec<String> = list_values.iter().map(|v| 
+                serde_json::to_string(v.get("data").clone().unwrap_or(&Value::Null)).unwrap_or(String::new())
+            ).collect();
 
-                            let console_parsed: Vec<Result<ConsoleData, serde_json::Error>> =
-                                value_from_line::<ConsoleData, _>(line_content, |line| !line.contains("\"list\"")).await;
+            let console_parsed: Vec<Result<ConsoleData, serde_json::Error>> =
+                value_from_line::<ConsoleData, _>(line_content, |line| !line.contains("\"list\"")).await;
 
-                            let mut console_values: Vec<ConsoleData> = vec![];
-                            for item in console_parsed {
-                                if let Ok(data) = item {
-                                    if !list_lines.contains(&data.data) {
-                                        console_values.push(data);
-                                    }
-                                }
-                            }
-
-                            final_data.extend(list_values);
-                            final_data.extend(console_values);
-
-                            for data_clone in final_data.iter() {
-                                if let Ok(inner) = serde_json::from_str::<serde_json::Value>(&data_clone.data) {
-                                    if let (Some(start_kw), Some(stop_kw)) = (
-                                        inner.get("start_keyword").and_then(|v| v.as_str()),
-                                        inner.get("stop_keyword").and_then(|v| v.as_str()),
-                                    ) {
-                                        server_start_keyword = start_kw.to_string();
-                                        server_stop_keyword = stop_kw.to_string();
-                                    }
-                                }
-
-                                if data_clone.data.contains("\"type\":\"command\"") {
-                                    if let Ok(inner_msg) = serde_json::from_str::<MessagePayload>(&data_clone.data) {
-                                        if inner_msg.r#type == "command" {
-                                            let (client_option, database) = {
-                                                let state_guard = arc_state.read().await;
-                                                (state_guard.client.clone(), state_guard.database.clone())
-                                            };
-
-                                            if let Ok(nodes) = database.fetch_all_nodes().await {
-                                                let node_status = if let Some(client) = client_option {
-                                                    let client_clone = client.clone();
-                                                    let ip_clone = ip.clone();
-
-                                                    match tokio::time::timeout(
-                                                        std::time::Duration::from_millis(100),
-                                                        verify_is_k8s_gameserver(client_clone, ip_clone)
-                                                    ).await {
-                                                        Ok(Ok(true)) => NodeStatus::ImmutablyEnabled,
-                                                        _ => NodeStatus::Enabled,
-                                                    }
-                                                } else {
-                                                    NodeStatus::Enabled
-                                                };
-
-                                                let node = Node {
-                                                    ip: ip.clone(),
-                                                    nodename: inner_msg.message,
-                                                    nodetype: NodeType::Custom,
-                                                    nodestatus: node_status,
-                                                };
-
-                                                if !nodes.iter().any(|n| n.ip == node.ip && n.nodename == node.nodename) {
-                                                    let _ = database.create_nodes_in_db(ModifyElementData {
-                                                        element: Element::Node(node),
-                                                        jwt: "".to_string(),
-                                                        require_auth: false,
-                                                    }).await;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                if data_clone.data.contains("\"type\":\"stdout\"") {
-                                    if let Ok(output_msg) = serde_json::from_str::<serde_json::Value>(&data_clone.data) {
-                                        if let Some(server_output) = output_msg.get("data").and_then(|v| v.as_str()) {
-                                            if !server_start_keyword.is_empty() && server_output.contains(&server_start_keyword) {
-                                                let _ = ws_tx.send("Server is ready for connections!".to_string());
-                                                {
-                                                    let mut state_guard = arc_state.write().await;
-                                                    state_guard.status = Status::Up;
-                                                }
-                                            } else if !server_stop_keyword.is_empty() && server_output.contains(&server_stop_keyword) {
-                                                {
-                                                    let mut state_guard = arc_state.write().await;
-                                                    state_guard.status = Status::Down;
-                                                }
-                                            }
-                                            let _ = ws_tx.send(server_output.to_string());
-                                            continue;
-                                        }
-                                    }
-                                }
-
-                                if !data_clone.data.contains("\"type\":\"stdout\"") && !data_clone.data.contains("\"type\":\"command\"") {
-                                    let _ = ws_tx.send(data_clone.data.clone());
-                                }
-                            }
+            let mut console_values: Vec<Value> = vec![];
+            for item in console_parsed {
+                if let Ok(data) = item {
+                    if !list_lines.contains(&data.data) {
+                        if let Ok(seralized_value) = serde_json::to_value(data) {
+                            console_values.push(seralized_value);
                         }
                     }
-                    Err(e) => return Err(e.into()),
+                }
+            }
+            let message_parsed: Vec<Result<MessagePayload, serde_json::Error>> =
+                value_from_line::<MessagePayload, _>(line_content, |line| !line.contains("\"list\"")).await;
+
+            //println!("value: \n {:#?}, line: \n {}", message_parsed, line_content);
+            let mut message_values: Vec<Value> = vec![];
+            for item in message_parsed {
+                if let Ok(data) = item {
+                    if let Ok(seralized_value) = serde_json::to_value(data) {
+                        message_values.push(seralized_value)
+                    }
                 }
             }
 
-            broadcast_result = rx.recv() => {
-                match broadcast_result {
-                    Ok(data) => {
-                        writer.write_all(&data).await?;
-                        writer.write_all(b"\n").await?;
-                        writer.flush().await?;
+            final_data.extend(list_values);
+            final_data.extend(console_values);
+            final_data.extend(message_values);
+            //println!("{:#?}", final_data);
+
+            for value in final_data.iter() {
+                if let Ok(payload) = serde_json::from_value::<MessagePayload>(value.clone()) {
+                        if payload.message == "end_conn" {
+                            println!("Ending current connection");
+                            return Ok(true);
+                        }
+                }
+                if let Ok(data_clone) = serde_json::from_value::<ConsoleData>(value.clone()) {
+                    if let (Some(start_kw), Some(stop_kw)) = (
+                        value.get("start_keyword").and_then(|v| v.as_str()),
+                        value.get("stop_keyword").and_then(|v| v.as_str()),
+                    ) {
+                        *server_start_keyword = start_kw.to_string();
+                        *server_stop_keyword = stop_kw.to_string();
                     }
-                    Err(_) => {}
+
+                    if data_clone.data.contains("\"type\":\"command\"") {
+                        if let Ok(inner_msg) = serde_json::from_str::<MessagePayload>(&data_clone.data) {
+                            if inner_msg.r#type == "command" {
+                                let (client_option, database) = {
+                                    let state_guard = arc_state.read().await;
+                                    (state_guard.client.clone(), state_guard.database.clone())
+                                };
+
+                                if let Ok(nodes) = database.fetch_all_nodes().await {
+                                    let node_status = if let Some(client) = client_option {
+                                        let client_clone = client.clone();
+                                        let ip_clone = ip.to_string();
+
+                                        match tokio::time::timeout(
+                                            std::time::Duration::from_millis(100),
+                                            verify_is_k8s_gameserver(client_clone, ip_clone)
+                                        ).await {
+                                            Ok(Ok(true)) => NodeStatus::ImmutablyEnabled,
+                                            _ => NodeStatus::Enabled,
+                                        }
+                                    } else {
+                                        NodeStatus::Enabled
+                                    };
+
+                                    let node = Node {
+                                        ip: ip.to_string(),
+                                        nodename: inner_msg.message,
+                                        nodetype: NodeType::Custom,
+                                        nodestatus: node_status,
+                                    };
+
+                                    if !nodes.iter().any(|n| n.ip == node.ip && n.nodename == node.nodename) {
+                                        let _ = database.create_nodes_in_db(ModifyElementData {
+                                            element: Element::Node(node),
+                                            jwt: "".to_string(),
+                                            require_auth: false,
+                                        }).await;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if data_clone.data.contains("\"type\":\"stdout\"") {
+                        if let Ok(output_msg) = serde_json::from_str::<serde_json::Value>(&data_clone.data) {
+                            if let Some(server_output) = output_msg.get("data").and_then(|v| v.as_str()) {
+                                if !server_start_keyword.is_empty() && server_output.contains(&*server_start_keyword) {
+                                    let _ = ws_tx.send("Server is ready for connections!".to_string());
+                                    {
+                                        let mut state_guard = arc_state.write().await;
+                                        state_guard.current_node.status = Status::Up;
+                                    }
+                                } else if !server_stop_keyword.is_empty() && server_output.contains(&*server_stop_keyword) {
+                                    {
+                                        let mut state_guard = arc_state.write().await;
+                                        state_guard.current_node.status = Status::Down;
+                                    }
+                                }
+                                let _ = ws_tx.send(server_output.to_string());
+                                continue;
+                            }
+                        }
+                    }
+
+                    if !data_clone.data.contains("\"type\":\"stdout\"") && !data_clone.data.contains("\"type\":\"command\"") {
+                        let _ = ws_tx.send(data_clone.data.clone());
+                    }
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    loop {
+        if let Some(ref mut internal_rx) = internal_stream {
+            tokio::select! {
+                read_result = buf_reader.read(&mut buf) => {
+                    match read_result {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let raw_data = &buf[..n];
+                            if process_stream_data(raw_data, &arc_state, &ws_tx, &ip, &mut server_start_keyword, &mut server_stop_keyword).await? {
+                                break;
+                            }
+                        }
+                        Err(e) => return Err(e.into()),
+                    }
+                }
+
+                internal_result = internal_rx.recv() => {
+                    if let Ok(raw_data) = internal_result {
+                        if process_stream_data(&raw_data, &arc_state, &ws_tx, &ip, &mut server_start_keyword, &mut server_stop_keyword).await? {
+                            break;
+                        }
+                    }
+                }
+
+                broadcast_result = rx.recv() => {
+                    match broadcast_result {
+                        Ok(data) => {
+                            writer.write_all(&data).await?;
+                            writer.write_all(b"\n").await?;
+                            writer.flush().await?;
+                        }
+                        Err(_) => {}
+                    }
+                }
+            }
+        } else {
+            tokio::select! {
+                read_result = buf_reader.read(&mut buf) => {
+                    match read_result {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let raw_data = &buf[..n];
+                            if process_stream_data(raw_data, &arc_state, &ws_tx, &ip, &mut server_start_keyword, &mut server_stop_keyword).await? {
+                                break;
+                            }
+                        }
+                        Err(e) => return Err(e.into()),
+                    }
+                }
+
+                broadcast_result = rx.recv() => {
+                    match broadcast_result {
+                        Ok(data) => {
+                            writer.write_all(&data).await?;
+                            writer.write_all(b"\n").await?;
+                            writer.flush().await?;
+                        }
+                        Err(_) => {}
+                    }
                 }
             }
         }
@@ -637,33 +728,61 @@ pub async fn handle_stream(
 // use tokio::sync::broadcast::error::RecvError::Closed;
 
 // does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
-async fn connect_to_server(
+pub async fn connect_to_server(
     state: Arc<RwLock<AppState>>,
     tcp_url: String,
-    mut rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
+    mut rx: broadcast::Receiver<Vec<u8>>,
     ws_tx: broadcast::Sender<String>,
-) -> Result<SocketAddr, Box<dyn std::error::Error + Send + Sync>> {
+    internal_stream: Option<broadcast::Receiver<Vec<u8>>>,
+    end_if_timeout: bool,
+    block_with_stream: bool,
+    //overall_timeout: Option<Duration>,
+) -> Result<SocketAddr, Box<dyn Error + Send + Sync>> {
+    let deadline: Instant = Instant::now() + CONNECTION_TIMEOUT;
+    //overall_timeout.unwrap_or(CONNECTION_TIMEOUT);
+
     loop {
-        match timeout(CONNECTION_TIMEOUT, TcpStream::connect(tcp_url.clone())).await {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("overall connect timeout".into());
+        }
+
+        let per_attempt = CONNECTION_TIMEOUT.min(remaining);
+
+        match timeout(per_attempt, TcpStream::connect(&tcp_url)).await {
             Ok(Ok(mut stream)) => {
-                let stream_result =
-                    handle_stream(state.clone(), &mut rx, &mut stream, ws_tx.clone()).await;
-                if stream_result.is_ok() {
-                    return Ok(stream.peer_addr()?);
-                } else if let Err(error) = stream_result {
-                    return Err(error);
+                let peer = stream.peer_addr()?;
+                let st = Arc::clone(&state);
+                let tx = ws_tx.clone();
+
+                if !block_with_stream {
+                    tokio::spawn(async move {
+                        if let Err(e) = handle_stream(st, &mut rx, &mut stream, tx, internal_stream).await {
+                            eprintln!("handle_stream error: {}", e);
+                        }
+                    });
+                } else {
+                    if let Err(e) = handle_stream(st, &mut rx, &mut stream, tx, internal_stream).await {
+                        eprintln!("handle_stream error: {}", e);
+                    }
                 }
+                return Ok(peer);
             }
             Ok(Err(e)) => {
-                tokio::time::sleep(CONNECTION_RETRY_DELAY).await;
+                eprintln!("TCP connect error: {}", e);
             }
             Err(_) => {
-                tokio::time::sleep(CONNECTION_RETRY_DELAY).await;
+                eprintln!("TCP connect timed out ({:?})", per_attempt);
+                if end_if_timeout {
+                    return Err("connection attempt timed out".into());
+                }
             }
         }
+
+        sleep(CONNECTION_RETRY_DELAY).await;
     }
 }
-// This function is soley for the initial connection to the tcp server, then passes it off to the dedicated handler, for the initial conneciton
+
 // this is where it determines wether or not to try and create the container and deployment, as attempt_connection itself is used in various diffrent contexts (like it will constantly
 // try to connect upon failing but it should not try to create the container and deployment every time it fails)
 async fn try_initial_connection(
@@ -680,7 +799,7 @@ async fn try_initial_connection(
                 tokio::sync::broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
 
             let mut temp_rx = temp_rx; // make receiver mutable
-            handle_stream(state, &mut temp_rx, &mut stream, ws_tx).await
+            handle_stream(state, &mut temp_rx, &mut stream, ws_tx, None).await
         }
         Err(e) => {
             eprintln!("Initial connection failed: {}", e);
@@ -753,21 +872,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 name: node.nodename,
                 nodetype: node.nodetype,
                 ip: node.ip,
-                tcp_tx: None,
-                tcp_rx: None,
+                ..Default::default()
             })
             .collect()
     }
+    let backup_node = &NodeAndTCP { 
+        name: "placeholder".to_string(), 
+        ip: tcp_url.clone(), 
+        ..Default::default()
+    };
+    let current_node = nodes.iter().find(|node| node.ip == tcp_url).unwrap_or(backup_node);
+    let (internal_tx, internal_rx) = broadcast::channel::<Vec<u8>>(100);
+    let internal_stream = Some(internal_rx.resubscribe());
 
     // use everything so far to make the app state
     let state: AppState = AppState {
-        gameserver: json!({}),
-        status: Status::Down,
+        //gameserver: json!({}),
+        //status: Status::Down,
         tcp_tx: tcp_tx,
         // tcp_rx: Arc::new(Mutex::new(tcp_rx)),
         tcp_rx: tcp_rx,
+        internal_rx: Some(internal_rx.resubscribe()),
+        internal_tx: Some(internal_tx),
         ws_tx: ws_tx.clone(),
         base_path: base_path.clone(),
+        current_node: NodeAndTCP::default(),
         database,
         client,
         additonal_node_tcp: nodes,
@@ -815,10 +944,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             tcp_url.to_string(),
             bridge_rx,
             bridge_tx,
+            internal_stream,
+            false,
+            false
         )
         .await
         {
-            eprintln!("[DEBUG] Connection task failed: {}", e);
+            eprintln!("Connection task failed: {}", e);
         }
     });
 
@@ -1248,7 +1380,7 @@ async fn ongoing_server_status(
         move |(mut interval, arc_state)| async move {
             interval.tick().await;
 
-            let status = arc_state.read().await.status.clone();
+            let status = arc_state.read().await.current_node.status.clone();
             let status_str = match status {
                 Status::Up => "up",
                 Status::Healthy => "healthy",
@@ -1512,25 +1644,67 @@ async fn change_node(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<IncomingMessage>,
 ) -> Result<StatusCode, StatusCode> {
-    let state = arc_state.write().await;
+    let mut state = arc_state.write().await;
     let option_node = state.database.retrieve_nodes(request.message).await;
-    
+    //println!("Starting to change node");
+
     if let Some(node) = option_node {
+        {
+            let termination_payload = MessagePayload {
+                r#type: "conn_state".to_string(),
+                message: "end_conn".to_string(),
+                authcode: "0".to_string()
+            };
+            
+            if let Ok(termination_json) = serde_json::to_string(&termination_payload) {
+                let termination_bytes = termination_json.into_bytes();
+                if let Some(unwrapped_internal_stream) = &state.internal_tx {
+                    if let Err(e) = unwrapped_internal_stream.send(termination_bytes) {
+                        eprintln!("Failed to send termination signal: {}", e);
+                    } else {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                    }
+                } else {
+                    println!("No stream found");
+                }
+            } else {
+                println!("Failed sending termination with parse");
+            }
+        }
+         
         let bridge_rx = state.tcp_rx.resubscribe();
         let bridge_tx = state.ws_tx.clone();
-        drop(state);
+        //drop(state);
+        //println!("Starting to connect to server");
+        let (internal_tx, internal_rx) = broadcast::channel::<Vec<u8>>(100);
+        state.internal_rx = Some(internal_rx.resubscribe());
+        state.internal_tx = Some(internal_tx);
+        let internal_stream = Some(internal_rx);
+
         if let Err(e) = connect_to_server(
-            arc_state,
+            Arc::clone(&arc_state),
             node.ip.to_string(),
             bridge_rx,
             bridge_tx,
+            internal_stream,
+            true,
+            false
         )
         .await
         {
-            eprintln!("[DEBUG] Connection task failed: {}", e);
+            eprintln!("Connection task failed: {}", e);
+        } else {
+            //let mut state = arc_state.write().await;
+            //println!("Changed node");
+            state.current_node = NodeAndTCP { 
+                name: node.nodename, 
+                ip: node.ip, 
+                ..Default::default()
+            };
         }
         Ok(StatusCode::OK)
     } else {
+        println!("Error");
         Err(StatusCode::INTERNAL_SERVER_ERROR)
     }
 }
@@ -1570,8 +1744,7 @@ async fn get_nodes(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl IntoR
                     name: node.nodename,
                     ip: node.ip,
                     nodetype: node.nodetype,
-                    tcp_tx: None,
-                    tcp_rx: None,
+                    ..Default::default()
                 };
 
                 let exists = node_list.iter().any(|n| n.name == new_node.name);

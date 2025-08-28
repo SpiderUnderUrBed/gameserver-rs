@@ -120,7 +120,7 @@ async loadFileUpload() {
       console.log(`Error: ${err.message}`)
     }   
     // let server_status = document.getElementById("server-status-indicator");
-    this.updateStatus("none");
+    this.updateStatus("none", true);
   }
   selectedNodeType(){
     const selector = document.getElementById("nodetype-selector");
@@ -139,8 +139,11 @@ async loadFileUpload() {
         }
     });
   }
+  
 async nodeClicked(node) {
     try {
+      let button_status = document.getElementById("temp-enable-defaults");
+      console.log("Changing node")
       const res = await fetch(`${this.basePath}/api/changenode`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -148,12 +151,15 @@ async nodeClicked(node) {
           type: "changenode", message: node, authcode: "0",
         }),
       });
+      console.log("After req")
 
       const text = await res.text();
       if (res.ok) {
         try {
           //const data = JSON.parse(text);
           console.log("Response is ok")
+          this.addResult(`Changed to node: ${node}`)
+          this.updateStatus("up", false)
         } catch {
           console.log(`Invalid JSON response: ${text}`)
         }
@@ -323,9 +329,35 @@ async fetchNodes() {
     const cleaned = this.cleanOutput(output.toString());
     if (cleaned) this.addResult("", cleaned, false, true);
   }
+  async isAllowedInConsoleResult(str){
+    console.log(str)
+    let isNotAllowed = false
+    let rawOutputEnabled = this.rawOutputEnabled;
+    console.log("Checking")
+    try {
+      let json = JSON.parse(str);
+      console.log("In try-catch")
+      if (!rawOutputEnabled) {
+        console.log("Is not allowed")
+        isNotAllowed = true;
+        // if (json.start_keyword && json.stop_keyword) {
+        //   isNotAllowed = true;
+        // }  
+      }
+    } catch (e) {
+      //isNotAllowed = false;
+      console.log(`${e}`)
+    }
+    console.log("Returning")
+    return isNotAllowed
+  }
 
   async addResult(input, output, addInput, addOutput, retryCount = 0) {
     try {
+      if (await this.isAllowedInConsoleResult(output)) {
+          return;
+          //throw new Error("Input not allowed in console"); 
+      }
       const outputAsString =
         output === undefined
           ? "undefined"
@@ -720,10 +752,10 @@ async fetchNodes() {
     this.toggablePages.style.display =
       this.toggablePages.style.display === "flex" ? "none" : "flex";
   }
-  updateStatus(state) {
+  updateStatus(state, await) {
     const loading = document.getElementById("loading");
     let server_status = document.getElementById("server-status-indicator");
-    if (state != "none") {
+    if (state != "none" && await) {
       loading.style.display = "block";
     }
     const statusEvent = new EventSource(`${this.basePath}/api/awaitserverstatus`);
@@ -739,11 +771,14 @@ async fetchNodes() {
       } else if (e.data == "down") {
         server_status.style.backgroundColor = "red";
       }
+      if (await) {
+        statusEvent.close();
+      }
     };
   }
 
   async stopServer() {
-    this.updateStatus("down")
+    this.updateStatus("down", true)
     try {
       const res = await fetch(`${this.basePath}/api/general`, {
         method: "POST",
@@ -844,7 +879,7 @@ async fetchNodes() {
     serverDialog.showModal()
   }
   async startServer() {
-    this.updateStatus("up")
+    this.updateStatus("up", true)
     try {
       const res = await fetch(`${this.basePath}/api/general`, {
         method: "POST",
@@ -872,7 +907,7 @@ async fetchNodes() {
   }
 
   async createDefaultServer() {
-    this.updateStatus("up")
+    this.updateStatus("up", true)
 
     let providertype = document.getElementById("providertype-selector").value;
 
