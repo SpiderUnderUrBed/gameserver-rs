@@ -139,6 +139,31 @@ async loadFileUpload() {
         }
     });
   }
+async nodeClicked(node) {
+    try {
+      const res = await fetch(`${this.basePath}/api/changenode`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "changenode", message: node, authcode: "0",
+        }),
+      });
+
+      const text = await res.text();
+      if (res.ok) {
+        try {
+          //const data = JSON.parse(text);
+          console.log("Response is ok")
+        } catch {
+          console.log(`Invalid JSON response: ${text}`)
+        }
+      } else {
+        console.log(`Failed (${res.status}): ${text}`)
+      }
+    } catch (err) {
+      console.log(`Error: ${err.message}`)
+    }   
+}
 
 async fetchNodes() {
     try {
@@ -155,7 +180,7 @@ async fetchNodes() {
                 const button = document.createElement("button");
                 button.textContent = node;
                 button.className = "nodes-element";
-                button.onclick = () => alert(`Node clicked: ${node}`);
+                button.onclick = () => this.nodeClicked(node);
                 nodesBar.appendChild(button);
             }
         });

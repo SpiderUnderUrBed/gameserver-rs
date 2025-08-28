@@ -326,7 +326,9 @@ struct ResponseMessage {
 #[derive(Debug, Deserialize, Serialize)]
 struct Statistics {
     used_memory: String,
+    total_memory: String,
     core_data: Vec<String>,
+    metadata: String
 }
 // a list for things like nodes, capabilities, etc
 #[derive(Debug, Serialize, Deserialize)]
@@ -844,6 +846,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         //.route("/api/uploadcontent", post(upload))
         .route("/api/statistics", get(statistics))
         .route("/api/awaitserverstatus", get(ongoing_server_status))
+        .route("/api/changenode", post(change_node))
         .route("/api/fetchnode", post(fetch_node))
         .route("/api/migrate", post(migrate))
         .route("/api/getstatus", post(get_status))
@@ -1218,8 +1221,10 @@ async fn statistics(
                 .map(|core| core.cpu_usage().to_string())
                 .collect();
             let statistics = Statistics {
-                used_memory: system.total_memory().to_string(),
+                total_memory: system.total_memory().to_string(),
+                used_memory: system.used_memory().to_string(),
                 core_data,
+                metadata: "".to_string()
             };
             let event = match serde_json::to_string(&statistics) {
                 Ok(json) => Ok(Event::default().data(json)),
@@ -1502,6 +1507,32 @@ async fn users(
     Ok(Json(List {
         list: ApiCalls::UserList(users),
     }))
+}
+async fn change_node(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    Json(request): Json<IncomingMessage>,
+) -> Result<StatusCode, StatusCode> {
+    let state = arc_state.write().await;
+    let option_node = state.database.retrieve_nodes(request.message).await;
+    
+    if let Some(node) = option_node {
+        let bridge_rx = state.tcp_rx.resubscribe();
+        let bridge_tx = state.ws_tx.clone();
+        drop(state);
+        if let Err(e) = connect_to_server(
+            arc_state,
+            node.ip.to_string(),
+            bridge_rx,
+            bridge_tx,
+        )
+        .await
+        {
+            eprintln!("[DEBUG] Connection task failed: {}", e);
+        }
+        Ok(StatusCode::OK)
+    } else {
+        Err(StatusCode::INTERNAL_SERVER_ERROR)
+    }
 }
 
 async fn fetch_node(

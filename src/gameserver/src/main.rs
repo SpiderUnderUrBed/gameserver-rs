@@ -277,6 +277,7 @@ enum ReadMode {
 #[derive(Clone)]
 struct AppState {
     current_server: String,
+    server_running: Arc<Mutex<bool>>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -531,6 +532,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let state = AppState {
         current_server: "minecraft".to_string(),
+        server_running: Arc::new(Mutex::new(false)),
     };
     let arc_state = Arc::new(state);
 
@@ -625,7 +627,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         ReadMode::Json => {
                             let mut found_message = false;
 
-                            while let Some(newline_pos) = read_buf.iter().position(|&b| b == b'\n') {
+                            while let Some(newline_pos) = read_buf.iter().position(|&b| b == b'\n')
+                            {
                                 let line = &read_buf[..newline_pos];
 
                                 if line.is_empty() {
@@ -649,39 +652,87 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                     continue;
                                 }
 
-                                if line_str.trim().starts_with('{') && line_str.trim().ends_with('}') {
+                                if line_str.trim().starts_with('{')
+                                    && line_str.trim().ends_with('}')
+                                {
                                     if let Ok(json_value) = serde_json::from_slice::<Value>(line) {
-                                        if let Ok(request) = serde_json::from_value::<FileRequestMessage>(json_value.clone()) {
+                                        if let Ok(request) =
+                                            serde_json::from_value::<FileRequestMessage>(
+                                                json_value.clone(),
+                                            )
+                                        {
                                             let out_tx_clone = out_tx.clone();
                                             let arc_state_for_spawn = arc_state_clone.clone();
                                             tokio::spawn(async move {
-                                                let response_json = handle_file_request(&Arc::clone(&arc_state_for_spawn), request).await;
+                                                let response_json = handle_file_request(
+                                                    &Arc::clone(&arc_state_for_spawn),
+                                                    request,
+                                                )
+                                                .await;
                                                 let _ = out_tx_clone.send(response_json).await;
                                             });
-                                        } else if let Ok(payload) = serde_json::from_value::<SrcAndDest>(json_value.clone()) {
+                                        } else if let Ok(payload) =
+                                            serde_json::from_value::<SrcAndDest>(json_value.clone())
+                                        {
                                             if let ApiCalls::Node(dest) = payload.dest {
-                                                match unsure_ip_or_port_tcp_conn(Some(dest.ip.clone()), None).await {
+                                                match unsure_ip_or_port_tcp_conn(
+                                                    Some(dest.ip.clone()),
+                                                    None,
+                                                )
+                                                .await
+                                                {
                                                     Ok(conn) => {
                                                         let writer_tx = tcp_to_writer(conn).await;
                                                         tokio::spawn(async move {
-                                                            let _ = send_folder_over_broadcast("server/", writer_tx).await;
+                                                            let _ = send_folder_over_broadcast(
+                                                                "server/", writer_tx,
+                                                            )
+                                                            .await;
                                                         });
                                                     }
-                                                    Err(e) => eprintln!("[{}] Failed to connect: {}", addr, e),
+                                                    Err(e) => eprintln!(
+                                                        "[{}] Failed to connect: {}",
+                                                        addr, e
+                                                    ),
                                                 }
                                             }
-                                        } else if let Ok(msg_payload) = serde_json::from_value::<IncomingMessageWithMetadata>(json_value.clone()) {
-                                            handle_commands_with_metadata(&Arc::clone(&arc_state_clone), &msg_payload, &cmd_tx, &stdin_ref, &hostname_ref).await;
-                                        } else if let Ok(msg_payload) = serde_json::from_value::<MessagePayload>(json_value.clone()) {
+                                        } else if let Ok(msg_payload) =
+                                            serde_json::from_value::<IncomingMessageWithMetadata>(
+                                                json_value.clone(),
+                                            )
+                                        {
+                                            handle_commands_with_metadata(
+                                                &Arc::clone(&arc_state_clone),
+                                                &msg_payload,
+                                                &cmd_tx,
+                                                &stdin_ref,
+                                                &hostname_ref,
+                                            )
+                                            .await;
+                                        } else if let Ok(msg_payload) =
+                                            serde_json::from_value::<MessagePayload>(
+                                                json_value.clone(),
+                                            )
+                                        {
                                             match msg_payload.r#type.as_str() {
                                                 "start_file" => {
                                                     files_received += 1;
-                                                    println!("[File Transfer] {} is being transferred", msg_payload.message);
-                                                    let file_path = format!("server/{}", msg_payload.message);
-                                                    let _ = tokio::fs::create_dir_all(file_path.clone()).await;
+                                                    println!(
+                                                        "[File Transfer] {} is being transferred",
+                                                        msg_payload.message
+                                                    );
+                                                    let file_path =
+                                                        format!("server/{}", msg_payload.message);
+                                                    let _ = tokio::fs::create_dir_all(
+                                                        file_path.clone(),
+                                                    )
+                                                    .await;
 
-                                                    if let Some(parent) = std::path::Path::new(&file_path).parent() {
-                                                        let _ = tokio::fs::create_dir_all(parent).await;
+                                                    if let Some(parent) =
+                                                        std::path::Path::new(&file_path).parent()
+                                                    {
+                                                        let _ =
+                                                            tokio::fs::create_dir_all(parent).await;
                                                     }
 
                                                     if let Ok(file) = tokio::fs::OpenOptions::new()
@@ -696,7 +747,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                             file_name: msg_payload.message.clone(),
                                                             bytes_written: 0,
                                                             last_logged_mb: 0,
-                                                            last_activity: tokio::time::Instant::now(),
+                                                            last_activity:
+                                                                tokio::time::Instant::now(),
                                                         };
                                                         if newline_pos + 1 <= read_buf.len() {
                                                             read_buf.drain(..newline_pos + 1);
@@ -717,9 +769,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                     continue;
                                                 }
                                                 "clean_file" => {
-                                                    let file_path = format!("server/{}", msg_payload.message);
-                                                    if tokio::fs::metadata(&file_path).await.is_ok() {
-                                                        let _ = cleanup_end_file_markers(&file_path, &msg_payload.message).await;
+                                                    let file_path =
+                                                        format!("server/{}", msg_payload.message);
+                                                    if tokio::fs::metadata(&file_path).await.is_ok()
+                                                    {
+                                                        let _ = cleanup_end_file_markers(
+                                                            &file_path,
+                                                            &msg_payload.message,
+                                                        )
+                                                        .await;
                                                     }
                                                     if newline_pos + 1 <= read_buf.len() {
                                                         read_buf.drain(..newline_pos + 1);
@@ -730,7 +788,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                     continue;
                                                 }
                                                 _ => {
-                                                    handle_command_or_console(&Arc::clone(&arc_state_clone), &msg_payload, &cmd_tx, &stdin_ref, &hostname_ref).await;
+                                                    handle_command_or_console(
+                                                        &Arc::clone(&arc_state_clone),
+                                                        &msg_payload,
+                                                        &cmd_tx,
+                                                        &stdin_ref,
+                                                        &hostname_ref,
+                                                    )
+                                                    .await;
                                                 }
                                             }
                                         }
@@ -801,7 +866,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         });
     }
 }
-
 
 async fn handle_file_request(state: &Arc<AppState>, request: FileRequestMessage) -> String {
     match request.payload {
@@ -1181,6 +1245,17 @@ async fn handle_command_or_console(
                 }
             }
             "start_server" => {
+                // Check if server is already running
+                {
+                    let stdin_guard = stdin_ref.lock().await;
+                    if stdin_guard.is_some() {
+                        let _ = cmd_tx
+                            .send("Server is already running. Use 'stop_server' first.".into())
+                            .await;
+                        return;
+                    }
+                }
+
                 if let Some(prov) = get_provider(
                     &get_provider_from_servername(&state, state.current_server.clone()).await,
                     &get_definite_path_from_tag(
@@ -1192,18 +1267,40 @@ async fn handle_command_or_console(
                     if let Some(cmd) = prov.start() {
                         let tx = cmd_tx.clone();
                         let stdin_clone = stdin_ref.clone();
+
                         tokio::spawn(async move {
-                            run_command_live_output(
+                            let result = run_command_live_output(
                                 cmd,
                                 "Server".into(),
-                                Some(tx),
-                                Some(stdin_clone),
+                                Some(tx.clone()),
+                                Some(stdin_clone.clone()),
                             )
-                            .await
-                            .ok();
+                            .await;
+                            {
+                                let mut stdin_guard = stdin_clone.lock().await;
+                                *stdin_guard = None;
+                            }
+
+                            match result {
+                                Ok(_) => {
+                                    let _ = tx.send("Server process ended".into()).await;
+                                }
+                                Err(e) => {
+                                    let _ = tx.send(format!("Server process failed: {}", e)).await;
+                                }
+                            }
                         });
+
                         let _ = cmd_tx.send("Server started".into()).await;
+                    } else {
+                        let _ = cmd_tx
+                            .send("No start command available for this provider".into())
+                            .await;
                     }
+                } else {
+                    let _ = cmd_tx
+                        .send("Failed to get provider for server".into())
+                        .await;
                 }
             }
             "server_data" => {
