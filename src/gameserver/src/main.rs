@@ -147,7 +147,7 @@ impl TryFrom<Value> for List {
 static PORT: &str = "8080";
 
 #[cfg(not(feature = "full-stack"))]
-static PORT: &str = "8083";
+static PORT: &str = "8082";
 
 #[derive(serde::Serialize)]
 struct GetState {
@@ -522,7 +522,7 @@ pub async fn handle_incoming(mut conn: tokio::net::TcpStream) -> anyhow::Result<
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     const FILE_DELIMITER: &[u8] = b"<|END_OF_FILE|>";
-    const PORT: u16 = 8083;
+    const PORT: u16 = 8082;
 
     let listener = TcpListener::bind(format!("0.0.0.0:{}", PORT)).await?;
     println!("Listening on {}", PORT);
@@ -783,7 +783,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 }
 
                                 let line_str = String::from_utf8_lossy(line);
-                                println!("{:#?}", line_str);
+                                //println!("{:#?}", line_str);
 
                                 if line_str.trim() == "<|END_OF_FILE|>" {
                                     if newline_pos + 1 <= read_buf.len() {
@@ -951,6 +951,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                         if let Err(e) = start_server_with_broadcast(
                                                             &arc_state_clone,
                                                             &stdin_ref,
+                                                            &cmd_tx
                                                         )
                                                         .await
                                                         {
@@ -1091,6 +1092,7 @@ async fn debug_dump_state(state: &Arc<AppState>, label: &str) {
 async fn start_server_with_broadcast(
     state: &Arc<AppState>,
     shared_stdin: &Arc<Mutex<Option<ChildStdin>>>,
+    cmd_tx: &mpsc::Sender<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     {
         let server_running = state.server_running.lock().await;
@@ -1124,12 +1126,17 @@ async fn start_server_with_broadcast(
     ) {
         println!("Selected provider: {}", provider_type.name);
 
-        if let Some(pre_hook_cmd) = provider_type.pre_hook() {
-            let _ = tokio::process::Command::from(pre_hook_cmd)
-                .current_dir("server/")
-                .status()
-                .await;
-        }
+        // if let Some(pre_hook_cmd) = provider_type.pre_hook() {
+        //     let mut cmd = pre_hook_cmd;
+        //     cmd.current_dir("server/");
+        //     let _ = run_command_live_output(
+        //         cmd,
+        //         "Pre-hook".into(),
+        //         Some(cmd_tx.clone()),
+        //         None,
+        //     )
+        //     .await;
+        // }
 
         let start_command = provider_type
             .start()
@@ -1166,14 +1173,20 @@ async fn start_server_with_broadcast(
             *server_running = true;
         }
 
-        if let Some(post_hook_cmd) = provider_type.post_hook() {
-            tokio::spawn(async move {
-                let _ = tokio::process::Command::from(post_hook_cmd)
-                    .current_dir("server/")
-                    .status()
-                    .await;
-            });
-        }
+        // if let Some(post_hook_cmd) = provider_type.post_hook() {
+        //     let cmd_tx_clone = cmd_tx.clone();
+        //     tokio::spawn(async move {
+        //         let mut cmd = post_hook_cmd;
+        //         cmd.current_dir("server/");
+        //         let _ = run_command_live_output(
+        //             cmd,
+        //             "Post-hook".into(),
+        //             Some(cmd_tx_clone),
+        //             None,
+        //         )
+        //         .await;
+        //     });
+        // }
 
         let broadcast_tx_clone = broadcast_tx.clone();
         tokio::spawn(async move {
