@@ -11,6 +11,7 @@ use tokio::fs::OpenOptions;
 use tokio::io;
 use tokio::io::{split, AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
+use tokio::process::Child;
 use tokio::process::{ChildStdin, Command as TokioCommand};
 use tokio::sync::{mpsc, Mutex};
 
@@ -146,7 +147,7 @@ impl TryFrom<Value> for List {
 static PORT: &str = "8080";
 
 #[cfg(not(feature = "full-stack"))]
-static PORT: &str = "8082";
+static PORT: &str = "8083";
 
 #[derive(serde::Serialize)]
 struct GetState {
@@ -278,6 +279,8 @@ enum ReadMode {
 struct AppState {
     current_server: String,
     server_running: Arc<Mutex<bool>>,
+    server_output_tx: Arc<Mutex<Option<broadcast::Sender<String>>>>,
+    server_process: Arc<Mutex<Option<Child>>>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -519,9 +522,9 @@ pub async fn handle_incoming(mut conn: tokio::net::TcpStream) -> anyhow::Result<
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     const FILE_DELIMITER: &[u8] = b"<|END_OF_FILE|>";
-    const PORT: u16 = 8082;
+    const PORT: u16 = 8083;
 
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", PORT)).await?;
+    let listener = TcpListener::bind(format!("0.0.0.0:{}", PORT)).await?;
     println!("Listening on {}", PORT);
 
     let shared_stdin: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
@@ -533,24 +536,136 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let state = AppState {
         current_server: "minecraft".to_string(),
         server_running: Arc::new(Mutex::new(false)),
+        server_output_tx: Arc::new(Mutex::new(None)),
+        server_process: Arc::new(Mutex::new(None)),
     };
     let arc_state = Arc::new(state);
+
+    let health_monitor_state = arc_state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+        loop {
+            interval.tick().await;
+
+            let server_running = health_monitor_state.server_running.lock().await;
+            let mut server_process = health_monitor_state.server_process.lock().await;
+
+            if *server_running {
+                if let Some(process) = server_process.as_mut() {
+                    match process.try_wait() {
+                        Ok(Some(status)) => {
+                            drop(server_running);
+                            drop(server_process);
+
+                            let mut server_running =
+                                health_monitor_state.server_running.lock().await;
+                            *server_running = false;
+
+                            let mut server_process =
+                                health_monitor_state.server_process.lock().await;
+                            *server_process = None;
+
+                            let mut output_tx = health_monitor_state.server_output_tx.lock().await;
+                            *output_tx = None;
+
+                            println!("Server state reset due to process exit");
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            eprintln!("Error checking server process: {}", e);
+                        }
+                    }
+                } else {
+                    drop(server_running);
+                    drop(server_process);
+
+                    let mut server_running = health_monitor_state.server_running.lock().await;
+                    *server_running = false;
+
+                    let mut output_tx = health_monitor_state.server_output_tx.lock().await;
+                    *output_tx = None;
+                }
+            }
+        }
+    });
+
+    {
+        let mut server_running = arc_state.server_running.lock().await;
+        *server_running = true;
+    }
+
+    {
+        let mut server_running = arc_state.server_running.lock().await;
+        *server_running = false;
+    }
 
     loop {
         let (socket, addr) = listener.accept().await?;
         println!("[Connection] New client from {}", addr);
+
+        debug_dump_state(&arc_state, &format!("New connection from {}", addr)).await;
 
         let stdin_ref = shared_stdin.clone();
         let hostname_ref = hostname_ref.clone();
         let arc_state_clone = arc_state.clone();
 
         tokio::spawn(async move {
+            println!("[{}] DEBUG: Connection task started", addr);
+
             let (mut read_half, mut write_half) = socket.into_split();
             let (out_tx, mut out_rx) = mpsc::channel::<String>(128);
             let (cmd_tx, mut cmd_rx) = mpsc::channel::<String>(128);
 
+
+            let mut server_output_rx = {
+                let server_running_lock = arc_state_clone.server_running.lock().await;
+                let output_tx_lock = arc_state_clone.server_output_tx.lock().await;
+
+                if *server_running_lock {
+                    if let Some(ref tx) = *output_tx_lock {
+                        Some(tx.subscribe())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+
+            let arc_state_for_writer = arc_state_clone.clone();
+            let addr_clone = addr.clone();
             tokio::spawn(async move {
+                let mut retry_interval = tokio::time::interval(tokio::time::Duration::from_secs(2));
+                let mut needs_server_status_check = server_output_rx.is_none();
+
                 loop {
+                    if needs_server_status_check {
+                        let server_running_lock = arc_state_for_writer.server_running.lock().await;
+                        let output_tx_lock = arc_state_for_writer.server_output_tx.lock().await;
+
+                        if *server_running_lock {
+                            if let Some(ref tx) = *output_tx_lock {
+                                server_output_rx = Some(tx.subscribe());
+                                needs_server_status_check = false;
+
+                                let connection_msg = serde_json::json!({
+                                    "type": "info",
+                                    "data": "Connected to server output stream",
+                                    "authcode": "0"
+                                })
+                                .to_string()
+                                    + "\n";
+
+                                if let Err(e) =
+                                    write_half.write_all(connection_msg.as_bytes()).await
+                                {
+                                    eprintln!("[{}] Write error: {}", addr_clone, e);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
                     tokio::select! {
                         Some(msg) = cmd_rx.recv() => {
                             let payload = serde_json::json!({
@@ -559,21 +674,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 "authcode": "0"
                             }).to_string() + "\n";
                             if let Err(e) = write_half.write_all(payload.as_bytes()).await {
-                                eprintln!("[{}] Write error: {}", addr, e);
+                                eprintln!("[{}] Write error: {}", addr_clone, e);
                                 break;
                             }
                         }
+
                         Some(out) = out_rx.recv() => {
                             if let Err(e) = write_half.write_all((out + "\n").as_bytes()).await {
-                                eprintln!("[{}] Write error: {}", addr, e);
+                                eprintln!("[{}] Write error: {}", addr_clone, e);
                                 break;
                             }
                         }
-                        else => break,
+
+                        server_msg = async {
+                            if let Some(rx) = &mut server_output_rx {
+                                rx.recv().await
+                            } else {
+                                retry_interval.tick().await;
+                                Err(broadcast::error::RecvError::Closed)
+                            }
+                        } => {
+                            match server_msg {
+                                Ok(msg) => {
+                                    if let Err(e) = write_half.write_all((msg + "\n").as_bytes()).await {
+                                        eprintln!("[{}] Write error: {}", addr_clone, e);
+                                        break;
+                                    }
+                                }
+                                Err(broadcast::error::RecvError::Lagged(_)) => {
+                                    println!("[{}] Lagged behind server output, catching up", addr_clone);
+                                    continue;
+                                }
+                                Err(broadcast::error::RecvError::Closed) => {
+                                    needs_server_status_check = true;
+                                }
+                            }
+                        }
+
+                        _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {
+                        }
                     }
                 }
             });
-
             let mut read_buf = Vec::new();
             let mut temp_buf = [0u8; 20632];
 
@@ -641,6 +783,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 }
 
                                 let line_str = String::from_utf8_lossy(line);
+                                println!("{:#?}", line_str);
 
                                 if line_str.trim() == "<|END_OF_FILE|>" {
                                     if newline_pos + 1 <= read_buf.len() {
@@ -701,6 +844,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                 json_value.clone(),
                                             )
                                         {
+                                            println!(
+                                                "[{}] DEBUG: Processing command with metadata: {}",
+                                                addr, msg_payload.message
+                                            );
                                             handle_commands_with_metadata(
                                                 &Arc::clone(&arc_state_clone),
                                                 &msg_payload,
@@ -787,6 +934,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                     found_message = true;
                                                     continue;
                                                 }
+                                                "command" => {
+                                                    println!(
+                                                        "{} {}", addr, msg_payload.message
+                                                    );
+                                                    if msg_payload.message == "start_server" {
+                                                        debug_dump_state(
+                                                            &arc_state_clone,
+                                                            &format!(
+                                                                "Before start_server from {}",
+                                                                addr
+                                                            ),
+                                                        )
+                                                        .await;
+
+                                                        if let Err(e) = start_server_with_broadcast(
+                                                            &arc_state_clone,
+                                                            &stdin_ref,
+                                                        )
+                                                        .await
+                                                        {
+                                                            eprintln!(
+                                                                "[{}] Failed to start server: {}",
+                                                                addr, e
+                                                            );
+                                                        }
+
+                                                        debug_dump_state(
+                                                            &arc_state_clone,
+                                                            &format!(
+                                                                "After start_server from {}",
+                                                                addr
+                                                            ),
+                                                        )
+                                                        .await;
+                                                    } else {
+                                                        handle_command_or_console(
+                                                            &Arc::clone(&arc_state_clone),
+                                                            &msg_payload,
+                                                            &cmd_tx,
+                                                            &stdin_ref,
+                                                            &hostname_ref,
+                                                        )
+                                                        .await;
+                                                    }
+                                                }
                                                 _ => {
                                                     handle_command_or_console(
                                                         &Arc::clone(&arc_state_clone),
@@ -867,6 +1059,204 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 }
 
+async fn handle_server_crash(state: &Arc<AppState>) {
+    println!("Server crash detected, cleaning up state...");
+
+    let mut server_running = state.server_running.lock().await;
+    *server_running = false;
+
+    let mut server_process = state.server_process.lock().await;
+    *server_process = None;
+
+    let mut output_tx = state.server_output_tx.lock().await;
+    *output_tx = None;
+
+    println!("Server state reset after crash");
+}
+async fn debug_dump_state(state: &Arc<AppState>, label: &str) {
+    // let server_running = state.server_running.lock().await;
+    // let output_tx_lock = state.server_output_tx.lock().await;
+    // let process_lock = state.server_process.lock().await;
+
+    // println!("DEBUG DUMP [{}]:", label);
+    // println!("  - server_running: {}", *server_running);
+    // println!("  - output_tx exists: {}", output_tx_lock.is_some());
+    // println!("  - process exists: {}", process_lock.is_some());
+    // println!("  - current_server: {}", state.current_server);
+
+    // if let Some(ref tx) = *output_tx_lock {
+    //     println!("  - broadcast receiver_count: {}", tx.receiver_count());
+    // }
+}
+async fn start_server_with_broadcast(
+    state: &Arc<AppState>,
+    shared_stdin: &Arc<Mutex<Option<ChildStdin>>>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    {
+        let server_running = state.server_running.lock().await;
+        if *server_running {
+            return Ok(());
+        }
+    }
+
+    {
+        let mut process_lock = state.server_process.lock().await;
+        if let Some(mut child) = process_lock.take() {
+            let _ = child.kill().await;
+        }
+    }
+
+    {
+        let mut output_tx_lock = state.server_output_tx.lock().await;
+        *output_tx_lock = None;
+    }
+
+    let (broadcast_tx, _) = broadcast::channel(1000);
+
+    println!("Adjusted path to: server/");
+    if let Some(provider_type) = get_provider(
+        &get_provider_from_servername(&state, state.current_server.clone()).await,
+        &get_definite_path_from_tag(
+            state,
+            get_provider_from_servername(&state, state.current_server.clone()).await,
+        )
+        .await,
+    ) {
+        println!("Selected provider: {}", provider_type.name);
+
+        if let Some(pre_hook_cmd) = provider_type.pre_hook() {
+            let _ = tokio::process::Command::from(pre_hook_cmd)
+                .current_dir("server/")
+                .status()
+                .await;
+        }
+
+        let start_command = provider_type
+            .start()
+            .ok_or("Provider does not support starting servers")?;
+
+        let mut child = tokio::process::Command::from(start_command)
+            .current_dir("server/")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+
+        let stdin = child.stdin.take().expect("Failed to open stdin");
+        let stdout = child.stdout.take().expect("Failed to open stdout");
+        let stderr = child.stderr.take().expect("Failed to open stderr");
+
+        {
+            let mut shared_stdin_lock = shared_stdin.lock().await;
+            *shared_stdin_lock = Some(stdin);
+        }
+
+        {
+            let mut process_lock = state.server_process.lock().await;
+            *process_lock = Some(child);
+        }
+
+        {
+            let mut output_tx_lock = state.server_output_tx.lock().await;
+            *output_tx_lock = Some(broadcast_tx.clone());
+        }
+
+        {
+            let mut server_running = state.server_running.lock().await;
+            *server_running = true;
+        }
+
+        if let Some(post_hook_cmd) = provider_type.post_hook() {
+            tokio::spawn(async move {
+                let _ = tokio::process::Command::from(post_hook_cmd)
+                    .current_dir("server/")
+                    .status()
+                    .await;
+            });
+        }
+
+        let broadcast_tx_clone = broadcast_tx.clone();
+        tokio::spawn(async move {
+            let mut stdout_reader = BufReader::new(stdout);
+            let mut line = String::new();
+            while stdout_reader.read_line(&mut line).await.is_ok() && !line.is_empty() {
+                let output_msg = serde_json::json!({
+                    "type": "info",
+                    "data": serde_json::json!({
+                        "type": "stdout",
+                        "data": line.trim()
+                    }).to_string(),
+                    "authcode": "0"
+                })
+                .to_string();
+
+                let _ = broadcast_tx_clone.send(output_msg);
+                line.clear();
+            }
+        });
+
+        let broadcast_tx_clone = broadcast_tx.clone();
+        tokio::spawn(async move {
+            let mut stderr_reader = BufReader::new(stderr);
+            let mut line = String::new();
+            while stderr_reader.read_line(&mut line).await.is_ok() && !line.is_empty() {
+                let output_msg = serde_json::json!({
+                    "type": "info",
+                    "data": serde_json::json!({
+                        "type": "stderr",
+                        "data": line.trim()
+                    }).to_string(),
+                    "authcode": "0"
+                })
+                .to_string();
+
+                let _ = broadcast_tx_clone.send(output_msg);
+                line.clear();
+            }
+        });
+    }
+    Ok(())
+}
+
+async fn stop_server(
+    state: &Arc<AppState>,
+    shared_stdin: &Arc<Mutex<Option<ChildStdin>>>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut server_running = state.server_running.lock().await;
+    if !*server_running {
+        return Ok(());
+    }
+
+    {
+        let mut stdin_lock = shared_stdin.lock().await;
+        if let Some(ref mut stdin) = *stdin_lock {
+            let _ = stdin.write_all(b"stop\n").await;
+        }
+    }
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
+    {
+        let mut process_lock = state.server_process.lock().await;
+        if let Some(mut child) = process_lock.take() {
+            let _ = child.kill().await;
+        }
+    }
+
+    {
+        let mut stdin_lock = shared_stdin.lock().await;
+        *stdin_lock = None;
+    }
+
+    {
+        let mut output_tx_lock = state.server_output_tx.lock().await;
+        *output_tx_lock = None;
+    }
+
+    *server_running = false;
+    Ok(())
+}
+
 async fn handle_file_request(state: &Arc<AppState>, request: FileRequestMessage) -> String {
     match request.payload {
         FileRequestPayload::Metadata { path } => match get_metadata(&path).await {
@@ -927,56 +1317,6 @@ async fn handle_file_request(state: &Arc<AppState>, request: FileRequestMessage)
             })
             .unwrap(),
         },
-    }
-}
-
-fn drain_line(read_buf: &mut Vec<u8>, newline_pos: usize) {
-    if newline_pos + 1 <= read_buf.len() {
-        read_buf.drain(..newline_pos + 1);
-    } else {
-        read_buf.clear();
-    }
-}
-
-async fn finish_file(
-    current_file: &mut tokio::fs::File,
-    file_name: &str,
-    bytes_written: u64,
-    addr: std::net::SocketAddr,
-) {
-    if let Err(e) = current_file.flush().await {
-        eprintln!("[{}] Error flushing {}: {}", addr, file_name, e);
-    } else {
-        println!(
-            "[{}] Received file: {} ({} bytes)",
-            addr, file_name, bytes_written
-        );
-    }
-}
-
-async fn write_file_chunk(
-    read_buf: &mut Vec<u8>,
-    current_file: &mut tokio::fs::File,
-    bytes_written: &mut u64,
-    chunk_size: usize,
-    addr: std::net::SocketAddr,
-    file_name: &str,
-) {
-    let write_size = read_buf.len().min(chunk_size);
-
-    if write_size > 0 {
-        if let Err(e) = current_file.write_all(&read_buf[..write_size]).await {
-            eprintln!("[{}] Error writing to {}: {}", addr, file_name, e);
-            return;
-        }
-
-        *bytes_written += write_size as u64;
-
-        if write_size <= read_buf.len() {
-            read_buf.drain(..write_size);
-        } else {
-            read_buf.clear();
-        }
     }
 }
 
@@ -1125,43 +1465,43 @@ fn get_provider(name: &str, pre_path: &str) -> Option<ProviderType> {
     let mut path = pre_path.to_string();
     if !path.starts_with("server/") {
         path = format!("server/{}", path);
-        println!("[DEBUG] Adjusted path to: {}", path);
+        println!("Adjusted path to: {}", path);
     }
 
     match name {
         "minecraft" => {
-            println!("[INFO] Selected provider: Minecraft");
+            println!("Selected provider: Minecraft");
             Some(Minecraft.into())
         }
         "custom" => {
             let provider_json_path = format!("{}/provider.json", path);
             println!(
-                "[INFO] Looking for custom provider config at: {}",
+                "Looking for custom provider config at: {}",
                 provider_json_path
             );
 
             match std::fs::read_to_string(&provider_json_path) {
                 Ok(json_content) => {
-                    println!("[DEBUG] Successfully read provider.json");
+                    println!("Successfully read provider.json");
                     match serde_json::from_str::<ProviderConfig>(&json_content) {
                         Ok(config) => {
-                            println!("[INFO] Loaded custom provider config successfully");
+                            println!("Loaded custom provider config successfully");
                             let mut custom = Custom::new();
 
                             if let Some(cmd) = config.pre_hook {
-                                println!("[INFO] Adding pre_hook: {}", cmd);
+                                println!("Adding pre_hook: {}", cmd);
                                 custom = custom.with_pre_hook(cmd);
                             }
                             if let Some(cmd) = config.install {
-                                println!("[INFO] Adding install: {}", cmd);
+                                println!("Adding install: {}", cmd);
                                 custom = custom.with_install(cmd);
                             }
                             if let Some(cmd) = config.post_hook {
-                                println!("[INFO] Adding post_hook: {}", cmd);
+                                println!("Adding post_hook: {}", cmd);
                                 custom = custom.with_post_hook(cmd);
                             }
                             if let Some(cmd) = config.start {
-                                println!("[INFO] Adding start: {}", cmd);
+                                println!("Adding start: {}", cmd);
                                 custom = custom.with_start(cmd);
                             }
 
@@ -1245,7 +1585,6 @@ async fn handle_command_or_console(
                 }
             }
             "start_server" => {
-                // Check if server is already running
                 {
                     let stdin_guard = stdin_ref.lock().await;
                     if stdin_guard.is_some() {
@@ -1344,3 +1683,4 @@ async fn handle_command_or_console(
         }
     }
 }
+
