@@ -179,10 +179,10 @@ mod kubernetes {
 // I like these defaults for testing, and for the moment I doubt anyone would object
 // but at some point this will be removed in favor of testing with ENV varibles
 #[cfg(not(feature = "full-stack"))]
-static TcpUrl: &str = "127.0.0.1:8082";
+static StaticTcpUrl: &str = "127.0.0.1:8082";
 
 #[cfg(not(feature = "full-stack"))]
-static LocalUrl: &str = "127.0.0.1:8081";
+static StaticLocalUrl: &str = "127.0.0.1:8081";
 
 #[cfg(not(feature = "full-stack"))]
 static K8S_WORKS: bool = false;
@@ -191,10 +191,10 @@ static K8S_WORKS: bool = false;
 static DOCKER_WORKS: bool = false;
 
 #[cfg(feature = "full-stack")]
-static TcpUrl: &str = "gameserver-service:8080";
+static StaticTcpUrl: &str = "gameserver-service:8080";
 
 #[cfg(feature = "full-stack")]
-static LocalUrl: &str = "127.0.0.1:8080";
+static StaticLocalUrl: &str = "127.0.0.1:8080";
 
 static WEBSOCKET_DEBUGGING: bool = false;
 // K8S_WORKS needs to be true in the case where the full stack is running and not if that is not the case
@@ -823,6 +823,16 @@ async fn try_initial_connection(
     }
 }
 
+fn get_env_var_or_arg<T: std::str::FromStr>(env_var: &str, arg: Option<T>) -> Option<T> {
+    arg.or_else(|| env::var(env_var).ok().and_then(|s| s.parse().ok()))
+}
+
+// fn get_env_var_or_required_arg<T: std::str::FromStr>(env_var: &str, arg: Option<T>, field_name: &str) -> T {
+//     get_env_var_or_arg(env_var, arg).unwrap_or_else(|| {
+//         panic!("{} must be provided either as argument or through {}", field_name, env_var)
+//     })
+// }
+
 // main function handles the initial connection
 // initilizing the database struct, getting and setting the base path as well as alot of defaults in AppState
 // trying the initial tcp connection to gameserver, and considering creating it if it doesnt exist, and will continually try to make a connection with it
@@ -850,6 +860,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         })
         .unwrap_or_default();
 
+    let config_tcp_url = get_env_var_or_arg("TCPURL", Some(StaticTcpUrl.to_string())).unwrap();
+    let config_local_url = get_env_var_or_arg("LOCALURL", Some(StaticLocalUrl.to_string())).unwrap();
+
     // Overrides for testing or specific cases where how it worksin a setup may be diffrent
     const ENABLE_K8S_CLIENT: bool = true;
     const ENABLE_INITIAL_CONNECTION: bool = false;
@@ -869,7 +882,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         client = Some(Client::try_default().await?);
     }
 
-    let mut tcp_url: String = TcpUrl.to_string();
+    let mut tcp_url: String = config_tcp_url.to_string();
     if !DONT_OVERRIDE_CONN_WITH_K8S && client.is_some() {
         if let Ok(url_result) = &kubernetes::get_avalible_gameserver(client.as_ref().unwrap()).await
         {
@@ -1030,7 +1043,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
 
     // serves the website
-    let addr: SocketAddr = LocalUrl.parse().unwrap();
+    let addr: SocketAddr = config_local_url.parse().unwrap();
     println!("Listening on http://{}{}", addr, base_path);
 
     let listener = TcpListener::bind(addr).await?;

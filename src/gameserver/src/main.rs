@@ -182,13 +182,19 @@ impl TryFrom<Value> for List {
     }
 }
 
-// These port defaults are diffrence based on feature as i typically do not run full-stack
-// when im testing on bare metal, where the ports have to be diffrent to not conflict 
+// These ip:port defaults are diffrence based on feature as i typically do not run full-stack
+// when im testing on bare metal, where the ip:port have to be diffrent to not conflict 
 #[cfg(feature = "full-stack")]
-static PORT: &str = "8080";
+static StaticLocalUrl: &str = "0.0.0.0:8080";
 
-#[cfg(not(feature = "full-stack"))]
-static PORT: &str = "8082";
+#[cfg(feature = "full-stack")]
+static StaticLocalUrl: &str = "0.0.0.0:8082";
+
+// #[cfg(feature = "full-stack")]
+// static PORT: &str = "8080";
+
+// #[cfg(not(feature = "full-stack"))]
+// static PORT: &str = "8082";
 
 // the server state, currently only holds keywords for what messages to look for when declaring the server as started or stopped
 // might be phased out in favor of determining whether or not the process is running or not
@@ -347,7 +353,11 @@ struct OneTimeWrapper {
     data: Value,
 }
 
-
+// This is for returning a connection from either a specifed ip feild, which might look like
+// <IP>:<PORT> or IP and PORT seprately from two diffrent arguments, I need to probably enforce setting the ip or port, atleast change to the default port
+// but for now it suffices
+// TODO: do above
+// TODO: remove the option for ip (as its required anyways)
 pub async fn unsure_ip_or_port_tcp_conn(
     ip: Option<String>,
     port: Option<String>,
@@ -373,6 +383,8 @@ pub async fn unsure_ip_or_port_tcp_conn(
     Ok(stream)
 }
 
+// Takes a regular tcp stream and converts it to a broadcast channel
+// forwards the messages from the stream to a broadcast
 pub async fn tcp_to_broadcast(stream: TcpStream) -> Sender<Vec<u8>> {
     let (tx, mut rx) = broadcast::channel::<Vec<u8>>(16);
 
@@ -408,49 +420,22 @@ pub async fn tcp_to_broadcast(stream: TcpStream) -> Sender<Vec<u8>> {
     tx
 }
 
-pub async fn handle_incoming(mut conn: tokio::net::TcpStream) -> anyhow::Result<()> {
-    let mut reader = BufReader::new(&mut conn);
-    let mut line = String::new();
-
-    let mut current_file: Option<File> = None;
-
-    loop {
-        line.clear();
-        let n = reader.read_line(&mut line).await?;
-        if n == 0 {
-            break;
-        }
-
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
-            match json.get("type").and_then(|t| t.as_str()) {
-                Some("start_file") => {
-                    let path = json.get("message").and_then(|m| m.as_str()).unwrap();
-                    current_file = Some(File::create(path).await?);
-                    eprintln!("[handle_file] Started writing file: {}", path);
-                }
-                Some("end_file") => {
-                    eprintln!("[handle_file] Finished file.");
-                    current_file = None;
-                }
-                _ => {
-                    eprintln!("JSON received but no handler matched: {:?}", json);
-                }
-            }
-        } else if let Some(file) = &mut current_file {
-            file.write_all(line.as_bytes()).await?;
-        } else {
-            eprintln!("Invalid JSON received: {:?}", line);
-        }
-    }
-
-    Ok(())
+fn get_env_var_or_arg<T: std::str::FromStr>(env_var: &str, arg: Option<T>) -> Option<T> {
+    arg.or_else(|| env::var(env_var).ok().and_then(|s| s.parse().ok()))
 }
+
+// Main function, entrypoint to the program, initalizes the app state, serves a tcp connection
+// at the specified and does most of the intial handling of data, including switching between modes (json and file)
+// and forwards some messages to other functions to handle command or console data, does health checks and set up the forwarding 
+// and re-attaching of the server stdin to go back to the main server
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     const FILE_DELIMITER: &[u8] = b"<|END_OF_FILE|>";
-    const PORT: u16 = 8082;
+    let config_local_url = get_env_var_or_arg("LOCALURL", Some(StaticLocalUrl));
 
-    let listener = TcpListener::bind(format!("0.0.0.0:{}", PORT)).await?;
+    //const PORT: u16 = 8082;
+    //let listener = TcpListener::bind(format!("0.0.0.0:{}", PORT)).await?;
+    let listener = TcpListener::bind(config_local_url).await?;
     println!("Listening on {}", PORT);
 
     let shared_stdin: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
@@ -987,6 +972,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 }
 
+// Handles either commands or console output, should eventually be replaced by handle_commands_with_metadata
+// and eventually there should be out_tx added to it. The commands are mainly related to server management, like deleting the server, (delete the files)
+// stopping it (TODO: stop isnt the universal keyword to stop all servers, fix that and make it depend on the provider)
+// console output is forwarded directly to the server process via channel
 async fn handle_command_or_console(
     arc_state: &Arc<AppState>,
     payload: &MessagePayload,
@@ -1152,20 +1141,8 @@ async fn handle_command_or_console(
     }
 }
 
-async fn handle_server_crash(state: &Arc<AppState>) {
-    println!("Server crash detected, cleaning up state...");
 
-    let mut server_running = state.server_running.lock().await;
-    *server_running = false;
-
-    let mut server_process = state.server_process.lock().await;
-    *server_process = None;
-
-    let mut output_tx = state.server_output_tx.lock().await;
-    *output_tx = None;
-
-    println!("Server state reset after crash");
-}
+// TODO: this was for debugging, remove this
 async fn debug_dump_state(state: &Arc<AppState>, label: &str) {
     // let server_running = state.server_running.lock().await;
     // let output_tx_lock = state.server_output_tx.lock().await;
@@ -1181,6 +1158,8 @@ async fn debug_dump_state(state: &Arc<AppState>, label: &str) {
     //     println!("  - broadcast receiver_count: {}", tx.receiver_count());
     // }
 }
+
+// starts the server with the channel (broadcast) in which it will receive and send out commands (for the server, not server management commands)
 async fn start_server_with_broadcast(
     state: &Arc<AppState>,
     shared_stdin: &Arc<Mutex<Option<ChildStdin>>>,
@@ -1323,6 +1302,9 @@ async fn start_server_with_broadcast(
     Ok(())
 }
 
+// Dedicated function for stopping the server, There was already have something like this in a match statement but this function is mroe recent and handles the process, in the 
+// match statement I should invoke this function instead of having its own logic in the match statement
+// TODO: do the above
 async fn stop_server(
     state: &Arc<AppState>,
     shared_stdin: &Arc<Mutex<Option<ChildStdin>>>,
@@ -1362,6 +1344,12 @@ async fn stop_server(
     Ok(())
 }
 
+// Handles the file requests via easy match statement, easy for if i need it for another aspect of the whole gameserver stack
+// Metadata just gives the metadata from a individual file
+// PathFromTag will take a tag, usually coorosponding to a servers name or unique identifier, and return a path, 
+// as at some point it would be benifical if gameserver-rs could run 
+// servers from some nested directory so you dont need to migrate server files, delete it, then migrate newer server files 
+// or recreate it
 async fn handle_file_request(state: &Arc<AppState>, request: FileRequestMessage) -> String {
     match request.payload {
         FileRequestPayload::Metadata { path } => match get_metadata(&path).await {
@@ -1425,6 +1413,8 @@ async fn handle_file_request(state: &Arc<AppState>, request: FileRequestMessage)
     }
 }
 
+// this is a function which will look for a small slice (needle) in a bigger slice (haystack)
+// if it finds it, it will return where it starts, otherwise returns None
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || haystack.len() < needle.len() {
         return None;
@@ -1434,6 +1424,8 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .windows(needle.len())
         .position(|window| window == needle)
 }
+
+// this function takes a tcp stream and forwards the data from that to the sender it returns, used a few times
 pub async fn tcp_to_writer(stream: TcpStream) -> mpsc::Sender<Vec<u8>> {
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(1024);
 
@@ -1451,16 +1443,16 @@ pub async fn tcp_to_writer(stream: TcpStream) -> mpsc::Sender<Vec<u8>> {
                 Ok(()) => {
                     total_bytes_written += msg_len as u64;
 
-                    if message_count % 1000 == 0 || total_bytes_written % 10_000_000 == 0 {
-                        println!(
-                            "[tcp_to_writer] Wrote {} messages, {} total bytes",
-                            message_count, total_bytes_written
-                        );
-                    }
+                    // if message_count % 1000 == 0 || total_bytes_written % 10_000_000 == 0 {
+                    //     println!(
+                    //         "[tcp_to_writer] Wrote {} messages, {} total bytes",
+                    //         message_count, total_bytes_written
+                    //     );
+                    // }
                 }
                 Err(e) => {
-                    eprintln!("[tcp_to_writer] Failed to write message {} ({} bytes) to socket after {} total bytes: {}", 
-                            message_count, msg_len, total_bytes_written, e);
+                    // eprintln!("[tcp_to_writer] Failed to write message {} ({} bytes) to socket after {} total bytes: {}", 
+                    //         message_count, msg_len, total_bytes_written, e);
                     break;
                 }
             }
@@ -1486,6 +1478,7 @@ pub async fn tcp_to_writer(stream: TcpStream) -> mpsc::Sender<Vec<u8>> {
     tx
 }
 
+// 
 async fn handle_commands_with_metadata(
     state: Arc<AppState>,
     payload: &IncomingMessageWithMetadata,

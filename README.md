@@ -19,10 +19,11 @@ $ git clone https://github.com/SpiderUnderUrBed/gameserver-rs.git
 $ cd gameserver-rs
 $ kubectl apply -f .
 $ cd src/gameserver 
-(install npm if you have not already)
-$ npm install . 
-$ npm build
 ```
+EDIT:
+You no longer need to run npm install and build when setting it up
+(Fixed in moving the npm install in the Dockerfile)
+
 Thats it!
 **If you want a single deployment which would pull the image from dockerhub, it is not avalible at the moment**, which is why you have to use the registry, I plan on uploading it as soon as this project gains a tiny bit of traction
 
