@@ -15,14 +15,18 @@ use std::{
         Arc,
     },
 };
+use tokio::fs;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncSeekExt;
 use tokio::io::AsyncWriteExt;
+use tokio::fs::OpenOptions;
 use tokio::sync::broadcast;
 use tokio::time::timeout;
 
 use tokio::sync::mpsc;
+
+use std::io::SeekFrom;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(tag = "kind", content = "data")]
@@ -77,6 +81,10 @@ pub struct FileRequestMessage {
     payload: FileRequestPayload,
 }
 
+
+// FileChunk represents a portion of a file, with file name 
+// ensuring its written to the write file, offsets and size to make sure it doesnt already cover content written to a file
+// and size for defining when the size of the buffer, to ensure nothing unexpected happens (might be used to help determine when the chunk is done)
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct FileChunk {
     pub(crate) file_name: String,
@@ -1071,4 +1079,138 @@ impl RemoteFileSystem<TcpFs> {
 
         Ok(result)
     }
+}
+
+
+pub async fn get_metadata(path: &str) -> std::io::Result<FsMetadata> {
+    let metadata = fs::metadata(path).await?;
+    let canonical = fs::canonicalize(path).await?;
+
+    let optional_folder_children = if metadata.is_dir() {
+        let mut count = 0;
+        let mut dir = fs::read_dir(path).await?;
+        while let Some(entry) = dir.next_entry().await? {
+            count += 1;
+        }
+        Some(count)
+    } else {
+        None
+    };
+
+    Ok(FsMetadata {
+        is_file: metadata.is_file(),
+        is_dir: metadata.is_dir(),
+        optional_folder_children,
+        canonical_path: canonical.to_string_lossy().to_string(),
+    })
+}
+
+pub async fn list_directory_with_range(
+    path: &str,
+    start: Option<u64>,
+    end: Option<u64>,
+) -> std::io::Result<Vec<FsEntry>> {
+    let mut entries = Vec::new();
+    let mut dir = fs::read_dir(path).await?;
+
+    let start_idx = start.unwrap_or(0);
+    let mut current_idx = 0u64;
+
+    while let Some(entry) = dir.next_entry().await? {
+        if current_idx < start_idx {
+            current_idx += 1;
+            continue;
+        }
+
+        if let Some(end_idx) = end {
+            if current_idx >= end_idx {
+                break;
+            }
+        }
+
+        let metadata = entry.metadata().await?;
+        entries.push(FsEntry {
+            name: entry.file_name().to_string_lossy().to_string(),
+            is_file: metadata.is_file(),
+            is_dir: metadata.is_dir(),
+        });
+
+        current_idx += 1;
+    }
+
+    Ok(entries)
+}
+
+pub async fn list_directory(path: &str) -> std::io::Result<Vec<FsEntry>> {
+    list_directory_with_range(path, None, None).await
+}
+pub async fn get_files_content(file_chunk: FileChunk) -> std::io::Result<MessagePayload> {
+    let metadata = fs::metadata(&file_chunk.file_name).await?;
+
+    if metadata.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("Path is a directory: {}", file_chunk.file_name),
+        ));
+    }
+
+    let mut file = File::open(&file_chunk.file_name).await?;
+    let offset: u64 = file_chunk
+        .file_chunk_offet
+        .parse()
+        .expect("Invalid file offset");
+
+    file.seek(SeekFrom::Start(offset.try_into().unwrap()))
+        .await?;
+    let chunk_size: usize = file_chunk
+        .file_chunk_size
+        .parse()
+        .expect("Invalid chunk size");
+
+    let mut buffer = vec![0; chunk_size];
+    let bytes_read = file.read(&mut buffer).await?;
+    let content = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+
+    Ok(MessagePayload {
+        r#type: "file_content".to_string(),
+        message: content,
+        authcode: "0".to_string(),
+    })
+}
+
+pub async fn handle_multipart_message(
+    payload: &MessagePayload,
+    current_file: &mut Option<File>,
+) -> std::io::Result<()> {
+    match payload.r#type.as_str() {
+        "start_file" => {
+            let file_name = format!("server/{}", payload.message);
+            tokio::fs::create_dir_all("server").await?;
+            let file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .open(&file_name)
+                .await?;
+            *current_file = Some(file);
+            println!(
+                "[handle_multipart_message] Started writing file: {}",
+                file_name
+            );
+        }
+        "end_file" => {
+            if let Some(mut file) = current_file.take() {
+                file.flush().await?;
+                println!(
+                    "[handle_multipart_message] Finished writing file: {}",
+                    payload.message
+                );
+            } else {
+                eprintln!(
+                    "[handle_multipart_message] end_file received but no file is currently open"
+                );
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }

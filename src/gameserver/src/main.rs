@@ -18,7 +18,12 @@ use tokio::sync::{mpsc, Mutex};
 use crate::broadcast::Sender;
 use crate::filesystem::cleanup_end_file_markers;
 use crate::filesystem::send_folder_over_broadcast;
+use crate::filesystem::list_directory;
+use crate::filesystem::get_metadata;
+use crate::filesystem::list_directory_with_range;
+use crate::filesystem::get_files_content;
 use crate::filesystem::BasicPath;
+use crate::filesystem::FileChunk;
 
 use crate::providers::Custom;
 use crate::providers::Minecraft;
@@ -34,13 +39,23 @@ use uuid::Uuid;
 use std::net::SocketAddr;
 use tokio::sync::broadcast;
 
+// I use the same code as in the main server
+// with a few diffrences in stuff like filesystem
 mod extra;
 mod filesystem;
 mod providers;
 
-const ENABLE_BROADCAST_LOGS: bool = true;
+// const ENABLE_BROADCAST_LOGS: bool = true;
+
+// Server directory as in the one at the root of this project (../server)
+// all server files are sandboxed in there including nested server directories
+// by default its set to well, server, and changing this means that it will look for a diffrent directory at the root
+// for server files
 const SERVER_DIR: &str = "server";
 
+// Old, at some point move to IncomingMessageWithMetadata
+// a struct for basic message sending between a node and the main server
+// IncomingMessageWithMetadata and IncomingMessage should be renamed to something that makes sense
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 struct IncomingMessage {
     message: String,
@@ -49,6 +64,8 @@ struct IncomingMessage {
     authcode: String,
 }
 
+// newer version of IncomingMessage, mainly because this includes the metadata feild which i sometimes use
+// IncomingMessageWithMetadata and IncomingMessage should be renamed to something that makes sense
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct IncomingMessageWithMetadata {
     message: String,
@@ -58,6 +75,8 @@ struct IncomingMessageWithMetadata {
     authcode: String,
 }
 
+// Metadata types, currently i primarially use it to transmit server data
+// but it can be not set or set as a string too, there will probably be more metadata types in the future
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(tag = "kind", content = "data")]
 enum MetadataTypes {
@@ -71,6 +90,8 @@ enum MetadataTypes {
     String(String),
 }
 
+// a struct primarially used for node migration, as in, moving the server files
+// but will probably used to all sorts of transfers in the future
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 struct SrcAndDest {
     src: ApiCalls,
@@ -78,6 +99,11 @@ struct SrcAndDest {
     metadata: String,
 }
 
+// NodeStatus
+// as in, if servers can be manually or automatically sceduled to it
+// which depends if its avalible, or several other factors which will affect how the node can scedule 
+// servers, immutable varients represent kubernetes nodes, which cant just be removed as of now, 
+// because it doesnt seem to make much sense to hide it in a cluster
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq)]
 #[serde(tag = "kind", content = "data")]
 pub enum NodeStatus {
@@ -87,6 +113,10 @@ pub enum NodeStatus {
     ImmutablyDisabled,
 }
 
+// NodeTypes, this might be unnessesary, but for now its useful to represent nodes like the one the 
+// server will try connecting to initially, and key nodes which the user doesnt define but is picked up 
+// for better usability, custom is what the user creates manually and at some point, it might be added where the 
+// user can disable their custom ones or detected ones
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq)]
 #[serde(tag = "kind", content = "data")]
 pub enum NodeType {
@@ -94,6 +124,8 @@ pub enum NodeType {
     Main,
 }
 
+// A simple node, the only reason this is in this node is mainly for server migrations, nodename and ip is the feilds currently
+// used but i keep the other ones for consistency
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Node {
     pub nodename: String,
@@ -102,11 +134,13 @@ pub struct Node {
     pub nodestatus: NodeStatus,
 }
 
+// A list will contain stuff like a list of files, resources, capabilities, or things of that nature
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct List {
     list: Vec<String>,
 }
 
+// This is even older than IncomingMessage, and should be phased out soon
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 struct MessagePayload {
     r#type: String,
@@ -114,6 +148,9 @@ struct MessagePayload {
     authcode: String,
 }
 
+// ApiCalls represent some common types so I can keep track of them, its not used them much
+// and might be worth phasing out in the future, its definitately used in the main server for mixed data types and sending 
+// them over a common interface
 #[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
 #[serde(tag = "kind", content = "data")]
 enum ApiCalls {
@@ -124,6 +161,8 @@ enum ApiCalls {
     Node(Node),
 }
 
+// I tried to convert from a Value, as in undefined data type, to a List, as its a data type created only 
+// here and its used sometimes, maybe it would be better to just do the conversion when its needed
 impl TryFrom<Value> for List {
     type Error = &'static str;
 
@@ -143,18 +182,24 @@ impl TryFrom<Value> for List {
     }
 }
 
+// These port defaults are diffrence based on feature as i typically do not run full-stack
+// when im testing on bare metal, where the ports have to be diffrent to not conflict 
 #[cfg(feature = "full-stack")]
 static PORT: &str = "8080";
 
 #[cfg(not(feature = "full-stack"))]
 static PORT: &str = "8082";
 
+// the server state, currently only holds keywords for what messages to look for when declaring the server as started or stopped
+// might be phased out in favor of determining whether or not the process is running or not
 #[derive(serde::Serialize)]
 struct GetState {
     start_keyword: String,
     stop_keyword: String,
 }
 
+// runs a command and forwards the output of the command to the given channel, which in this case would be back to 
+// the main server
 async fn run_command_live_output(
     state: &AppState,
     cmd: Command,
@@ -208,6 +253,8 @@ async fn run_command_live_output(
     Ok(())
 }
 
+// Custom metadata for file, not its actual metadata, as it might not be relevent for my file tree
+// sandboxing, and determining all of a folders children was listed
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct FsMetadata {
     pub is_file: bool,
@@ -216,6 +263,7 @@ pub struct FsMetadata {
     pub canonical_path: String,
 }
 
+// this is FsMetadata but simpler, should be phased out in favor of FsMetadata
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct FsEntry {
     pub name: String,
@@ -223,13 +271,9 @@ pub struct FsEntry {
     pub is_dir: bool,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-pub struct FileChunk {
-    file_name: String,
-    file_chunk_offet: String,
-    file_chunk_size: String,
-}
 
+// Due to certain instabillity when it comes to sending files and file content, id matching is required to 
+// make sure the correct data is matched to the correct file or operation
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 struct FileRequestMessage {
     id: u64,
@@ -237,6 +281,7 @@ struct FileRequestMessage {
     payload: FileRequestPayload,
 }
 
+// The types of file requests the server can make, easy to match and keep track of/consistent
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 #[serde(tag = "type", content = "data")]
 enum FileRequestPayload {
@@ -258,12 +303,19 @@ enum FileRequestPayload {
     FileChunk(FileChunk),
 }
 
+// Needs to be phased out, or just removed, everything now uses FileRequestPayload
 #[derive(serde::Serialize, serde::Deserialize)]
 struct FileResponseMessage {
     in_response_to: u64,
     data: serde_json::Value,
 }
 
+
+// There are two main read modes, Json for message processing and MigrationFile for file transfers, althought it should
+// be renamed to just file transfer, as it switches to this mode during a migration or from the file transfers from the server
+// the reason I seperated it is because of the fact that raw bytes are sent very quickly from a node or the main server
+// which can cause some weirdness if mixed with the json logic, and seperations of concerns
+// TODO: change the name from MigrationFile to something more represenative of the use cases
 enum ReadMode {
     Json,
     MigrationFile {
@@ -271,11 +323,14 @@ enum ReadMode {
         file_name: String,
         bytes_written: u64,
     },
-    NormalFile {
-        current_file: tokio::fs::File,
-    },
+    // NormalFile {
+    //     current_file: tokio::fs::File,
+    // },
 }
 
+// AppState for the Node, stores the name of the current server, the state of the process
+// whether or not its running, the channel for the output messages, and the process, makes it easier to pass and modify 
+// between functions
 #[derive(Clone)]
 struct AppState {
     current_server: String,
@@ -284,143 +339,14 @@ struct AppState {
     server_process: Arc<Mutex<Option<Child>>>,
 }
 
+// Will remove this, this was kept because at a time there was a issue with the channels reciving messages they sent, so
+// i made it ignore messages still in the wrapped, but this is no longer needed
+// TODO: remove this
 #[derive(serde::Serialize, serde::Deserialize)]
 struct OneTimeWrapper {
     data: Value,
 }
 
-async fn get_metadata(path: &str) -> io::Result<FsMetadata> {
-    let metadata = fs::metadata(path).await?;
-    let canonical = fs::canonicalize(path).await?;
-
-    let optional_folder_children = if metadata.is_dir() {
-        let mut count = 0;
-        let mut dir = fs::read_dir(path).await?;
-        while let Some(entry) = dir.next_entry().await? {
-            count += 1;
-        }
-        Some(count)
-    } else {
-        None
-    };
-
-    Ok(FsMetadata {
-        is_file: metadata.is_file(),
-        is_dir: metadata.is_dir(),
-        optional_folder_children,
-        canonical_path: canonical.to_string_lossy().to_string(),
-    })
-}
-
-async fn list_directory_with_range(
-    path: &str,
-    start: Option<u64>,
-    end: Option<u64>,
-) -> io::Result<Vec<FsEntry>> {
-    let mut entries = Vec::new();
-    let mut dir = fs::read_dir(path).await?;
-
-    let start_idx = start.unwrap_or(0);
-    let mut current_idx = 0u64;
-
-    while let Some(entry) = dir.next_entry().await? {
-        if current_idx < start_idx {
-            current_idx += 1;
-            continue;
-        }
-
-        if let Some(end_idx) = end {
-            if current_idx >= end_idx {
-                break;
-            }
-        }
-
-        let metadata = entry.metadata().await?;
-        entries.push(FsEntry {
-            name: entry.file_name().to_string_lossy().to_string(),
-            is_file: metadata.is_file(),
-            is_dir: metadata.is_dir(),
-        });
-
-        current_idx += 1;
-    }
-
-    Ok(entries)
-}
-
-async fn list_directory(path: &str) -> io::Result<Vec<FsEntry>> {
-    list_directory_with_range(path, None, None).await
-}
-pub async fn get_files_content(file_chunk: FileChunk) -> io::Result<MessagePayload> {
-    let metadata = fs::metadata(&file_chunk.file_name).await?;
-
-    if metadata.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Path is a directory: {}", file_chunk.file_name),
-        ));
-    }
-
-    let mut file = File::open(&file_chunk.file_name).await?;
-    let offset: u64 = file_chunk
-        .file_chunk_offet
-        .parse()
-        .expect("Invalid file offset");
-
-    file.seek(SeekFrom::Start(offset.try_into().unwrap()))
-        .await?;
-    let chunk_size: usize = file_chunk
-        .file_chunk_size
-        .parse()
-        .expect("Invalid chunk size");
-
-    let mut buffer = vec![0; chunk_size];
-    let bytes_read = file.read(&mut buffer).await?;
-    let content = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
-
-    Ok(MessagePayload {
-        r#type: "file_content".to_string(),
-        message: content,
-        authcode: "0".to_string(),
-    })
-}
-
-pub async fn handle_multipart_message(
-    payload: &MessagePayload,
-    current_file: &mut Option<File>,
-) -> std::io::Result<()> {
-    match payload.r#type.as_str() {
-        "start_file" => {
-            let file_name = format!("server/{}", payload.message);
-            tokio::fs::create_dir_all("server").await?;
-            let file = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .open(&file_name)
-                .await?;
-            *current_file = Some(file);
-            println!(
-                "[handle_multipart_message] Started writing file: {}",
-                file_name
-            );
-        }
-        "end_file" => {
-            if let Some(mut file) = current_file.take() {
-                file.flush().await?;
-                println!(
-                    "[handle_multipart_message] Finished writing file: {}",
-                    payload.message
-                );
-            } else {
-                eprintln!(
-                    "[handle_multipart_message] end_file received but no file is currently open"
-                );
-            }
-        }
-        _ => {}
-    }
-    Ok(())
-}
 
 pub async fn unsure_ip_or_port_tcp_conn(
     ip: Option<String>,
