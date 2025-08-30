@@ -5,6 +5,9 @@ class ServerConsole {
     this.historyContainer = document.querySelector(".console-history");
     this.toggablePages = document.getElementById("toggablePages");
 
+    // this.start_keyword = ""
+    // this.stop_keyword = ""
+
     this.globalWs = null;
     this.rawOutputEnabled = false;
     // this.reconnectAttempts = 0;
@@ -26,6 +29,7 @@ class ServerConsole {
     this.setStatuses();
     this.loadFileUpload();
 
+    window.updateStatus = () => this.updateStatus();  
     window.deleteServer = () => this.deleteServer();
     window.updateServer = () => this.updateServer();
     window.configureServer = () => this.configureServer();
@@ -771,7 +775,7 @@ async fetchNodes() {
       } else if (e.data == "down") {
         server_status.style.backgroundColor = "red";
       }
-      if (await) {
+      if (!await) {
         statusEvent.close();
       }
     };

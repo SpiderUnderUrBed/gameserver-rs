@@ -569,20 +569,35 @@ pub async fn handle_stream(
             //println!("{:#?}", final_data);
 
             for value in final_data.iter() {
+                //println!("{:#?}", value);
                 if let Ok(payload) = serde_json::from_value::<MessagePayload>(value.clone()) {
+                        //println!("{:#?}", payload);
                         if payload.message == "end_conn" {
                             println!("Ending current connection");
                             return Ok(true);
+                        } else if payload.r#type == "server_state" {
+                            //println!("Got server state");
+                            let mut state_guard = arc_state.write().await;
+                            let sent_status = payload.message.parse().unwrap_or(false);
+                            state_guard.current_node.status = match sent_status {
+                                true => Status::Up,
+                                false => Status::Down,
+                            }
                         }
                 }
-                if let Ok(data_clone) = serde_json::from_value::<ConsoleData>(value.clone()) {
+            if let Ok(data_clone) = serde_json::from_value::<ConsoleData>(value.clone()) {
+               // println!("{:#?}", data_clone);
+                if let Ok(inner_value) = serde_json::from_str::<serde_json::Value>(&data_clone.data) {
+                   // println!("{:#?}", inner_value);
                     if let (Some(start_kw), Some(stop_kw)) = (
-                        value.get("start_keyword").and_then(|v| v.as_str()),
-                        value.get("stop_keyword").and_then(|v| v.as_str()),
+                        inner_value.get("start_keyword").and_then(|v| v.as_str()),
+                        inner_value.get("stop_keyword").and_then(|v| v.as_str()),
                     ) {
+                        println!("Changing keyword {} {}", start_kw.to_string().clone(), stop_kw.to_string().clone());
                         *server_start_keyword = start_kw.to_string();
                         *server_stop_keyword = stop_kw.to_string();
                     }
+                }
 
                     if data_clone.data.contains("\"type\":\"command\"") {
                         if let Ok(inner_msg) = serde_json::from_str::<MessagePayload>(&data_clone.data) {
@@ -1701,6 +1716,30 @@ async fn change_node(
                 ip: node.ip, 
                 ..Default::default()
             };
+            let termination_payload = MessagePayload {
+                r#type: "conn_state".to_string(),
+                message: "end_conn".to_string(),
+                authcode: "0".to_string()
+            };
+            let node_state_payload = MessagePayload {
+                r#type: "command".to_string(),
+                message: "server_state".to_string(),
+                authcode: "0".to_string()
+            };
+            if let Ok(node_state_json) = serde_json::to_string(&node_state_payload) {
+                let node_state_bytes = node_state_json.into_bytes();
+                if let Some(unwrapped_internal_stream) = &state.internal_tx {
+                    if let Err(e) = unwrapped_internal_stream.send(node_state_bytes) {
+                        eprintln!("Failed to send termination signal: {}", e);
+                    } else {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                    }
+                } else {
+                    println!("No stream found");
+                }
+            } else {
+                println!("Failed sending termination with parse");
+            }
         }
         Ok(StatusCode::OK)
     } else {

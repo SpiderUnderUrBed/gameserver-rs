@@ -156,6 +156,7 @@ struct GetState {
 }
 
 async fn run_command_live_output(
+    state: &AppState,
     cmd: Command,
     label: String,
     sender: Option<mpsc::Sender<String>>,
@@ -518,7 +519,6 @@ pub async fn handle_incoming(mut conn: tokio::net::TcpStream) -> anyhow::Result<
 
     Ok(())
 }
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     const FILE_DELIMITER: &[u8] = b"<|END_OF_FILE|>";
@@ -783,7 +783,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 }
 
                                 let line_str = String::from_utf8_lossy(line);
-                                //println!("{:#?}", line_str);
 
                                 if line_str.trim() == "<|END_OF_FILE|>" {
                                     if newline_pos + 1 <= read_buf.len() {
@@ -849,7 +848,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                 addr, msg_payload.message
                                             );
                                             handle_commands_with_metadata(
-                                                &Arc::clone(&arc_state_clone),
+                                                arc_state_clone.clone(),
                                                 &msg_payload,
                                                 &cmd_tx,
                                                 &stdin_ref,
@@ -973,6 +972,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                         handle_command_or_console(
                                                             &Arc::clone(&arc_state_clone),
                                                             &msg_payload,
+                                                            &out_tx,
                                                             &cmd_tx,
                                                             &stdin_ref,
                                                             &hostname_ref,
@@ -984,6 +984,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                     handle_command_or_console(
                                                         &Arc::clone(&arc_state_clone),
                                                         &msg_payload,
+                                                        &out_tx,
                                                         &cmd_tx,
                                                         &stdin_ref,
                                                         &hostname_ref,
@@ -1057,6 +1058,171 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 }
             }
         });
+    }
+}
+
+async fn handle_command_or_console(
+    arc_state: &Arc<AppState>,
+    payload: &MessagePayload,
+    out_tx: &mpsc::Sender<String>,
+    cmd_tx: &mpsc::Sender<String>,
+    stdin_ref: &Arc<Mutex<Option<ChildStdin>>>,
+    hostname: &Arc<Result<OsString, String>>,
+) {
+    let typ = payload.r#type.clone();
+    let state = Arc::clone(arc_state);
+    if typ == "command" {
+        let cmd_str = payload.message.clone();
+        match cmd_str.as_str() {
+            "delete_server" => {
+                let mut path = get_definite_path_from_tag(
+                    &state,
+                    get_provider_from_servername(&state, state.current_server.clone()).await,
+                )
+                .await;
+
+                if !path.starts_with("server/") {
+                    path = format!("server/{}", path);
+                }
+                if let Err(errro) = fs::remove_dir_all(&path).await {
+                    eprintln!("Failed to delete directory {}: {}", path, errro);
+                } else {
+                    if let Err(errro) = fs::create_dir(&path).await {
+                        eprintln!("Failed to recreate directory {}: {}", path, errro);
+                    } else {
+                        println!("Successfully cleared directory: {}", path);
+                    }
+                }
+            }
+            "server_state" => {
+                //println!("Sending back state");
+                let status = &state.server_running.lock().await;
+                //println!("{:#?}", status);
+                let status_message = MessagePayload {
+                    r#type: "server_state".to_string(),
+                    message: status.to_string(),
+                    authcode: "0".to_string(),
+                };
+                //println!("{:#?}", status_message);
+                let json_str = serde_json::to_string(&status_message).unwrap();
+                out_tx.send(json_str).await;
+            },
+            "stop_server" => {
+                if let Some(prov) = get_provider(
+                    &get_provider_from_servername(&state, state.current_server.clone()).await,
+                    &get_definite_path_from_tag(
+                        &state,
+                        get_provider_from_servername(&state, state.current_server.clone()).await,
+                    )
+                    .await,
+                ) {
+                    let input = "stop";
+                    let mut guard = stdin_ref.lock().await;
+                    if let Some(stdin) = guard.as_mut() {
+                        let _ = stdin.write_all(format!("{}\n", input).as_bytes()).await;
+                        let _ = stdin.flush().await;
+                        let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
+                    }
+                }
+            }
+            "start_server" => {
+                {
+                    let stdin_guard = stdin_ref.lock().await;
+                    if stdin_guard.is_some() {
+                        let _ = cmd_tx
+                            .send("Server is already running. Use 'stop_server' first.".into())
+                            .await;
+                        return;
+                    }
+                }
+
+                if let Some(prov) = get_provider(
+                    &get_provider_from_servername(&state, state.current_server.clone()).await,
+                    &get_definite_path_from_tag(
+                        &state,
+                        get_provider_from_servername(&state, state.current_server.clone()).await,
+                    )
+                    .await,
+                ) {
+                    if let Some(cmd) = prov.start() {
+                        let tx = cmd_tx.clone();
+                        let stdin_clone = stdin_ref.clone();
+
+                        tokio::spawn(async move {
+                            let result = run_command_live_output(
+                                &state,
+                                cmd,
+                                "Server".into(),
+                                Some(tx.clone()),
+                                Some(stdin_clone.clone()),
+                            )
+                            .await;
+                            {
+                                let mut stdin_guard = stdin_clone.lock().await;
+                                *stdin_guard = None;
+                            }
+
+                            match result {
+                                Ok(_) => {
+                                    let _ = tx.send("Server process ended".into()).await;
+                                }
+                                Err(e) => {
+                                    let _ = tx.send(format!("Server process failed: {}", e)).await;
+                                }
+                            }
+                        });
+
+                        let _ = cmd_tx.send("Server started".into()).await;
+                    } else {
+                        let _ = cmd_tx
+                            .send("No start command available for this provider".into())
+                            .await;
+                    }
+                } else {
+                    let _ = cmd_tx
+                        .send("Failed to get provider for server".into())
+                        .await;
+                }
+            }
+            "server_data" => {
+                let _ = cmd_tx
+                    .send(
+                        serde_json::to_string(&GetState {
+                            start_keyword: "help".to_string(),
+                            stop_keyword: "All dimensions are saved".to_string(),
+                        })
+                        .unwrap(),
+                    )
+                    .await;
+            }
+            "server_name" => {
+                let hostname_str = match hostname.as_ref() {
+                    Ok(os) => os.to_string_lossy().to_string(),
+                    Err(e) => e.clone(),
+                };
+                let _ = cmd_tx
+                    .send(
+                        serde_json::to_string(&MessagePayload {
+                            r#type: "command".to_string(),
+                            message: hostname_str,
+                            authcode: "0".to_string(),
+                        })
+                        .unwrap(),
+                    )
+                    .await;
+            }
+            other => {
+                let _ = cmd_tx.send(format!("Unknown command: {}", other)).await;
+            }
+        }
+    } else if typ == "console" {
+        let input = payload.message.clone();
+        let mut guard = stdin_ref.lock().await;
+        if let Some(stdin) = guard.as_mut() {
+            let _ = stdin.write_all(format!("{}\n", input).as_bytes()).await;
+            let _ = stdin.flush().await;
+            let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
+        }
     }
 }
 
@@ -1395,7 +1561,7 @@ pub async fn tcp_to_writer(stream: TcpStream) -> mpsc::Sender<Vec<u8>> {
 }
 
 async fn handle_commands_with_metadata(
-    state: &AppState,
+    state: Arc<AppState>,
     payload: &IncomingMessageWithMetadata,
     cmd_tx: &mpsc::Sender<String>,
     stdin_ref: &Arc<Mutex<Option<ChildStdin>>>,
@@ -1416,7 +1582,7 @@ async fn handle_commands_with_metadata(
                     if let Some(prov) = get_provider(
                         providertype,
                         &get_definite_path_from_tag(
-                            state,
+                            &state,
                             get_provider_from_servername(&state, state.current_server.clone())
                                 .await,
                         )
@@ -1424,6 +1590,7 @@ async fn handle_commands_with_metadata(
                     ) {
                         if let Some(cmd) = prov.pre_hook() {
                             run_command_live_output(
+                                &state,
                                 cmd,
                                 "Pre-hook".into(),
                                 Some(cmd_tx.clone()),
@@ -1434,6 +1601,7 @@ async fn handle_commands_with_metadata(
                         }
                         if let Some(cmd) = prov.install() {
                             run_command_live_output(
+                                &state,
                                 cmd,
                                 "Install".into(),
                                 Some(cmd_tx.clone()),
@@ -1444,6 +1612,7 @@ async fn handle_commands_with_metadata(
                         }
                         if let Some(cmd) = prov.post_hook() {
                             run_command_live_output(
+                                &state,
                                 cmd,
                                 "Post-hook".into(),
                                 Some(cmd_tx.clone()),
@@ -1457,6 +1626,7 @@ async fn handle_commands_with_metadata(
                             let stdin_clone = stdin_ref.clone();
                             tokio::spawn(async move {
                                 run_command_live_output(
+                                    &state,
                                     cmd,
                                     "Server".into(),
                                     Some(tx),
@@ -1548,152 +1718,5 @@ async fn get_provider_from_servername(state: &AppState, servername: String) -> S
 async fn get_definite_path_from_tag(state: &AppState, tag: String) -> String {
     String::new()
 }
-async fn handle_command_or_console(
-    state: &AppState,
-    payload: &MessagePayload,
-    cmd_tx: &mpsc::Sender<String>,
-    stdin_ref: &Arc<Mutex<Option<ChildStdin>>>,
-    hostname: &Arc<Result<OsString, String>>,
-) {
-    let typ = payload.r#type.clone();
-    if typ == "command" {
-        let cmd_str = payload.message.clone();
-        match cmd_str.as_str() {
-            "delete_server" => {
-                let mut path = get_definite_path_from_tag(
-                    state,
-                    get_provider_from_servername(&state, state.current_server.clone()).await,
-                )
-                .await;
 
-                if !path.starts_with("server/") {
-                    path = format!("server/{}", path);
-                }
-                if let Err(errro) = fs::remove_dir_all(&path).await {
-                    eprintln!("Failed to delete directory {}: {}", path, errro);
-                } else {
-                    if let Err(errro) = fs::create_dir(&path).await {
-                        eprintln!("Failed to recreate directory {}: {}", path, errro);
-                    } else {
-                        println!("Successfully cleared directory: {}", path);
-                    }
-                }
-            }
-            "stop_server" => {
-                if let Some(prov) = get_provider(
-                    &get_provider_from_servername(&state, state.current_server.clone()).await,
-                    &get_definite_path_from_tag(
-                        state,
-                        get_provider_from_servername(&state, state.current_server.clone()).await,
-                    )
-                    .await,
-                ) {
-                    let input = "stop";
-                    let mut guard = stdin_ref.lock().await;
-                    if let Some(stdin) = guard.as_mut() {
-                        let _ = stdin.write_all(format!("{}\n", input).as_bytes()).await;
-                        let _ = stdin.flush().await;
-                        let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
-                    }
-                }
-            }
-            "start_server" => {
-                {
-                    let stdin_guard = stdin_ref.lock().await;
-                    if stdin_guard.is_some() {
-                        let _ = cmd_tx
-                            .send("Server is already running. Use 'stop_server' first.".into())
-                            .await;
-                        return;
-                    }
-                }
-
-                if let Some(prov) = get_provider(
-                    &get_provider_from_servername(&state, state.current_server.clone()).await,
-                    &get_definite_path_from_tag(
-                        state,
-                        get_provider_from_servername(&state, state.current_server.clone()).await,
-                    )
-                    .await,
-                ) {
-                    if let Some(cmd) = prov.start() {
-                        let tx = cmd_tx.clone();
-                        let stdin_clone = stdin_ref.clone();
-
-                        tokio::spawn(async move {
-                            let result = run_command_live_output(
-                                cmd,
-                                "Server".into(),
-                                Some(tx.clone()),
-                                Some(stdin_clone.clone()),
-                            )
-                            .await;
-                            {
-                                let mut stdin_guard = stdin_clone.lock().await;
-                                *stdin_guard = None;
-                            }
-
-                            match result {
-                                Ok(_) => {
-                                    let _ = tx.send("Server process ended".into()).await;
-                                }
-                                Err(e) => {
-                                    let _ = tx.send(format!("Server process failed: {}", e)).await;
-                                }
-                            }
-                        });
-
-                        let _ = cmd_tx.send("Server started".into()).await;
-                    } else {
-                        let _ = cmd_tx
-                            .send("No start command available for this provider".into())
-                            .await;
-                    }
-                } else {
-                    let _ = cmd_tx
-                        .send("Failed to get provider for server".into())
-                        .await;
-                }
-            }
-            "server_data" => {
-                let _ = cmd_tx
-                    .send(
-                        serde_json::to_string(&GetState {
-                            start_keyword: "help".to_string(),
-                            stop_keyword: "All dimensions are saved".to_string(),
-                        })
-                        .unwrap(),
-                    )
-                    .await;
-            }
-            "server_name" => {
-                let hostname_str = match hostname.as_ref() {
-                    Ok(os) => os.to_string_lossy().to_string(),
-                    Err(e) => e.clone(),
-                };
-                let _ = cmd_tx
-                    .send(
-                        serde_json::to_string(&MessagePayload {
-                            r#type: "command".to_string(),
-                            message: hostname_str,
-                            authcode: "0".to_string(),
-                        })
-                        .unwrap(),
-                    )
-                    .await;
-            }
-            other => {
-                let _ = cmd_tx.send(format!("Unknown command: {}", other)).await;
-            }
-        }
-    } else if typ == "console" {
-        let input = payload.message.clone();
-        let mut guard = stdin_ref.lock().await;
-        if let Some(stdin) = guard.as_mut() {
-            let _ = stdin.write_all(format!("{}\n", input).as_bytes()).await;
-            let _ = stdin.flush().await;
-            let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
-        }
-    }
-}
 
