@@ -12,6 +12,7 @@ if [ ! -d "gameserver-rs" ]; then
 fi
 
 cd gameserver-rs
+git checkout testing
 
 if ! command -v cargo &> /dev/null; then
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
@@ -36,12 +37,9 @@ if [ -d "src/svelte" ]; then
     cd ../..
 fi
 
-read -rp "Do you want to set a custom LOCALURL for $MAIN_SERVICE_NAME? [y/N]: " USE_LOCALURL_MAIN
-if [[ "$USE_LOCALURL_MAIN" =~ ^[Yy]$ ]]; then
-    read -rp "Enter LOCALURL value for $MAIN_SERVICE_NAME: " LOCALURL_MAIN
-else
-    LOCALURL_MAIN=""
-fi
+read -rp "Enter LOCALURL value for $MAIN_SERVICE_NAME (leave blank for none): " LOCALURL_MAIN
+read -rp "Enter TCPURL value for $MAIN_SERVICE_NAME (leave blank for none): " TCPURL_MAIN
+read -rp "Enter LOCALURL value for $NODE_SERVICE_NAME (leave blank for none): " LOCALURL_NODE
 
 cargo build --release
 
@@ -61,6 +59,9 @@ EOF
 if [ -n "$LOCALURL_MAIN" ]; then
     echo "Environment=\"LOCALURL=$LOCALURL_MAIN\"" >> "$MAIN_SERVICE_FILE"
 fi
+if [ -n "$TCPURL_MAIN" ]; then
+    echo "Environment=\"TCPURL=$TCPURL_MAIN\"" >> "$MAIN_SERVICE_FILE"
+fi
 
 echo "[Install]
 WantedBy=multi-user.target" >> "$MAIN_SERVICE_FILE"
@@ -70,16 +71,6 @@ sudo systemctl daemon-reload
 sudo systemctl enable "$MAIN_SERVICE_NAME.service"
 sudo systemctl restart "$MAIN_SERVICE_NAME.service"
 rm "$MAIN_SERVICE_FILE"
-
-cd src/gameserver
-read -rp "Do you want to set a custom LOCALURL for $NODE_SERVICE_NAME? [y/N]: " USE_LOCALURL_NODE
-if [[ "$USE_LOCALURL_NODE" =~ ^[Yy]$ ]]; then
-    read -rp "Enter LOCALURL value for $NODE_SERVICE_NAME: " LOCALURL_NODE
-else
-    LOCALURL_NODE=""
-fi
-
-cargo build --release
 
 NODE_SERVICE_FILE=$(mktemp)
 cat <<EOF > "$NODE_SERVICE_FILE"
