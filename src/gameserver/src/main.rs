@@ -187,7 +187,7 @@ impl TryFrom<Value> for List {
 #[cfg(feature = "full-stack")]
 static StaticLocalUrl: &str = "0.0.0.0:8080";
 
-#[cfg(feature = "full-stack")]
+#[cfg(not(feature = "full-stack"))]
 static StaticLocalUrl: &str = "0.0.0.0:8082";
 
 // #[cfg(feature = "full-stack")]
@@ -431,12 +431,12 @@ fn get_env_var_or_arg<T: std::str::FromStr>(env_var: &str, arg: Option<T>) -> Op
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     const FILE_DELIMITER: &[u8] = b"<|END_OF_FILE|>";
-    let config_local_url = get_env_var_or_arg("LOCALURL", Some(StaticLocalUrl));
+    let config_local_url = get_env_var_or_arg("LOCALURL", Some(StaticLocalUrl.to_string()));
 
     //const PORT: u16 = 8082;
     //let listener = TcpListener::bind(format!("0.0.0.0:{}", PORT)).await?;
-    let listener = TcpListener::bind(config_local_url).await?;
-    println!("Listening on {}", PORT);
+    let listener = TcpListener::bind(config_local_url.clone().unwrap()).await?;
+    println!("Listening on {}", config_local_url.unwrap());
 
     let shared_stdin: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
     let hostname_ref: Arc<Result<OsString, String>> = Arc::new(match hostname::get() {
