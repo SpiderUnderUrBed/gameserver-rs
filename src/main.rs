@@ -823,8 +823,12 @@ async fn try_initial_connection(
     }
 }
 
-fn get_env_var_or_arg<T: std::str::FromStr>(env_var: &str, arg: Option<T>) -> Option<T> {
+fn get_arg_or_env_var<T: std::str::FromStr>(env_var: &str, arg: Option<T>) -> Option<T> {
     arg.or_else(|| env::var(env_var).ok().and_then(|s| s.parse().ok()))
+}
+
+fn get_env_var_or_arg<T: std::str::FromStr>(env_var: &str, default: Option<T>) -> Option<T> {
+    env::var(env_var).ok().and_then(|s| s.parse().ok()).or(default)
 }
 
 // fn get_env_var_or_required_arg<T: std::str::FromStr>(env_var: &str, arg: Option<T>, field_name: &str) -> T {
