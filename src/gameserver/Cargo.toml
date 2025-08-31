@@ -21,7 +21,7 @@ futures = "0.3.31"
 env = "1.0.1"
 
 [[bin]]
-name = "myapp"
+name = "gameserver-rs-node"
 path = "src/main.rs"
 
 [target.x86_64-unknown-linux-musl]

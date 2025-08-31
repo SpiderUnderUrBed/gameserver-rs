@@ -54,3 +54,7 @@ full-stack = [
     "serde_yaml",
     "sqlx"
 ]
+
+[[bin]]
+name = "gameserver-rs"
+path = "src/main.rs"
