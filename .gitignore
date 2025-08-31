@@ -1,5 +1,9 @@
+
+.direnv/
+
 /target
 /src/gameserver/target
+
 app.tar.gz
 /src/gameserver/server/*
 /src/credentials.json

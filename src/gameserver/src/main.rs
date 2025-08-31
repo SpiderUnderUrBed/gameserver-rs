@@ -420,10 +420,11 @@ pub async fn tcp_to_broadcast(stream: TcpStream) -> Sender<Vec<u8>> {
     tx
 }
 
-fn get_arg_or_env_var<T: std::str::FromStr>(env_var: &str, arg: Option<T>) -> Option<T> {
-    arg.or_else(|| env::var(env_var).ok().and_then(|s| s.parse().ok()))
-}
+// fn get_arg_or_env_var<T: std::str::FromStr>(env_var: &str, arg: Option<T>) -> Option<T> {
+//     arg.or_else(|| env::var(env_var).ok().and_then(|s| s.parse().ok()))
+// }
 
+// Looks for a env varible, if its not found, try the specified default, if none is found it will use the default of whatever that type is
 fn get_env_var_or_arg<T: std::str::FromStr>(env_var: &str, default: Option<T>) -> Option<T> {
     env::var(env_var).ok().and_then(|s| s.parse().ok()).or(default)
 }
@@ -1482,7 +1483,9 @@ pub async fn tcp_to_writer(stream: TcpStream) -> mpsc::Sender<Vec<u8>> {
     tx
 }
 
-// 
+// More modern version of handle_command_or_console, except currently it only handles commands, mainly this is used to the singular command which requires a 
+// metadata feild (server data), to create a server
+// TODO: eventually replace handle_command_or_console with this
 async fn handle_commands_with_metadata(
     state: Arc<AppState>,
     payload: &IncomingMessageWithMetadata,
@@ -1567,6 +1570,10 @@ async fn handle_commands_with_metadata(
         }
     }
 }
+
+// Gets a provider out of a handpicked list of gameservers, including custom, at some point needs to be massively re-worked as
+// it might be a bit messy having this is my rust code, the majority of the code and types are in provider.rs and it just relies on 
+// structs I created changing into this provider types, which is one of the few reasons why a better system is needed, it also takes a path to put the files in (not implimented yet)
 fn get_provider(name: &str, pre_path: &str) -> Option<ProviderType> {
     let mut path = pre_path.to_string();
     if !path.starts_with("server/") {
@@ -1635,9 +1642,15 @@ fn get_provider(name: &str, pre_path: &str) -> Option<ProviderType> {
     }
 }
 
+// Needs to be implimented, provider and servername should not forever remain the same thing and 
+// a index needs to be kept about what provider matches to which server, the code already store the data 
+// but at some point i need to decouple the two
 async fn get_provider_from_servername(state: &AppState, servername: String) -> String {
     servername
 }
+
+// paths are tagged, this is for nested servers within the server directory, so you can have the files of multiple servers in one node, and the string returned is added to the path 
+// that create server or anything about the server before the process is created or after the process finishes needs to know
 async fn get_definite_path_from_tag(state: &AppState, tag: String) -> String {
     String::new()
 }
