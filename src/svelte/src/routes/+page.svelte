@@ -115,19 +115,19 @@
       color: white;
     } */
     .header-white {
-      background-color: white;
+      background-color: orange;
       color: black; 
     }
     .header-black {
-      background-color: black;
+      background-color: orange;
       color: white;
     }
     .secondary-header-white {
-      background-color: white;
+      background-color: orange;
       color: black; 
     }
     .secondary-header-black {
-      background-color: black;
+      background-color: orange;
       color: white;
     }
     .general-buttons-white {
@@ -154,35 +154,59 @@
       background-color: black;
       color: white;
     } 
+    .center {
+      width: 100svw;
+      display: flex;
+      justify-content: center;
+    }
+    .orange-banner {
+      background-color: orange;
+      width: 100svw;
+      display: flex;
+      justify-content: center;
+    }
   </style>
-  
-  <h1 class="header-{colorState === "WHITE" ? "white" : "black"}">Welcome to My Page</h1>
-  
-  <p>{siteUrl ? `Base Path: ${siteUrl}` : ''}</p>
-  
-  <div class="login">
-    <h4 class="secondary-header-{colorState === "WHITE" ? "white" : "black"}">Login:</h4>
-    <input class="user-login-{colorState === "WHITE" ? "white" : "black"}" type="text" bind:value={username} placeholder="Username" />
-    <input class="user-password-{colorState === "WHITE" ? "white" : "black"}" type="password" bind:value={password} placeholder="Password" />
-    <div>
-      <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}">Signup</button>
-      <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}" on:click={login}>Login</button>
+
+  <div class="center">
+    <div class="orange-banner">
+      <h1 class="header-{colorState === "WHITE" ? "white" : "black"}">Welcome to Gameserver-rs</h1>
     </div>
   </div>
+
+  <p>{siteUrl ? `Base Path: ${siteUrl}` : ''}</p>
   
-  <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}" on:click={goToMainPage}>Go to main page</button>
-  <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}" on:click={toggleColor}>Toggle {colorState}</button>
-  <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}" on:click={toggleDeveloper}>Developer Work</button>
-  
-  {#if showDeveloper}
-    <div class="developer-section">
-      <p>Click the button to get a message from the server:</p>
-      <button on:click={fetchMessage}>Get Message</button>
-      <div>{serverMessage}</div>
-  
-      <h2>Send a Message to the Server:</h2>
-      <input type="text" bind:value={userMessage} placeholder="Type your message here" />
-      <button on:click={sendUserMessage}>Send Message</button>
+  <div class="center">
+    <div class="orange-banner">
+      <div>
+        <div class="login">
+          <h4 class="secondary-header-{colorState === "WHITE" ? "white" : "black"}">Login:</h4>
+          <input class="user-login-{colorState === "WHITE" ? "white" : "black"}" type="text" bind:value={username} placeholder="Username" />
+          <input class="user-password-{colorState === "WHITE" ? "white" : "black"}" type="password" bind:value={password} placeholder="Password" />
+          <div>
+            <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}">Signup</button>
+            <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}" on:click={login}>Login</button>
+          </div>
+        </div>
+
+
+        <div>
+          <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}" on:click={goToMainPage}>Go to main page</button>
+          <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}" on:click={toggleColor}>Toggle {colorState}</button>
+          <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}" on:click={toggleDeveloper}>Developer Work</button>
+        </div>
+
+        {#if showDeveloper}
+          <div class="developer-section">
+            <p>Click the button to get a message from the server:</p>
+            <button on:click={fetchMessage}>Get Message</button>
+            <div>{serverMessage}</div>
+        
+            <h2>Send a Message to the Server:</h2>
+            <input type="text" bind:value={userMessage} placeholder="Type your message here" />
+            <button on:click={sendUserMessage}>Send Message</button>
+          </div>
+        {/if}
+      </div>
     </div>
-  {/if}
+</div>
   

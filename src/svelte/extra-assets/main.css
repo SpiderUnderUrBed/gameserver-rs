@@ -48,12 +48,12 @@ aside button {
 	margin-bottom: 20px;
 }
 
-#nodeActionDialog .background {
+/* #nodeActionDialog .background {
   background-color: #00ffcc;
   display: inline-block; 
   padding: 1rem;               
   border-radius: 8px;          
-}
+} */
 
 
 .management-buttons {
@@ -180,10 +180,16 @@ footer {
     left: 50%;
     transform: translate(-50%, -50%);
 }
+
 .loading {
     display: none;
     width: 40px;
     height: 40px;
+}
+
+.dialog-container {
+  width: 20svw;
+  height: 20svh;
 }
 
 @media screen and (width >= 800px) {

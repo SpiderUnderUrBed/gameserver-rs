@@ -44,8 +44,8 @@
 		</div>
 		<div class="top-bar">
 			<div class="server-status-indicator" id="server-status-indicator"></div>
-			<button class="main-buttons" onclick="document.getElementById('createServerDialog').showModal()">Create Server</button>
-			<button class="main-buttons" onclick="deleteServer()">Delete current server</button>
+			<button class="main-buttons" onclick="showServerDialog()">Create Server</button>
+			<button class="main-buttons" onclick="document.getElementById('deleteServerDialog').showModal()">Delete current server</button>
 			<button class="main-buttons" onclick="startServer()">Start Server</button>
 			<button class="main-buttons" onclick="stopServer()">Stop Server</button>
 			<button class="main-buttons" onclick="configureServer()">Configure Server</button>
@@ -76,6 +76,7 @@
 		<dialog id="createServerDialog" class="user-dialog">
 			<form method="dialog">
 				<h1>Create Server</h1>
+				<div class="no-provider-warning" id="no-provider-warning">Warning, there is no provider.json</div>
 				<div class="navigate-buttons">
 					<button class="toggle-button" id="toggleUploader">Show File Uploader</button>
 					<div action="" class="dropzone" id="myDropzone"></div>
@@ -112,17 +113,29 @@
 			</form>
 		</dialog>
 		<dialog id="nodeActionDialog" class="user-dialog">
-		<div class="background">
-			<form method="dialog">
-			<div class="user-dialog" data-user-container data-value="edit-perms">
-				<h3>Node Actions</h3>
-				<p id="node-dialog-name">Loading...</p>
-				<div class="dialog-buttons">
-				<button type="button" onclick="nodeClicked(this)">End</button>
+		<div class="dialog-container">
+			<!-- <div class="background"> -->
+				<form method="dialog">
+				<div class="user-dialog" data-user-container data-value="edit-perms">
+					<div class="">
+					<h3>Node Actions</h3>
+					<h5>Node name:</h5>
+					<p id="node-dialog-name">Loading...</p>
+					<div class="dialog-buttons">
+					<button type="button" onclick="nodeClicked(this)">Transfer to this node</button>
+					<button type="button" onclick="document.getElementById('nodeActionDialog').close()">Cancel</button>
+					</div>
 				</div>
-			</div>
-			</form>
+				</form>
+			<!-- </div> -->
 		</div>
+		</dialog>
+		<dialog id="deleteServerDialog" class="user-dialog">
+			<div class="dialog-container">
+				<p>WARNING: This will remove all server files</p>
+				<button onclick="deleteServer()">I am sure</button>
+				<button type="button" onclick="document.getElementById('deleteServerDialog').close()">Cancel</button>
+			</div>
 		</dialog>
 		<dialog id="addNodeDialog" class="user-dialog">
 			<form method="dialog">

@@ -4,7 +4,7 @@ class ServerConsole {
     this.consoleInput = document.querySelector(".console-input");
     this.historyContainer = document.querySelector(".console-history");
     this.toggablePages = document.getElementById("toggablePages");
-
+    this.currentSelectedNode = null; 
     // this.start_keyword = ""
     // this.stop_keyword = ""
 
@@ -29,7 +29,8 @@ class ServerConsole {
     this.setStatuses();
     this.loadFileUpload();
 
-   window.nodeClicked = (button) => this.nodeClicked(button);
+    window.showServerDialog = () => this.showServerDialog();
+    window.nodeClicked = (button) => this.nodeClicked(button);
     window.updateStatus = () => this.updateStatus();  
     window.deleteServer = () => this.deleteServer();
     window.updateServer = () => this.updateServer();
@@ -178,83 +179,88 @@ async changeNode(node) {
 }
 
   
-async nodeClicked(button) {
-  console.log("Button element:", button);
+  async nodeClicked(button) {
+    if (!this.currentSelectedNode) {
+      console.error("No node selected");
+      return;
+    }
 
-  const nodeEl = button.querySelector("#node-dialog-name");
-  if (!nodeEl) {
-    console.error("No #node element inside button", button);
-    return;
-  }
-
-  const node = nodeEl.innerText;
-  console.log("Clicked node:", node);
-}
-
-
-async fetchNodes() {
-    try {
-        const response = await fetch(`${this.basePath}/api/nodes`);
-        if (!response.ok) throw new Error("Failed to fetch nodes");
-
-        const data = await response.json();
-        const nodes = data.list.data;
-
-        const nodesBar = document.querySelector("#nodes-bar");
-        let nodeDialog = document.getElementById("nodeActionDialog");
-
-        if (nodesBar) nodesBar.innerHTML = "";
-nodes.forEach((node) => {
-  if (nodesBar) {
-    const button = document.createElement("button");
-    button.className = "nodes-element";
-
-    const clone = document
-      .getElementById("node-element-inner-template")
-      .content.cloneNode(true);
-
-    clone.getElementById("node-dialog-name").textContent = node;
-    button.appendChild(clone);
-
-    // button.addEventListener("click", (e) => {
-    //   this.nodeClicked(e.currentTarget);
-    //   nodeDialog.showModal();
-    // });
+    const node = this.currentSelectedNode;
+    console.log("Processing action for node:", node);
     
-    button.addEventListener("click", () => {
-      //this.nodeClicked(e.currentTarget);
-      // nodeDialog.showModal();
-      nodeDialog.show();
-    });
-
-    nodesBar.appendChild(button);
+    await this.changeNode(node);
+    
+    document.getElementById("nodeActionDialog").close();
   }
-});
 
-        const migrateto = document.getElementById("migrate-to");
-        const migratefrom = document.getElementById("migrate-from");
 
-        if (!migrateto || !migratefrom) {
-            console.warn("Migration selects not found in DOM yet. Will retry when dialog opens.");
-            return;
+
+  async fetchNodes() {
+    try {
+      const response = await fetch(`${this.basePath}/api/nodes`);
+      if (!response.ok) throw new Error("Failed to fetch nodes");
+
+      const data = await response.json();
+      const nodes = data.list.data;
+
+      const nodesBar = document.querySelector("#nodes-bar");
+      let nodeDialog = document.getElementById("nodeActionDialog");
+
+      if (nodesBar) nodesBar.innerHTML = "";
+
+      nodes.forEach((node) => {
+        if (nodesBar) {
+          const button = document.createElement("button");
+          button.className = "nodes-element";
+
+          const clone = document
+            .getElementById("node-element-inner-template")
+            .content.cloneNode(true);
+
+          clone.getElementById("node-dialog-name").textContent = node;
+          button.appendChild(clone);
+
+          button.addEventListener("click", () => {
+            this.openNodeDialog(node); 
+          });
+
+          nodesBar.appendChild(button);
         }
+      });
 
+      const migrateto = document.getElementById("migrate-to");
+      const migratefrom = document.getElementById("migrate-from");
+
+      if (migrateto && migratefrom) {
         migrateto.innerHTML = "";
         migratefrom.innerHTML = "";
 
         nodes.forEach((node) => {
-            const option = document.createElement("option");
-            option.value = node;
-            option.text = node;
+          const option = document.createElement("option");
+          option.value = node;
+          option.text = node;
 
-            migrateto.appendChild(option);
-            migratefrom.appendChild(option.cloneNode(true));
+          migrateto.appendChild(option);
+          migratefrom.appendChild(option.cloneNode(true));
         });
+      }
 
     } catch (error) {
-        console.error("Error fetching nodes:", error);
+      console.error("Error fetching nodes:", error);
     }
-}
+  }
+
+  openNodeDialog(nodeName) {
+    this.currentSelectedNode = nodeName;
+    const nodeDialog = document.getElementById("nodeActionDialog");
+    const nodeNameElement = nodeDialog.querySelector("#node-dialog-name");
+    
+    if (nodeNameElement) {
+      nodeNameElement.textContent = nodeName;
+    }
+    
+    nodeDialog.showModal();
+  }
 
 
 
@@ -800,7 +806,7 @@ nodes.forEach((node) => {
     }
     const statusEvent = new EventSource(`${this.basePath}/api/awaitserverstatus`);
     statusEvent.onmessage = (e) => {
-      console.log(e.data)
+      //console.log(e.data)
       if ((e.data == "healthy" || e.data == "up") && state == "up"){
         loading.style.display = "none";
       } else if (e.data == "down" && state == "down"){
@@ -943,6 +949,54 @@ nodes.forEach((node) => {
       }
     } catch (err) {
       this.addResult("", `Error: ${err.message}`, false, true);
+    }
+  }
+  async showServerDialog(){
+    //this.checkIfProviderFile()
+    document.getElementById('createServerDialog').showModal()
+    let providerWarning = document.getElementById("no-provider-warning");
+        providerWarning.style.display = "none";
+    document.getElementById("providertype-selector")
+      .addEventListener("change", (event) => {
+        let providerWarningInChange = document.getElementById("no-provider-warning");
+          providerWarningInChange.style.display = "none";
+        let providertype = event.target.value;
+        console.log(providertype)
+        if (providertype == "custom"){
+          this.checkIfProviderFile()
+        } 
+        // else {
+        //   providerWarning.style.display = "none";
+        // }
+      })
+  }
+  async checkIfProviderFile(){
+    //document.getElementById('createServerDialog').showModal()
+    let providerWarning = document.getElementById("no-provider-warning");
+    //providerWarning.style.display = "none";
+    try {
+      const res = await fetch(`${this.basePath}/api/getfiles`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'command', message: '', authcode: '0' })
+      });
+      const text = await res.text();
+      //console.log("API response:", text);
+      
+      if (res.ok) {
+        try {
+          //console.log(text)
+          const data = JSON.parse(text);
+          let filelist = data.list?.data || [];
+          if (!filelist.includes("provider.json")){
+            providerWarning.style.display = "block";
+          }
+        } catch {
+          console.log("Error with json");
+        }
+      }
+    } catch {
+      console.log("Error fetching files");
     }
   }
 

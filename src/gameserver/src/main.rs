@@ -1355,6 +1355,7 @@ async fn stop_server(
 // as at some point it would be benifical if gameserver-rs could run 
 // servers from some nested directory so you dont need to migrate server files, delete it, then migrate newer server files 
 // or recreate it
+// should be here and not filesystem because it contains appstate
 async fn handle_file_request(state: &Arc<AppState>, request: FileRequestMessage) -> String {
     match request.payload {
         FileRequestPayload::Metadata { path } => match get_metadata(&path).await {
