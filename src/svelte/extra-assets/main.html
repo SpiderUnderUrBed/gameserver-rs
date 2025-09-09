@@ -111,6 +111,19 @@
 				</div>
 			</form>
 		</dialog>
+		<dialog id="nodeActionDialog" class="user-dialog">
+		<div class="background">
+			<form method="dialog">
+			<div class="user-dialog" data-user-container data-value="edit-perms">
+				<h3>Node Actions</h3>
+				<p id="node-dialog-name">Loading...</p>
+				<div class="dialog-buttons">
+				<button type="button" onclick="nodeClicked(this)">End</button>
+				</div>
+			</div>
+			</form>
+		</div>
+		</dialog>
 		<dialog id="addNodeDialog" class="user-dialog">
 			<form method="dialog">
 				<h3>Add Node</h3>
@@ -153,5 +166,10 @@
 				</div>
 			</form>
 		</dialog>
+		<template id="node-element-inner-template">
+			<div class="node-element" data-user-container>
+				<p id="node-dialog-name"></p>
+			</div>
+		</template>
 	</body>
 </html>

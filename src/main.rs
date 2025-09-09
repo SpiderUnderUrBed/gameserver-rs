@@ -593,7 +593,7 @@ pub async fn handle_stream(
                         inner_value.get("start_keyword").and_then(|v| v.as_str()),
                         inner_value.get("stop_keyword").and_then(|v| v.as_str()),
                     ) {
-                        println!("Changing keyword {} {}", start_kw.to_string().clone(), stop_kw.to_string().clone());
+                        //println!("Changing keyword {} {}", start_kw.to_string().clone(), stop_kw.to_string().clone());
                         *server_start_keyword = start_kw.to_string();
                         *server_stop_keyword = stop_kw.to_string();
                     }

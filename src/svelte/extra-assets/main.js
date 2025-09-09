@@ -29,6 +29,7 @@ class ServerConsole {
     this.setStatuses();
     this.loadFileUpload();
 
+   window.nodeClicked = (button) => this.nodeClicked(button);
     window.updateStatus = () => this.updateStatus();  
     window.deleteServer = () => this.deleteServer();
     window.updateServer = () => this.updateServer();
@@ -143,8 +144,9 @@ async loadFileUpload() {
         }
     });
   }
-  
-async nodeClicked(node) {
+
+
+async changeNode(node) {
     try {
       let button_status = document.getElementById("temp-enable-defaults");
       console.log("Changing node")
@@ -175,6 +177,21 @@ async nodeClicked(node) {
     }   
 }
 
+  
+async nodeClicked(button) {
+  console.log("Button element:", button);
+
+  const nodeEl = button.querySelector("#node-dialog-name");
+  if (!nodeEl) {
+    console.error("No #node element inside button", button);
+    return;
+  }
+
+  const node = nodeEl.innerText;
+  console.log("Clicked node:", node);
+}
+
+
 async fetchNodes() {
     try {
         const response = await fetch(`${this.basePath}/api/nodes`);
@@ -184,16 +201,35 @@ async fetchNodes() {
         const nodes = data.list.data;
 
         const nodesBar = document.querySelector("#nodes-bar");
+        let nodeDialog = document.getElementById("nodeActionDialog");
+
         if (nodesBar) nodesBar.innerHTML = "";
-        nodes.forEach((node) => {
-            if (nodesBar) {
-                const button = document.createElement("button");
-                button.textContent = node;
-                button.className = "nodes-element";
-                button.onclick = () => this.nodeClicked(node);
-                nodesBar.appendChild(button);
-            }
-        });
+nodes.forEach((node) => {
+  if (nodesBar) {
+    const button = document.createElement("button");
+    button.className = "nodes-element";
+
+    const clone = document
+      .getElementById("node-element-inner-template")
+      .content.cloneNode(true);
+
+    clone.getElementById("node-dialog-name").textContent = node;
+    button.appendChild(clone);
+
+    // button.addEventListener("click", (e) => {
+    //   this.nodeClicked(e.currentTarget);
+    //   nodeDialog.showModal();
+    // });
+    
+    button.addEventListener("click", () => {
+      //this.nodeClicked(e.currentTarget);
+      // nodeDialog.showModal();
+      nodeDialog.show();
+    });
+
+    nodesBar.appendChild(button);
+  }
+});
 
         const migrateto = document.getElementById("migrate-to");
         const migratefrom = document.getElementById("migrate-from");

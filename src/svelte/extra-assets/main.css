@@ -48,6 +48,14 @@ aside button {
 	margin-bottom: 20px;
 }
 
+#nodeActionDialog .background {
+  background-color: #00ffcc;
+  display: inline-block; 
+  padding: 1rem;               
+  border-radius: 8px;          
+}
+
+
 .management-buttons {
   display: none;
 }
