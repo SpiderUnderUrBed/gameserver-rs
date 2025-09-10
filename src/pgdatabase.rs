@@ -2,12 +2,20 @@
 use bcrypt::{hash};
 //
 
+//
+
 use bcrypt::DEFAULT_COST;
 use sqlx::{Pool, Postgres as SqlxPostgres};
+
 
 use crate::StatusCode;
 use std::error::Error;
 pub mod databasespec;
+
+pub use databasespec::{
+    User, Node, Element, ModifyElementData, UserDatabase, NodesDatabase, 
+    DatabaseError, RetrieveUser, Server, ServerDatabase, Button, ButtonsDatabase, Settings
+};
 
 pub use databasespec::{
     User, Node, Element, ModifyElementData, UserDatabase, NodesDatabase, 
@@ -26,8 +34,10 @@ impl Database {
         }
     }
     
+    
     pub async fn clear_db(&self) -> Result<(), sqlx::Error> {
         let tables = [
+            "users", "nodes", "servers", "buttons", "settings"
             "users", "nodes", "servers", "buttons", "settings"
         ];
 
@@ -39,6 +49,7 @@ impl Database {
         Ok(())
     }
 }
+
 
 impl UserDatabase for Database { 
     async fn retrieve_user(&self, username: String) -> Option<User> {
@@ -53,6 +64,7 @@ impl UserDatabase for Database {
             Some(User{
                 username,
                 password_hash,
+                user_perms: vec!["all".to_string()]
                 user_perms: vec!["all".to_string()]
             })
         } else {
@@ -69,6 +81,8 @@ impl UserDatabase for Database {
     }
     
     async fn edit_user_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+    
+    async fn edit_user_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         if let Element::User { password, user, user_perms } = &element.element {
             if password.is_empty() {
                 match sqlx::query(
@@ -83,6 +97,7 @@ impl UserDatabase for Database {
                 .bind(&user)
                 .execute(&self.connection)
                 .await {
+                    Ok(_result) => {},
                     Ok(_result) => {},
                     Err(e) => {
                         return Err(Box::new(e));
@@ -111,6 +126,7 @@ impl UserDatabase for Database {
                 .execute(&self.connection)
                 .await {
                     Ok(_result) => {},
+                    Ok(_result) => {},
                     Err(e) => {
                         return Err(Box::new(e));
                     }
@@ -123,6 +139,7 @@ impl UserDatabase for Database {
         }
     }
 
+    async fn create_user_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
     async fn create_user_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         if let Element::User { password, user, user_perms } = element.element {
             let already_exists = self.get_from_database(&user).await?;
@@ -137,6 +154,7 @@ impl UserDatabase for Database {
                 sqlx::Error::Protocol(e.to_string().into())
             })?;
 
+            let _final_user = sqlx::query_as::<_, User>("INSERT INTO users (username, password_hash, authcode, user_perms) VALUES ($1, $2, $3, $4) RETURNING *")
             let _final_user = sqlx::query_as::<_, User>("INSERT INTO users (username, password_hash, authcode, user_perms) VALUES ($1, $2, $3, $4) RETURNING *")
                 .bind(user)
                 .bind(hashed)
@@ -162,7 +180,10 @@ impl UserDatabase for Database {
 
     async fn remove_user_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         if let Element::User { user, .. } = element.element {
+    async fn remove_user_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+        if let Element::User { user, .. } = element.element {
             let final_user = sqlx::query_as::<_, User>("DELETE FROM users WHERE username = $1 RETURNING *")
+                .bind(user)
                 .bind(user)
                 .fetch_optional(&self.connection)
                 .await?;
@@ -175,6 +196,9 @@ impl UserDatabase for Database {
         } else {
             Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
         }
+        } else {
+            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+        }
     }
 }
 
@@ -184,16 +208,31 @@ impl NodesDatabase for Database {
             Ok(node) => node,
             Err(_) => None
         }
+        match self.get_from_nodes_database(&nodename).await {
+            Ok(node) => node,
+            Err(_) => None
+        }
     }
+    
     
     async fn fetch_all_nodes(&self) -> Result<Vec<Node>, Box<dyn Error + Send + Sync>> {
         let nodes = sqlx::query_as::<_, Node>("SELECT * FROM nodes")
             .fetch_all(&self.connection)
             .await?;
         Ok(nodes)
+        let nodes = sqlx::query_as::<_, Node>("SELECT * FROM nodes")
+            .fetch_all(&self.connection)
+            .await?;
+        Ok(nodes)
     }
     
+    
     async fn get_from_nodes_database(&self, nodename: &str) -> Result<Option<Node>, Box<dyn Error + Send + Sync>> {
+        let node = sqlx::query_as::<_, Node>("SELECT * FROM nodes WHERE nodename = $1")
+            .bind(nodename)
+            .fetch_optional(&self.connection)
+            .await?;
+        Ok(node)
         let node = sqlx::query_as::<_, Node>("SELECT * FROM nodes WHERE nodename = $1")
             .bind(nodename)
             .fetch_optional(&self.connection)

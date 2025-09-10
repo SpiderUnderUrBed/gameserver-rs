@@ -16,6 +16,7 @@ COPY . .
 
 # Build Svelte assets
 WORKDIR /usr/src/app/src/svelte
+#RUN mkdir -p build && npm install && npm run build
 RUN mkdir -p build && npm install && npm run build
 
 # Return to main working directory

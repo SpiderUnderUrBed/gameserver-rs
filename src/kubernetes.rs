@@ -4,10 +4,13 @@ use std::fs;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::Node;
 use k8s_openapi::api::core::v1::{PersistentVolume, PersistentVolumeClaim, Service};
+use k8s_openapi::api::core::v1::Pod;
 use kube::api::PostParams;
 use kube::Error::Api as ErrorApi;
+use kube::api::ListParams;
 use kube::{Api, Client};
 
+use crate::NodeType;
 use crate::NodeAndTCP;
 
 pub async fn list_node_info(client: Client) -> Result<Vec<NodeAndTCP>, Box<dyn Error>> {
@@ -47,7 +50,7 @@ pub async fn list_node_info(client: Client) -> Result<Vec<NodeAndTCP>, Box<dyn E
                         result.push(NodeAndTCP {
                             name,
                             ip,
-                            nodetype,
+                            nodetype: NodeType::InbuiltWithString(nodetype),
                             tcp_tx: None,
                             tcp_rx: None,
                         });
@@ -72,15 +75,30 @@ pub async fn list_node_names(client: Client) -> Result<Vec<String>, Box<dyn std:
 }
 
 pub async fn get_avalible_gameserver(
-    _: &crate::Client,
+    client: &Client,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let services: Api<Service> = Api::namespaced(client.clone(), "default");
+    let lp = ListParams::default();
+    let svc_list = services.list(&lp).await?;
+
+    for svc in svc_list.items {
+        if let Some(name) = &svc.metadata.name {
+            if name.contains("gameserver") && !name.contains("gameserver-postgres") {
+                let dns_name = format!("{}.default.svc.cluster.local:8080", name);
+                println!("Using gameserver service DNS: {}", dns_name);
+                return Ok(dns_name);
+            }
+        }
+    }
+
+    Err("No gameserver service found".into())
 }
 
 pub async fn verify_is_k8s_gameserver(
     _: crate::Client,
     _: String,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-    Ok(false)
+    Ok(true)
 }
 
 pub async fn create_k8s_deployment(

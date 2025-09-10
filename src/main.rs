@@ -801,6 +801,7 @@ pub async fn connect_to_server(
 // this is where it determines wether or not to try and create the container and deployment, as attempt_connection itself is used in various diffrent contexts (like it will constantly
 // try to connect upon failing but it should not try to create the container and deployment every time it fails)
 async fn try_initial_connection(
+    create_handler: bool,
     state: Arc<RwLock<AppState>>,
     tcp_url: String,
     ws_tx: broadcast::Sender<String>,
@@ -809,12 +810,26 @@ async fn try_initial_connection(
     match attempt_connection(tcp_url).await {
         Ok(mut stream) => {
             println!("Initial connection succeeded!");
-
-            let (temp_tx, temp_rx) =
-                tokio::sync::broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
-
-            let mut temp_rx = temp_rx; // make receiver mutable
-            handle_stream(state, &mut temp_rx, &mut stream, ws_tx, None).await
+            // note, possibly I wont ever need to create a handler from the test of the intial connection
+            // TODO: think about removing create_handler and just never create a handler
+            if create_handler {
+                let (temp_tx, temp_rx) =
+                    tokio::sync::broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+                let mut temp_rx = temp_rx;
+                handle_stream(state, &mut temp_rx, &mut stream, ws_tx, None).await
+            } else {
+                Ok(())
+            }
+            // note, possibly I wont ever need to create a handler from the test of the intial connection
+            // TODO: think about removing create_handler and just never create a handler
+            if create_handler {
+                let (temp_tx, temp_rx) =
+                    tokio::sync::broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+                let mut temp_rx = temp_rx;
+                handle_stream(state, &mut temp_rx, &mut stream, ws_tx, None).await
+            } else {
+                Ok(())
+            }
         }
         Err(e) => {
             eprintln!("Initial connection failed: {}", e);
@@ -822,6 +837,8 @@ async fn try_initial_connection(
         }
     }
 }
+ 
+
 
 // fn get_arg_or_env_var<T: std::str::FromStr>(env_var: &str, arg: Option<T>) -> Option<T> {
 //     arg.or_else(|| env::var(env_var).ok().and_then(|s| s.parse().ok()))
@@ -870,7 +887,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Overrides for testing or specific cases where how it worksin a setup may be diffrent
     const ENABLE_K8S_CLIENT: bool = true;
-    const ENABLE_INITIAL_CONNECTION: bool = false;
+    const ENABLE_INITIAL_CONNECTION: bool = true;
     const FORCE_REBUILD: bool = false;
     const BUILD_DOCKER_IMAGE: bool = true;
     const BUILD_DEPLOYMENT: bool = true;
@@ -943,6 +960,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if ENABLE_INITIAL_CONNECTION && multifaceted_state.write().await.client.is_some() {
         println!("Trying initial connection...");
         if try_initial_connection(
+	    false,
             multifaceted_state.clone(),
             tcp_url.to_string(),
             ws_tx.clone(),
