@@ -15,9 +15,8 @@ spec:
       dnsPolicy: None
       dnsConfig:
         nameservers:
-              - 8.8.8.8
+          - 8.8.8.8
       nodeSelector:
-        #kubernetes.io/hostname: extranuc
         kubernetes.io/hostname: hostnuc
       containers:
         - name: gameserver
@@ -25,17 +24,12 @@ spec:
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
+            - containerPort: 25565
           volumeMounts:
-            # - name: docker-socket
-            #   mountPath: /var/run/docker.sock
-            - name: gameserver-pvc
-              mountPath: /usr/src/app
+            - name: gameserver-storage
+              mountPath: /data
       volumes:
-        # - name: docker-socket
-        #   hostPath:
-        #     path: /var/run/docker.sock
-        #     type: Socket
-        - name: gameserver-pvc
+        - name: gameserver-storage
           persistentVolumeClaim:
             claimName: gameserver-pvc
 ---
@@ -62,22 +56,25 @@ kind: PersistentVolume
 metadata:
   name: gameserver-pv
 spec:
-  storageClassName: local-path
   capacity:
     storage: 1Gi
   accessModes:
     - ReadWriteOnce
+  storageClassName: ""
   hostPath:
     path: /home/spiderunderurbed/projects/gameserver-rs/src/gameserver
+  persistentVolumeReclaimPolicy: Retain
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: gameserver-pvc
 spec:
-  storageClassName: local-path
+  volumeName: gameserver-pv
+  storageClassName: ""
   accessModes:
     - ReadWriteOnce
   resources:
     requests:
       storage: 1Gi
+
