@@ -391,6 +391,7 @@ enum ApiCalls {
 
 #[derive(Clone, Default)]
 enum Status {
+    Unknown,
     Up,
     Healthy,
     #[default]
@@ -816,9 +817,9 @@ async fn try_initial_connection(
                 let (temp_tx, temp_rx) =
                     tokio::sync::broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
                 let mut temp_rx = temp_rx;
-                handle_stream(state, &mut temp_rx, &mut stream, ws_tx, None).await
+                handle_stream(state.clone(), &mut temp_rx, &mut stream, ws_tx.clone(), None).await?
             } else {
-                Ok(())
+                return Ok(());
             }
             // note, possibly I wont ever need to create a handler from the test of the intial connection
             // TODO: think about removing create_handler and just never create a handler
@@ -1437,6 +1438,7 @@ async fn ongoing_server_status(
                 Status::Healthy => "healthy",
                 Status::Down => "down",
                 Status::Unhealthy => "unhealthy",
+		_ => &String::new()
             };
 
             Some((Ok(Event::default().data(status_str)), (interval, arc_state)))

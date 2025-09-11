@@ -90,13 +90,14 @@ pub struct Settings {
 #[sqlx(type_name = "text")]
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
 pub enum NodeStatus {
+    Unknown,
     Enabled, 
     Disabled, 
     ImmutablyEnabled,
     ImmutablyDisabled,
 }
 //`
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 pub enum NodeType {
     #[default]
     Unknown,
@@ -159,6 +160,7 @@ impl ToString for NodeType {
             NodeType::Main => "main".to_string(),
             NodeType::CustomWithString(s) => s.clone(),
             NodeType::InbuiltWithString(s) => s.clone(),
+	   _ => String::new()
         }
     }
 }
