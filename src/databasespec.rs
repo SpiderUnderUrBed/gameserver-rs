@@ -5,6 +5,9 @@ use std::error::Error;
 use crate::Serialize;
 use crate::Deserialize;
 use crate::StatusCode;
+
+use serde::Deserializer;
+
 // use crate::NodeType;
 
 use serde::ser::StdError;
@@ -85,9 +88,65 @@ pub struct Settings {
     pub toggled_default_buttons: bool
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, sqlx::Type)]
+
+#[cfg(any(feature = "full-stack", feature = "database"))]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, sqlx::Type)]
 // #[sqlx(type_name = "node_status", rename_all = "snake_case")]
 #[sqlx(type_name = "text")]
+#[serde(rename_all = "snake_case", tag = "kind", content = "data")]
+pub enum NodeStatus {
+    Unknown,
+    Enabled, 
+    Disabled, 
+    ImmutablyEnabled,
+    ImmutablyDisabled,
+}
+
+use serde_json::Value;
+// impl<'de> Deserialize<'de> for NodeStatus {
+//     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+//     where
+//         D: Deserializer<'de>,
+//     {
+//         let raw = serde_json::Value::deserialize(deserializer)?;
+//         println!("Raw JSON being parsed: {}", serde_json::to_string_pretty(&raw).unwrap_or_else(|_| format!("{:?}", raw)));
+        
+//         if let Some(s) = raw.as_str() {
+//             let s = s.to_lowercase();
+//             return Ok(match s.as_str() {
+//                 "enabled" => NodeStatus::Enabled,
+//                 "disabled" => NodeStatus::Disabled,
+//                 "immutably_enabled" => NodeStatus::ImmutablyEnabled,
+//                 "immutably_disabled" => NodeStatus::ImmutablyDisabled,
+//                 _ => NodeStatus::Unknown,
+//             });
+//         }
+        
+//       
+//         if let Some(obj) = raw.as_object() {
+//             if let Some(state_val) = obj.get("state").and_then(|v| v.as_str()) {
+//                 let s = state_val.to_lowercase();
+//                 return Ok(match s.as_str() {
+//                     "enabled" => NodeStatus::Enabled,
+//                     "disabled" => NodeStatus::Disabled,
+//                     "immutably_enabled" => NodeStatus::ImmutablyEnabled,
+//                     "immutably_disabled" => NodeStatus::ImmutablyDisabled,
+//                     _ => NodeStatus::Unknown,
+//                 });
+//             }
+//         }
+        
+//         println!("Unknown format for NodeStatus: {:?}", raw);
+//         Ok(NodeStatus::Unknown)
+//     }
+// }
+#[cfg(all(
+    not(feature = "full-stack"),
+    not(feature = "docker"),
+    not(feature = "database")
+))]
+#[derive(Debug, Serialize, Clone, Deserialize, PartialEq)]
+// #[sqlx(type_name = "node_status", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
 pub enum NodeStatus {
     Unknown,

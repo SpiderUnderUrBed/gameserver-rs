@@ -388,8 +388,8 @@ enum ApiCalls {
 //     require_auth: String,
 //     api_call: ApiCalls
 // }
-
-#[derive(Clone, Default)]
+use serde::Deserializer;
+#[derive(Clone, Default, Serialize, Deserialize, Debug)]
 enum Status {
     Unknown,
     Up,
@@ -398,6 +398,23 @@ enum Status {
     Down,
     Unhealthy,
 }
+
+
+// impl<'de> Deserialize<'de> for Status {
+//     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+//     where
+//         D: Deserializer<'de>,
+//     {
+//         let s = String::deserialize(deserializer)?.to_lowercase(); 
+//         Ok(match s.as_str() {
+//             "up" => Status::Up,
+//             "healthy" => Status::Healthy,
+//             "down" => Status::Down,
+//             "unhealthy" => Status::Unhealthy,
+//             _ => Status::Unknown,
+//         })
+//     }
+// }
 
 // AppState, this is a global struct which will be used to store data needed across the application like in routes and etc
 // which includes the sender and reciver to the tcp connection for gameserver, the websocket sender (receiver only needs to be managed by its own handler)

@@ -197,6 +197,7 @@ impl Database {
         let mut database: Result<JsonBackendContent, String> = if contents.trim().is_empty() {
             Ok(JsonBackendContent::default())
         } else {
+            //println!("{:#?}", contents.clone());
             let result: Result<JsonBackendContent, String> = serde_json::from_str(&contents).map_err(|e| {
                 println!("Failed to parse JSON (1): {}", e); 
                 format!("Error: {}", e)
