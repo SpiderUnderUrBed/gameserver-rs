@@ -29,6 +29,7 @@ class ServerConsole {
     this.setStatuses();
     this.loadFileUpload();
 
+    window.fetchNodes = () => this.fetchNodes();
     window.showServerDialog = () => this.showServerDialog();
     window.nodeClicked = (button) => this.nodeClicked(button);
     window.updateStatus = () => this.updateStatus();  
@@ -1048,7 +1049,8 @@ async changeNode(node) {
   }
 }
 
-
+const basePath = document.querySelector('meta[name="site-url"]').content.replace(/\/$/, '');
+    
 document.addEventListener("DOMContentLoaded", () => {
-  new ServerConsole();
+  new ServerConsole(basePath);
 });
