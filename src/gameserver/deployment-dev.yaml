@@ -27,11 +27,12 @@ spec:
             - containerPort: 25565
           volumeMounts:
             - name: gameserver-storage
-              mountPath: /data
+              mountPath: /usr/src/app
       volumes:
         - name: gameserver-storage
-          persistentVolumeClaim:
-            claimName: gameserver-pvc
+          hostPath:
+            path: /home/spiderunderurbed/projects/gameserver-rs/src/gameserver
+            type: Directory
 ---
 apiVersion: v1
 kind: Service
@@ -50,31 +51,3 @@ spec:
       port: 25565
       targetPort: 25565
   type: ClusterIP
----
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: gameserver-pv
-spec:
-  capacity:
-    storage: 1Gi
-  accessModes:
-    - ReadWriteOnce
-  storageClassName: ""
-  hostPath:
-    path: /home/spiderunderurbed/projects/gameserver-rs/src/gameserver
-  persistentVolumeReclaimPolicy: Retain
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: gameserver-pvc
-spec:
-  volumeName: gameserver-pv
-  storageClassName: ""
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 1Gi
-
