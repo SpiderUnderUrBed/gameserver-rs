@@ -42,6 +42,24 @@ aside button {
   width: 2svw;
   height: 3svh;
 }
+.mini-server-status-indicator {
+  background-color: grey;
+  width: fit-content;
+  height: fit-content;
+}
+/* .mini-server-status-indicator-off {
+  background-color: rgb(255, 0, 0);
+  width: fit-content;
+  height: fit-content;
+} */
+.serverStatuses {
+  display: none;
+  justify-content: space-between;
+}
+.simple-spacer {
+  display: flex;
+  justify-content: space-between;
+}
 
 .dropzone {
 	display: block;

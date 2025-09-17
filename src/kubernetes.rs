@@ -69,6 +69,49 @@ pub async fn list_node_info(client: Client) -> Result<Vec<NodeAndTCP>, Box<dyn E
     Ok(result)
 }
 
+pub async fn verify_is_k8s_node(
+    client: &Client,
+    ip: String,
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    let nodes: Api<Node> = Api::all(client.clone());
+    let node_list = nodes.list(&Default::default()).await?;
+
+    for node in node_list.items {
+        if let Some(status) = node.status {
+            if let Some(addresses) = status.addresses {
+                for addr in addresses {
+                    if (addr.type_ == "InternalIP" || addr.type_ == "ExternalIP") && addr.address == ip {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(false)
+}
+
+pub async fn verify_is_k8s_pod(
+    client: &Client,
+    ip: String,
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    let pods: Api<Pod> = Api::all(client.clone());
+    let pod_list = pods.list(&Default::default()).await?;
+
+    for pod in pod_list.items {
+        if let Some(status) = pod.status {
+            if let Some(pod_ip) = status.pod_ip {
+                if pod_ip == ip {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+
+    Ok(false)
+}
+
+
 pub async fn list_node_names(client: Client) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let nodes: Api<Node> = Api::all(client);
     let node_list = nodes.list(&Default::default()).await?;

@@ -44,7 +44,7 @@
 			</div>
 		</div>
 		<div class="top-bar">
-			<div class="server-status-indicator" id="server-status-indicator"></div>
+			<button class="server-status-indicator" id="server-status-indicator" onclick="showStatusDialog()"></button>
 			<button class="main-buttons" onclick="showServerDialog()">Create Server</button>
 			<button class="main-buttons" onclick="document.getElementById('deleteServerDialog').showModal()">Delete current server</button>
 			<button class="main-buttons" onclick="startServer()">Start Server</button>
@@ -154,6 +154,31 @@
 				</div>
 				<div class="dialog-buttons">
 					<button type="submit" onclick="addNode()">Confirm</button>
+					<button type="button" onclick="this.closest('dialog').close()">Cancel</button>
+				</div>
+			</form>
+		</dialog>
+		<dialog id="statusChangeDialog" class="user-dialog">
+			<h1>Change status to</h1>
+			<div class="simple-spacer">
+			<div></div>
+			<button class="mini-server-status-indicator" id="node-status-display" onclick="changeStatusTypeTo('node')">Node status</button>
+			<button class="mini-server-status-indicator" id="server-statuses" onclick="toggleServerStatuses()">Show server status types</button>
+			<div></div>
+			</div>
+			<br>
+			<div class="serverStatuses" id="serverStatuses">
+				<div></div>
+				<button class="mini-server-status-indicator" id="server-keyword-display" onclick="changeStatusTypeTo('server-keyword')"> server keyword </button>
+				<button class="mini-server-status-indicator" id="server-process-display" onclick="changeStatusTypeTo('server-process')"> server process </button>
+				<div></div>
+			</div>
+			<!-- changeStatusTypeTo('server') -->
+			<br>
+			<button onclick="refreshStatus()"> Refresh status </button>
+			<form method="dialog">
+				<div class="dialog-buttons">
+					<button type="submit" onclick="loadStatus()">Confirm</button>
 					<button type="button" onclick="this.closest('dialog').close()">Cancel</button>
 				</div>
 			</form>

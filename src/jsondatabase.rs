@@ -1,4 +1,5 @@
 use mime_guess::mime::Name;
+use serde::de::value;
 use serde::Deserialize;
 use serde::Serialize;
 use std::error::Error;
@@ -21,6 +22,7 @@ use crate::database::databasespec::NodeType;
 use crate::database::databasespec::Button;
 use crate::database::databasespec::ButtonsDatabase;
 
+use crate::database::databasespec::SettingsDatabase;
 // use crate::database::Database;
 use crate::StatusCode;
 
@@ -414,6 +416,7 @@ impl NodesDatabase for Database {
         todo!()
     }
 }
+
 impl ButtonsDatabase for Database {
     async fn retrieve_buttons(&self, name: String) -> Option<Button> {
         todo!()
@@ -472,5 +475,18 @@ impl ButtonsDatabase for Database {
             println!("Error, failed to get the button element type");
             Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
         }
+    }
+}
+
+impl SettingsDatabase for Database {
+    async fn set_settings(&self, settings: Settings) ->  Result<(), Box<dyn Error + Send + Sync>> {
+        let mut database = self.get_database().await?;
+        database.settings = settings;
+        self.write_database(database).await?;
+        Ok(())
+    }
+    async fn get_settings(&self) ->  Result<Settings, Box<dyn Error + Send + Sync>> {
+        let database = self.get_database().await?;
+        Ok(database.settings)
     }
 }

@@ -10,6 +10,8 @@ class ServerConsole {
 
     this.globalWs = null;
     this.rawOutputEnabled = false;
+    this.pending_status = ""
+    this.final_status = ""
     // this.reconnectAttempts = 0;
 
     this.messageQueue = [];
@@ -29,6 +31,7 @@ class ServerConsole {
     this.setStatuses();
     this.loadFileUpload();
 
+    window.showStatusDialog = () => this.showStatusDialog();
     window.fetchNodes = () => this.fetchNodes();
     window.showServerDialog = () => this.showServerDialog();
     window.nodeClicked = (button) => this.nodeClicked(button);
@@ -49,52 +52,131 @@ class ServerConsole {
     window.startServer = () => this.startServer();
     window.createDefaultServer = () => this.createDefaultServer();
     window.enableDeveloperOptions = () => this.enableDeveloperOptions();
+    window.changeStatusTypeTo = (status) => this.changeStatusTypeTo(status);
+    window.loadStatus = () => this.loadStatus();
+    window.refreshStatus = () => this.refreshStatus();
+    window.toggleServerStatuses = () => this.toggleServerStatuses();
   }
-  
-async loadFileUpload() {
-  // if (typeof Dropzone === "undefined") {
-  //   console.error("Dropzone not loaded");
-  //   return;
-  // }
-
-  // if (Dropzone.instances.length) {
-  //   Dropzone.instances.forEach(dz => dz.destroy());
-  // }
-
-  const dz = new Dropzone("#myDropzone", {
-    url: `${this.basePath}/api/upload`,
-    paramName: "file",
-    method: "post",
-    autoProcessQueue: false,  
-    maxFilesize: 1024,         
-    parallelUploads: 10,
-    uploadMultiple: false,
-    addRemoveLinks: true,
-    dictDefaultMessage: "Drop files or folders here to upload",
-    init: function () {
-      this.on("success", (file, response) => {
-        console.log("Upload success:", file.name, response);
-      });
-      this.on("error", (file, errorMessage) => {
-        console.error("Upload error:", file.name, errorMessage);
-      });
-      this.on("queuecomplete", () => {
-        console.log("All uploads complete");
-      });
+  async toggleServerStatuses(){
+    let display = document.getElementById('serverStatuses').style.display;
+    if (display == "none") {
+      document.getElementById('serverStatuses').style.display = "flex"
+    } else {
+      document.getElementById('serverStatuses').style.display = "none"
     }
-  });
+  }
+  async refreshStatus() {
 
-  dz.hiddenFileInput.setAttribute("webkitdirectory", true);
-
-  document.getElementById("uploadBtn").addEventListener("click", () => {
-    if (dz.getQueuedFiles().length === 0) {
-      alert("No files to upload.");
-      return;
-    }
-    dz.processQueue();
-  });
   }
 
+  async changeStatusColorsTo(type) {
+    if (type == "node"){
+      document.getElementById('node-status-display').style.backgroundColor = "green"
+      document.getElementById('server-keyword-display').style.backgroundColor = "red"
+      document.getElementById('server-process-display').style.backgroundColor = "red"
+      document.getElementById('server-statuses').style.backgroundColor = "red"
+    } else if (type == "server-keyword") {
+      document.getElementById('server-statuses').style.backgroundColor = "green"
+      document.getElementById('server-keyword-display').style.backgroundColor = "green"
+      document.getElementById('server-process-display').style.backgroundColor = "red"
+      document.getElementById('node-status-display').style.backgroundColor = "red"
+    } else if (type == "server-process"){
+      document.getElementById('server-statuses').style.backgroundColor = "green"
+      document.getElementById('server-process-display').style.backgroundColor = "green"
+      document.getElementById('node-status-display').style.backgroundColor = "red"
+      document.getElementById('server-keyword-display').style.backgroundColor = "red"
+    } 
+  }
+  async changeStatusTypeTo(newstatus){
+    console.log("test")
+    console.log(this.pending_status)
+    this.pending_status = newstatus
+    this.changeStatusColorsTo(newstatus)
+     console.log(this.final_status)
+  }
+  async loadStatus() {
+    console.log(this.pending_status)
+    this.final_status = this.pending_status
+    ///api/setsettings
+    try {
+        const response = await fetch(`${this.basePath}/api/setsettings`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              message: {
+                status_type: this.final_status
+              },
+              type: "",
+              authcode: ""
+            })
+        })
+        if (response.ok) {
+          // try {
+          //   let json = res.json()
+
+          // } catch (e) {
+          //   console.log("not json")
+          // }
+        } else {
+          console.log("Error setting settings")
+        }
+    } catch (e) {
+      console.log(e)
+    }
+    console.log(this.final_status)
+  }
+  async loadFileUpload() {
+    // if (typeof Dropzone === "undefined") {
+    //   console.error("Dropzone not loaded");
+    //   return;
+    // }
+
+    // if (Dropzone.instances.length) {
+    //   Dropzone.instances.forEach(dz => dz.destroy());
+    // }
+
+    const dz = new Dropzone("#myDropzone", {
+      url: `${this.basePath}/api/upload`,
+      paramName: "file",
+      method: "post",
+      autoProcessQueue: false,  
+      maxFilesize: 1024,         
+      parallelUploads: 10,
+      uploadMultiple: false,
+      addRemoveLinks: true,
+      dictDefaultMessage: "Drop files or folders here to upload",
+      init: function () {
+        this.on("success", (file, response) => {
+          console.log("Upload success:", file.name, response);
+        });
+        this.on("error", (file, errorMessage) => {
+          console.error("Upload error:", file.name, errorMessage);
+        });
+        this.on("queuecomplete", () => {
+          console.log("All uploads complete");
+        });
+      }
+    });
+
+    dz.hiddenFileInput.setAttribute("webkitdirectory", true);
+
+    document.getElementById("uploadBtn").addEventListener("click", () => {
+      if (dz.getQueuedFiles().length === 0) {
+        alert("No files to upload.");
+        return;
+      }
+      dz.processQueue();
+    });
+  }
+
+    async showStatusDialog(){
+      document.getElementById('statusChangeDialog').showModal()
+      // document.getElementById('')
+      console.log(this.final_status)
+      this.changeStatusColorsTo(this.final_status)
+    }
 
   async setStatuses(){
     let button_status = document.getElementById("temp-enable-defaults");
@@ -511,6 +593,7 @@ async changeNode(node) {
         // }
     }
   }
+
   async temporaryButtonReset(){
     let button_status = document.getElementById("temp-enable-defaults");
     try {

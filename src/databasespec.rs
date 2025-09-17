@@ -79,13 +79,15 @@ pub struct ModifyElementData {
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct Settings {
-    pub(crate) toggled_default_buttons: bool
+    pub(crate) toggled_default_buttons: bool,
+    pub(crate) status_type: String
 }
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
 #[derive(Debug, Deserialize, Serialize, Clone, sqlx::FromRow, Default)]
 pub struct Settings {
-    pub toggled_default_buttons: bool
+    pub toggled_default_buttons: bool,
+    pub(crate) status_type: String
 }
 
 
@@ -161,8 +163,16 @@ pub enum NodeType {
     #[default]
     Unknown,
     Custom,
+    CustomNode,
+    CustomPod,
     CustomWithString(String),
+    CustomPodWithString(String),
+    CustomNodeWithString(String),
+    InbuiltNodeWithString(String),
+    InbuiltPodWithString(String),
     InbuiltWithString(String),
+    InbuiltNode,
+    InbuiltPod,
     Inbuilt,
     Main
 }
@@ -240,6 +250,7 @@ pub struct User {
     pub password_hash: Option<String>,
     pub user_perms: Vec<String>
 }
+
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
 #[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize, PartialEq)]
@@ -324,6 +335,11 @@ pub trait NodesDatabase {
     async fn create_nodes_in_db(&self, node: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
     async fn remove_node_in_db(&self, node: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
     async fn edit_node_in_db(&self, node: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+}
+
+pub trait SettingsDatabase {
+    async fn set_settings(&self, value: Settings) ->  Result<(), Box<dyn Error + Send + Sync>>;
+    async fn get_settings(&self) ->  Result<Settings, Box<dyn Error + Send + Sync>>;
 }
 pub trait ButtonsDatabase {
     async fn retrieve_buttons(&self, name: String) -> Option<Button>;

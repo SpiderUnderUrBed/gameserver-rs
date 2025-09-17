@@ -44,7 +44,7 @@ use tokio::sync::{mpsc, RwLock};
 
 // mod databasespec;
 // use databasespec::UserDatabase;
-use crate::database::databasespec::{ButtonsDatabase, Server, ServerDatabase};
+use crate::database::databasespec::{ButtonsDatabase, Server, ServerDatabase, Settings, SettingsDatabase};
 use crate::database::databasespec::NodeType;
 use crate::database::databasespec::NodesDatabase;
 use crate::database::databasespec::UserDatabase;
@@ -172,6 +172,18 @@ mod kubernetes {
         _: &crate::Client,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         Err("This should not be running in a non-k8s environemnt".into())
+    }
+    pub async fn verify_is_k8s_pod(
+        client: &crate::Client,
+        ip: String,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(false)
+    }
+    pub async fn verify_is_k8s_node(
+        client: &crate::Client,
+        ip: String,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(false)
     }
 }
 
@@ -351,6 +363,15 @@ struct List {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct IncomingMessage {
     message: String,
+    #[serde(rename = "type")]
+    message_type: String,
+    authcode: String,
+}
+
+// useful and not outdated because in this case the message is a Value, as in its not a predefined data type
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct IncomingMessageWithValue {
+    message: Value,
     #[serde(rename = "type")]
     message_type: String,
     authcode: String,
@@ -640,11 +661,28 @@ pub async fn handle_stream(
                                     } else {
                                         NodeStatus::Enabled
                                     };
-
+                                    
                                     let node = Node {
                                         ip: ip.to_string(),
                                         nodename: inner_msg.message,
-                                        nodetype: NodeType::Custom,
+                                        nodetype: {
+                                            let state_guard = arc_state.read().await;
+                                            if let Some(client) = &state_guard.client {
+                                                if kubernetes::verify_is_k8s_gameserver(client.clone(), ip.to_string()).await? {
+                                                    if kubernetes::verify_is_k8s_pod(client, ip.to_string()).await? {
+                                                        NodeType::CustomPod
+                                                    } else if kubernetes::verify_is_k8s_node(client, ip.to_string()).await? {
+                                                        NodeType::CustomNode
+                                                    } else {
+                                                        NodeType::Unknown
+                                                    }
+                                                } else {
+                                                    NodeType::Custom
+                                                }
+                                            } else {
+                                                NodeType::Custom
+                                            }
+                                        }, 
                                         nodestatus: node_status,
                                     };
 
@@ -1046,7 +1084,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/upload", post(upload))
         //.route("/api/uploadcontent", post(upload))
         .route("/api/statistics", get(statistics))
+        .route("/api/getsettings", get(get_settings))
         .route("/api/awaitserverstatus", get(ongoing_server_status))
+        .route("/api/setsettings", post(set_settings))
         .route("/api/changenode", post(change_node))
         .route("/api/fetchnode", post(fetch_node))
         .route("/api/migrate", post(migrate))
@@ -1163,7 +1203,14 @@ async fn get_status(
         Json(message)
     }
 }
-
+async fn get_settings(State(state): State<Arc<RwLock<AppState>>>) -> impl IntoResponse {
+    match state.read().await.database.get_settings().await {
+        Ok(settings) => Json(settings).into_response(),
+        Err(_err) => {
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
 async fn get_buttons(State(state): State<Arc<RwLock<AppState>>>) -> impl IntoResponse {
     let mut button_list = vec![];
     match state.read().await.database.fetch_all_buttons().await {
@@ -1399,6 +1446,43 @@ fn routes_static(state: Arc<RwLock<AppState>>) -> Router<Arc<RwLock<AppState>>> 
 // async fn status(state: &AppState) -> String {
 //     state.status
 // }
+
+// #[axum::debug_handler] 
+async fn set_settings(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    Json(request): Json<IncomingMessageWithValue>,
+) -> impl IntoResponse {
+    let inner_value = request.message;
+    //IncomingMessageWithValue
+    let mut state = arc_state.write().await;
+    let settings = match state.database.get_settings().await {
+        Ok(s) => s,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    
+    let mut settings_value = match serde_json::to_value(settings) {
+        Ok(v) => v,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    
+    if let (Value::Object(ref mut current), Value::Object(new)) = (&mut settings_value, inner_value) {
+        for (k, v) in new {
+            current.insert(k, v);
+        }
+    } else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    
+    let updated_settings: Settings = match serde_json::from_value(settings_value) {
+        Ok(s) => s,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    
+    match state.database.set_settings(updated_settings).await {
+        Ok(_) => StatusCode::CREATED.into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
 
 async fn statistics(
     State(_): State<Arc<RwLock<AppState>>>,
