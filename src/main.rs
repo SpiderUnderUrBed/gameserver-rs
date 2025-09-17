@@ -445,6 +445,7 @@ enum Status {
 struct AppState {
     tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
     tcp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
+    tcp_conn_status: Status,
     internal_rx: Option<broadcast::Receiver<Vec<u8>>>,
     internal_tx: Option<broadcast::Sender<Vec<u8>>>,
     additonal_node_tcp: Vec<NodeAndTCP>,
@@ -456,6 +457,7 @@ struct AppState {
     base_path: String,
     client: Option<Client>,
     database: database::Database,
+    cached_status_type: String,
     //sysinfo: System
 }
 impl Clone for AppState {
@@ -472,6 +474,7 @@ impl Clone for AppState {
             client: self.client.clone(),
             current_node: self.current_node.clone(),
             database: self.database.clone(),
+            tcp_conn_status: Status::Unknown,
             //sysinfo: System::new_all(),
             additonal_node_tcp: self
                 .additonal_node_tcp
@@ -492,6 +495,7 @@ impl Clone for AppState {
                     gameserver: node.gameserver.clone(),
                 })
                 .collect(),
+            cached_status_type: String::new(),
         }
     }
 }
@@ -613,6 +617,8 @@ pub async fn handle_stream(
                         //println!("{:#?}", payload);
                         if payload.message == "end_conn" {
                             println!("Ending current connection");
+                            let mut state_guard = arc_state.write().await;
+                            state_guard.tcp_conn_status = Status::Down;
                             return Ok(true);
                         } else if payload.r#type == "server_state" {
                             //println!("Got server state");
@@ -800,7 +806,7 @@ pub async fn handle_stream(
 
 // does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
 pub async fn connect_to_server(
-    state: Arc<RwLock<AppState>>,
+    arc_state: Arc<RwLock<AppState>>,
     tcp_url: String,
     mut rx: broadcast::Receiver<Vec<u8>>,
     ws_tx: broadcast::Sender<String>,
@@ -823,8 +829,11 @@ pub async fn connect_to_server(
         match timeout(per_attempt, TcpStream::connect(&tcp_url)).await {
             Ok(Ok(mut stream)) => {
                 let peer = stream.peer_addr()?;
-                let st = Arc::clone(&state);
+                let st = Arc::clone(&arc_state);
                 let tx = ws_tx.clone();
+
+                let mut state_guard = arc_state.write().await;
+                state_guard.tcp_conn_status = Status::Up;
 
                 if !block_with_stream {
                     tokio::spawn(async move {
@@ -841,8 +850,23 @@ pub async fn connect_to_server(
             }
             Ok(Err(e)) => {
                 eprintln!("TCP connect error: {}", e);
+                let mut state_guard = arc_state.write().await;
+                if let Some(tx) = &state_guard.internal_tx {
+                    tx.send("end_conn".into());
+                }
+                state_guard.tcp_conn_status = Status::Down;
+                // if check_channel_health(&state_guard.tcp_tx, state_guard.tcp_rx.resubscribe()).await {
+                //     // println!("up");
+                //     state_guard.tcp_conn_status = Status::Up
+                // } else {
+                //     //println!("down");
+                //     state_guard.tcp_conn_status = Status::Down
+                // }
+                println!("Done");
             }
             Err(_) => {
+                let mut state_guard = arc_state.write().await;
+                state_guard.tcp_conn_status = Status::Down;
                 eprintln!("TCP connect timed out ({:?})", per_attempt);
                 if end_if_timeout {
                     return Err("connection attempt timed out".into());
@@ -992,7 +1016,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let internal_stream = Some(internal_rx.resubscribe());
 
     // use everything so far to make the app state
-    let state: AppState = AppState {
+    let mut state: AppState = AppState {
         //gameserver: json!({}),
         //status: Status::Down,
         tcp_tx: tcp_tx,
@@ -1006,10 +1030,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         database,
         client,
         additonal_node_tcp: nodes,
+        tcp_conn_status: Status::Unknown,
+        cached_status_type: String::new()
         //sysinfo: System::new_all()
     };
+    state.tcp_conn_status = {
+            if check_channel_health(&state.tcp_tx, state.tcp_rx.resubscribe()).await {
+                Status::Up
+            } else {
+                Status::Down
+            }
+        };
 
     let multifaceted_state = Arc::new(RwLock::new(state));
+    load_settings(multifaceted_state.clone()).await;
 
     // if there is supposed to be a initial connection and if there is a client (as it wont be able to create the deployment without it, and it would be pointless to create a docker container
     // without the abbility to deploy it)
@@ -1045,6 +1079,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let bridge_rx = multifaceted_state.read().await.tcp_rx.resubscribe();
     let bridge_tx = multifaceted_state.read().await.ws_tx.clone();
 
+    let arc_state_clone = multifaceted_state.clone();
+
     tokio::spawn(async move {
         if let Err(e) = connect_to_server(
             server_connection_state,
@@ -1058,6 +1094,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .await
         {
             eprintln!("Connection task failed: {}", e);
+            let mut temporary_state = arc_state_clone.write().await;
+            // if check_channel_health(&temporary_state.tcp_tx, temporary_state.tcp_rx.resubscribe()).await {
+            //     // println!("up");
+            //     temporary_state.tcp_conn_status = Status::Up
+            // } else {
+            //     //println!("down");
+            //     temporary_state.tcp_conn_status = Status::Down
+            // }
         }
     });
 
@@ -1086,6 +1130,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/statistics", get(statistics))
         .route("/api/getsettings", get(get_settings))
         .route("/api/awaitserverstatus", get(ongoing_server_status))
+        .route("/api/refreshstatus", post(refresh_status))
         .route("/api/setsettings", post(set_settings))
         .route("/api/changenode", post(change_node))
         .route("/api/fetchnode", post(fetch_node))
@@ -1173,6 +1218,20 @@ async fn migrate(
 
     "ok"
 }
+async fn refresh_status(
+   State(arc_state): State<Arc<RwLock<AppState>>>,
+    // Json(_): Json<IncomingMessage>,
+) {
+    let mut state = arc_state.write().await;
+    state.tcp_conn_status = {
+        if check_channel_health(&state.tcp_tx, state.tcp_rx.resubscribe()).await {
+            Status::Up
+        } else {
+            Status::Down
+        }
+    };
+
+}
 
 // TODO: maybe split this function and route into several routes with statuses for diffrent states/nodes/settings?
 async fn get_status(
@@ -1181,7 +1240,7 @@ async fn get_status(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let mut message = IncomingMessage {
+    let mut returning_req = IncomingMessage {
         message: String::new(),
         message_type: "status".to_string(),
         authcode: "0".to_string(),
@@ -1190,17 +1249,17 @@ async fn get_status(
     if request.message_type == "buttons" {
         match state.database.toggle_button_state().await {
             Ok(status) => {
-                message.message = status.to_string();
+                returning_req.message = status.to_string();
             }
             Err(_) => {
-                message.message = "error".to_string();
+                returning_req.message = "error".to_string();
             }
         }
-        Json(message)
+        Json(returning_req)
     } else if request.message_type == "node" {
-        Json(message)
+        Json(returning_req)
     } else {
-        Json(message)
+        Json(returning_req)
     }
 }
 async fn get_settings(State(state): State<Arc<RwLock<AppState>>>) -> impl IntoResponse {
@@ -1448,6 +1507,19 @@ fn routes_static(state: Arc<RwLock<AppState>>) -> Router<Arc<RwLock<AppState>>> 
 // }
 
 // #[axum::debug_handler] 
+async fn load_settings(arc_state: Arc<RwLock<AppState>>) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let mut state = arc_state.write().await;
+    let settings = match state.database.get_settings().await {
+        Ok(s) => s,
+        Err(_) =>return Err(Box::<dyn Error + Send + Sync>::from("Failed to load settings from database"))
+    };
+    // println!("Loading settings");
+    // println!("{:#?}", state.cached_status_type);
+    state.cached_status_type = settings.status_type;
+
+    Ok(())
+}
+
 async fn set_settings(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<IncomingMessageWithValue>,
@@ -1477,10 +1549,21 @@ async fn set_settings(
         Ok(s) => s,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    
+    let mut has_created = false;
     match state.database.set_settings(updated_settings).await {
-        Ok(_) => StatusCode::CREATED.into_response(),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Ok(_) => {
+            has_created = true
+        },
+        _ => {}
+    };
+    drop(state);
+    println!("Starting it");
+    load_settings(arc_state).await;
+    println!("past it");
+    if has_created {
+        StatusCode::CREATED.into_response()
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
     }
 }
 
@@ -1522,6 +1605,24 @@ async fn statistics(
     );
     Sse::new(updates).keep_alive(axum::response::sse::KeepAlive::default())
 }
+
+async fn check_channel_health(
+    tx: &broadcast::Sender<Vec<u8>>,
+    mut rx: broadcast::Receiver<Vec<u8>>,
+) -> bool {
+    match tx.send("ping".into()) {
+        Ok(_) => true,
+        Err(_) => return false,
+    };
+
+    match rx.recv().await {
+        Ok(_msg) => true, 
+        Err(broadcast::error::RecvError::Closed) => false,
+        Err(broadcast::error::RecvError::Lagged(_)) => true,
+    }
+}
+
+
 async fn ongoing_server_status(
     State(arc_state): State<Arc<RwLock<AppState>>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
@@ -1532,15 +1633,37 @@ async fn ongoing_server_status(
         (interval, state_clone),
         move |(mut interval, arc_state)| async move {
             interval.tick().await;
-
-            let status = arc_state.read().await.current_node.status.clone();
-            let status_str = match status {
-                Status::Up => "up",
-                Status::Healthy => "healthy",
-                Status::Down => "down",
-                Status::Unhealthy => "unhealthy",
-		_ => &String::new()
+            //println!("start");
+            let status = {
+                let mut state = arc_state.write().await;
+                if state.cached_status_type.is_empty() || state.cached_status_type == "server-keyword" {
+                    //println!("normal");
+                    arc_state.read().await.current_node.status.clone()
+                } else if state.cached_status_type == "server-process" {
+                    Status::Unknown
+                } else if state.cached_status_type == "node" {
+                   // println!("{:#?}", state.tcp_conn_status.clone());
+                    // if check_channel_health(&state.tcp_tx, state.tcp_rx.resubscribe()).await {
+                    //    // println!("up");
+                    //     state.tcp_conn_status = Status::Up
+                    // } else {
+                    //     //println!("down");
+                    //     state.tcp_conn_status = Status::Down
+                    // }
+                   state.tcp_conn_status.clone()
+                } else {
+                    Status::Unknown
+                }
             };
+           // println!("past");
+            let status_str = match status {
+                    Status::Up => "up",
+                    Status::Healthy => "healthy",
+                    Status::Down => "down",
+                    Status::Unhealthy => "unhealthy",
+                    Status::Unknown => "unknown",
+                    _ => &String::new()
+                };
 
             Some((Ok(Event::default().data(status_str)), (interval, arc_state)))
         },
@@ -1798,41 +1921,39 @@ async fn change_node(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<IncomingMessage>,
 ) -> Result<StatusCode, StatusCode> {
-    let mut state = arc_state.write().await;
-    let option_node = state.database.retrieve_nodes(request.message).await;
-    //println!("Starting to change node");
+    let option_node = {
+        let state = arc_state.read().await;
+        state.database.retrieve_nodes(request.message).await
+    };
 
     if let Some(node) = option_node {
         {
             let termination_payload = MessagePayload {
                 r#type: "conn_state".to_string(),
                 message: "end_conn".to_string(),
-                authcode: "0".to_string()
+                authcode: "0".to_string(),
             };
-            
-            if let Ok(termination_json) = serde_json::to_string(&termination_payload) {
-                let termination_bytes = termination_json.into_bytes();
-                if let Some(unwrapped_internal_stream) = &state.internal_tx {
-                    if let Err(e) = unwrapped_internal_stream.send(termination_bytes) {
-                        eprintln!("Failed to send termination signal: {}", e);
-                    } else {
-                        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-                    }
-                } else {
-                    println!("No stream found");
-                }
-            } else {
-                println!("Failed sending termination with parse");
+
+            let termination_bytes = serde_json::to_vec(&termination_payload).unwrap_or_default();
+
+            if let Some(tx) = &arc_state.read().await.internal_tx {
+                let _ = tx.send(termination_bytes);
             }
         }
-         
-        let bridge_rx = state.tcp_rx.resubscribe();
-        let bridge_tx = state.ws_tx.clone();
-        //drop(state);
-        //println!("Starting to connect to server");
+
+        let (new_tcp_tx, new_tcp_rx) = broadcast::channel::<Vec<u8>>(100);
         let (internal_tx, internal_rx) = broadcast::channel::<Vec<u8>>(100);
-        state.internal_rx = Some(internal_rx.resubscribe());
-        state.internal_tx = Some(internal_tx);
+
+        {
+            let mut state = arc_state.write().await;
+            state.tcp_tx = new_tcp_tx.clone();
+            state.tcp_rx = new_tcp_rx.resubscribe();
+            state.internal_tx = Some(internal_tx);
+            state.internal_rx = Some(internal_rx.resubscribe());
+        }
+
+        let bridge_rx = new_tcp_tx.subscribe();
+        let bridge_tx = arc_state.read().await.ws_tx.clone();
         let internal_stream = Some(internal_rx);
 
         if let Err(e) = connect_to_server(
@@ -1842,51 +1963,37 @@ async fn change_node(
             bridge_tx,
             internal_stream,
             true,
-            false
+            false,
         )
         .await
         {
             eprintln!("Connection task failed: {}", e);
         } else {
-            //let mut state = arc_state.write().await;
-            //println!("Changed node");
-            state.current_node = NodeAndTCP { 
-                name: node.nodename, 
-                ip: node.ip, 
+            let mut state = arc_state.write().await;
+            state.current_node = NodeAndTCP {
+                name: node.nodename,
+                ip: node.ip,
                 ..Default::default()
             };
-            let termination_payload = MessagePayload {
-                r#type: "conn_state".to_string(),
-                message: "end_conn".to_string(),
-                authcode: "0".to_string()
-            };
+
             let node_state_payload = MessagePayload {
                 r#type: "command".to_string(),
                 message: "server_state".to_string(),
-                authcode: "0".to_string()
+                authcode: "0".to_string(),
             };
-            if let Ok(node_state_json) = serde_json::to_string(&node_state_payload) {
-                let node_state_bytes = node_state_json.into_bytes();
-                if let Some(unwrapped_internal_stream) = &state.internal_tx {
-                    if let Err(e) = unwrapped_internal_stream.send(node_state_bytes) {
-                        eprintln!("Failed to send termination signal: {}", e);
-                    } else {
-                        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-                    }
-                } else {
-                    println!("No stream found");
-                }
-            } else {
-                println!("Failed sending termination with parse");
+            let node_state_bytes = serde_json::to_vec(&node_state_payload).unwrap_or_default();
+
+            if let Some(tx) = &state.internal_tx {
+                let _ = tx.send(node_state_bytes);
             }
         }
+
         Ok(StatusCode::OK)
     } else {
-        println!("Error");
+        println!("Error: node not found");
         Err(StatusCode::INTERNAL_SERVER_ERROR)
     }
 }
-
 async fn fetch_node(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<IncomingMessage>,

@@ -3,17 +3,17 @@ use std::fs;
 
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::Node;
-use k8s_openapi::api::core::v1::{PersistentVolume, PersistentVolumeClaim, Service};
 use k8s_openapi::api::core::v1::Pod;
+use k8s_openapi::api::core::v1::{PersistentVolume, PersistentVolumeClaim, Service};
 use serde_json::Value;
 
+use kube::api::ListParams;
 use kube::api::PostParams;
 use kube::Error::Api as ErrorApi;
-use kube::api::ListParams;
 use kube::{Api, Client};
 
-use crate::NodeType;
 use crate::NodeAndTCP;
+use crate::NodeType;
 //use crate::NodeStatus;
 use crate::Status;
 
@@ -54,8 +54,8 @@ pub async fn list_node_info(client: Client) -> Result<Vec<NodeAndTCP>, Box<dyn E
                         result.push(NodeAndTCP {
                             name,
                             ip,
-			    gameserver: Value::String(String::new()),
-			    status: Status::Unknown,
+                            gameserver: Value::String(String::new()),
+                            status: Status::Unknown,
                             nodetype: NodeType::InbuiltWithString(nodetype),
                             tcp_tx: None,
                             tcp_rx: None,
@@ -80,7 +80,9 @@ pub async fn verify_is_k8s_node(
         if let Some(status) = node.status {
             if let Some(addresses) = status.addresses {
                 for addr in addresses {
-                    if (addr.type_ == "InternalIP" || addr.type_ == "ExternalIP") && addr.address == ip {
+                    if (addr.type_ == "InternalIP" || addr.type_ == "ExternalIP")
+                        && addr.address == ip
+                    {
                         return Ok(true);
                     }
                 }
@@ -110,7 +112,6 @@ pub async fn verify_is_k8s_pod(
 
     Ok(false)
 }
-
 
 pub async fn list_node_names(client: Client) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let nodes: Api<Node> = Api::all(client);

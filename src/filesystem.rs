@@ -846,7 +846,7 @@ impl<S: FsType> RemoteFileSystem<S> {
                     .optional_folder_children
                     .unwrap_or(0);
 
-                let chunk_size = ((dir_item_count as f64) / 2.0).ceil() as u64; 
+                let chunk_size = ((dir_item_count as f64) / 2.0).ceil() as u64;
 
                 let mut all_entries = Vec::new();
                 let mut start = 0;

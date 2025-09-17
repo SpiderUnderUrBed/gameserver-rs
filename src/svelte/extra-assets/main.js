@@ -30,6 +30,7 @@ class ServerConsole {
     this.loadTopmostButtonsLinks();
     this.setStatuses();
     this.loadFileUpload();
+    this.updateStatus("up", false)
 
     window.showStatusDialog = () => this.showStatusDialog();
     window.fetchNodes = () => this.fetchNodes();
@@ -687,6 +688,19 @@ async changeNode(node) {
       const nodeip = document.getElementById('nodeip').value;
       const nodetype = document.getElementById('nodetype-selector').value;
       const jwt = "";
+      const json_response = JSON.stringify({
+                element: {
+                    kind: "Node",
+                    data: {
+                        nodename, 
+                        ip: nodeip, 
+                        nodetype, 
+                        nodestatus: { kind: "enabled", data: null }
+                    }
+                },
+                jwt,
+                require_auth: true
+            });
 
       try {
         const response = await fetch(`${this.basePath}/api/addnode`, {
@@ -694,19 +708,7 @@ async changeNode(node) {
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({
-                element: {
-                    kind: "Node",
-                    data: {
-                        nodename, 
-                        ip: nodeip, 
-                        nodetype: { kind: nodetype, data: null }, 
-                        nodestatus: { kind: "Enabled", data: null }
-                    }
-                },
-                jwt,
-                require_auth: true
-            })
+            body: json_response
         });
           // To be clear, just because its set to true at this point in the code, does not mean it gets to 
           // demand the server to not require auth to prevent spoofing, the only time it respects that request is if its
