@@ -44,7 +44,7 @@ use tokio::sync::{mpsc, RwLock};
 
 // mod databasespec;
 // use databasespec::UserDatabase;
-use crate::database::databasespec::{ButtonsDatabase, Server, ServerDatabase, Settings, SettingsDatabase};
+use crate::database::databasespec::{ButtonsDatabase, K8sType, Server, ServerDatabase, Settings, SettingsDatabase};
 use crate::database::databasespec::NodeType;
 use crate::database::databasespec::NodesDatabase;
 use crate::database::databasespec::UserDatabase;
@@ -284,6 +284,7 @@ struct NodeAndTCP {
     ip: String,
     status: Status,
     nodetype: NodeType,
+    k8s_type: K8sType,
     gameserver: Value,
     tcp_tx: Option<tokio::sync::broadcast::Sender<Vec<u8>>>,
     tcp_rx: Option<tokio::sync::broadcast::Receiver<Vec<u8>>>,
@@ -298,6 +299,7 @@ impl Clone for NodeAndTCP {
             gameserver: self.gameserver.clone(),
             tcp_tx: self.tcp_tx.clone(),
             tcp_rx: self.tcp_tx.as_ref().map(|tx| tx.subscribe()),
+            k8s_type: self.k8s_type.clone(),
         }
     }
 }
@@ -393,14 +395,15 @@ struct SrcAndDest {
 enum ApiCalls {
     None,
     Capabilities(Vec<String>),
-    NodeList(Vec<String>),
+    NodeDataList(Vec<Node>),
+    //NodeList(Vec<String>),
     UserData(LoginData),
-    UserList(Vec<User>),
-    ServerList(Vec<Server>),
-    ButtonList(Vec<Button>),
+    UserDataList(Vec<User>),
+    ServerDataList(Vec<Server>),
+    ButtonDataList(Vec<Button>),
     IncomingMessage(IncomingMessage),
     IncomingMessageWithMetadata(IncomingMessageWithMetadata),
-    FileList(Vec<FsItem>),
+    FileDataList(Vec<FsItem>),
     Node(Node),
 }
 
@@ -493,6 +496,7 @@ impl Clone for AppState {
                     nodetype: node.nodetype.clone(),
                     status: node.status.clone(),
                     gameserver: node.gameserver.clone(),
+                    k8s_type: node.k8s_type.clone(),
                 })
                 .collect(),
             cached_status_type: String::new(),
@@ -675,13 +679,7 @@ pub async fn handle_stream(
                                             let state_guard = arc_state.read().await;
                                             if let Some(client) = &state_guard.client {
                                                 if kubernetes::verify_is_k8s_gameserver(client.clone(), ip.to_string()).await? {
-                                                    if kubernetes::verify_is_k8s_pod(client, ip.to_string()).await? {
-                                                        NodeType::CustomPod
-                                                    } else if kubernetes::verify_is_k8s_node(client, ip.to_string()).await? {
-                                                        NodeType::CustomNode
-                                                    } else {
-                                                        NodeType::Unknown
-                                                    }
+                                                    NodeType::Inbuilt
                                                 } else {
                                                     NodeType::Custom
                                                 }
@@ -690,6 +688,24 @@ pub async fn handle_stream(
                                             }
                                         }, 
                                         nodestatus: node_status,
+                                        k8s_type: {
+                                            let state_guard = arc_state.read().await;
+                                            if let Some(client) = &state_guard.client {
+                                                if kubernetes::verify_is_k8s_gameserver(client.clone(), ip.to_string()).await? {    
+                                                    if kubernetes::verify_is_k8s_pod(client, ip.to_string()).await? {
+                                                        K8sType::Pod
+                                                    } else if kubernetes::verify_is_k8s_node(client, ip.to_string()).await? {
+                                                        K8sType::Node
+                                                    } else {
+                                                        K8sType::Unknown
+                                                    }
+                                                } else {
+                                                    K8sType::None
+                                                }
+                                            } else {
+                                                K8sType::Unknown
+                                            }
+                                        },
                                     };
 
                                     if !nodes.iter().any(|n| n.ip == node.ip && n.nodename == node.nodename) {
@@ -1279,7 +1295,7 @@ async fn get_buttons(State(state): State<Arc<RwLock<AppState>>>) -> impl IntoRes
         Err(err) => eprintln!("Error fetching DB buttons: {}", err),
     }
     Json(List {
-        list: ApiCalls::ButtonList(button_list),
+        list: ApiCalls::ButtonDataList(button_list),
     })
 }
 
@@ -1557,9 +1573,9 @@ async fn set_settings(
         _ => {}
     };
     drop(state);
-    println!("Starting it");
+    //println!("Starting it");
     load_settings(arc_state).await;
-    println!("past it");
+    //println!("past it");
     if has_created {
         StatusCode::CREATED.into_response()
     } else {
@@ -1635,26 +1651,21 @@ async fn ongoing_server_status(
             interval.tick().await;
             //println!("start");
             let status = {
-                let mut state = arc_state.write().await;
+                let state = arc_state.read().await;
+
+
                 if state.cached_status_type.is_empty() || state.cached_status_type == "server-keyword" {
-                    //println!("normal");
-                    arc_state.read().await.current_node.status.clone()
+                    state.current_node.status.clone()
                 } else if state.cached_status_type == "server-process" {
                     Status::Unknown
                 } else if state.cached_status_type == "node" {
-                   // println!("{:#?}", state.tcp_conn_status.clone());
-                    // if check_channel_health(&state.tcp_tx, state.tcp_rx.resubscribe()).await {
-                    //    // println!("up");
-                    //     state.tcp_conn_status = Status::Up
-                    // } else {
-                    //     //println!("down");
-                    //     state.tcp_conn_status = Status::Down
-                    // }
-                   state.tcp_conn_status.clone()
+                    state.tcp_conn_status.clone()
                 } else {
                     Status::Unknown
                 }
             };
+
+            //println!("{:#?}", status);
            // println!("past");
             let status_str = match status {
                     Status::Up => "up",
@@ -1914,7 +1925,7 @@ async fn users(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(List {
-        list: ApiCalls::UserList(users),
+        list: ApiCalls::UserDataList(users),
     }))
 }
 async fn change_node(
@@ -2049,10 +2060,17 @@ async fn get_nodes(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl IntoR
         }
     }
 
-    let node_name_list: Vec<String> = node_list.into_iter().map(|node| node.name).collect();
+    //let node_name_list: Vec<String> = node_list.into_iter().map(|node| node.name).collect();
+    let regular_node_list: Vec<Node> = node_list.into_iter().map(|node_and_tcp| Node {
+        nodename: node_and_tcp.name,
+        ip: node_and_tcp.ip,
+        nodestatus: NodeStatus::Unknown,
+        nodetype: node_and_tcp.nodetype,
+        k8s_type: node_and_tcp.k8s_type,
+    }).collect();
 
     Json(List {
-        list: ApiCalls::NodeList(node_name_list),
+        list: ApiCalls::NodeDataList(regular_node_list),
     })
 }
 
@@ -2061,7 +2079,7 @@ async fn get_servers(State(arc_state): State<Arc<RwLock<AppState>>>) -> Result<J
     match state.database.fetch_all_servers().await {
         Ok(servers) => {
             Ok(Json(List {
-                list: ApiCalls::ServerList(servers)
+                list: ApiCalls::ServerDataList(servers)
             }))    
         },
         Err(_) => {
@@ -2468,7 +2486,7 @@ pub async fn get_files(
     }
 
     Json(List {
-        list: ApiCalls::FileList(items),
+        list: ApiCalls::FileDataList(items),
     })
     .into_response()
 }

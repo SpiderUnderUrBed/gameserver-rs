@@ -393,13 +393,13 @@ impl NodesDatabase for Database {
         Ok(database.nodes.iter().find(|node| node.nodename == nodename).cloned())
     }
     async fn create_nodes_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
-        if let Element::Node(Node { nodename, ip, nodetype, nodestatus }) = element.element {
+        if let Element::Node(Node { nodename, ip, nodetype, nodestatus, k8s_type }) = element.element {
             let mut database = self.get_database().await?;
     
             if database.nodes.iter().any(|node| node.nodename == nodename) || (nodetype == NodeType::Custom && ip.is_empty()){
                 return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
             } else {
-                let final_node = Node {nodename,ip,nodetype, nodestatus };
+                let final_node = Node {nodename,ip,nodetype, nodestatus, k8s_type };
                 database.nodes.push(final_node.clone());
             }
         

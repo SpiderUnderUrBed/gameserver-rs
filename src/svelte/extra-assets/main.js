@@ -67,7 +67,10 @@ class ServerConsole {
     }
   }
   async refreshStatus() {
-
+    this.updateStatus("none", false);
+    // console.log("refreshing status");
+    // this.setStatuses();
+    // console.log("refreshing status");
   }
 
   async changeStatusColorsTo(type) {
@@ -301,11 +304,20 @@ async changeNode(node) {
             .getElementById("node-element-inner-template")
             .content.cloneNode(true);
 
-          clone.getElementById("node-dialog-name").textContent = node;
+          clone.getElementById("node-dialog-name").textContent = node.nodename;
+
+          //console.log("k8s node type", node.k8s_type)
+          if (node.k8s_type.toLowerCase() == "unknown" || node.k8s_type.toLowerCase() == "none") {
+            button.style.backgroundColor = "brown";
+          } else if (node.k8s_type.toLowerCase() == "pod"){
+            button.style.backgroundColor = "blue";
+          } else if (node.k8s_type.toLowerCase() == "node"){
+            button.style.backgroundColor = "green";
+          }
           button.appendChild(clone);
 
           button.addEventListener("click", () => {
-            this.openNodeDialog(node); 
+            this.openNodeDialog(node.nodename); 
           });
 
           nodesBar.appendChild(button);
@@ -887,12 +899,15 @@ async changeNode(node) {
   updateStatus(state, await) {
     const loading = document.getElementById("loading");
     let server_status = document.getElementById("server-status-indicator");
+    //console.log("b");
     if (state != "none" && await) {
       loading.style.display = "block";
     }
     const statusEvent = new EventSource(`${this.basePath}/api/awaitserverstatus`);
+    //console.log("a");
     statusEvent.onmessage = (e) => {
       //console.log(e.data)
+      //console.log(e.data);
       if ((e.data == "healthy" || e.data == "up") && state == "up"){
         loading.style.display = "none";
       } else if (e.data == "down" && state == "down"){

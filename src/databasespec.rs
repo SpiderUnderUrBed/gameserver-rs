@@ -1,4 +1,6 @@
 use async_trait::async_trait;
+#[cfg(any(feature = "full-stack", feature = "database"))]
+use std::default;
 // use sqlx::Error;
 use std::fmt;
 use std::error::Error;
@@ -157,25 +159,70 @@ pub enum NodeStatus {
     ImmutablyEnabled,
     ImmutablyDisabled,
 }
-//`
+//
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub enum K8sType {
+    Node,
+    Pod,
+    #[default]
+    None,
+    Unknown
+}
+
+#[cfg(any(feature = "full-stack", feature = "database"))]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, sqlx::Type)]
+// #[sqlx(type_name = "node_status", rename_all = "snake_case")]
+#[sqlx(type_name = "text")]
+#[serde(rename_all = "snake_case", tag = "kind", content = "data")]
+pub enum K8sType {
+    Node,
+    Pod,
+    #[default]
+    None,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 pub enum NodeType {
     #[default]
     Unknown,
     Custom,
-    CustomNode,
-    CustomPod,
+    // CustomNode,
+    // CustomPod,
     CustomWithString(String),
-    CustomPodWithString(String),
-    CustomNodeWithString(String),
-    InbuiltNodeWithString(String),
-    InbuiltPodWithString(String),
+    // CustomPodWithString(String),
+    // CustomNodeWithString(String),
+    // InbuiltNodeWithString(String),
+    // InbuiltPodWithString(String),
     InbuiltWithString(String),
-    InbuiltNode,
-    InbuiltPod,
+    // InbuiltNode,
+    // InbuiltPod,
     Inbuilt,
     Main
 }
+
+#[cfg(any(feature = "full-stack", feature = "database"))]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, sqlx::Type)]
+// #[sqlx(type_name = "node_status", rename_all = "snake_case")]
+#[sqlx(type_name = "text")]
+#[serde(rename_all = "snake_case", tag = "kind", content = "data")]
+pub enum NodeType {
+    #[default]
+    Unknown,
+    Custom,
+    // CustomNode,
+    // CustomPod,
+    CustomWithString(String),
+    // CustomPodWithString(String),
+    // CustomNodeWithString(String),
+    // InbuiltNodeWithString(String),
+    // InbuiltPodWithString(String),
+    InbuiltWithString(String),
+    // InbuiltNode,
+    // InbuiltPod,
+    Inbuilt,
+    Main
+}
+
 
 
 #[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
@@ -268,7 +315,8 @@ pub struct Node {
     pub nodename: String,
     pub ip: String,
     pub nodestatus: NodeStatus,
-    pub nodetype: NodeType
+    pub nodetype: NodeType,
+    pub k8s_type: K8sType
 }
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
