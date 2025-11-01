@@ -27,6 +27,13 @@ You no longer need to run npm install and build when setting it up
 Thats it!
 **If you want a single deployment which would pull the image from dockerhub, it is not avalible at the moment**, which is why you have to use the registry, I plan on uploading it as soon as this project gains a tiny bit of traction
 
+Running it on the host system (not kubernetes):
+```
+$ chmod +x install.sh
+$ ./install.sh
+```
+This is the simplest way to install it, but you lose some features you would have have on kubernetes
+
 Running it for testing: \
 Given that the docker file uses cargo-watch, as long as you edited the deployment to mount the project directory directly to its proper position, you should be able to test this normally, but this project also supports being ran on a host, just run:
 ```

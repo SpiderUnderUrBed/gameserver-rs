@@ -385,7 +385,7 @@ impl NodesDatabase for Database {
         database.unwrap().nodes.iter().find(|node| node.nodename == nodename).cloned()
     }
     async fn fetch_all_nodes(&self) -> Result<Vec<Node>, Box<dyn Error + Send + Sync>> {
-        let database = self.get_database().await?;
+        let database: JsonBackendContent = self.get_database().await?;
         Ok(database.nodes)
     }
     async fn get_from_nodes_database(&self, nodename: &str) -> Result<Option<Node>, Box<dyn Error + Send + Sync>> {
