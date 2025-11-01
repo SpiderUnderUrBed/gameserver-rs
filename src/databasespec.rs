@@ -67,7 +67,8 @@ pub enum Element {
     },
     Node(Node),
     Button(Button),
-    Server(Server)
+    Server(Server),
+    Intergration(Intergration)
 }
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ModifyElementData {
@@ -223,7 +224,24 @@ pub enum NodeType {
     Main
 }
 
+#[cfg(any(feature = "full-stack", feature = "database"))]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, sqlx::Type)]
+// #[sqlx(type_name = "node_status", rename_all = "snake_case")]
+#[sqlx(type_name = "text")]
+#[serde(rename_all = "lowercase", tag = "kind", content = "data")]
+pub enum Intergrations {
+    Minecraft,
+    Other(String)
+}
 
+#[serde(rename_all = "lowercase")]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub enum Intergrations {
+    Minecraft,
+    Other(String),
+    #[default]
+    Unknown
+}
 
 #[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
 impl Type<Postgres> for NodeType {
@@ -281,6 +299,17 @@ impl ToString for NodeType {
     }
 }
 
+impl FromStr for Intergrations {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "minecraft" => Intergrations::Minecraft,
+            "unknown" => Intergrations::Unknown,
+            _ => Intergrations::Unknown,
+        })
+    }
+}
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
 #[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize)]
@@ -326,6 +355,22 @@ pub struct Button {
     pub link: String,
     pub r#type: String
     //CustomType
+}
+
+#[cfg(any(feature = "full-stack", feature = "database"))]
+#[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize, PartialEq)]
+pub struct Intergration {
+   // name: String,
+    pub status: String,
+    pub r#type: Intergrations
+}
+
+#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Intergration {
+   // name: String,
+    pub status: String,
+    pub r#type: Intergrations
 }
 
 
@@ -397,4 +442,13 @@ pub trait ButtonsDatabase {
     async fn reset_buttons(&self) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
     async fn get_from_buttons_database(&self, name: &str) -> Result<Option<Button>, Box<dyn Error + Send + Sync>>;
     async fn edit_button_in_db(&self, button: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+}
+
+pub trait IntergrationsDatabase {
+    async fn retrieve_intergrations(&self, intergration: String) -> Option<Intergration>;
+    async fn fetch_all_intergrations(&self) -> Result<Vec<Intergration>, Box<dyn Error + Send + Sync>>;
+    async fn get_from_intergrations_database(&self, intergration: &str) -> Result<Option<Intergration>, Box<dyn Error + Send + Sync>>;
+    async fn create_intergrations_in_db(&self, intergration: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn remove_intergrations_in_db(&self, intergration: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn edit_intergrations_in_db(&self, intergration: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
 }

@@ -9,7 +9,7 @@ use std::{net::SocketAddr, path::Path, sync::Arc};
 // Axum is the routing framework, and the backbone to this project helping intergrate the backend with the frontend
 // and the general api, redirections, it will take form data and queries and make it easily accessible
 // I also use axum_login to take off alot of effort that would be required for authentication
-use crate::database::Element;
+use crate::database::{DatabaseError, Element};
 use crate::filesystem::{send_multipart_over_broadcast, FsType};
 use crate::http::HeaderMap;
 use crate::kubernetes::verify_is_k8s_gameserver;
@@ -44,7 +44,8 @@ use tokio::sync::{mpsc, RwLock};
 
 // mod databasespec;
 // use databasespec::UserDatabase;
-use crate::database::databasespec::{ButtonsDatabase, K8sType, Server, ServerDatabase, Settings, SettingsDatabase};
+use crate::database::databasespec::Intergration;
+use crate::database::databasespec::{ButtonsDatabase, IntergrationsDatabase, K8sType, Server, ServerDatabase, Settings, SettingsDatabase};
 use crate::database::databasespec::NodeType;
 use crate::database::databasespec::NodesDatabase;
 use crate::database::databasespec::UserDatabase;
@@ -397,6 +398,7 @@ enum ApiCalls {
     Capabilities(Vec<String>),
     NodeDataList(Vec<Node>),
     //NodeList(Vec<String>),
+    IntergrationsDataList(Vec<Intergration>),
     UserData(LoginData),
     UserDataList(Vec<User>),
     ServerDataList(Vec<Server>),
@@ -1146,6 +1148,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/statistics", get(statistics))
         .route("/api/getsettings", get(get_settings))
         .route("/api/awaitserverstatus", get(ongoing_server_status))
+        .route("/api/intergrations", get(get_integrations))
+        .route("/api/createintergrations", post(create_intergration))
+        .route("/api/modifyintergrations", post(modify_intergration))
+        .route("/api/deleteintergrations", post(delete_intergration))
         .route("/api/refreshstatus", post(refresh_status))
         .route("/api/setsettings", post(set_settings))
         .route("/api/changenode", post(change_node))
@@ -1193,6 +1199,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     Ok(())
 }
+
 
 // async fn uploadcontent(
 //     State(arc_state): State<Arc<RwLock<AppState>>>,
@@ -1707,6 +1714,120 @@ async fn add_server(
         .await
         .map_err(|e| StatusCode::INTERNAL_SERVER_ERROR);
     result
+}
+
+async fn get_integrations(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+) -> impl IntoResponse {
+    let state = arc_state.write().await;
+
+    let result = state
+        .database
+        .fetch_all_intergrations()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR); 
+
+    match result {
+        Ok(intergrations) => (
+            StatusCode::OK,
+            Json(List {
+                list: ApiCalls::IntergrationsDataList(intergrations),
+            }),
+        )
+            .into_response(),
+
+        Err(status) => status.into_response(), 
+    }
+}
+
+//modify_intergration
+async fn modify_intergration(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    Json(request): Json<ModifyElementData>,
+) -> impl IntoResponse {
+    let state = arc_state.write().await;
+    
+    match state.database.edit_intergrations_in_db(request).await {
+        Ok(status_code) => {
+            (status_code, Json(serde_json::json!({
+                "success": true,
+                "message": "Integration modified successfully"
+            }))).into_response()
+        }
+        Err(e) => {
+            //eprintln!("Database error: {:#?}", e);
+            
+            let status_code = if let Some(db_err) = e.downcast_ref::<DatabaseError>() {
+                db_err.0
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            
+            let error_message = match status_code {
+                StatusCode::NOT_FOUND => "Integration not found",
+                StatusCode::BAD_REQUEST => "Invalid request data",
+                _ => "Internal server error"
+            };
+            
+            (status_code, Json(serde_json::json!({
+                "success": false,
+                "error": error_message
+            }))).into_response()
+        }
+    }
+}
+
+async fn delete_intergration(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    Json(request): Json<ModifyElementData>,
+) -> impl IntoResponse {
+    let state = arc_state.write().await;
+    let result = state
+        .database
+        .remove_intergrations_in_db(request)
+        .await
+        .map_err(|e| {
+            println!("{:#?}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        });
+    result
+}
+async fn create_intergration(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    Json(request): Json<ModifyElementData>,
+) -> impl IntoResponse {
+    //println!("Received request: {:#?}", request);
+    let state = arc_state.write().await;
+    
+    match state.database.create_intergrations_in_db(request).await {
+        Ok(status_code) => {
+            (status_code, Json(serde_json::json!({
+                "success": true,
+                "message": "Integration created successfully"
+            }))).into_response()
+        }
+        Err(e) => {
+            // eprintln!("Database error: {:#?}", e);
+            // eprintln!("Error source: {:?}", e.source());
+            
+            let status_code = if let Some(db_err) = e.downcast_ref::<DatabaseError>() {
+                db_err.0
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            
+            let error_message = match status_code {
+                StatusCode::CONFLICT => "Integration already exists",
+                StatusCode::BAD_REQUEST => "Invalid request data",
+                _ => "Internal server error"
+            };
+            
+            (status_code, Json(serde_json::json!({
+                "success": false,
+                "error": error_message
+            }))).into_response()
+        }
+    }
 }
 
 // delegate user creation to the DB and return with relevent status code

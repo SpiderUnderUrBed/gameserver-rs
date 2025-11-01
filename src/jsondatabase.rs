@@ -14,6 +14,9 @@ use std::io::Write;
 use std::io::Read;
 use std::collections::HashMap;
 
+use crate::database::databasespec::Intergration;
+use crate::database::databasespec::Intergrations;
+use crate::database::databasespec::IntergrationsDatabase;
 use crate::database::databasespec::Server;
 use crate::database::databasespec::ServerDatabase;
 use crate::database::databasespec::Settings;
@@ -37,6 +40,7 @@ pub struct JsonBackendContent {
     pub nodes: Vec<Node>,
     pub servers: Vec<Server>,
     pub buttons: Vec<Button>,
+    pub intergrations: Vec<Intergration>,
     pub toggled_buttons: Vec<Button>,
     pub settings: Settings
     //pub buttons: HashMap<String, Node>
@@ -88,6 +92,7 @@ impl Default for JsonBackendContent {
             users: vec![],
             nodes: vec![],
             servers: vec![],
+            intergrations: vec![],
             buttons: default_button_list.clone(),
             toggled_buttons: default_button_list,
             settings: Settings::default()
@@ -488,5 +493,66 @@ impl SettingsDatabase for Database {
     async fn get_settings(&self) ->  Result<Settings, Box<dyn Error + Send + Sync>> {
         let database = self.get_database().await?;
         Ok(database.settings)
+    }
+}
+
+impl IntergrationsDatabase for Database {
+    async fn retrieve_intergrations(&self, intergration_str: String) -> Option<Intergration> {
+        let intergration_type = intergration_str.parse::<Intergrations>().unwrap();
+         let database = self.get_database().await;
+        database.unwrap().intergrations.iter().find(|integration| integration.r#type == intergration_type).cloned()
+    }
+    async fn fetch_all_intergrations(&self) -> Result<Vec<Intergration>, Box<dyn Error + Send + Sync>> {
+        let database = self.get_database().await?;
+        Ok(database.intergrations)
+    }
+    async fn get_from_intergrations_database(&self, intergration_str: &str) -> Result<Option<Intergration>, Box<dyn Error + Send + Sync>> {
+        let intergration_type = intergration_str.parse::<Intergrations>().unwrap();
+        let database = self.get_database().await?;
+        Ok(database.intergrations.iter().find(|integrations| integrations.r#type == intergration_type).cloned())  
+    }
+    async fn create_intergrations_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+        if let Element::Intergration(Intergration { status, r#type }) = element.element {
+            let mut database = self.get_database().await?;
+            
+            if database.intergrations.iter().any(|intergration| intergration.r#type == r#type) {
+                return Err(Box::new(DatabaseError(StatusCode::CONFLICT)));
+            } else {
+                let intergration = Intergration { r#type, status };
+                database.intergrations.push(intergration.clone());
+            }
+            
+            self.write_database(database).await;  
+            Ok(StatusCode::CREATED)
+        } else {
+            Err(Box::new(DatabaseError(StatusCode::BAD_REQUEST)))
+        }
+    }
+    async fn remove_intergrations_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+        let mut database = self.get_database().await?;
+        if let Element::Intergration(Intergration { status, r#type }) = element.element {
+            database.intergrations.retain(|db_intergration| db_intergration.r#type != r#type);
+        } else {
+            return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
+        }
+
+        self.write_database(database).await;
+
+        Ok(StatusCode::CREATED)
+    }
+    async fn edit_intergrations_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+        if let Element::Intergration(Intergration { status, r#type }) = element.element {
+            let mut database = self.get_database().await?;
+            if let Some(db_intergration) = database.intergrations.iter_mut().find(|db_intergration| db_intergration.r#type == r#type) {
+                // db_server.user_perms = user_perms.clone();
+                // db_server.username = user.clone();
+                db_intergration.status = status;
+            }   
+
+            self.write_database(database).await;
+            Ok(StatusCode::CREATED)
+        } else {
+            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+        }
     }
 }
