@@ -37,6 +37,25 @@ aside button {
   cursor: pointer;
 }
 
+.intergration-spacer {
+  display: none;
+  width: 20svw;
+}
+.intergrations-features {
+  display: none;
+  width: 100svw;
+  background-color: blue;
+}
+.tooltip {
+  display: none;
+  position: absolute;
+  background-color: #333;
+  color: white;
+  padding: 5px 10px;
+  border-radius: 5px;
+  font-size: 14px;
+  z-index: 1000;
+}
 .server-status-indicator {
   background-color: grey;
   width: 2svw;

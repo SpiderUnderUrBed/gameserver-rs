@@ -23,6 +23,7 @@ class ServerConsole {
   }
 
   initialize() {
+    this.checkIntergrations();
     this.setupInputListener();
     this.connectWebSocket();
     this.fetchNodes();
@@ -31,7 +32,8 @@ class ServerConsole {
     this.setStatuses();
     this.loadFileUpload();
     this.updateStatus("up", false)
-
+    this.tooltipHandlers();
+    
     window.showStatusDialog = () => this.showStatusDialog();
     window.fetchNodes = () => this.fetchNodes();
     window.showServerDialog = () => this.showServerDialog();
@@ -58,6 +60,75 @@ class ServerConsole {
     window.refreshStatus = () => this.refreshStatus();
     window.toggleServerStatuses = () => this.toggleServerStatuses();
   }
+    async tooltipHandlers(){
+      const tooltipTriggers = document.querySelectorAll('[data-tooltip]');
+      let currentTooltip = null; 
+
+      tooltipTriggers.forEach(trigger => {
+        trigger.addEventListener('mouseenter', async (event) => {
+          if (!currentTooltip) {
+            currentTooltip = document.createElement('div');
+            currentTooltip.classList.add('tooltip');
+            document.body.appendChild(currentTooltip);
+          }
+          //const dataEntries = Object.entries(trigger.dataset);
+          let new_text = trigger.dataset.tooltip;
+          if ('playercount' in trigger.dataset) {
+            try {
+              const response = await fetch(`${this.basePath}/api/mclist`);
+              if (response.ok) {
+                let data = await response.json()
+                //console.log(data)
+                let playercount = data.users.length;
+                if (data.users[0] == "") {
+                  playercount -= 1
+                }
+                new_text = new_text.replace("%%", playercount)
+              }
+            } catch (e) {
+              console.log(e)
+            }
+          }
+
+          currentTooltip.textContent = new_text;
+
+          const rect = trigger.getBoundingClientRect();
+          currentTooltip.style.left = `${rect.left + window.scrollX}px`;
+          currentTooltip.style.top = `${rect.bottom + window.scrollY + 5}px`; 
+
+          currentTooltip.style.display = 'block';
+        });
+
+        trigger.addEventListener('mouseleave', () => {
+          if (currentTooltip) {
+            currentTooltip.style.display = 'none';
+          }
+        });
+      });
+  }
+  async checkIntergrations(){
+      try {
+        const response = await fetch(`${this.basePath}/api/intergrations`);
+        const data = await response.json();
+        const intergrations = data.list?.data || [];
+        console.log(data)
+        intergrations.forEach(intergration => {
+          console.log(intergration)
+          // console.log(intergration.type)
+          // console.log(intergration.status)
+          if (intergration.type == "minecraft" && intergration.status == "enabled"){
+            console.log('intergration is enabled')
+            let intergration_elements = document.getElementById('intergrations-features'); 
+            let intergration_spacer = document.getElementById('intergration-spacer');
+            intergration_elements.style.display = 'block';
+            intergration_spacer.style.display = 'block';
+          }
+        })
+      } catch (e) {
+        console.error(e)
+      }
+  }
+
   async toggleServerStatuses(){
     let display = document.getElementById('serverStatuses').style.display;
     if (display == "none") {

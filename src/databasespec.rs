@@ -80,10 +80,26 @@ pub struct ModifyElementData {
 }
 
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
-#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+// #[derive(Debug, Deserialize, Serialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Settings {
     pub(crate) toggled_default_buttons: bool,
-    pub(crate) status_type: String
+    pub(crate) status_type: String,
+    pub(crate) enabled_rcon: bool,
+    pub(crate) rcon_url: String,
+    pub(crate) rcon_password: String
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self { 
+            toggled_default_buttons: Default::default(), 
+            status_type: Default::default(), 
+            enabled_rcon: true, 
+            rcon_url: "localhost:25575".to_string(), 
+            rcon_password: "testing".to_string()
+        }
+    }
 }
 
 #[cfg(any(feature = "full-stack", feature = "database"))]

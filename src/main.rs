@@ -42,6 +42,8 @@ use serde::de::{self, DeserializeOwned};
 use tokio::fs::File;
 use tokio::sync::{mpsc, RwLock};
 
+use rcon::Connection;
+
 // mod databasespec;
 // use databasespec::UserDatabase;
 use crate::database::databasespec::Intergration;
@@ -277,6 +279,11 @@ struct MessagePayload {
     message: String,
     authcode: String,
 }
+#[derive(Debug, Serialize, Deserialize)]
+struct UnauthenticatedMessagePayload {
+    r#type: String,
+    message: String,
+}
 
 // #[derive(PartialEq)]
 #[derive(Default)]
@@ -463,6 +470,7 @@ struct AppState {
     client: Option<Client>,
     database: database::Database,
     cached_status_type: String,
+    rcon_connection: Option<Arc<Mutex<Connection<TcpStream>>>>,
     //sysinfo: System
 }
 impl Clone for AppState {
@@ -502,6 +510,7 @@ impl Clone for AppState {
                 })
                 .collect(),
             cached_status_type: String::new(),
+            rcon_connection: self.rcon_connection.clone(),
         }
     }
 }
@@ -1033,6 +1042,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (internal_tx, internal_rx) = broadcast::channel::<Vec<u8>>(100);
     let internal_stream = Some(internal_rx.resubscribe());
 
+    let mut rcon_connection: Option<Arc<Mutex<Connection<TcpStream>>>> = None;
+    if let Ok(retrived_db) = database.get_settings().await {
+        if (retrived_db.enabled_rcon) {
+            rcon_connection = match Connection::builder()
+                .enable_minecraft_quirks(true)
+                .connect(&retrived_db.rcon_url, &retrived_db.rcon_password)
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)
+                //)))
+                {
+                    Ok(conn) => Some(Arc::new(Mutex::new(conn))),
+                    Err(e) => {
+                        eprintln!("Failed to connect to RCON: {}", e);
+                        None
+                        // Connection stays None
+                    }
+                //retrived_db
+                }
+        }
+    }
+
     // use everything so far to make the app state
     let mut state: AppState = AppState {
         //gameserver: json!({}),
@@ -1049,7 +1079,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         client,
         additonal_node_tcp: nodes,
         tcp_conn_status: Status::Unknown,
-        cached_status_type: String::new()
+        cached_status_type: String::new(),
+        rcon_connection
         //sysinfo: System::new_all()
     };
     state.tcp_conn_status = {
@@ -1152,6 +1183,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/createintergrations", post(create_intergration))
         .route("/api/modifyintergrations", post(modify_intergration))
         .route("/api/deleteintergrations", post(delete_intergration))
+        // Actual intergrations
+        .route("/api/rconcommand", post(rcon_command))
+        // End of actual intergrations
         .route("/api/refreshstatus", post(refresh_status))
         .route("/api/setsettings", post(set_settings))
         .route("/api/changenode", post(change_node))
@@ -1199,7 +1233,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     Ok(())
 }
-
+pub async fn rcon_command(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    Json(request): Json<IncomingMessage>,
+) -> impl IntoResponse {
+    ensure_rcon(Arc::clone(&arc_state)).await.map_err(|_| return StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    let state = arc_state.write().await;
+    if let Some(arc_conn) = &state.rcon_connection {
+        let mut conn = arc_conn.lock().await;
+        let response = conn.cmd(&request.message).await.map_err(|_| return StatusCode::INTERNAL_SERVER_ERROR.into_response());
+        Json(UnauthenticatedMessagePayload {
+            r#type: "rcon_response".to_string(),
+            message: response.unwrap(),
+        }).into_response()
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    }
+}
+pub async fn ensure_rcon(arc_state: Arc<RwLock<AppState>>) -> Result<(), String>{
+    let state = arc_state.write().await;
+    if state.rcon_connection.is_none(){
+    let mut rcon_connection: Arc<Mutex<Connection<TcpStream>>>;
+        if let Ok(retrived_db) = state.database.get_settings().await {
+            if (retrived_db.enabled_rcon) {
+                match Connection::builder()
+                    .enable_minecraft_quirks(true)
+                    .connect(&retrived_db.rcon_url, &retrived_db.rcon_password)
+                    .await
+                    .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)
+                    //)))
+                    {
+                        Ok(conn) => {
+                            rcon_connection = Arc::new(Mutex::new(conn))
+                        },
+                        Err(e) => {
+                            eprintln!("Failed to connect to RCON: {}", e);
+                            return Err(format!("Rconn failed: {}", e));;
+                            // Connection stays None
+                        }
+                    //retrived_db
+                    }
+            }
+        }
+    }
+    Ok(())
+}
 
 // async fn uploadcontent(
 //     State(arc_state): State<Arc<RwLock<AppState>>>,
