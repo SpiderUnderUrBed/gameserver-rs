@@ -1237,48 +1237,60 @@ pub async fn rcon_command(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<IncomingMessage>,
 ) -> impl IntoResponse {
-    ensure_rcon(Arc::clone(&arc_state)).await.map_err(|_| return StatusCode::INTERNAL_SERVER_ERROR.into_response());
-    let state = arc_state.write().await;
+    if let Err(e) = ensure_rcon(Arc::clone(&arc_state)).await {
+        eprintln!("Failed to ensure RCON: {}", e);
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    
+    let state = arc_state.read().await;  
+    
     if let Some(arc_conn) = &state.rcon_connection {
         let mut conn = arc_conn.lock().await;
-        let response = conn.cmd(&request.message).await.map_err(|_| return StatusCode::INTERNAL_SERVER_ERROR.into_response());
-        Json(UnauthenticatedMessagePayload {
-            r#type: "rcon_response".to_string(),
-            message: response.unwrap(),
-        }).into_response()
+        
+        match conn.cmd(&request.message).await {
+            Ok(response) => {
+                Json(UnauthenticatedMessagePayload {
+                    r#type: "rcon_response".to_string(),
+                    message: response,
+                }).into_response()
+            }
+            Err(e) => {
+                eprintln!("RCON command error: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
+        }
     } else {
-        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        StatusCode::SERVICE_UNAVAILABLE.into_response()
     }
 }
-pub async fn ensure_rcon(arc_state: Arc<RwLock<AppState>>) -> Result<(), String>{
-    let state = arc_state.write().await;
-    if state.rcon_connection.is_none(){
-    let mut rcon_connection: Arc<Mutex<Connection<TcpStream>>>;
+
+pub async fn ensure_rcon(arc_state: Arc<RwLock<AppState>>) -> Result<(), String> {
+    let mut state = arc_state.write().await;
+    
+    if state.rcon_connection.is_none() {
         if let Ok(retrived_db) = state.database.get_settings().await {
-            if (retrived_db.enabled_rcon) {
+            if retrived_db.enabled_rcon {
                 match Connection::builder()
                     .enable_minecraft_quirks(true)
                     .connect(&retrived_db.rcon_url, &retrived_db.rcon_password)
                     .await
-                    .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)
-                    //)))
-                    {
-                        Ok(conn) => {
-                            rcon_connection = Arc::new(Mutex::new(conn))
-                        },
-                        Err(e) => {
-                            eprintln!("Failed to connect to RCON: {}", e);
-                            return Err(format!("Rconn failed: {}", e));;
-                            // Connection stays None
-                        }
-                    //retrived_db
+                {
+                    Ok(conn) => {
+                        state.rcon_connection = Some(Arc::new(Mutex::new(conn)));
+                        return Ok(());
                     }
+                    Err(e) => {
+                        eprintln!("Failed to connect to RCON: {}", e);
+                        return Err(format!("RCON connection failed: {}", e));
+                    }
+                }
             }
         }
+        return Err("RCON not enabled or settings not available".to_string());
     }
+    
     Ok(())
 }
-
 // async fn uploadcontent(
 //     State(arc_state): State<Arc<RwLock<AppState>>>,
 //     multipart: Multipart,
