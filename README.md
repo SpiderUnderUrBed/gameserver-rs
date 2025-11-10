@@ -45,6 +45,11 @@ cargo run . --features backend
 ```
 (but it should run with postgres by just applying the deployment, with or without testing)
 
+** Modifying the k8s config ** 
+If you want to modify the k8s config, more specifically the one under src/gamserver/deployment.yaml
+You need the comments between each important section if you have automatic building of the image enabled 
+(e.g comments between pv,pvc,etc)
+
 **For kubernetes testing:** \
 As for other stuff to use for the testing environment, look to the deployment-dev.yaml, you might want to adjust the settings with this too but it provides better defaults, and the deployment in src/gameserver, if you enable TESTING="true" in the deployment (which is the default in deployment-dev.yaml at the root of the project), it would run the equivalent deployment-dev.yaml in src/gameserver, which I use for my own personal testing, so i recommend editing that, and adding it to your .gitignore (I added a nodeSelector to one of my nodes, so you'll HAVE to edit it)
 
