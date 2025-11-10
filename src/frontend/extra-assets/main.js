@@ -421,8 +421,9 @@ async changeNode(node) {
 
         nodes.forEach((node) => {
           const option = document.createElement("option");
-          option.value = node;
-          option.text = node;
+          //console.log(node)
+          option.value = node.nodename;
+          option.text = node.nodename;
 
           migrateto.appendChild(option);
           migratefrom.appendChild(option.cloneNode(true));
