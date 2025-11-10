@@ -952,9 +952,19 @@ async fn try_initial_connection(
 // }
 
 // Looks for a env varible, if its not found, try the specified default, if none is found it will use the default of whatever that type is
-fn get_env_var_or_arg<T: std::str::FromStr>(env_var: &str, default: Option<T>) -> Option<T> {
-    env::var(env_var).ok().and_then(|s| s.parse().ok()).or(default)
+// fn get_env_var_or_arg<T: std::str::FromStr>(env_var: &str, default: Option<T>) -> Option<T> {
+//     env::var(env_var).ok().and_then(|s| s.parse().ok()).or(default)
+// }
+fn get_env_var_or_arg<T>(env_var: &str, default: Option<T>) -> Option<T>
+where
+    T: std::str::FromStr + Clone,
+{
+    env::var(env_var)
+        .ok()
+        .and_then(|s| s.parse::<T>().ok())
+        .or(default)
 }
+
 
 // fn get_env_var_or_required_arg<T: std::str::FromStr>(env_var: &str, arg: Option<T>, field_name: &str) -> T {
 //     get_env_var_or_arg(env_var, arg).unwrap_or_else(|| {
@@ -993,12 +1003,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config_local_url = get_env_var_or_arg("LOCALURL", Some(StaticLocalUrl.to_string())).unwrap();
 
     // Overrides for testing or specific cases where how it worksin a setup may be diffrent
-    const ENABLE_K8S_CLIENT: bool = true;
-    const ENABLE_INITIAL_CONNECTION: bool = true;
-    const FORCE_REBUILD: bool = false;
-    const BUILD_DOCKER_IMAGE: bool = true;
-    const BUILD_DEPLOYMENT: bool = true;
-    const DONT_OVERRIDE_CONN_WITH_K8S: bool = false;
+    
+    let enable_k8s_client: bool = get_env_var_or_arg("ENABLE_K8S_CLIENT", Some(true)).unwrap();
+    let enable_initial_connection: bool = get_env_var_or_arg("ENABLE_INITIAL_CONNECTION", Some(true)).unwrap();
+    let force_rebuild: bool = get_env_var_or_arg("FORCE_REBUILD", Some(false)).unwrap();
+    let build_docker_image: bool = get_env_var_or_arg("BUILD_DOCKER_IMAGE", Some(true)).unwrap();
+    let build_deployment: bool = get_env_var_or_arg("BUILD_DEPLOYMENT", Some(true)).unwrap();
+    let dont_override_conn_with_k8s: bool = get_env_var_or_arg("DONT_OVERRIDE_CONN_WITH_K8S", Some(true)).unwrap();
 
     // creates a websocket broadcase and tcp channels
     let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
@@ -1007,12 +1018,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // sets the client to be none by default unless this is ran the stanard way which will be ran with the appropriate feature-flag
     // which will set the k8s client
     let mut client: Option<Client> = None;
-    if ENABLE_K8S_CLIENT && K8S_WORKS {
+    if enable_k8s_client && K8S_WORKS {
         client = Some(Client::try_default().await?);
     }
 
     let mut tcp_url: String = config_tcp_url.to_string();
-    if !DONT_OVERRIDE_CONN_WITH_K8S && client.is_some() {
+    if !dont_override_conn_with_k8s && client.is_some() {
         if let Ok(url_result) = &kubernetes::get_avalible_gameserver(client.as_ref().unwrap()).await
         {
             tcp_url = url_result.clone();
@@ -1096,7 +1107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // if there is supposed to be a initial connection and if there is a client (as it wont be able to create the deployment without it, and it would be pointless to create a docker container
     // without the abbility to deploy it)
-    if ENABLE_INITIAL_CONNECTION && multifaceted_state.write().await.client.is_some() {
+    if enable_initial_connection && multifaceted_state.write().await.client.is_some() {
         println!("Trying initial connection...");
         if try_initial_connection(
 	    false,
@@ -1107,13 +1118,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
         .await
         .is_err()
-            || FORCE_REBUILD
+            || force_rebuild
         {
             eprintln!("Initial connection failed or force rebuild enabled");
-            if BUILD_DOCKER_IMAGE {
+            if build_docker_image {
                 docker::build_docker_image().await?;
             }
-            if BUILD_DEPLOYMENT {
+            if build_deployment {
                 kubernetes::create_k8s_deployment(
                     multifaceted_state.write().await.client.as_ref().unwrap(),
                 )
@@ -1982,8 +1993,19 @@ async fn delete_user(
     result
 }
 
-// TODO: (capabilities), as I am considering if the frontend needs to be notified of capabilities as it might change via featureflag
-async fn capabilities(State(_): State<AppState>) -> impl IntoResponse {}
+// Capabilities (in this function) notifies the frontend if th backend has certain things enabled, like a
+// samba server and etc
+async fn capabilities(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+) -> impl IntoResponse {
+    let state = arc_state.write().await;
+    let mut capabilities: Vec<String> = vec![];
+    capabilities.push("all".to_string());
+    // capabilities.push("all");
+    Json({
+        capabilities
+    }).into_response()
+}
 
 // For general messages, in alot if not most cases this is for development purposes
 // there are many cases where this can fail, if it does, it can simply return INTERNAL_SERVER_ERROR
