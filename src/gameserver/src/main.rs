@@ -44,6 +44,9 @@ use tokio::sync::broadcast;
 mod extra;
 mod filesystem;
 mod providers;
+mod intergrations;
+
+use intergrations::{IntergrationCommands, run_intergration_commands};
 
 // const ENABLE_BROADCAST_LOGS: bool = true;
 
@@ -709,10 +712,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                     found_message = true;
                                     continue;
                                 }
-
+                                        // else if let Ok(msg_payload) =
+                                        //     serde_json::from_value::<IntergrationCommands>(
+                                        //         json_value.clone(),
+                                        //     ){
+                                        //     println!("[{}] Successfully parsed as Value: {:#?}", addr, json_value);
+                                        //     sort_command_type_or_console(
+                                        //         &Arc::clone(&arc_state_clone),
+                                        //         &serde_json::to_value(msg_payload).unwrap(),
+                                        //         &out_tx,
+                                        //         &cmd_tx,
+                                        //         &stdin_ref,
+                                        //         &hostname_ref,                              
+                                        //     ).await;
+                                        // }
                                 if line_str.trim().starts_with('{')
                                     && line_str.trim().ends_with('}')
                                 {
+                                   // println!("[{}] Received JSON line: {}", addr, line_str.trim());
                                     if let Ok(json_value) = serde_json::from_slice::<Value>(line) {
                                         if let Ok(request) =
                                             serde_json::from_value::<FileRequestMessage>(
@@ -771,7 +788,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                 &hostname_ref,
                                             )
                                             .await;
-                                        } else if let Ok(msg_payload) =
+                                        } 
+                                        else if let Ok(msg_payload) =
+                                                        serde_json::from_value::<IntergrationCommands>(
+                                                            json_value.clone(),
+                                                        ){
+                                                        //println!("[{}] Successfully parsed as Value: {:#?}", addr, json_value);
+                                                        sort_command_type_or_console(
+                                                            &Arc::clone(&arc_state_clone),
+                                                            &serde_json::to_value(msg_payload).unwrap(),
+                                                            &out_tx,
+                                                            &cmd_tx,
+                                                            &stdin_ref,
+                                                            &hostname_ref,
+                                                        ).await;
+                                                    }         
+                                        else if let Ok(msg_payload) =
                                             serde_json::from_value::<MessagePayload>(
                                                 json_value.clone(),
                                             )
@@ -885,30 +917,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                         )
                                                         .await;
                                                     } else {
-                                                        handle_command_or_console(
+                                                        // handle_typical_command_or_console(
+                                                        //     &Arc::clone(&arc_state_clone),
+                                                        //     &msg_payload,
+                                                        //     &out_tx,
+                                                        //     &cmd_tx,
+                                                        //     &stdin_ref,
+                                                        //     &hostname_ref,
+                                                        // )
+                                                        // .await;
+                                                       // println!("{:#?}", msg_payload);
+                                                        sort_command_type_or_console(
                                                             &Arc::clone(&arc_state_clone),
-                                                            &msg_payload,
+                                                            &serde_json::to_value(msg_payload).unwrap(),
                                                             &out_tx,
                                                             &cmd_tx,
                                                             &stdin_ref,
-                                                            &hostname_ref,
-                                                        )
-                                                        .await;
+                                                            &hostname_ref,                              
+                                                        ).await;
                                                     }
                                                 }
                                                 _ => {
-                                                    handle_command_or_console(
+                                                   // println!("{:#?}", msg_payload);
+                                                    sort_command_type_or_console(
                                                         &Arc::clone(&arc_state_clone),
-                                                        &msg_payload,
+                                                        &serde_json::to_value(msg_payload).unwrap(),
                                                         &out_tx,
                                                         &cmd_tx,
                                                         &stdin_ref,
-                                                        &hostname_ref,
-                                                    )
-                                                    .await;
+                                                        &hostname_ref,                              
+                                                    ).await;
                                                 }
                                             }
-                                        }
+                                        } 
+                                        // else if let Ok(msg_payload) =
+                                        //     serde_json::from_value::<IntergrationCommands>(
+                                        //         json_value.clone(),
+                                        //     ){
+                                        //     println!("[{}] Successfully parsed as Value: {:#?}", addr, json_value);
+                                        //     sort_command_type_or_console(
+                                        //         &Arc::clone(&arc_state_clone),
+                                        //         &serde_json::to_value(msg_payload).unwrap(),
+                                        //         &out_tx,
+                                        //         &cmd_tx,
+                                        //         &stdin_ref,
+                                        //         &hostname_ref,                              
+                                        //     ).await;
+                                        // }
                                     } else {
                                         break;
                                     }
@@ -977,11 +1032,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 }
 
+// TODO: merge with handle_typical_command_or_console
+// At the time of writing this, i am working on getting intergration commands to work here 
+// on the node, I did a sub-optimal solution for this command type which is, since regular
+// message payloads expect strings and immediately serializes into a structure that doesnt represent
+// how I want IntergrationCommands to work, I decided to make this function for the time being to ensure the 
+// commands are handled properly and serialized properly, as well as other commands be forwarded to 
+// the relevent function
+async fn sort_command_type_or_console(
+    arc_state: &Arc<AppState>,
+    payload: &serde_json::Value,
+    out_tx: &mpsc::Sender<String>,
+    cmd_tx: &mpsc::Sender<String>,
+    stdin_ref: &Arc<Mutex<Option<ChildStdin>>>,
+    hostname: &Arc<Result<OsString, String>>,
+){
+   // println!("{:#?}", payload);
+
+    let standard_command_payload_result: Result<MessagePayload, serde_json::Error> = serde_json::from_value(payload.clone());
+    if let Ok(standard_command_payload) = standard_command_payload_result {
+        handle_typical_command_or_console(
+            &arc_state,
+            &standard_command_payload,
+            &out_tx,
+            &cmd_tx,
+            &stdin_ref,
+            &hostname,
+        )
+        .await;
+    }
+
+    let intergration_command_payload_result: Result<IntergrationCommands, serde_json::Error> = serde_json::from_value(payload.clone());
+    if let Ok(intergration_command_payload) = intergration_command_payload_result {
+        run_intergration_commands(intergration_command_payload).await;
+    }
+}
+
 // Handles either commands or console output, should eventually be replaced by handle_commands_with_metadata
 // and eventually there should be out_tx added to it. The commands are mainly related to server management, like deleting the server, (delete the files)
 // stopping it (TODO: stop isnt the universal keyword to stop all servers, fix that and make it depend on the provider)
 // console output is forwarded directly to the server process via channel
-async fn handle_command_or_console(
+async fn handle_typical_command_or_console(
     arc_state: &Arc<AppState>,
     payload: &MessagePayload,
     out_tx: &mpsc::Sender<String>,
@@ -1484,9 +1575,9 @@ pub async fn tcp_to_writer(stream: TcpStream) -> mpsc::Sender<Vec<u8>> {
     tx
 }
 
-// More modern version of handle_command_or_console, except currently it only handles commands, mainly this is used to the singular command which requires a 
+// More modern version of handle_typical_command_or_console, except currently it only handles commands, mainly this is used to the singular command which requires a 
 // metadata feild (server data), to create a server
-// TODO: eventually replace handle_command_or_console with this
+// TODO: eventually replace handle_typical_command_or_console with this
 async fn handle_commands_with_metadata(
     state: Arc<AppState>,
     payload: &IncomingMessageWithMetadata,

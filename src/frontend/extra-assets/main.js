@@ -75,12 +75,29 @@ class ServerConsole {
           let new_text = trigger.dataset.tooltip;
           if ('playercount' in trigger.dataset) {
             try {
-              const response = await fetch(`${this.basePath}/api/mclist`);
+              //const response = await fetch(`${this.basePath}/api/mclist`);
+              const response = await fetch(`${this.basePath}/api/rconcommand`, {
+                  method: 'POST',
+                  headers: {
+                      'Content-Type': 'application/json'
+                  },
+                  body: JSON.stringify({
+                    message: "list",
+                    type: "",
+                    authcode: ""
+                  })
+              })
               if (response.ok) {
                 let data = await response.json()
+                console.log(data)
                 //console.log(data)
-                let playercount = data.users.length;
-                if (data.users[0] == "") {
+                let users = data.message.split(":")[1].split(" ");
+                console.log(users)
+                let playercount = users.length;
+                if (users[0] == "") {
+                  playercount -= 1
+                }
+                if (users[1] == "") {
                   playercount -= 1
                 }
                 new_text = new_text.replace("%%", playercount)

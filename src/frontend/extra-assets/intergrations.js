@@ -31,7 +31,8 @@ async function toggleIntergration(button){
             kind: "Intergration",
             data: {
                 status: "enabled",
-                type: "minecraft"
+                type: "minecraft",
+                settings: {}
             }
         },
         jwt: "",
@@ -67,6 +68,7 @@ async function toggleIntergration(button){
 
 async function toggleIntergrationOnHomePage(button) {
     let isEnabled = "";
+    let settings = {};
     
     const response = await fetch(`${basePath}/api/intergrations`);
     const data = await response.json();
@@ -75,6 +77,7 @@ async function toggleIntergrationOnHomePage(button) {
     
     intergrations.forEach(integration => {
         if (integration.type === "minecraft") {
+            settings = integration.settings;
             if (integration.status === "enabled") {
                 isEnabled = "disabled";
                 console.log("Toggling to: Disabled");
@@ -88,6 +91,15 @@ async function toggleIntergrationOnHomePage(button) {
             // }
         } 
     });
+
+    settings = {
+        "enable_test": !settings.enable_test,
+        "_enable_test_hook": {
+            "kind": "MinecraftEnableRcon",
+            //"data": {}
+        }
+    }
+    console.log(settings)
     
     if (!isEnabled) {
         console.error("Could not determine status - minecraft integration not found!");
@@ -99,12 +111,14 @@ async function toggleIntergrationOnHomePage(button) {
             kind: "Intergration",
             data: {
                 status: isEnabled,
-                type: "minecraft"
+                type: "minecraft",
+                settings
             }
         },
         jwt: "",
         require_auth: false
     };
+    console.log(integration)
     
     fetch(`${basePath}/api/modifyintergrations`, {
         method: "POST",

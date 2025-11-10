@@ -512,13 +512,13 @@ impl IntergrationsDatabase for Database {
         Ok(database.intergrations.iter().find(|integrations| integrations.r#type == intergration_type).cloned())  
     }
     async fn create_intergrations_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
-        if let Element::Intergration(Intergration { status, r#type }) = element.element {
+        if let Element::Intergration(Intergration { status, r#type, settings }) = element.element {
             let mut database = self.get_database().await?;
             
             if database.intergrations.iter().any(|intergration| intergration.r#type == r#type) {
                 return Err(Box::new(DatabaseError(StatusCode::CONFLICT)));
             } else {
-                let intergration = Intergration { r#type, status };
+                let intergration = Intergration { r#type, status, settings };
                 database.intergrations.push(intergration.clone());
             }
             
@@ -530,7 +530,7 @@ impl IntergrationsDatabase for Database {
     }
     async fn remove_intergrations_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         let mut database = self.get_database().await?;
-        if let Element::Intergration(Intergration { status, r#type }) = element.element {
+        if let Element::Intergration(Intergration { status, r#type, settings }) = element.element {
             database.intergrations.retain(|db_intergration| db_intergration.r#type != r#type);
         } else {
             return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
@@ -541,11 +541,12 @@ impl IntergrationsDatabase for Database {
         Ok(StatusCode::CREATED)
     }
     async fn edit_intergrations_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
-        if let Element::Intergration(Intergration { status, r#type }) = element.element {
+        if let Element::Intergration(Intergration { status, r#type, settings }) = element.element {
             let mut database = self.get_database().await?;
             if let Some(db_intergration) = database.intergrations.iter_mut().find(|db_intergration| db_intergration.r#type == r#type) {
                 // db_server.user_perms = user_perms.clone();
                 // db_server.username = user.clone();
+                db_intergration.settings = settings;
                 db_intergration.status = status;
             }   
 

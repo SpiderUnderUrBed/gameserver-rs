@@ -250,6 +250,8 @@ pub enum Intergrations {
     Other(String)
 }
 
+// Ideally I dont hardcode any intergrations like minecraft or any specific provider, but it would be meaningless to move it to its own file when
+// its much more readable in this spec, and until i have a better solution down the line or decide to keep this
 #[serde(rename_all = "lowercase")]
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 pub enum Intergrations {
@@ -315,6 +317,7 @@ impl ToString for NodeType {
     }
 }
 
+// TODO: Consider removing the string to enum varient matching
 impl FromStr for Intergrations {
     type Err = ();
 
@@ -326,6 +329,17 @@ impl FromStr for Intergrations {
         })
     }
 }
+impl ToString for Intergrations {
+
+    fn to_string(&self) -> String {
+        match self {
+            Intergrations::Minecraft => "minecraft".to_string(),
+            Intergrations::Unknown => "unknown".to_string(),
+            _ => "unknown".to_string(),
+        }
+    }
+}
+
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
 #[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize)]
@@ -378,7 +392,8 @@ pub struct Button {
 pub struct Intergration {
    // name: String,
     pub status: String,
-    pub r#type: Intergrations
+    pub r#type: Intergrations,
+    pub settings: Value
 }
 
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
@@ -386,7 +401,8 @@ pub struct Intergration {
 pub struct Intergration {
    // name: String,
     pub status: String,
-    pub r#type: Intergrations
+    pub r#type: Intergrations,
+    pub settings: Value
 }
 
 

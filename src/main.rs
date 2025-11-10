@@ -87,6 +87,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use sysinfo::System;
 
 static CONNECTION_COUNTER: AtomicUsize = AtomicUsize::new(0);
+static FORWARD_ALL_MESSAGES: bool = true;
+
 
 // For now I only restrict the json backend for running this without kubernetes
 // the json backend is only for testing in most cases, simple deployments would use full-stack feature flag
@@ -117,6 +119,9 @@ use database::JsonBackend;
 use database::ModifyElementData;
 use crate::database::databasespec::RetrieveElement;
 use database::User;
+
+// mod intergrations;
+// use intergrations::{IntergrationCommands, run_intergration_commands};
 
 mod extra;
 use extra::value_from_line;
@@ -334,6 +339,16 @@ enum MetadataTypes {
     },
     String(String),
 }
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(tag = "kind", content = "data")]
+enum IntegrationCommands {
+    // MinecraftEnableRcon(serde_json::Value),
+    // MinecraftDisableRcon(serde_json::Value),
+    MinecraftEnableRcon(serde_json::Value),
+    MinecraftDisableRcon(serde_json::Value),
+}
+
 
 // console output is sometimes contained within the data feild of json, but this also might be redundant
 #[derive(Debug, Deserialize, Serialize)]
@@ -620,7 +635,19 @@ pub async fn handle_stream(
                     }
                 }
             }
+            let integration_parsed: Vec<Result<IntegrationCommands, serde_json::Error>> =
+                value_from_line::<IntegrationCommands, _>(line_content, |line| line.contains("\"kind\"")).await;
 
+            let mut integration_values: Vec<Value> = vec![];
+            for item in integration_parsed {
+                if let Ok(data) = item {
+                    if let Ok(serialized_value) = serde_json::to_value(data) {
+                        integration_values.push(serialized_value);
+                    }
+                }
+            }
+
+            final_data.extend(integration_values);
             final_data.extend(list_values);
             final_data.extend(console_values);
             final_data.extend(message_values);
@@ -645,117 +672,139 @@ pub async fn handle_stream(
                             }
                         }
                 }
-            if let Ok(data_clone) = serde_json::from_value::<ConsoleData>(value.clone()) {
-               // println!("{:#?}", data_clone);
-                if let Ok(inner_value) = serde_json::from_str::<serde_json::Value>(&data_clone.data) {
-                   // println!("{:#?}", inner_value);
-                    if let (Some(start_kw), Some(stop_kw)) = (
-                        inner_value.get("start_keyword").and_then(|v| v.as_str()),
-                        inner_value.get("stop_keyword").and_then(|v| v.as_str()),
-                    ) {
-                        //println!("Changing keyword {} {}", start_kw.to_string().clone(), stop_kw.to_string().clone());
-                        *server_start_keyword = start_kw.to_string();
-                        *server_stop_keyword = stop_kw.to_string();
+                
+                if let Ok(data_clone) = serde_json::from_value::<ConsoleData>(value.clone()) {
+                // println!("{:#?}", data_clone);
+                    if let Ok(inner_value) = serde_json::from_str::<serde_json::Value>(&data_clone.data) {
+                    // println!("{:#?}", inner_value);
+                        if let (Some(start_kw), Some(stop_kw)) = (
+                            inner_value.get("start_keyword").and_then(|v| v.as_str()),
+                            inner_value.get("stop_keyword").and_then(|v| v.as_str()),
+                        ) {
+                            //println!("Changing keyword {} {}", start_kw.to_string().clone(), stop_kw.to_string().clone());
+                            *server_start_keyword = start_kw.to_string();
+                            *server_stop_keyword = stop_kw.to_string();
+                        }
                     }
-                }
 
-                    if data_clone.data.contains("\"type\":\"command\"") {
-                        if let Ok(inner_msg) = serde_json::from_str::<MessagePayload>(&data_clone.data) {
-                            if inner_msg.r#type == "command" {
-                                let (client_option, database) = {
-                                    let state_guard = arc_state.read().await;
-                                    (state_guard.client.clone(), state_guard.database.clone())
-                                };
-
-                                if let Ok(nodes) = database.fetch_all_nodes().await {
-                                    let node_status = if let Some(client) = client_option {
-                                        let client_clone = client.clone();
-                                        let ip_clone = ip.to_string();
-
-                                        match tokio::time::timeout(
-                                            std::time::Duration::from_millis(100),
-                                            verify_is_k8s_gameserver(client_clone, ip_clone)
-                                        ).await {
-                                            Ok(Ok(true)) => NodeStatus::ImmutablyEnabled,
-                                            _ => NodeStatus::Enabled,
-                                        }
-                                    } else {
-                                        NodeStatus::Enabled
+                        if data_clone.data.contains("\"type\":\"command\"") {
+                            if let Ok(inner_msg) = serde_json::from_str::<MessagePayload>(&data_clone.data) {
+                                if inner_msg.r#type == "command" {
+                                    let (client_option, database) = {
+                                        let state_guard = arc_state.read().await;
+                                        (state_guard.client.clone(), state_guard.database.clone())
                                     };
-                                    
-                                    let node = Node {
-                                        ip: ip.to_string(),
-                                        nodename: inner_msg.message,
-                                        nodetype: {
-                                            let state_guard = arc_state.read().await;
-                                            if let Some(client) = &state_guard.client {
-                                                if kubernetes::verify_is_k8s_gameserver(client.clone(), ip.to_string()).await? {
-                                                    NodeType::Inbuilt
+
+                                    if let Ok(nodes) = database.fetch_all_nodes().await {
+                                        let node_status = if let Some(client) = client_option {
+                                            let client_clone = client.clone();
+                                            let ip_clone = ip.to_string();
+
+                                            match tokio::time::timeout(
+                                                std::time::Duration::from_millis(100),
+                                                verify_is_k8s_gameserver(client_clone, ip_clone)
+                                            ).await {
+                                                Ok(Ok(true)) => NodeStatus::ImmutablyEnabled,
+                                                _ => NodeStatus::Enabled,
+                                            }
+                                        } else {
+                                            NodeStatus::Enabled
+                                        };
+                                        
+                                        let node = Node {
+                                            ip: ip.to_string(),
+                                            nodename: inner_msg.message,
+                                            nodetype: {
+                                                let state_guard = arc_state.read().await;
+                                                if let Some(client) = &state_guard.client {
+                                                    if kubernetes::verify_is_k8s_gameserver(client.clone(), ip.to_string()).await? {
+                                                        NodeType::Inbuilt
+                                                    } else {
+                                                        NodeType::Custom
+                                                    }
                                                 } else {
                                                     NodeType::Custom
                                                 }
-                                            } else {
-                                                NodeType::Custom
-                                            }
-                                        }, 
-                                        nodestatus: node_status,
-                                        k8s_type: {
-                                            let state_guard = arc_state.read().await;
-                                            if let Some(client) = &state_guard.client {
-                                                if kubernetes::verify_is_k8s_gameserver(client.clone(), ip.to_string()).await? {    
-                                                    if kubernetes::verify_is_k8s_pod(client, ip.to_string()).await? {
-                                                        K8sType::Pod
-                                                    } else if kubernetes::verify_is_k8s_node(client, ip.to_string()).await? {
-                                                        K8sType::Node
+                                            }, 
+                                            nodestatus: node_status,
+                                            k8s_type: {
+                                                let state_guard = arc_state.read().await;
+                                                if let Some(client) = &state_guard.client {
+                                                    if kubernetes::verify_is_k8s_gameserver(client.clone(), ip.to_string()).await? {    
+                                                        if kubernetes::verify_is_k8s_pod(client, ip.to_string()).await? {
+                                                            K8sType::Pod
+                                                        } else if kubernetes::verify_is_k8s_node(client, ip.to_string()).await? {
+                                                            K8sType::Node
+                                                        } else {
+                                                            K8sType::Unknown
+                                                        }
                                                     } else {
-                                                        K8sType::Unknown
+                                                        K8sType::None
                                                     }
                                                 } else {
-                                                    K8sType::None
+                                                    K8sType::Unknown
                                                 }
-                                            } else {
-                                                K8sType::Unknown
-                                            }
-                                        },
-                                    };
+                                            },
+                                        };
 
-                                    if !nodes.iter().any(|n| n.ip == node.ip && n.nodename == node.nodename) {
-                                        let _ = database.create_nodes_in_db(ModifyElementData {
-                                            element: Element::Node(node),
-                                            jwt: "".to_string(),
-                                            require_auth: false,
-                                        }).await;
+                                        if !nodes.iter().any(|n| n.ip == node.ip && n.nodename == node.nodename) {
+                                            let _ = database.create_nodes_in_db(ModifyElementData {
+                                                element: Element::Node(node),
+                                                jwt: "".to_string(),
+                                                require_auth: false,
+                                            }).await;
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
 
-                    if data_clone.data.contains("\"type\":\"stdout\"") {
-                        if let Ok(output_msg) = serde_json::from_str::<serde_json::Value>(&data_clone.data) {
-                            if let Some(server_output) = output_msg.get("data").and_then(|v| v.as_str()) {
-                                if !server_start_keyword.is_empty() && server_output.contains(&*server_start_keyword) {
-                                    let _ = ws_tx.send("Server is ready for connections!".to_string());
-                                    {
-                                        let mut state_guard = arc_state.write().await;
-                                        state_guard.current_node.status = Status::Up;
+                        if data_clone.data.contains("\"type\":\"stdout\"") {
+                            if let Ok(output_msg) = serde_json::from_str::<serde_json::Value>(&data_clone.data) {
+                                if let Some(server_output) = output_msg.get("data").and_then(|v| v.as_str()) {
+                                    if !server_start_keyword.is_empty() && server_output.contains(&*server_start_keyword) {
+                                        let _ = ws_tx.send("Server is ready for connections!".to_string());
+                                        {
+                                            let mut state_guard = arc_state.write().await;
+                                            state_guard.current_node.status = Status::Up;
+                                        }
+                                    } else if !server_stop_keyword.is_empty() && server_output.contains(&*server_stop_keyword) {
+                                        {
+                                            let mut state_guard = arc_state.write().await;
+                                            state_guard.current_node.status = Status::Down;
+                                        }
                                     }
-                                } else if !server_stop_keyword.is_empty() && server_output.contains(&*server_stop_keyword) {
-                                    {
-                                        let mut state_guard = arc_state.write().await;
-                                        state_guard.current_node.status = Status::Down;
-                                    }
+                                    let _ = ws_tx.send(server_output.to_string());
+                                    continue;
                                 }
-                                let _ = ws_tx.send(server_output.to_string());
-                                continue;
                             }
                         }
-                    }
 
-                    if !data_clone.data.contains("\"type\":\"stdout\"") && !data_clone.data.contains("\"type\":\"command\"") {
-                        let _ = ws_tx.send(data_clone.data.clone());
+                        if !data_clone.data.contains("\"type\":\"stdout\"") && !data_clone.data.contains("\"type\":\"command\"") {
+                            let _ = ws_tx.send(data_clone.data.clone());
+                        }
                     }
-                }
+                    // let final_value = match serde_json::to_vec(&value) {
+                    //     Ok(bytes) => {
+                    //         // internal_tx
+                    //         if let Err(err) = ws_tx.send(bytes) {
+                    //             eprintln!("Failed to send request over broadcast: {}", err);
+                    //         }
+                    //     }
+                    //     Err(err) => eprintln!("Failed to serialize request: {}", err),
+                    // };
+                    if FORWARD_ALL_MESSAGES == true {
+                        let all_remaining_messages_result = match serde_json::to_string(&value) {
+                            Ok(string) => {
+                                // internal_tx
+                                if let Err(err) = ws_tx.send(string) {
+                                    eprintln!("Failed to send request over broadcast: {}", err);
+                                }
+                            }
+                            Err(err) => eprintln!("Failed to serialize request: {}", err),
+                        };   
+                    }               
+                    //let _ = ws_tx.send(final_value);
             }
         }
         Ok(false)
@@ -1847,7 +1896,86 @@ async fn modify_intergration(
     Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
+
+    //let mut fetched_intergration: Option<Result<Option<Intergration>, StatusCode>>;
+    if let Element::Intergration(ref intergration_element) = request.element {
+        let fetched_intergration_result = state
+            .database
+            .get_from_intergrations_database(&intergration_element.r#type.to_string())
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
+        if let Ok(Some(final_intergration)) = fetched_intergration_result {
+            // if final_intergration.settings.get("enable_")
+            if let Some(settings) = final_intergration.settings.as_object() {
+                let enabled_keys: Vec<&String> = 
+                    settings.iter()
+                    .filter(|(key, _)| key.starts_with("enable"))
+                    .filter_map(|(key, value)| {
+                        if let Value::Bool(bool) = value {
+                            if *bool == false {
+                                Some(key)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    })
+                    //.filter(|(_, value)| matches!(value, Value::Bool(_)))
+                    //.map(|(key, _)| key)
+                    .collect();
+
+                for enabled_key in enabled_keys {
+                    let hook = settings.iter().find(|(key, _)| key.starts_with(&format!("_{}_hook", enabled_key)));
+                    //println!("{:#?}", hook);
+                    if let Some(unwrapped_hook) = hook {
+                        if let Some(Value::Bool(new_enabled_key)) = intergration_element.settings.get(enabled_key) {
+                            if *new_enabled_key == true {
+                                println!("unwrapped hook {:#?}", unwrapped_hook.1);
+                                match serde_json::to_vec(&unwrapped_hook.1) {
+                                    Ok(mut bytes) => {
+                                        // Add newline delimiter for TCP stream parsing
+                                        bytes.push(b'\n');
+                                        
+                                          // Send to internal_tx for local processing
+                                        // This goes to internal_stream in handle_stream
+                                        if let Some(ref internal_tx) = state.internal_tx {
+                                            if let Err(err) = internal_tx.send(bytes.clone()) {
+                                                eprintln!("Failed to send to internal stream: {}", err);
+                                            }
+                                        }
+                                        
+                                        // Send to tcp_tx to forward to remote server
+                                        if let Err(err) = state.tcp_tx.send(bytes) {
+                                            eprintln!("Failed to send to TCP stream: {}", err);
+                                        }
+                                    }
+                                    Err(err) => eprintln!("Failed to serialize request: {}", err),
+                                }
+                                // let maybe_command: Result<IntergrationCommands, _> = serde_json::from_value(unwrapped_hook.1.clone());
+                                // if let Ok(command) = maybe_command {
+                                //     run_intergration_commands(command)
+                                // }
+                                // if let IntergrationCommands = unwrapped_hook.1 {
+                                //     println!("{}", command);
+                                // }
+                            }
+                        }
+                    }
+                }
+                // for (key, value) in settings {
+                //    if key.starts_with("enable"){
+
+                //    }
+                // }
+            }
+        }
+    } else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    }
+
     
+
     match state.database.edit_intergrations_in_db(request).await {
         Ok(status_code) => {
             (status_code, Json(serde_json::json!({
