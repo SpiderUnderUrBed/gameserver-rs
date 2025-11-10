@@ -2486,7 +2486,7 @@ async fn serve_html_with_replacement(
     file: &str,
     state: &AppState,
 ) -> Result<Response<Body>, StatusCode> {
-    let path = Path::new("src/svelte/build").join(file);
+    let path = Path::new("src/frontend/build").join(file);
 
     if path.extension().and_then(|e| e.to_str()) == Some("html") {
         let html = tokio_fs::read_to_string(&path)
