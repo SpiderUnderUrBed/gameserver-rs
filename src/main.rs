@@ -1931,7 +1931,7 @@ async fn modify_intergration(
                     if let Some(unwrapped_hook) = hook {
                         if let Some(Value::Bool(new_enabled_key)) = intergration_element.settings.get(enabled_key) {
                             if *new_enabled_key == true {
-                                println!("unwrapped hook {:#?}", unwrapped_hook.1);
+                               // println!("unwrapped hook {:#?}", unwrapped_hook.1);
                                 match serde_json::to_vec(&unwrapped_hook.1) {
                                     Ok(mut bytes) => {
                                         // Add newline delimiter for TCP stream parsing
@@ -1945,10 +1945,10 @@ async fn modify_intergration(
                                             }
                                         }
                                         
-                                        // Send to tcp_tx to forward to remote server
-                                        if let Err(err) = state.tcp_tx.send(bytes) {
-                                            eprintln!("Failed to send to TCP stream: {}", err);
-                                        }
+                                        // // Send to tcp_tx to forward to remote server
+                                        // if let Err(err) = state.tcp_tx.send(bytes) {
+                                        //     eprintln!("Failed to send to TCP stream: {}", err);
+                                        // }
                                     }
                                     Err(err) => eprintln!("Failed to serialize request: {}", err),
                                 }
