@@ -957,41 +957,46 @@ pub async fn connect_to_server(
 // this is where it determines wether or not to try and create the container and deployment, as attempt_connection itself is used in various diffrent contexts (like it will constantly
 // try to connect upon failing but it should not try to create the container and deployment every time it fails)
 async fn try_initial_connection(
+    conn_attempts: u64,
+    conn_timeout: u64,
     create_handler: bool,
-    state: Arc<RwLock<AppState>>,
+    state: &Arc<RwLock<AppState>>,
     tcp_url: String,
-    ws_tx: broadcast::Sender<String>,
+    ws_tx: &broadcast::Sender<String>,
     tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    match attempt_connection(tcp_url).await {
-        Ok(mut stream) => {
-            println!("Initial connection succeeded!");
-            // note, possibly I wont ever need to create a handler from the test of the intial connection
-            // TODO: think about removing create_handler and just never create a handler
-            if create_handler {
-                let (temp_tx, temp_rx) =
-                    tokio::sync::broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
-                let mut temp_rx = temp_rx;
-                handle_stream(state.clone(), &mut temp_rx, &mut stream, ws_tx.clone(), None).await?
-            } else {
-                return Ok(());
+    let mut final_error: Box<dyn std::error::Error + Send + Sync> = "This should not show up".into();
+    for _ in 0..conn_attempts {
+       // let mut has_succeeded = false;
+        match attempt_connection(tcp_url.clone()).await {
+            Ok(mut stream) => {
+                //let copy_state = &Arc::clone(&state);
+                println!("Initial connection succeeded!");
+                // note, possibly I wont ever need to create a handler from the test of the intial connection
+                // TODO: think about removing create_handler and just never create a handler
+                if create_handler {
+                    let (temp_tx, temp_rx) =
+                        tokio::sync::broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+                    let mut temp_rx = temp_rx;
+                    let stream_result = handle_stream(state.clone(), &mut temp_rx, &mut stream, ws_tx.clone(), None).await;
+                    if stream_result.is_ok() {
+                        break;
+                    } else {
+                        final_error = stream_result.err().unwrap()
+                    }
+                    //.map_err(|| "Failed conn attempt")?
+                } else {
+                    break;
+                } 
             }
-            // note, possibly I wont ever need to create a handler from the test of the intial connection
-            // TODO: think about removing create_handler and just never create a handler
-            if create_handler {
-                let (temp_tx, temp_rx) =
-                    tokio::sync::broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
-                let mut temp_rx = temp_rx;
-                handle_stream(state, &mut temp_rx, &mut stream, ws_tx, None).await
-            } else {
-                Ok(())
+            Err(e) => {
+                eprintln!("Initial connection failed: {}", e);
+                // return Err(e)
             }
         }
-        Err(e) => {
-            eprintln!("Initial connection failed: {}", e);
-            Err(e)
-        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
     }
+    Err(final_error)
 }
  
 
@@ -1054,11 +1059,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Overrides for testing or specific cases where how it worksin a setup may be diffrent
     
     let enable_k8s_client: bool = get_env_var_or_arg("ENABLE_K8S_CLIENT", Some(true)).unwrap();
-    let enable_initial_connection: bool = get_env_var_or_arg("ENABLE_INITIAL_CONNECTION", Some(true)).unwrap();
     let force_rebuild: bool = get_env_var_or_arg("FORCE_REBUILD", Some(false)).unwrap();
     let build_docker_image: bool = get_env_var_or_arg("BUILD_DOCKER_IMAGE", Some(true)).unwrap();
     let build_deployment: bool = get_env_var_or_arg("BUILD_DEPLOYMENT", Some(true)).unwrap();
     let dont_override_conn_with_k8s: bool = get_env_var_or_arg("DONT_OVERRIDE_CONN_WITH_K8S", Some(true)).unwrap();
+
+    // consider if I should not have enable_initial_connection and instead if initial_connection_attempts dont 
+    // try to connect to the server
+    let enable_initial_connection: bool = get_env_var_or_arg("ENABLE_INITIAL_CONNECTION", Some(true)).unwrap();
+    let initial_connection_attempts: u64 = get_env_var_or_arg("INITIAL_CONNECTION_ATTEMPTS", Some(5)).unwrap();
+    let initial_connection_timeout: u64 = get_env_var_or_arg("INITIAL_CONNECTION_TIMEOUT", Some(2)).unwrap();
 
     // creates a websocket broadcase and tcp channels
     let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
@@ -1156,28 +1166,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // if there is supposed to be a initial connection and if there is a client (as it wont be able to create the deployment without it, and it would be pointless to create a docker container
     // without the abbility to deploy it)
-    if enable_initial_connection && multifaceted_state.write().await.client.is_some() {
+    if enable_initial_connection {
+    // && multifaceted_state.write().await.client.is_some() {
         println!("Trying initial connection...");
-        if try_initial_connection(
-	    false,
-            multifaceted_state.clone(),
+        let initial_connection_result = try_initial_connection(
+            initial_connection_attempts,
+            initial_connection_timeout,
+	        false,
+            &multifaceted_state.clone(),
             tcp_url.to_string(),
-            ws_tx.clone(),
+            &ws_tx.clone(),
             multifaceted_state.write().await.tcp_tx.clone(),
         )
-        .await
-        .is_err()
-            || force_rebuild
+        .await;
+        if initial_connection_result.is_err() {
+            println!("All initial connections failed");
+        }
+        if initial_connection_result.is_err() || force_rebuild
         {
-            eprintln!("Initial connection failed or force rebuild enabled");
-            if build_docker_image {
-                docker::build_docker_image().await?;
-            }
-            if build_deployment {
-                kubernetes::create_k8s_deployment(
-                    multifaceted_state.write().await.client.as_ref().unwrap(),
-                )
-                .await?;
+
+            if multifaceted_state.write().await.client.is_some() { 
+                eprintln!("Initial connection failed or force rebuild enabled, will possibly enable auto-build (configurable)");
+                if build_docker_image {
+                    docker::build_docker_image().await?;
+                }
+                if build_deployment {
+                    kubernetes::create_k8s_deployment(
+                        multifaceted_state.write().await.client.as_ref().unwrap(),
+                    )
+                    .await?;
+                }
             }
         }
     }
