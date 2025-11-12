@@ -17,10 +17,10 @@ use std::{
 };
 use tokio::fs;
 use tokio::fs::File;
+use tokio::fs::OpenOptions;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncSeekExt;
 use tokio::io::AsyncWriteExt;
-use tokio::fs::OpenOptions;
 use tokio::sync::broadcast;
 use tokio::time::timeout;
 
@@ -81,8 +81,7 @@ pub struct FileRequestMessage {
     payload: FileRequestPayload,
 }
 
-
-// FileChunk represents a portion of a file, with file name 
+// FileChunk represents a portion of a file, with file name
 // ensuring its written to the write file, offsets and size to make sure it doesnt already cover content written to a file
 // and size for defining when the size of the buffer, to ensure nothing unexpected happens (might be used to help determine when the chunk is done)
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -1080,7 +1079,6 @@ impl RemoteFileSystem<TcpFs> {
         Ok(result)
     }
 }
-
 
 pub async fn get_metadata(path: &str) -> std::io::Result<FsMetadata> {
     let metadata = fs::metadata(path).await?;

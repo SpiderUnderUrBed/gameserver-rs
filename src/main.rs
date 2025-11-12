@@ -393,6 +393,11 @@ struct IncomingMessage {
     authcode: String,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct AuthTcpMessage {
+    password: String,
+}
+
 // useful and not outdated because in this case the message is a Value, as in its not a predefined data type
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct IncomingMessageWithValue {
@@ -553,6 +558,12 @@ pub async fn handle_stream(
     let (reader, mut writer) = stream.split();
     let mut buf_reader = BufReader::new(reader);
     let mut buf = vec![0u8; 4096];
+
+    let initial_node_password: String = get_env_var_or_arg("INITIAL_NODE_PASSWORD", Some(String::default())).unwrap();
+    let auth_msg = serde_json::to_string(&AuthTcpMessage {
+        password: initial_node_password
+    })? + "\n";
+    writer.write_all(auth_msg.as_bytes()).await?;
 
     let capability_msg = serde_json::to_string(&List {
         list: ApiCalls::Capabilities(vec!["all".to_string()]),
