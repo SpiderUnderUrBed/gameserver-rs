@@ -1257,45 +1257,123 @@ impl fmt::Display for FileOperations {
 pub fn execute_file_operation(encoded_src: FileOperations, encoded_dest: FileOperations, dir: String) -> std::io::Result<()> {
     let dest = encoded_dest.as_inner_str().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid destination"))?;
     let src = encoded_src.as_inner_str().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid source"))?;
-    let operation = encoded_src.to_string();
     let src_path = PathBuf::from(&dir).join(src);
     let dest_path = PathBuf::from(&dir).join(dest);
     
-    let final_dest = if dest_path.exists() && dest_path.is_dir() {
-        if let Some(filename) = src_path.file_name() {
-            dest_path.join(filename)
-        } else {
-            dest_path
-        }
-    } else {
-        dest_path
-    };
-
     match &encoded_src {
         FileOperations::FileCopyOperation(_) => {
+            let final_dest = if dest_path.exists() && dest_path.is_dir() {
+                if let Some(filename) = src_path.file_name() {
+                    dest_path.join(filename)
+                } else {
+                    dest_path
+                }
+            } else {
+                dest_path
+            };
             std::fs::copy(&src_path, &final_dest)?;
         },
         FileOperations::FileMoveOperation(_) => {
+            let final_dest = if dest_path.exists() && dest_path.is_dir() {
+                if let Some(filename) = src_path.file_name() {
+                    dest_path.join(filename)
+                } else {
+                    dest_path
+                }
+            } else {
+                dest_path
+            };
             std::fs::rename(&src_path, &final_dest)?;
         },
         FileOperations::FileZipOperation(_) => {
+            let mut final_dest = if dest_path.exists() && dest_path.is_dir() {
+                if let Some(filename) = src_path.file_name() {
+                    dest_path.join(filename)
+                } else {
+                    dest_path
+                }
+            } else {
+                dest_path
+            };
+            final_dest.set_extension("zip");
+            
             let file = std::fs::File::create(&final_dest)?;
             let mut zip = zip::ZipWriter::new(file);
             let options = zip::write::SimpleFileOptions::default();
-            zip.start_file(src, options)?;
-            let mut src_file = std::fs::File::open(&src_path)?;
-            std::io::copy(&mut src_file, &mut zip)?;
+            
+            if src_path.is_dir() {
+                let dir_name = src_path.file_name()
+                    .and_then(|n| n.to_str())
+                    .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid directory name"))?;
+                
+                fn zip_directory(zip: &mut zip::ZipWriter<std::fs::File>, path: &Path, prefix: &str, options: zip::write::SimpleFileOptions) -> std::io::Result<()> {
+                    for entry in std::fs::read_dir(path)? {
+                        let entry = entry?;
+                        let entry_path = entry.path();
+                        let name = entry_path.file_name()
+                            .and_then(|n| n.to_str())
+                            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid filename"))?;
+                        let zip_path = format!("{}/{}", prefix, name);
+                        
+                        if entry_path.is_dir() {
+                            zip.add_directory(&zip_path, options)?;
+                            zip_directory(zip, &entry_path, &zip_path, options)?;
+                        } else {
+                            zip.start_file(&zip_path, options)?;
+                            let mut f = std::fs::File::open(&entry_path)?;
+                            std::io::copy(&mut f, zip)?;
+                        }
+                    }
+                    Ok(())
+                }
+                
+                zip.add_directory(dir_name, options)?;
+                zip_directory(&mut zip, &src_path, dir_name, options)?;
+            } else {
+                let filename = src_path.file_name()
+                    .and_then(|n| n.to_str())
+                    .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid filename"))?;
+                zip.start_file(filename, options)?;
+                let mut src_file = std::fs::File::open(&src_path)?;
+                std::io::copy(&mut src_file, &mut zip)?;
+            }
+            
             zip.finish()?;
         },
         FileOperations::FileUnzipOperation(_) => {
+            if !src_path.exists() {
+                return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "Source zip file not found"));
+            }
+            
             let file = std::fs::File::open(&src_path)?;
             let mut archive = zip::ZipArchive::new(file)?;
-            archive.extract(&final_dest)?;
+            
+            let extract_dir = if dest_path.exists() && dest_path.is_dir() {
+                dest_path
+            } else {
+                std::fs::create_dir_all(&dest_path)?;
+                dest_path
+            };
+            
+            for i in 0..archive.len() {
+                let mut file = archive.by_index(i)?;
+                let outpath = extract_dir.join(file.name());
+                let is_directory = file.is_dir() || (file.size() == 0 && !file.name().contains('.'));
+                
+                if is_directory {
+                    std::fs::create_dir_all(&outpath)?;
+                } else {
+                    if let Some(p) = outpath.parent() {
+                        if !p.exists() {
+                            std::fs::create_dir_all(p)?;
+                        }
+                    }
+                    let mut outfile = std::fs::File::create(&outpath)?;
+                    std::io::copy(&mut file, &mut outfile)?;
+                }
+            }
         },
-        _ => {
-            println!("Unknown or unimplemented operation: {}", operation);
-        }
+        _ => {}
     }
-    
     Ok(())
 }

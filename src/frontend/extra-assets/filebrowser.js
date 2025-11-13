@@ -325,14 +325,31 @@ async function executeFileOperation(){
 // });
 
 //newSelectedMode
-	let src = document.getElementById("src").dataset.src;
-	let dest = document.getElementById("dest").dataset.dest;
+
+	// FileOperations::FileDownloadOperation(_) => "FileDownloadOperation",
+	// FileOperations::FileZipOperation(_) => "FileZipOperation",
+	// FileOperations::FileMoveOperation(_) => "FileMoveOperation",
+	// FileOperations::FileUnzipOperation(_) => "FileUnzipOperation",
+	// FileOperations::FileCopyOperation(_) => "FileCopyOperation",
+
+	let src_element = document.getElementById("src");
+	let dest_element = document.getElementById("dest");
+	let src = src_element.dataset.src
+	let dest = dest_element.dataset.dest || current_path || "";
 	let final_operation = "";
 	if (newSelectedMode == "Move") {
 		final_operation = "FileMoveOperation"
 	} else if (newSelectedMode == "Copy") {
 		final_operation = "FileCopyOperation"
+	} else if (newSelectedMode == "Zip"){
+		final_operation = "FileZipOperation"
+	} else if (newSelectedMode == "Unzip"){
+		final_operation = "FileUnzipOperation"
+	} else if (newSelectedMode == "Download"){
+		final_operation = "FileDownloadOperation"
 	}
+
+
 
 	try {
 		const res = await fetch(`${basePath}/api/fileoperations`, {
@@ -350,7 +367,22 @@ async function executeFileOperation(){
 				metadata: ""
 			})
 		});
+		src_element.textContent = '_'
+		src_element.dataset.src = ''
+		dest_element.textContent = '_'
+		dest_element.dataset.dest = ''
+		get_files('');
+
 	} catch (e){
 		console.log(e)
 	}
+}
+
+function clearFileOperation(){
+	let src_element = document.getElementById("src");
+	let dest_element = document.getElementById("dest");
+	src_element.textContent = '_'
+	src_element.dataset.src = ''
+	dest_element.textContent = '_'
+	dest_element.dataset.dest = ''
 }
