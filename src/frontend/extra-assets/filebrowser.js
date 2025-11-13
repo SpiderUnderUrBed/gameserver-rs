@@ -5,6 +5,8 @@ let current_path = '';
 let globalWs = null;
 let uploaderVisible = false;
 
+let newSelectedMode = "None"
+
 const toggleButton = document.getElementById('toggleUploader');
 const dropzone = document.getElementById('myDropzone');
 
@@ -18,6 +20,20 @@ toggleButton.addEventListener('click', () => {
 		toggleButton.textContent = 'Show File Uploader';
 	}
 });
+
+function modeToggle(){
+	let modes = ["Copy", "Move", "Zip", "Unzip", "Download", "None"]
+	let modeSelector = document.getElementById('mode-selector');
+	if (modeSelector.dataset.mode == "None") {
+		newSelectedMode = "Copy"
+	} else {
+		console.log(modes.indexOf(modeSelector.dataset.mode))
+		newSelectedMode = modes[modes.indexOf(modeSelector.dataset.mode)+1]
+	}
+	modeSelector.dataset.mode = newSelectedMode;
+	modeSelector.textContent = `Current mode: ${newSelectedMode}`
+	console.log(modeSelector.dataset.mode)
+}
 
 function connectWebSocket() {
 	globalWs = new WebSocket(`${basePath}/api/ws`);
@@ -166,16 +182,40 @@ async function get_files(path) {
 						if (item.kind.toLowerCase() === 'folder') {
 							button.className = 'folder-button';
 							button.onclick = () => {
-								if (filename === '..') {
-									const pathParts = path.split('/').filter(p => p !== '');
-									pathParts.pop();
-									get_files(pathParts.join('/'));
+								if (newSelectedMode == "None") {
+									if (filename === '..') {
+										const pathParts = path.split('/').filter(p => p !== '');
+										pathParts.pop();
+										get_files(pathParts.join('/'));
+									} else {
+										get_files(path ? `${path}/${filename}` : filename);
+									}
 								} else {
-									get_files(path ? `${path}/${filename}` : filename);
+									if (src.textContent != "" && src.textContent != "_"){
+										let dest = document.getElementById("dest");
+										dest.textContent = `dest: ${filename}`;
+										dest.dataset.dest = filename;
+									} else {
+										src.textContent = `source: ${filename}`;
+										src.dataset.src = filename;
+									}
 								}
 							};
 						} else {
-							button.onclick = () => open_editor(filename);
+							button.onclick = () => {
+								if (newSelectedMode == "None") {
+									open_editor(filename);
+								} else {
+									let src = document.getElementById("src");
+									src.textContent = `source: ${filename}`;
+									src.dataset.src = filename;
+									// if (src.textContent != "" && src.textContent != "_"){
+									// 	let dest = document.getElementById("dest");
+									// 	dest.textContent = `dest: ${filename}`;
+									// 	dest.dataset.dest = filename;
+									// } 
+								}
+							}
 						}
 						button.textContent = filename;
 						newelement.appendChild(button);
@@ -276,3 +316,41 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
 		alert('Failed to save file.');
 	}
 });
+
+async function executeFileOperation(){
+// const res = await fetch(`${basePath}/api/getfiles`, {
+// 	method: 'POST',
+// 	headers: { 'Content-Type': 'application/json' },
+// 	body: JSON.stringify({ type: 'command', message: path, authcode: '0' })
+// });
+
+//newSelectedMode
+	let src = document.getElementById("src").dataset.src;
+	let dest = document.getElementById("dest").dataset.dest;
+	let final_operation = "";
+	if (newSelectedMode == "Move") {
+		final_operation = "FileMoveOperation"
+	} else if (newSelectedMode == "Copy") {
+		final_operation = "FileCopyOperation"
+	}
+
+	try {
+		const res = await fetch(`${basePath}/api/fileoperations`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ 
+				src: {
+					kind: final_operation,
+					data: src
+				},
+				dest: {
+					kind: final_operation,
+					data: dest
+				},
+				metadata: ""
+			})
+		});
+	} catch (e){
+		console.log(e)
+	}
+}

@@ -19,6 +19,7 @@ walkdir = "2.5.0"
 anyhow = "1.0.99"
 futures = "0.3.31"
 env = "1.0.1"
+zip = "6.0.0"
 
 [[bin]]
 name = "gameserver-rs-node"

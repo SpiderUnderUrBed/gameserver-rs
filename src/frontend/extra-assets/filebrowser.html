@@ -11,7 +11,9 @@
 		<script src="filebrowser.js" defer></script>
 	</head>
 	<body>
-		<div class="header-bar">test</div>
+		<div class="header-bar">
+			<div>File browser</div>
+		</div>
 
 		<div class="full-filebrowser">
 		<div class="file-editor" id="file-editor">
@@ -21,11 +23,18 @@
 			<button id="saveBtn">Save</button>
 			<pre id="output"></pre>
 		</div>
-
-
-
 			<div class="main-body">
 				<div class="navigate-buttons">
+					<div class="mode-buttons">
+						<button data-mode="None" id="mode-selector" class="current-mode" onclick="modeToggle()">Current mode: None</button>
+						<div class="mode-buttons-spacer"></div>
+						<div data-src="" id="src" class="current-mode">_</div>
+						<div class="mode-buttons-spacer"></div>
+						<div data-dest="" id="dest" class="current-mode">_</div>
+						<div class="mode-buttons-spacer"></div>
+						<button class="mode-buttons-spacer" onclick="executeFileOperation()"></button>
+					</div>
+					<div class="navigate-buttons-spacer"></div>
 					<button class="toggle-button" id="toggleUploader">Show File Uploader</button>
 					<form action="" class="dropzone" id="myDropzone"></form>
 				</div>

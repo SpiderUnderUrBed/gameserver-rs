@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use std::fmt;
 use std::{
     any::Any,
     sync::{
@@ -1210,5 +1211,91 @@ pub async fn handle_multipart_message(
         }
         _ => {}
     }
+    Ok(())
+}
+
+
+
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
+pub enum FileOperations {
+    FileDownloadOperation(String),
+    FileMoveOperation(String),
+    FileZipOperation(String),
+    FileUnzipOperation(String),
+    FileCopyOperation(String),
+    Unknown
+}
+
+impl FileOperations {
+    pub fn as_inner_str(&self) -> Option<&str> {
+        match self {
+            FileOperations::FileDownloadOperation(s) => Some(s),
+            FileOperations::FileZipOperation(s) => Some(s),
+            FileOperations::FileMoveOperation(s) => Some(s),
+            FileOperations::FileUnzipOperation(s) => Some(s),
+            FileOperations::FileCopyOperation(s) => Some(s),
+            _ => None
+            // handle other variants if needed
+        }
+    }
+}
+
+impl fmt::Display for FileOperations {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            FileOperations::FileDownloadOperation(_) => "FileDownloadOperation",
+            FileOperations::FileZipOperation(_) => "FileZipOperation",
+            FileOperations::FileMoveOperation(_) => "FileMoveOperation",
+            FileOperations::FileUnzipOperation(_) => "FileUnzipOperation",
+            FileOperations::FileCopyOperation(_) => "FileCopyOperation",
+            _ => "not implemented",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+pub fn execute_file_operation(encoded_src: FileOperations, encoded_dest: FileOperations, dir: String) -> std::io::Result<()> {
+    let dest = encoded_dest.as_inner_str().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid destination"))?;
+    let src = encoded_src.as_inner_str().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid source"))?;
+    let operation = encoded_src.to_string();
+    let src_path = PathBuf::from(&dir).join(src);
+    let dest_path = PathBuf::from(&dir).join(dest);
+    
+    let final_dest = if dest_path.exists() && dest_path.is_dir() {
+        if let Some(filename) = src_path.file_name() {
+            dest_path.join(filename)
+        } else {
+            dest_path
+        }
+    } else {
+        dest_path
+    };
+
+    match &encoded_src {
+        FileOperations::FileCopyOperation(_) => {
+            std::fs::copy(&src_path, &final_dest)?;
+        },
+        FileOperations::FileMoveOperation(_) => {
+            std::fs::rename(&src_path, &final_dest)?;
+        },
+        FileOperations::FileZipOperation(_) => {
+            let file = std::fs::File::create(&final_dest)?;
+            let mut zip = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file(src, options)?;
+            let mut src_file = std::fs::File::open(&src_path)?;
+            std::io::copy(&mut src_file, &mut zip)?;
+            zip.finish()?;
+        },
+        FileOperations::FileUnzipOperation(_) => {
+            let file = std::fs::File::open(&src_path)?;
+            let mut archive = zip::ZipArchive::new(file)?;
+            archive.extract(&final_dest)?;
+        },
+        _ => {
+            println!("Unknown or unimplemented operation: {}", operation);
+        }
+    }
+    
     Ok(())
 }

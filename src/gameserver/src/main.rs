@@ -25,6 +25,13 @@ use crate::filesystem::list_directory_with_range;
 use crate::filesystem::send_folder_over_broadcast;
 use crate::filesystem::BasicPath;
 use crate::filesystem::FileChunk;
+use crate::filesystem::FileOperations;
+use crate::filesystem::execute_file_operation;
+use crate::FileOperations::FileMoveOperation;
+use crate::FileOperations::FileDownloadOperation;
+use crate::FileOperations::FileZipOperation;
+use crate::FileOperations::FileUnzipOperation;
+use crate::FileOperations::FileCopyOperation;
 
 use crate::providers::Custom;
 use crate::providers::Minecraft;
@@ -163,6 +170,24 @@ enum ApiCalls {
     NodeList(Vec<String>),
     IncomingMessage(MessagePayload),
     Node(Node),
+    FileDownloadOperation(String),
+    FileMoveOperation(String),
+    FileZipOperation(String),
+    FileUnzipOperation(String),
+    FileCopyOperation(String)
+}
+
+impl From<ApiCalls> for FileOperations {
+    fn from(api_call: ApiCalls) -> Self {
+        match api_call {
+            ApiCalls::FileDownloadOperation(s) => FileOperations::FileDownloadOperation(s),
+            ApiCalls::FileMoveOperation(s) => FileOperations::FileMoveOperation(s),
+            ApiCalls::FileZipOperation(s) => FileOperations::FileZipOperation(s),
+            ApiCalls::FileUnzipOperation(s) => FileOperations::FileUnzipOperation(s),
+            ApiCalls::FileCopyOperation(s) => FileOperations::FileCopyOperation(s),
+            _ => FileOperations::Unknown
+        }
+    }
 }
 
 // I tried to convert from a Value, as in undefined data type, to a List, as its a data type created only
@@ -781,6 +806,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                         addr, e
                                                     ),
                                                 }
+                                            } else {
+                                                sort_command_type_or_console(
+                                                    &Arc::clone(&arc_state_clone),
+                                                    &json_value,
+                                                    &out_tx,
+                                                    &cmd_tx,
+                                                    &stdin_ref,
+                                                    &hostname_ref,
+                                                )
+                                                .await;
                                             }
                                         } else if let Ok(msg_payload) =
                                             serde_json::from_value::<IncomingMessageWithMetadata>(
@@ -1104,6 +1139,7 @@ struct AuthTcpMessage {
 // commands are handled properly and serialized properly, as well as other commands be forwarded to
 // the relevent function.
 // This now also handles auth messages
+// TODO: Merge alot of the functionality back into main at some point
 async fn sort_command_type_or_console(
     arc_state: &Arc<AppState>,
     payload: &serde_json::Value,
@@ -1112,7 +1148,6 @@ async fn sort_command_type_or_console(
     stdin_ref: &Arc<Mutex<Option<ChildStdin>>>,
     hostname: &Arc<Result<OsString, String>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // println!("{:#?}", payload);
     //node_password
     let node_password: String =
         get_env_var_or_arg("NODE_PASSWORD", Some(String::default())).unwrap();
@@ -1130,6 +1165,24 @@ async fn sort_command_type_or_console(
         )
         .await;
         //Ok(())
+    }
+    //let dest = request.dest.as_inner_str();
+    let file_operation_result: Result<SrcAndDest, serde_json::Error> = 
+        serde_json::from_value(payload.clone());
+    if let Ok(file_operation) = file_operation_result { 
+        let (converted_src, converted_dest): (FileOperations, FileOperations) = (file_operation.clone().src.into(), file_operation.clone().dest.into());
+        let state = Arc::clone(arc_state);
+        let mut path = get_definite_path_from_tag(
+            &state,
+            get_provider_from_servername(&state, state.current_server.clone()).await,
+        )
+        .await;
+        
+        if !path.starts_with("server/") {
+            path = format!("server/{}", path);
+        }
+        
+        execute_file_operation(converted_src, converted_dest, path);
     }
 
     let auth_payload_result: Result<AuthTcpMessage, serde_json::Error> =

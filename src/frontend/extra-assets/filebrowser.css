@@ -67,7 +67,20 @@ body {
 	align-items: center;
 	padding: 1em;
 }
-
+.navigate-buttons-spacer {
+	height: 20px;
+}
+.mode-buttons-spacer {
+	width: 20px;
+}
+.current-mode {
+	background-color: black;
+	color: white;
+}
+.mode-buttons {
+	display: flex;
+	flex-direction: row;
+}
 .navigate-buttons {
 	margin-bottom: 20px;
 	display: flex;

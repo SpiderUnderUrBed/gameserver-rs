@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::default;
+use std::fmt;
 use std::fmt::Debug;
 use std::{net::SocketAddr, path::Path, sync::Arc};
 
@@ -434,7 +435,46 @@ enum ApiCalls {
     IncomingMessageWithMetadata(IncomingMessageWithMetadata),
     FileDataList(Vec<FsItem>),
     Node(Node),
+    FileMoveOperation(String),
+    FileCopyOperation(String),
+    FileZipOperation(String),
+    FileUnzipOperation(String),
+    FileDownloadOperation(String)
 }
+impl ApiCalls {
+    fn as_inner_str(&self) -> Option<&str> {
+        match self {
+            ApiCalls::FileDownloadOperation(s) => Some(s),
+            ApiCalls::FileZipOperation(s) => Some(s),
+            ApiCalls::FileMoveOperation(s) => Some(s),
+            ApiCalls::FileUnzipOperation(s) => Some(s),
+            ApiCalls::FileCopyOperation(s) => Some(s),
+            _ => None
+            // handle other variants if needed
+        }
+    }
+}
+
+impl fmt::Display for ApiCalls {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            ApiCalls::FileDownloadOperation(_) => "FileDownloadOperation",
+            ApiCalls::FileZipOperation(_) => "FileZipOperation",
+            ApiCalls::FileMoveOperation(_) => "FileMoveOperation",
+            ApiCalls::FileUnzipOperation(_) => "FileUnzipOperation",
+            ApiCalls::FileCopyOperation(_) => "FileCopyOperation",
+            _ => "not implemented",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+
+// #[derive(Debug, Deserialize, Serialize, Clone)]
+// #[serde(tag = "kind", content = "data")]
+// enum FileOperations {
+//     Move(SrcAndDest)
+// }
 
 // struct ApiCallsWithAuth {
 //     jwt: String,
@@ -646,6 +686,18 @@ pub async fn handle_stream(
                     }
                 }
             }
+            let src_and_dest_parsed: Vec<Result<SrcAndDest, serde_json::Error>> =
+                value_from_line::<SrcAndDest, _>(line_content, |line| line.contains("\"src\"")).await;
+
+            let mut src_and_dest_values: Vec<Value> = vec![];
+            for item in src_and_dest_parsed {
+                if let Ok(data) = item {
+                    if let Ok(serialized_value) = serde_json::to_value(data) {
+                        src_and_dest_values.push(serialized_value);
+                    }
+                }
+            }
+
             let integration_parsed: Vec<Result<IntegrationCommands, serde_json::Error>> =
                 value_from_line::<IntegrationCommands, _>(line_content, |line| line.contains("\"kind\"")).await;
 
@@ -658,6 +710,7 @@ pub async fn handle_stream(
                 }
             }
 
+            final_data.extend(src_and_dest_values);
             final_data.extend(integration_values);
             final_data.extend(list_values);
             final_data.extend(console_values);
@@ -1264,6 +1317,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/ws", get(ws_handler))
         // .route("getfiles", get(get_files))
         .route("/api/upload", post(upload))
+        .route("/api/fileoperations", post(file_operations))
         //.route("/api/uploadcontent", post(upload))
         .route("/api/statistics", get(statistics))
         .route("/api/getsettings", get(get_settings))
@@ -1386,7 +1440,23 @@ pub async fn ensure_rcon(arc_state: Arc<RwLock<AppState>>) -> Result<(), String>
 // ) -> StatusCode {
 
 // }
+async fn file_operations(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    Json(request): Json<SrcAndDest>,
+) -> StatusCode {   
+    let state = arc_state.write().await;
 
+    match serde_json::to_vec(&request) {
+        Ok(bytes) => {
+            if let Err(err) = state.tcp_tx.send(bytes) {
+                eprintln!("Failed to send request over broadcast: {}", err);
+            }
+        }
+        Err(err) => eprintln!("Failed to serialize request: {}", err),
+    }
+
+    StatusCode::CREATED
+}
 async fn upload(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     multipart: Multipart,
