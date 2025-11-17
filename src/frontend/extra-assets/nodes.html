@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="site-url" content="[[SITE_URL]]">
+    <title>Document</title>
+    <link rel="stylesheet" href="nodes.css">
+    <script src="nodes.js" defer></script>
+</head>
+<body>
+    <!-- <div class="background"> -->
+        <div class="node-whole">
+            <div class="side-bar">
+                <button class="node-button-page" onclick="window.location.href='main.html'">Homepage</button>
+                <button class="node-button-page" onclick="window.location.href='users.html'">Users</button>
+                <button class="server-button-page" onclick="window.location.href='servers.html'">Servers</button>
+                <button class="node-button-page" onclick="window.location.href='nodes.html'">Nodes</button>
+            </div>
+            <div class="node-center">
+                <div class="node-background">
+                        <!-- <div class="node-padding"> -->
+                            <div class="node-operations">
+                                <button class="nodes-element-operations" onclick="document.getElementById('addUserDialog').showModal()">Add Node</button>
+                                <span style="width: 20px;"></span>
+                                <button class="nodes-element-operations" onclick="document.getElementById('deleteUserDialog').showModal()">Delete Node</button>
+                            </div>
+                        <!-- </div> -->
+                    <!-- <div class="node-padding"> -->
+                        <div class="nodes">
+                            <!-- <button class="nodes-element">Test</button>
+                            <button class="nodes-element">Test</button> -->
+                        </div>
+                        <div id="message"></div>
+                    <!-- </div> -->
+                </div>
+                <dialog id="deleteUserDialog" class="node-dialog">
+                    <form method="dialog">
+                        <h3>Delete User</h3>
+                        <label for="nodename">Username:</label><br>
+                        <input type="text" id="delete-nodename" name="nodename" required><br>
+            
+                        <div class="dialog-buttons">
+                            <button type="submit" onclick="deleteUser()">Delete User</button>
+                            <button onclick="document.getElementById('deleteUserDialog').close()">Cancel</button>
+                        </div>
+                    </form>
+                </dialog>
+                <dialog id="addUserDialog" class="node-dialog">
+                    <form method="dialog">
+                        <h3>Add User</h3>
+                        <label for="nodename">Username:</label><br>
+                        <input type="text" id="create-nodename" name="nodename" required><br>
+            
+                        <label for="password">Password:</label><br>
+                        <input type="password" id="password" name="password" required><br>
+            
+                        <div class="dialog-buttons">
+                            <button type="submit" onclick="addUser()">Add User</button>
+                            <button onclick="document.getElementById('addUserDialog').close()">Cancel</button>
+                        </div>
+                    </form>
+                </dialog>
+            </div>
+        </div>
+    <!-- </div> -->
+</body>
+</html>

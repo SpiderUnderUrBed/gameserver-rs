@@ -1,0 +1,269 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  height: 100vh;
+  height: 100svh;
+  display: grid;
+  grid-template-rows: auto auto auto 1fr auto auto;
+  font-family: system-ui;
+  background: #111;
+}
+
+header {
+  grid-column: 1 / -1;
+  background: rgba(7, 234, 234, 0.445);
+  min-height: 100px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2rem;
+  font-weight: bold;
+}
+
+aside {
+  background: #000;
+  display: flex;
+  padding: 1em;
+  gap: 1em;
+  flex-direction: column;
+}
+
+aside button {
+  padding: 0.5em;
+  cursor: pointer;
+}
+
+.intergration-spacer {
+  display: none;
+  width: 20svw;
+}
+.intergrations-features {
+  display: none;
+  width: 100svw;
+  background-color: blue;
+}
+.tooltip {
+  display: none;
+  position: absolute;
+  background-color: #333;
+  color: white;
+  padding: 5px 10px;
+  border-radius: 5px;
+  font-size: 14px;
+  z-index: 1000;
+}
+.server-status-indicator {
+  background-color: grey;
+  width: 2svw;
+  height: 3svh;
+}
+.mini-server-status-indicator {
+  background-color: grey;
+  width: fit-content;
+  height: fit-content;
+}
+/* .mini-server-status-indicator-off {
+  background-color: rgb(255, 0, 0);
+  width: fit-content;
+  height: fit-content;
+} */
+.serverStatuses {
+  display: none;
+  justify-content: space-between;
+}
+.simple-spacer {
+  display: flex;
+  justify-content: space-between;
+}
+
+.dropzone {
+	display: block;
+	margin-bottom: 20px;
+}
+
+/* #nodeActionDialog .background {
+  background-color: #00ffcc;
+  display: inline-block; 
+  padding: 1rem;               
+  border-radius: 8px;          
+} */
+
+
+.management-buttons {
+  display: none;
+}
+
+
+.main-buttons {
+  max-height: 30px;
+}
+
+.top-bar {
+  background: hsl(0 0% 4%);
+  padding: 1em;
+  display: flex;
+  gap: 1em;
+  border-bottom: 1px solid hsl(0 0% 15%);
+  flex-wrap: wrap;
+}
+
+.top-bar button {
+  cursor: pointer;
+  padding: 0.5em 1em;
+}
+
+.top-bar button:nth-last-child(-n+2) {
+  background: red;
+}
+
+.topmost-bar {
+  background: hsl(0 0% 4%);
+  padding: 1em;
+  display: flex;
+  gap: 1em;
+  border-bottom: 1px solid hsl(0 0% 15%);
+  flex-wrap: wrap;
+}
+
+.topmost-bar button {
+  cursor: pointer;
+  padding: 0.5em 1em;
+}
+/* .topmost-bar button:nth-last-child(-n+2) {
+  background: red;
+} */
+
+.nodes-bar {
+    /* visibility: hidden; */
+    display: none;
+    height: 10vh;
+    background-color: rgba(7, 234, 234, 0.445);
+}
+
+/* .nodes-bar.visible {
+    visibility: visible;
+} */
+
+main {
+  background: #111111;
+  overflow-y: auto;
+  padding: 1em;
+  font-family: monospace;
+  color: white;
+}
+
+.console-history {
+  min-height: 70vh;
+  max-height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5em;
+  padding-bottom: 0.5em;
+  scrollbar-gutter: stable;
+}
+
+.console-input-log {
+  color: #ffffff;
+  font-weight: bold;
+  margin-bottom: 0.5em;
+}
+
+.console-output-log {
+  color: #00ffcc;
+  font-weight: bold;
+  margin-bottom: 0.5em;
+}
+
+.console-input-container {
+  grid-column: 1 / -1;
+}
+
+input[type="text"].console-input {
+  background: hsl(0 0% 15%);
+  padding: 1em;
+  outline: none;
+  color: hsl(0 0% 100%);
+  border: none;
+  border-top: 1px solid #333;
+  width: 100%;
+}
+
+input[type="text"].console-input:focus {
+  box-shadow: inset 0 0 .7em hsl(0 0% 0%);
+}
+
+footer {
+  min-height: 50px;
+  background: #000;
+  grid-column: 1 / -1;
+}
+
+.toggablePages {
+  display: none;
+  flex-direction: column;
+  gap: 1em;
+  margin-bottom: 1em;
+}
+
+.user-dialog {
+    min-width: 50vh;
+    position: fixed; 
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+}
+
+.loading {
+    display: none;
+    width: 40px;
+    height: 40px;
+}
+
+.dialog-container {
+  width: 20svw;
+  height: 20svh;
+}
+
+@media screen and (width >= 800px) {
+  body {
+    grid-template-columns: 250px 1fr;
+    grid-template-rows: auto auto 1fr auto;
+  }
+
+  header {
+    grid-column: 1 / -1;
+  }
+
+  aside {
+    grid-row: 2 / span 3;
+  }
+
+  .top-bar {
+    grid-column: 2;
+  }
+  .topmost-bar {
+    grid-column: 2;
+  }
+
+
+  .nodes-bar {
+    grid-column: 2;
+  }
+
+  main {
+    grid-column: 2;
+  }
+
+  .console-input-container {
+    grid-column: 2;
+  }
+
+  footer {
+    grid-column: 1 / -1;
+  }
+}

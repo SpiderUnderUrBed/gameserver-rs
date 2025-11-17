@@ -1,0 +1,11 @@
+.intergrations > * {
+    height: 20svh;
+    width: 100%;
+    background-color: blue;
+}
+.top-intergration-buttons {
+    display: flex;
+}
+.top-intergration-buttons > * {
+    background-color: cyan;
+}

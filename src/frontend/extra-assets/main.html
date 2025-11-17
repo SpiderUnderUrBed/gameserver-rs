@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<meta name="site-url" content="[[SITE_URL]]" />
+		<title>Server Panel</title>
+		<link rel="stylesheet" href="main.css" />
+		<script src="main.js" defer></script>
+		<link rel="stylesheet" href="https://unpkg.com/dropzone@6.0.0-beta.2/dist/dropzone.css" />
+		<script src="https://unpkg.com/dropzone@6.0.0-beta.2/dist/dropzone-min.js"></script>
+	</head>
+	<body>
+		<header>Server Panel</header>
+
+		<aside>
+			<button onclick="window.location.href='main.html'">Homepage</button>
+			<button onclick="window.location.href='users.html'">Users</button>
+			<button onclick="window.location.href='servers.html'">Servers</button>
+			<button onclick="window.location.href='nodes.html'">Nodes</button>
+			<button onclick="window.location.href='manual.html'">Manual</button>
+
+			<div class="toggablePages" id="toggablePages">
+				<button onclick="window.location.href='create-servers.html'">Create servers</button>
+				<button onclick="window.location.href='svelte-main.html'">Svelte main</button>
+			</div>
+
+			<button class="bottom" onclick="enableDeveloperOptions()">Toggle Developer Options</button>
+		</aside>
+
+		<div class="topmost-bar">
+			<button id="filebrowser">Filebrowser</button>
+			<button id="statistics">Statistics</button>
+			<button id="workflows">Workflows</button>	
+			<button id="intergrations">Intergrations</button>	
+			<button id="backups">Backups</button>
+			<button id="settings">Settings</button>
+
+			<button onclick="toggleButtons()">Manage buttons</button>
+			<div class="management-buttons" id="management-buttons">
+				<button onclick="configureTopmostButtons()">Configure Button links</button>
+				<button onclick="temporaryButtonReset()" id="temp-enable-defaults">Temporarially enable defaults</button>
+				<button onclick="restoreButtonDefaults()">Restore defaults</button>
+
+			</div>
+			<div id='intergration-spacer' class="intergration-spacer"></div>
+			<div id='intergrations-features' class="intergrations-features">
+				<button data-tooltip="Player count: %%" data-playercount>Hover over for player count</button>
+				<!-- <div class="tooltip-container">
+					<span class="tooltip-text">This enables your Minecraft integration.</span>
+				</div> -->
+			</div>
+		</div>
+		<div class="top-bar">
+			<button class="server-status-indicator" id="server-status-indicator" onclick="showStatusDialog()"></button>
+			<button class="main-buttons" onclick="showServerDialog()">Create Server</button>
+			<button class="main-buttons" onclick="document.getElementById('deleteServerDialog').showModal()">Delete current server</button>
+			<button class="main-buttons" onclick="startServer()">Start Server</button>
+			<button class="main-buttons" onclick="stopServer()">Stop Server</button>
+			<button class="main-buttons" onclick="configureServer()">Configure Server</button>
+            <img src="icons/12-dots-scale-rotate.svg" class="loading" id="loading">
+			<button class="main-buttons raw-toggle-button" onclick="toggleRaw()">Raw Output: OFF</button>
+			<button class="main-buttons" onclick="addMore()">Add Node</button>
+			<button class="main-buttons" onclick="toggleNodes()">Toggle Nodes</button>
+		</div>
+		<div class="nodes-bar" id="nodes-bar">
+			<p>test</p>
+		</div>
+
+		<main>
+			<div class="console-history" id="consoleHistory"></div>
+		</main>
+
+		<div class="console-input-container">
+			<input type="text" class="console-input" autofocus spellcheck="false" />
+		</div>
+		<button
+			id="scrollToBottom"
+			style="position: fixed; bottom: 70px; right: 10px; display: none; z-index: 999"
+		>
+			↓ Scroll to bottom
+		</button>
+
+		<footer></footer>
+		<dialog id="createServerDialog" class="user-dialog">
+			<form method="dialog">
+				<h1>Create Server</h1>
+				<div class="no-provider-warning" id="no-provider-warning">Warning, there is no provider.json</div>
+				<div class="navigate-buttons">
+					<button class="toggle-button" id="toggleUploader">Show File Uploader</button>
+					<div action="" class="dropzone" id="myDropzone"></div>
+					<button id="uploadBtn" type="button">Upload</button>
+				</div>
+				<select id="providertype-selector" name="providertype-selector">
+						<option value="custom">Custom</option>
+						<option value="minecraft" selected="selected">Vanilla minecraft</option>
+				</select>
+				<div class="dialog-buttons">
+					<button type="button" onclick="createDefaultServer()">Standard Create Server</button>
+					<button type="button" onclick="this.closest('dialog').close()">Cancel</button>
+				</div>
+			</form>
+		</dialog>
+		<dialog id="configureServerDialog" class="user-dialog">
+			<form method="dialog">
+				<h1>Test</h1>
+				<h5>Server type:</h5>
+				<h5>Minecraft</h5>
+				<br>
+				<div>
+				<h5>Migrate from</h5>
+				<select id="migrate-from" name="migrate-from"></select>
+				</div>
+				<div>
+				<h5>Migrate to</h5>
+				<select id="migrate-to" name="migrate-to"></select>
+				</div>
+				<div class="dialog-buttons">
+					<button type="submit" onclick="updateServer()">Confirm</button>
+					<button type="button" onclick="this.closest('dialog').close()">Cancel</button>
+				</div>
+			</form>
+		</dialog>
+		<dialog id="nodeActionDialog" class="user-dialog">
+		<div class="dialog-container">
+			<!-- <div class="background"> -->
+				<form method="dialog">
+				<div class="user-dialog" data-user-container data-value="edit-perms">
+					<div class="">
+					<h3>Node Actions</h3>
+					<h5>Node name:</h5>
+					<p id="node-dialog-name">Loading...</p>
+					<div class="dialog-buttons">
+					<button type="button" onclick="nodeClicked(this)">Transfer to this node</button>
+					<button type="button" onclick="document.getElementById('nodeActionDialog').close()">Cancel</button>
+					</div>
+				</div>
+				</form>
+			<!-- </div> -->
+		</div>
+		</dialog>
+		<dialog id="deleteServerDialog" class="user-dialog">
+			<div class="dialog-container">
+				<p>WARNING: This will remove all server files</p>
+				<button onclick="deleteServer()">I am sure</button>
+				<button type="button" onclick="document.getElementById('deleteServerDialog').close()">Cancel</button>
+			</div>
+		</dialog>
+		<dialog id="addNodeDialog" class="user-dialog">
+			<form method="dialog">
+				<h3>Add Node</h3>
+				<div class="form-content">
+                    <label for="create-nodename">Node name:</label><br>
+                    <input type="text" id="create-nodename" name="nodename"><br>
+                    <label for="nodeip">Node Ip:</label><br>
+                    <input type="text" id="nodeip" name="nodeip"><br>
+					<label for="nodetype-selector">Node Type:</label><br>
+					<select id="nodetype-selector" name="nodetype-selector">
+                            <option value="Main">Initial gameserver</option>
+                            <option value="Custom" selected="selected">Custom</option>
+                    </select>
+				</div>
+				<div class="dialog-buttons">
+					<button type="submit" onclick="addNode()">Confirm</button>
+					<button type="button" onclick="this.closest('dialog').close()">Cancel</button>
+				</div>
+			</form>
+		</dialog>
+		<dialog id="statusChangeDialog" class="user-dialog">
+			<h1>Change status to</h1>
+			<div class="simple-spacer">
+			<div></div>
+			<button class="mini-server-status-indicator" id="node-status-display" onclick="changeStatusTypeTo('node')">Node status</button>
+			<button class="mini-server-status-indicator" id="server-statuses" onclick="toggleServerStatuses()">Show server status types</button>
+			<div></div>
+			</div>
+			<br>
+			<div class="serverStatuses" id="serverStatuses">
+				<div></div>
+				<button class="mini-server-status-indicator" id="server-keyword-display" onclick="changeStatusTypeTo('server-keyword')"> server keyword </button>
+				<button class="mini-server-status-indicator" id="server-process-display" onclick="changeStatusTypeTo('server-process')"> server process </button>
+				<div></div>
+			</div>
+			<!-- changeStatusTypeTo('server') -->
+			<br>
+			<button onclick="refreshStatus()"> Refresh status </button>
+			<form method="dialog">
+				<div class="dialog-buttons">
+					<button type="submit" onclick="loadStatus()">Confirm</button>
+					<button type="button" onclick="this.closest('dialog').close()">Cancel</button>
+				</div>
+			</form>
+		</dialog>
+		<dialog id="configureTopmostButtonDialog" class="user-dialog">
+			<form method="dialog">
+				<h3>Configure buttons</h3>
+				<div class="form-content">
+					<label for="topmost-button-option">Topmost button</label><br>
+					<select id="topmost-button-option" name="topmost-button-option">
+						<option value="filebrowser">Filebrowser</option>
+						<option value="statistics">Statistics</option>
+						<option value="backups">Backups</option>
+						<option value="settings">Settings</option>
+						<option value="intergrations">Intergrations</option>
+						<option value="workflows">Workflows</option>
+					</select><br>			
+					<label for="custom-button-link">Link for button (empty for default)</label><br>
+					<input type="text" id="custom-button-link" name="custom-button-link">
+				</div>
+				<div class="dialog-buttons">
+					<button type="submit" onclick="configuredTopmostButtons()">Confirm</button>
+					<button type="button" onclick="this.closest('dialog').close()">Cancel</button>
+				</div>
+			</form>
+		</dialog>
+		<template id="node-element-inner-template">
+			<div class="node-element" data-user-container>
+				<p id="node-dialog-name"></p>
+			</div>
+		</template>
+	</body>
+</html>

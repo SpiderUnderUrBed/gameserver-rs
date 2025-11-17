@@ -1,0 +1,18 @@
+body {
+    background-color: aqua;
+}
+#ram-usage {
+    width: 100%;
+    height: 10svh; 
+    max-width: 800px;
+}
+#core-usage {
+    width: 100%;
+    height: 10svh; 
+    max-width: 800px;
+}
+.statistics-bar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}

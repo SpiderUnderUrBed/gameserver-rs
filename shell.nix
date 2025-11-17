@@ -2,10 +2,12 @@
 pkgs.mkShell {
   nativeBuildInputs = with pkgs; [
     rustup
+    rustc
+    cargo
     openssl
     pkg-config
     postgresql 
-    mariadb.client  
+    mariadb.client 
   ];
 
   shellHook = ''

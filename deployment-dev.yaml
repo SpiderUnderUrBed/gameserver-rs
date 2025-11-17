@@ -95,8 +95,8 @@ spec:
       labels:
         app: rust-app
     spec:
-      # nodeSelector:
-      #   kubernetes.io/hostname: raspberrypi 
+     # nodeSelector:
+      #  kubernetes.io/hostname: raspberrypi 
       serviceAccountName: pod-reader
       # dnsPolicy: "ClusterFirstWithHostNet"
       # dnsConfig:
