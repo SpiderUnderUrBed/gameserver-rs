@@ -228,7 +228,7 @@ static DOCKER_WORKS: bool = true;
 
 // dummy client and function
 #[cfg(not(feature = "full-stack"))]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Client;
 
 #[cfg(not(feature = "full-stack"))]
@@ -350,6 +350,12 @@ enum IntegrationCommands {
     MinecraftDisableRcon(serde_json::Value),
 }
 
+#[derive(Debug, Clone)]
+enum Clients {
+    K8s(Client),
+    Docker(String),
+    None
+}
 
 // console output is sometimes contained within the data feild of json, but this also might be redundant
 #[derive(Debug, Deserialize, Serialize)]
@@ -509,6 +515,7 @@ enum Status {
 //     }
 // }
 
+
 // AppState, this is a global struct which will be used to store data needed across the application like in routes and etc
 // which includes the sender and reciver to the tcp connection for gameserver, the websocket sender (receiver only needs to be managed by its own handler)
 // the base path like if all the routes are prefixed with something like /gameserver-rs which is the default for my testing deployment, and database as its needed frequently
@@ -527,7 +534,8 @@ struct AppState {
     //status: Status,
     ws_tx: broadcast::Sender<String>,
     base_path: String,
-    client: Option<Client>,
+    //client: Option<Client>,
+    client: Clients,
     database: database::Database,
     cached_status_type: String,
     rcon_connection: Option<Arc<Mutex<Connection<TcpStream>>>>,
@@ -760,7 +768,7 @@ pub async fn handle_stream(
                                     };
 
                                     if let Ok(nodes) = database.fetch_all_nodes().await {
-                                        let node_status = if let Some(client) = client_option {
+                                        let node_status = if let Clients::K8s(client) = client_option {
                                             let client_clone = client.clone();
                                             let ip_clone = ip.to_string();
 
@@ -780,7 +788,7 @@ pub async fn handle_stream(
                                             nodename: inner_msg.message,
                                             nodetype: {
                                                 let state_guard = arc_state.read().await;
-                                                if let Some(client) = &state_guard.client {
+                                                if let Clients::K8s(client) = &state_guard.client {
                                                     if kubernetes::verify_is_k8s_gameserver(client.clone(), ip.to_string()).await? {
                                                         NodeType::Inbuilt
                                                     } else {
@@ -793,7 +801,7 @@ pub async fn handle_stream(
                                             nodestatus: node_status,
                                             k8s_type: {
                                                 let state_guard = arc_state.read().await;
-                                                if let Some(client) = &state_guard.client {
+                                                if let Clients::K8s(client) = &state_guard.client {
                                                     if kubernetes::verify_is_k8s_gameserver(client.clone(), ip.to_string()).await? {    
                                                         if kubernetes::verify_is_k8s_pod(client, ip.to_string()).await? {
                                                             K8sType::Pod
@@ -848,21 +856,13 @@ pub async fn handle_stream(
                             let _ = ws_tx.send(data_clone.data.clone());
                         }
                     }
-                    // let final_value = match serde_json::to_vec(&value) {
-                    //     Ok(bytes) => {
-                    //         // internal_tx
-                    //         if let Err(err) = ws_tx.send(bytes) {
-                    //             eprintln!("Failed to send request over broadcast: {}", err);
-                    //         }
-                    //     }
-                    //     Err(err) => eprintln!("Failed to serialize request: {}", err),
-                    // };
+
                     if FORWARD_ALL_MESSAGES == true {
                         let all_remaining_messages_result = match serde_json::to_string(&value) {
                             Ok(string) => {
                                 // internal_tx
                                 if let Err(err) = ws_tx.send(string) {
-                                    eprintln!("Failed to send request over broadcast: {}", err);
+                                    eprintln!("Failed to send request over broadcast: {} (not fatal)", err);
                                 }
                             }
                             Err(err) => eprintln!("Failed to serialize request: {}", err),
@@ -1140,14 +1140,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // sets the client to be none by default unless this is ran the stanard way which will be ran with the appropriate feature-flag
     // which will set the k8s client
-    let mut client: Option<Client> = None;
+    // let mut client: Option<Client> = None;
+    // if enable_k8s_client && K8S_WORKS {
+    //     client = Some(Client::try_default().await?);
+    // }
+    let mut client: Clients = Clients::None;
     if enable_k8s_client && K8S_WORKS {
-        client = Some(Client::try_default().await?);
+        client = Clients::K8s(Client::try_default().await?);
     }
 
     let mut tcp_url: String = config_tcp_url.to_string();
-    if !dont_override_conn_with_k8s && client.is_some() {
-        if let Ok(url_result) = &kubernetes::get_avalible_gameserver(client.as_ref().unwrap()).await
+    if !dont_override_conn_with_k8s && let Clients::K8s(ref inner_client) = client {
+        //let Clients::K8s(inner_client) = client;
+        if let Ok(url_result) = &kubernetes::get_avalible_gameserver(&inner_client).await
         {
             tcp_url = url_result.clone();
         } else {
@@ -1249,14 +1254,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if initial_connection_result.is_err() || force_rebuild
         {
 
-            if multifaceted_state.write().await.client.is_some() { 
+            //if matches!(multifaceted_state.write().await.client, Clients::K8s(_)) { 
+            if let Clients::K8s(client) = &multifaceted_state.write().await.client {
                 eprintln!("Initial connection failed or force rebuild enabled, will possibly enable auto-build (configurable)");
                 if build_docker_image {
                     docker::build_docker_image().await?;
                 }
                 if build_deployment {
                     kubernetes::create_k8s_deployment(
-                        multifaceted_state.write().await.client.as_ref().unwrap(),
+                        &client,
                     )
                     .await?;
                 }
@@ -1809,7 +1815,7 @@ async fn set_settings(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     
-    if let (Value::Object(ref mut current), Value::Object(new)) = (&mut settings_value, inner_value) {
+    if let (Value::Object(current), Value::Object(new)) = (&mut settings_value, inner_value) {
         for (k, v) in new {
             current.insert(k, v);
         }
@@ -2482,7 +2488,7 @@ async fn get_nodes(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl IntoR
     let mut state = arc_state.write().await;
     let mut node_list: Vec<NodeAndTCP> = vec![];
 
-    if let Some(client) = state.client.clone() {
+    if let Clients::K8s(client) = state.client.clone() {
         match kubernetes::list_node_info(client).await {
             Ok(nodes) => {
                 node_list.extend(nodes.clone());
