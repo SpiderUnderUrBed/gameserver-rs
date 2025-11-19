@@ -15,6 +15,7 @@ use crate::filesystem::{send_multipart_over_broadcast, FsType};
 use crate::http::HeaderMap;
 use crate::kubernetes::verify_is_k8s_gameserver;
 use crate::middleware::from_fn;
+use crate::filesystem::TcpFileStream;
 use axum::extract::ws::Message as WsMessage;
 use axum::extract::Multipart;
 use axum::extract::Query;
@@ -54,6 +55,8 @@ use crate::database::databasespec::NodesDatabase;
 use crate::database::databasespec::UserDatabase;
 use crate::database::databasespec::{Button, NodeStatus};
 use crate::database::Node;
+
+use crate::http::header;
 // miscellancious imports, future traits are used because alot of the code is asyncronus and cant fully be contained in tokio
 // mime_guess as when I am serving the files, I need to serve it with the correct mime type
 // serde_json because I exchange alot of json data between the backend and frontend and to the gameserver
@@ -80,6 +83,7 @@ use tokio::{
 };
 use tower_http::cors::{Any as CorsAny, CorsLayer};
 
+use futures_util::task::Poll;
 use futures_util::{stream, Stream, TryFutureExt};
 
 use std::error::Error;
@@ -1323,7 +1327,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/ws", get(ws_handler))
         // .route("getfiles", get(get_files))
         .route("/api/upload", post(upload))
-        .route("/api/fileoperations", post(file_operations))
+        // .route("/api/fileupload", post(stream_file_download))
+        .route("/api/download/{*wildcard}", get(stream_file_download))
         //.route("/api/uploadcontent", post(upload))
         .route("/api/statistics", get(statistics))
         .route("/api/getsettings", get(get_settings))
@@ -3061,6 +3066,133 @@ async fn get_message(
             ))
         }
     }
+}
+
+pub async fn stream_file_download(
+    State(state): State<Arc<RwLock<AppState>>>,
+    axum::extract::Path(file_path): axum::extract::Path<String>,
+) -> Result<Response<Body>, StatusCode> {
+    let tcp_fs = {
+        let state = state.read().await;
+        let (tcp_tx, tcp_rx) = (state.tcp_tx.clone(), state.tcp_tx.subscribe());
+        Arc::new(Mutex::new(TcpFs::new(tcp_tx, tcp_rx)))
+    };
+    
+    let decoded_path = urlencoding::decode(&file_path)
+        .map_err(|_| StatusCode::BAD_REQUEST)?
+        .to_string();
+    
+    let normalized_path = normalize_and_secure_path(&decoded_path)?;
+    
+    
+    let metadata = {
+        let mut fs = tcp_fs.lock().await;
+        let mut remote_fs = RemoteFileSystem::new(&normalized_path, Some((*fs).clone()));
+        
+        let is_file = remote_fs.is_file().await.map_err(|e| {
+            eprintln!("Error checking if path is file: {}", e);
+            StatusCode::NOT_FOUND
+        })?;
+        
+        if !is_file {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        
+        remote_fs.ensure_metadata().await.map_err(|e| {
+            eprintln!("Error getting metadata: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        
+        remote_fs.cached_metadata.clone()
+    };
+    
+    let file_size = None;
+    let chunk_size = 64 * 1024;
+    
+    let stream = TcpFileStream::new(
+        tcp_fs.clone(),
+        normalized_path.clone(),  
+        file_size,
+        chunk_size,
+    );
+    
+    let body = Body::from_stream(stream);
+    
+    let filename = std::path::Path::new(&normalized_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("download");
+    
+    let mut response = Response::new(body);
+    let headers = response.headers_mut();
+    
+    headers.insert(
+        header::CONTENT_TYPE,
+        "application/octet-stream".parse().unwrap()
+    );
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        format!("attachment; filename=\"{}\"", filename).parse().unwrap()
+    );
+    
+    if let Some(size) = file_size {
+        headers.insert(header::CONTENT_LENGTH, size.to_string().parse().unwrap());
+    } else {
+        headers.insert(header::TRANSFER_ENCODING, "chunked".parse().unwrap());
+    }
+    
+    Ok(response)
+}
+fn normalize_and_secure_path(path: &str) -> Result<String, StatusCode> {
+    use std::path::{Path, PathBuf, Component};
+
+    let path = path.trim();
+    
+    let path_buf = PathBuf::from(path);
+    
+    let mut normalized = PathBuf::new();
+    for component in path_buf.components() {
+        match component {
+            Component::Normal(part) => normalized.push(part),
+            Component::RootDir => {
+                continue;
+            }
+            Component::CurDir => {
+                continue;
+            }
+            Component::ParentDir => {
+                if normalized.components().count() > 0 {
+                    normalized.pop();
+                }
+            }
+            _ => {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+        }
+    }
+    
+    let normalized_str = normalized.to_string_lossy().to_string();
+    
+    let server_prefix = "server/";
+    let final_path = if normalized_str.starts_with(server_prefix) {
+        normalized_str
+    } else if normalized_str.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    } else {
+        format!("{}{}", server_prefix, normalized_str)
+    };
+    
+    if !final_path.starts_with(server_prefix) {
+        eprintln!("Path traversal attempt blocked: {} -> {}", path, final_path);
+        return Err(StatusCode::FORBIDDEN);
+    }
+    
+    if final_path.contains('\0') {
+        eprintln!("Null byte in path blocked: {}", final_path);
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    
+    Ok(final_path)
 }
 
 // Unit tests

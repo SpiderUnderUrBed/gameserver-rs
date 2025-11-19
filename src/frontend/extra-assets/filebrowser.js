@@ -346,9 +346,10 @@ async function executeFileOperation(){
 	} else if (newSelectedMode == "Unzip"){
 		final_operation = "FileUnzipOperation"
 	} else if (newSelectedMode == "Download"){
-		final_operation = "FileDownloadOperation"
+		await downloadFileSimple(src);
+		clearFileOperation();
+		return;
 	}
-
 
 
 	try {
@@ -376,6 +377,87 @@ async function executeFileOperation(){
 	} catch (e){
 		console.log(e)
 	}
+}
+// async function downloadFileSimple(filePath) {
+// 	if (!filePath) {
+// 		alert('No file selected to download');
+// 		return;
+// 	}
+
+// 	const fullFilePath = current_path ? `${current_path}/${filePath}` : filePath;
+	
+// 	const a = document.createElement('a');
+// 	a.href = `${basePath}/api/download/${encodeURIComponent(fullFilePath)}`;
+// 	a.download = filePath;
+// 	a.style.display = 'none';
+// 	document.body.appendChild(a);
+// 	a.click();
+// 	document.body.removeChild(a);
+// }
+async function downloadFileSimple(filePath) {
+    console.log('[downloadFileSimple] Starting download...');
+    console.log('[downloadFileSimple] Input filePath:', filePath);
+    console.log('[downloadFileSimple] current_path:', current_path);
+    
+    if (!filePath) {
+        console.error('[downloadFileSimple] No file path provided');
+        alert('No file selected to download');
+        return;
+    }
+    
+    const fullFilePath = current_path ? `${current_path}/${filePath}` : filePath;
+    console.log('[downloadFileSimple] Full file path:', fullFilePath);
+    
+    const encodedPath = encodeURIComponent(fullFilePath);
+    console.log('[downloadFileSimple] Encoded path:', encodedPath);
+    
+    const downloadUrl = `${basePath}/api/download/${encodedPath}`;
+    console.log('[downloadFileSimple] Download URL:', downloadUrl);
+    console.log('[downloadFileSimple] basePath:', basePath);
+    
+    // Test if the endpoint exists
+    try {
+        console.log('[downloadFileSimple] Testing endpoint with HEAD request...');
+        const testResponse = await fetch(downloadUrl, { method: 'HEAD' });
+        console.log('[downloadFileSimple] HEAD response status:', testResponse.status);
+        console.log('[downloadFileSimple] HEAD response headers:', 
+            Array.from(testResponse.headers.entries()));
+        
+        if (!testResponse.ok) {
+            console.error('[downloadFileSimple] Endpoint returned error:', testResponse.status, testResponse.statusText);
+            alert(`Download failed: ${testResponse.status} ${testResponse.statusText}`);
+            return;
+        }
+    } catch (error) {
+        console.error('[downloadFileSimple] Failed to test endpoint:', error);
+        alert('Failed to connect to download endpoint: ' + error.message);
+        return;
+    }
+    
+    console.log('[downloadFileSimple] Creating download link element...');
+    const a = document.createElement('a');
+    a.href = downloadUrl;
+    a.download = filePath;
+    a.style.display = 'none';
+    
+    console.log('[downloadFileSimple] Link properties:', {
+        href: a.href,
+        download: a.download,
+        style: a.style.cssText
+    });
+    
+    document.body.appendChild(a);
+    console.log('[downloadFileSimple] Link appended to body');
+    
+    console.log('[downloadFileSimple] Triggering click...');
+    a.click();
+    
+    // Wait a moment before removing to ensure download starts
+    setTimeout(() => {
+        document.body.removeChild(a);
+        console.log('[downloadFileSimple] Link removed from body');
+        console.log('[downloadFileSimple] Download initiated successfully');
+    }, 100);
 }
 
 function clearFileOperation(){

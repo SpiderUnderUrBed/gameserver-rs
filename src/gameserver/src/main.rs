@@ -7,6 +7,7 @@ use std::fmt;
 use std::io::SeekFrom;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
+use std::path::Path;
 use tokio::fs;
 use tokio::fs::OpenOptions;
 use tokio::io;
@@ -46,6 +47,8 @@ use uuid::Uuid;
 
 use std::net::SocketAddr;
 use tokio::sync::broadcast;
+
+//use futures::TryFutureExt;
 
 // I use the same code as in the main server
 // with a few diffrences in stuff like filesystem
@@ -1579,6 +1582,33 @@ async fn stop_server(
     Ok(())
 }
 
+
+async fn fix_path(path: String) -> String {
+    let server_root = Path::new("server");
+
+    if path.starts_with("server/") || path == "server" {
+        let canonical = fs::canonicalize(&path)
+            .await.unwrap_or_else(|_| server_root.to_path_buf());
+
+        let canonical_server_root = fs::canonicalize(server_root)
+            .await.unwrap_or_else(|_| server_root.to_path_buf());
+
+        if canonical.starts_with(&canonical_server_root) {
+            return canonical.to_string_lossy().into_owned();
+        }
+
+        let fixed = server_root.join(path.trim_start_matches("server/"));
+        return fixed.to_string_lossy().into_owned();
+    }
+
+    let forced = server_root.join(path);
+
+    let canonical_forced = fs::canonicalize(&forced)
+        .await.unwrap_or(forced);
+
+    canonical_forced.to_string_lossy().into_owned()
+}
+
 // Handles the file requests via easy match statement, easy for if i need it for another aspect of the whole gameserver stack
 // Metadata just gives the metadata from a individual file
 // PathFromTag will take a tag, usually coorosponding to a servers name or unique identifier, and return a path,
@@ -1588,7 +1618,7 @@ async fn stop_server(
 // should be here and not filesystem because it contains appstate
 async fn handle_file_request(state: &Arc<AppState>, request: FileRequestMessage) -> String {
     match request.payload {
-        FileRequestPayload::Metadata { path } => match get_metadata(&path).await {
+        FileRequestPayload::Metadata { path } => match get_metadata(&fix_path(path).await).await {
             Ok(metadata) => serde_json::to_string(&FileResponseMessage {
                 in_response_to: request.id,
                 data: serde_json::to_value(metadata).unwrap(),
@@ -1601,6 +1631,7 @@ async fn handle_file_request(state: &Arc<AppState>, request: FileRequestMessage)
             .unwrap(),
         },
         FileRequestPayload::PathFromTag { tag, path } => {
+            let path = fix_path(path).await;
             let basic_path_response = BasicPath { paths: vec![] };
             serde_json::to_string(&FileResponseMessage {
                 in_response_to: request.id,
@@ -1608,7 +1639,7 @@ async fn handle_file_request(state: &Arc<AppState>, request: FileRequestMessage)
             })
             .unwrap()
         }
-        FileRequestPayload::ListDir { path } => match list_directory(&path).await {
+        FileRequestPayload::ListDir { path } => match list_directory(&fix_path(path).await).await {
             Ok(entries) => serde_json::to_string(&FileResponseMessage {
                 in_response_to: request.id,
                 data: serde_json::to_value(entries).unwrap(),
@@ -1621,7 +1652,7 @@ async fn handle_file_request(state: &Arc<AppState>, request: FileRequestMessage)
             .unwrap(),
         },
         FileRequestPayload::ListDirWithRange { path, start, end } => {
-            match list_directory_with_range(&path, start, end).await {
+            match list_directory_with_range(&fix_path(path).await, start, end).await {
                 Ok(entries) => serde_json::to_string(&FileResponseMessage {
                     in_response_to: request.id,
                     data: serde_json::to_value(entries).unwrap(),
@@ -1805,8 +1836,8 @@ async fn handle_commands_with_metadata(
 // Gets a provider out of a handpicked list of gameservers, including custom, at some point needs to be massively re-worked as
 // it might be a bit messy having this is my rust code, the majority of the code and types are in provider.rs and it just relies on
 // structs I created changing into this provider types, which is one of the few reasons why a better system is needed, it also takes a path to put the files in (not implimented yet)
-fn get_provider(name: &str, pre_path: &str) -> Option<ProviderType> {
-    let mut path = pre_path.to_string();
+fn get_provider(name: &str, path: &str) -> Option<ProviderType> {
+    let mut path = path.to_string();
     if !path.starts_with("server/") {
         path = format!("server/{}", path);
         println!("Adjusted path to: {}", path);

@@ -87,7 +87,10 @@ pub struct Settings {
     pub(crate) status_type: String,
     pub(crate) enabled_rcon: bool,
     pub(crate) rcon_url: String,
-    pub(crate) rcon_password: String
+    pub(crate) rcon_password: String,
+    pub(crate) driver: String,
+    pub(crate) file_system_driver: String,
+    pub(crate) enable_statistics_on_home_page: String,
 }
 
 impl Default for Settings {
@@ -97,7 +100,10 @@ impl Default for Settings {
             status_type: Default::default(), 
             enabled_rcon: true, 
             rcon_url: "localhost:25575".to_string(), 
-            rcon_password: "testing".to_string()
+            rcon_password: "testing".to_string(),
+            driver: "".to_string(),
+            enable_statistics_on_home_page: "".to_string(),
+            file_system_driver: "".to_string()
         }
     }
 }
@@ -105,8 +111,14 @@ impl Default for Settings {
 #[cfg(any(feature = "full-stack", feature = "database"))]
 #[derive(Debug, Deserialize, Serialize, Clone, sqlx::FromRow, Default)]
 pub struct Settings {
-    pub toggled_default_buttons: bool,
-    pub(crate) status_type: String
+    pub(crate) toggled_default_buttons: bool,
+    pub(crate) status_type: String,
+    pub(crate) enabled_rcon: bool,
+    pub(crate) rcon_url: String,
+    pub(crate) rcon_password: String,
+    pub(crate) driver: String,
+    pub(crate) file_system_driver: String,
+    pub(crate) enable_statistics_on_home_page: String,
 }
 
 
