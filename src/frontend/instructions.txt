@@ -1,0 +1,8 @@
+Instructions that especially/(only?) apply to nix:
+nix-shell -p vite npm
+then 
+npm ci
+then 
+mkdir build
+then
+npm run build

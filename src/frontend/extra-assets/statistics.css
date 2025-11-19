@@ -1,18 +1,37 @@
 body {
     background-color: aqua;
+    margin: 0;
+    padding: 20px;
+    box-sizing: border-box;
 }
-#ram-usage {
-    width: 100%;
-    height: 10svh; 
-    max-width: 800px;
-}
-#core-usage {
-    width: 100%;
-    height: 10svh; 
-    max-width: 800px;
-}
+
 .statistics-bar {
     display: flex;
     align-items: center;
     justify-content: center;
+    flex-direction: row;
+    gap: 20px;
+    width: 100%;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.ram-usage,
+.core-usage {
+    flex: 1;
+    max-width: 500px;
+    height: 300px;
+}
+
+@media (max-width: 768px) {
+    .statistics-bar {
+        flex-direction: column;
+    }
+    
+    .ram-usage,
+    .core-usage {
+        max-width: 100%;
+        width: 100%;
+    }
 }

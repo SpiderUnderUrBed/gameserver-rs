@@ -44,7 +44,7 @@ aside button {
 .intergrations-features {
   display: none;
   width: 100svw;
-  background-color: blue;
+  background-color: rgba(65, 65, 172, 0.358);
 }
 .tooltip {
   display: none;

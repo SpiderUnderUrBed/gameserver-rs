@@ -15,7 +15,7 @@ RUN cargo install cargo-watch
 COPY . .
 
 # Build Svelte assets
-WORKDIR /usr/src/app/src/svelte
+WORKDIR /usr/src/app/src/frontend
 #RUN mkdir -p build && npm install && npm run build
 RUN mkdir -p build && npm install && npm run build
 

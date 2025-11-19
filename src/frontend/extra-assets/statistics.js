@@ -1,5 +1,6 @@
 const ram_usage = document.getElementById('ram-usage');
-const core_usage = document.getElementById('ram-usage');
+const core_usage = document.getElementById('core-usage');
+
 const basePath = document.querySelector('meta[name="site-url"]').content.replace(/\/$/, '');
 let totalMemory = null;
 let counter = 0;
@@ -32,7 +33,7 @@ let ram_chart = new Chart(ram_usage, {
         }
     }
 });
-let core_chart = new Chart(ram_usage, {
+let core_chart = new Chart(core_usage, {
     type: 'line',
     data: {
         labels: [],

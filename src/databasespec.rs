@@ -8,6 +8,7 @@ use crate::Serialize;
 use crate::Deserialize;
 use crate::StatusCode;
 
+
 use serde::Deserializer;
 
 // use crate::NodeType;
@@ -87,7 +88,10 @@ pub struct Settings {
     pub(crate) status_type: String,
     pub(crate) enabled_rcon: bool,
     pub(crate) rcon_url: String,
-    pub(crate) rcon_password: String
+    pub(crate) rcon_password: String,
+    pub(crate) driver: String,
+    pub(crate) file_system_driver: String,
+    pub(crate) enable_statistics_on_home_page: String,
 }
 
 impl Default for Settings {
@@ -97,16 +101,25 @@ impl Default for Settings {
             status_type: Default::default(), 
             enabled_rcon: true, 
             rcon_url: "localhost:25575".to_string(), 
-            rcon_password: "testing".to_string()
+            rcon_password: "testing".to_string(),
+            driver: "".to_string(),
+            enable_statistics_on_home_page: "".to_string(),
+            file_system_driver: "".to_string()
         }
     }
 }
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
-#[derive(Debug, Deserialize, Serialize, Clone, sqlx::FromRow, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, sqlx::FromRow)]
 pub struct Settings {
-    pub toggled_default_buttons: bool,
-    pub(crate) status_type: String
+    pub(crate) toggled_default_buttons: bool,
+    pub(crate) status_type: String,
+    pub(crate) enabled_rcon: bool,
+    pub(crate) rcon_url: String,
+    pub(crate) rcon_password: String,
+    pub(crate) driver: String,
+    pub(crate) file_system_driver: String,
+    pub(crate) enable_statistics_on_home_page: String,
 }
 
 
@@ -177,6 +190,7 @@ pub enum NodeStatus {
     ImmutablyDisabled,
 }
 //
+#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 pub enum K8sType {
     Node,
@@ -187,7 +201,7 @@ pub enum K8sType {
 }
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, sqlx::Type)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, sqlx::Type)]
 // #[sqlx(type_name = "node_status", rename_all = "snake_case")]
 #[sqlx(type_name = "text")]
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
@@ -196,8 +210,10 @@ pub enum K8sType {
     Pod,
     #[default]
     None,
+    Unknown
 }
 
+#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 pub enum NodeType {
     #[default]
@@ -218,9 +234,9 @@ pub enum NodeType {
 }
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, sqlx::Type)]
+// #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq, sqlx::Type)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
 // #[sqlx(type_name = "node_status", rename_all = "snake_case")]
-#[sqlx(type_name = "text")]
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
 pub enum NodeType {
     #[default]
@@ -239,35 +255,6 @@ pub enum NodeType {
     Inbuilt,
     Main
 }
-
-#[cfg(any(feature = "full-stack", feature = "database"))]
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, sqlx::Type)]
-// #[sqlx(type_name = "node_status", rename_all = "snake_case")]
-#[sqlx(type_name = "text")]
-#[serde(rename_all = "lowercase", tag = "kind", content = "data")]
-pub enum Intergrations {
-    Minecraft,
-    Other(String)
-}
-
-// Ideally I dont hardcode any intergrations like minecraft or any specific provider, but it would be meaningless to move it to its own file when
-// its much more readable in this spec, and until i have a better solution down the line or decide to keep this
-#[serde(rename_all = "lowercase")]
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
-pub enum Intergrations {
-    Minecraft,
-    Other(String),
-    #[default]
-    Unknown
-}
-
-#[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
-impl Type<Postgres> for NodeType {
-    fn type_info() -> sqlx::postgres::PgTypeInfo {
-        <String as Type<Postgres>>::type_info()
-    }
-}
-
 #[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
 impl<'r> Decode<'r, Postgres> for NodeType {
     fn decode(value: PgValueRef<'r>) -> Result<Self, BoxDynError> {
@@ -317,6 +304,40 @@ impl ToString for NodeType {
     }
 }
 
+
+
+#[cfg(any(feature = "full-stack", feature = "database"))]
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, sqlx::Type)]
+// #[sqlx(type_name = "node_status", rename_all = "snake_case")]
+#[sqlx(type_name = "text")]
+#[serde(rename_all = "lowercase", tag = "kind", content = "data")]
+pub enum Intergrations {
+    Minecraft,
+    Other,
+    #[default]
+    Unknown
+}
+
+// Ideally I dont hardcode any intergrations like minecraft or any specific provider, but it would be meaningless to move it to its own file when
+// its much more readable in this spec, and until i have a better solution down the line or decide to keep this
+#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
+#[serde(rename_all = "lowercase")]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub enum Intergrations {
+    Minecraft,
+    Other,
+    #[default]
+    Unknown
+}
+
+#[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
+impl Type<Postgres> for NodeType {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        <String as Type<Postgres>>::type_info()
+    }
+}
+
+
 // TODO: Consider removing the string to enum varient matching
 impl FromStr for Intergrations {
     type Err = ();
@@ -365,6 +386,7 @@ pub struct Node {
     pub ip: String,
     pub nodestatus: NodeStatus,
     pub nodetype: NodeType,
+    pub k8s_type: K8sType
 }
 
 

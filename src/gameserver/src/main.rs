@@ -3,9 +3,11 @@ use serde_json::{json, Value};
 use std::convert::TryFrom;
 use std::error::Error;
 use std::ffi::OsString;
+use std::fmt;
 use std::io::SeekFrom;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
+use std::path::Path;
 use tokio::fs;
 use tokio::fs::OpenOptions;
 use tokio::io;
@@ -17,13 +19,20 @@ use tokio::sync::{mpsc, Mutex};
 
 use crate::broadcast::Sender;
 use crate::filesystem::cleanup_end_file_markers;
-use crate::filesystem::send_folder_over_broadcast;
-use crate::filesystem::list_directory;
-use crate::filesystem::get_metadata;
-use crate::filesystem::list_directory_with_range;
 use crate::filesystem::get_files_content;
+use crate::filesystem::get_metadata;
+use crate::filesystem::list_directory;
+use crate::filesystem::list_directory_with_range;
+use crate::filesystem::send_folder_over_broadcast;
 use crate::filesystem::BasicPath;
 use crate::filesystem::FileChunk;
+use crate::filesystem::FileOperations;
+use crate::filesystem::execute_file_operation;
+use crate::FileOperations::FileMoveOperation;
+use crate::FileOperations::FileDownloadOperation;
+use crate::FileOperations::FileZipOperation;
+use crate::FileOperations::FileUnzipOperation;
+use crate::FileOperations::FileCopyOperation;
 
 use crate::providers::Custom;
 use crate::providers::Minecraft;
@@ -39,14 +48,16 @@ use uuid::Uuid;
 use std::net::SocketAddr;
 use tokio::sync::broadcast;
 
+//use futures::TryFutureExt;
+
 // I use the same code as in the main server
 // with a few diffrences in stuff like filesystem
 mod extra;
 mod filesystem;
-mod providers;
 mod intergrations;
+mod providers;
 
-use intergrations::{IntergrationCommands, run_intergration_commands};
+use intergrations::{run_intergration_commands, IntergrationCommands};
 
 // const ENABLE_BROADCAST_LOGS: bool = true;
 
@@ -104,8 +115,8 @@ struct SrcAndDest {
 
 // NodeStatus
 // as in, if servers can be manually or automatically sceduled to it
-// which depends if its avalible, or several other factors which will affect how the node can scedule 
-// servers, immutable varients represent kubernetes nodes, which cant just be removed as of now, 
+// which depends if its avalible, or several other factors which will affect how the node can scedule
+// servers, immutable varients represent kubernetes nodes, which cant just be removed as of now,
 // because it doesnt seem to make much sense to hide it in a cluster
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq)]
 #[serde(tag = "kind", content = "data")]
@@ -116,9 +127,9 @@ pub enum NodeStatus {
     ImmutablyDisabled,
 }
 
-// NodeTypes, this might be unnessesary, but for now its useful to represent nodes like the one the 
-// server will try connecting to initially, and key nodes which the user doesnt define but is picked up 
-// for better usability, custom is what the user creates manually and at some point, it might be added where the 
+// NodeTypes, this might be unnessesary, but for now its useful to represent nodes like the one the
+// server will try connecting to initially, and key nodes which the user doesnt define but is picked up
+// for better usability, custom is what the user creates manually and at some point, it might be added where the
 // user can disable their custom ones or detected ones
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq)]
 #[serde(tag = "kind", content = "data")]
@@ -152,7 +163,7 @@ struct MessagePayload {
 }
 
 // ApiCalls represent some common types so I can keep track of them, its not used them much
-// and might be worth phasing out in the future, its definitately used in the main server for mixed data types and sending 
+// and might be worth phasing out in the future, its definitately used in the main server for mixed data types and sending
 // them over a common interface
 #[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
 #[serde(tag = "kind", content = "data")]
@@ -162,9 +173,27 @@ enum ApiCalls {
     NodeList(Vec<String>),
     IncomingMessage(MessagePayload),
     Node(Node),
+    FileDownloadOperation(String),
+    FileMoveOperation(String),
+    FileZipOperation(String),
+    FileUnzipOperation(String),
+    FileCopyOperation(String)
 }
 
-// I tried to convert from a Value, as in undefined data type, to a List, as its a data type created only 
+impl From<ApiCalls> for FileOperations {
+    fn from(api_call: ApiCalls) -> Self {
+        match api_call {
+            ApiCalls::FileDownloadOperation(s) => FileOperations::FileDownloadOperation(s),
+            ApiCalls::FileMoveOperation(s) => FileOperations::FileMoveOperation(s),
+            ApiCalls::FileZipOperation(s) => FileOperations::FileZipOperation(s),
+            ApiCalls::FileUnzipOperation(s) => FileOperations::FileUnzipOperation(s),
+            ApiCalls::FileCopyOperation(s) => FileOperations::FileCopyOperation(s),
+            _ => FileOperations::Unknown
+        }
+    }
+}
+
+// I tried to convert from a Value, as in undefined data type, to a List, as its a data type created only
 // here and its used sometimes, maybe it would be better to just do the conversion when its needed
 impl TryFrom<Value> for List {
     type Error = &'static str;
@@ -186,7 +215,7 @@ impl TryFrom<Value> for List {
 }
 
 // These ip:port defaults are diffrence based on feature as i typically do not run full-stack
-// when im testing on bare metal, where the ip:port have to be diffrent to not conflict 
+// when im testing on bare metal, where the ip:port have to be diffrent to not conflict
 #[cfg(feature = "full-stack")]
 static StaticLocalUrl: &str = "0.0.0.0:8080";
 
@@ -207,7 +236,7 @@ struct GetState {
     stop_keyword: String,
 }
 
-// runs a command and forwards the output of the command to the given channel, which in this case would be back to 
+// runs a command and forwards the output of the command to the given channel, which in this case would be back to
 // the main server
 async fn run_command_live_output(
     state: &AppState,
@@ -280,8 +309,7 @@ pub struct FsEntry {
     pub is_dir: bool,
 }
 
-
-// Due to certain instabillity when it comes to sending files and file content, id matching is required to 
+// Due to certain instabillity when it comes to sending files and file content, id matching is required to
 // make sure the correct data is matched to the correct file or operation
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 struct FileRequestMessage {
@@ -319,7 +347,6 @@ struct FileResponseMessage {
     data: serde_json::Value,
 }
 
-
 // There are two main read modes, Json for message processing and MigrationFile for file transfers, althought it should
 // be renamed to just file transfer, as it switches to this mode during a migration or from the file transfers from the server
 // the reason I seperated it is because of the fact that raw bytes are sent very quickly from a node or the main server
@@ -338,7 +365,7 @@ enum ReadMode {
 }
 
 // AppState for the Node, stores the name of the current server, the state of the process
-// whether or not its running, the channel for the output messages, and the process, makes it easier to pass and modify 
+// whether or not its running, the channel for the output messages, and the process, makes it easier to pass and modify
 // between functions
 #[derive(Clone)]
 struct AppState {
@@ -429,17 +456,20 @@ pub async fn tcp_to_broadcast(stream: TcpStream) -> Sender<Vec<u8>> {
 
 // Looks for a env varible, if its not found, try the specified default, if none is found it will use the default of whatever that type is
 fn get_env_var_or_arg<T: std::str::FromStr>(env_var: &str, default: Option<T>) -> Option<T> {
-    env::var(env_var).ok().and_then(|s| s.parse().ok()).or(default)
+    env::var(env_var)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .or(default)
 }
 
 // Main function, entrypoint to the program, initalizes the app state, serves a tcp connection
 // at the specified and does most of the intial handling of data, including switching between modes (json and file)
-// and forwards some messages to other functions to handle command or console data, does health checks and set up the forwarding 
+// and forwards some messages to other functions to handle command or console data, does health checks and set up the forwarding
 // and re-attaching of the server stdin to go back to the main server
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    const FILE_DELIMITER: &[u8] = b"<|END_OF_FILE|>";
     let config_local_url = get_env_var_or_arg("LOCALURL", Some(StaticLocalUrl.to_string()));
+    // let node_password: String = get_env_var_or_arg("NODE_PASSWORD", Some(String::default())).unwrap();
 
     //const PORT: u16 = 8082;
     //let listener = TcpListener::bind(format!("0.0.0.0:{}", PORT)).await?;
@@ -461,6 +491,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let arc_state = Arc::new(state);
 
     let health_monitor_state = arc_state.clone();
+
+    let mut kill_socket = false;
+    const FILE_DELIMITER: &[u8] = b"<|END_OF_FILE|>";
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
         loop {
@@ -534,7 +567,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let (mut read_half, mut write_half) = socket.into_split();
             let (out_tx, mut out_rx) = mpsc::channel::<String>(128);
             let (cmd_tx, mut cmd_rx) = mpsc::channel::<String>(128);
-
 
             let mut server_output_rx = {
                 let server_running_lock = arc_state_clone.server_running.lock().await;
@@ -656,6 +688,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
             loop {
+                if kill_socket == true {
+                    println!("Shutting down");
+                    //write_half.shutdown();
+                    kill_socket = false;
+                    break;
+                }
                 tokio::select! {
                     result = read_half.read(&mut temp_buf) => {
                         let n = match result {
@@ -684,6 +722,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 }
 
                 loop {
+
                     match &mut mode {
                         ReadMode::Json => {
                             let mut found_message = false;
@@ -712,24 +751,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                     found_message = true;
                                     continue;
                                 }
-                                        // else if let Ok(msg_payload) =
-                                        //     serde_json::from_value::<IntergrationCommands>(
-                                        //         json_value.clone(),
-                                        //     ){
-                                        //     println!("[{}] Successfully parsed as Value: {:#?}", addr, json_value);
-                                        //     sort_command_type_or_console(
-                                        //         &Arc::clone(&arc_state_clone),
-                                        //         &serde_json::to_value(msg_payload).unwrap(),
-                                        //         &out_tx,
-                                        //         &cmd_tx,
-                                        //         &stdin_ref,
-                                        //         &hostname_ref,                              
-                                        //     ).await;
-                                        // }
+                                // else if let Ok(msg_payload) =
+                                //     serde_json::from_value::<IntergrationCommands>(
+                                //         json_value.clone(),
+                                //     ){
+                                //     println!("[{}] Successfully parsed as Value: {:#?}", addr, json_value);
+                                //     sort_command_type_or_console(
+                                //         &Arc::clone(&arc_state_clone),
+                                //         &serde_json::to_value(msg_payload).unwrap(),
+                                //         &out_tx,
+                                //         &cmd_tx,
+                                //         &stdin_ref,
+                                //         &hostname_ref,
+                                //     ).await;
+                                // }
                                 if line_str.trim().starts_with('{')
                                     && line_str.trim().ends_with('}')
                                 {
-                                   // println!("[{}] Received JSON line: {}", addr, line_str.trim());
+                                    // println!("[{}] Received JSON line: {}", addr, line_str.trim());
                                     if let Ok(json_value) = serde_json::from_slice::<Value>(line) {
                                         if let Ok(request) =
                                             serde_json::from_value::<FileRequestMessage>(
@@ -770,6 +809,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                         addr, e
                                                     ),
                                                 }
+                                            } else {
+                                                sort_command_type_or_console(
+                                                    &Arc::clone(&arc_state_clone),
+                                                    &json_value,
+                                                    &out_tx,
+                                                    &cmd_tx,
+                                                    &stdin_ref,
+                                                    &hostname_ref,
+                                                )
+                                                .await;
                                             }
                                         } else if let Ok(msg_payload) =
                                             serde_json::from_value::<IncomingMessageWithMetadata>(
@@ -788,21 +837,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                 &hostname_ref,
                                             )
                                             .await;
-                                        } 
-                                        else if let Ok(msg_payload) =
-                                                        serde_json::from_value::<IntergrationCommands>(
-                                                            json_value.clone(),
-                                                        ){
-                                                        //println!("[{}] Successfully parsed as Value: {:#?}", addr, json_value);
-                                                        sort_command_type_or_console(
-                                                            &Arc::clone(&arc_state_clone),
-                                                            &serde_json::to_value(msg_payload).unwrap(),
-                                                            &out_tx,
-                                                            &cmd_tx,
-                                                            &stdin_ref,
-                                                            &hostname_ref,
-                                                        ).await;
-                                                    }         
+                                        }
+                                        //  else if let Ok(msg_payload) =
+                                        //     serde_json::from_value::<IntergrationCommands>(
+                                        //         json_value.clone(),
+                                        //     )
+                                        // {
+                                        //     //println!("[{}] Successfully parsed as Value: {:#?}", addr, json_value);
+                                        //     sort_command_type_or_console(
+                                        //         &Arc::clone(&arc_state_clone),
+                                        //         &serde_json::to_value(msg_payload).unwrap(),
+                                        //         &out_tx,
+                                        //         &cmd_tx,
+                                        //         &stdin_ref,
+                                        //         &hostname_ref,
+                                        //     )
+                                        //     .await;
+                                        // }
                                         else if let Ok(msg_payload) =
                                             serde_json::from_value::<MessagePayload>(
                                                 json_value.clone(),
@@ -882,9 +933,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                     continue;
                                                 }
                                                 "command" => {
-                                                    println!(
-                                                        "{} {}", addr, msg_payload.message
-                                                    );
+                                                    println!("{} {}", addr, msg_payload.message);
                                                     if msg_payload.message == "start_server" {
                                                         debug_dump_state(
                                                             &arc_state_clone,
@@ -898,7 +947,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                         if let Err(e) = start_server_with_broadcast(
                                                             &arc_state_clone,
                                                             &stdin_ref,
-                                                            &cmd_tx
+                                                            &cmd_tx,
                                                         )
                                                         .await
                                                         {
@@ -926,30 +975,67 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                         //     &hostname_ref,
                                                         // )
                                                         // .await;
-                                                       // println!("{:#?}", msg_payload);
+                                                        // println!("{:#?}", msg_payload);
                                                         sort_command_type_or_console(
                                                             &Arc::clone(&arc_state_clone),
-                                                            &serde_json::to_value(msg_payload).unwrap(),
+                                                            &serde_json::to_value(msg_payload)
+                                                                .unwrap(),
                                                             &out_tx,
                                                             &cmd_tx,
                                                             &stdin_ref,
-                                                            &hostname_ref,                              
-                                                        ).await;
+                                                            &hostname_ref,
+                                                        )
+                                                        .await;
                                                     }
                                                 }
                                                 _ => {
-                                                   // println!("{:#?}", msg_payload);
+                                                    // println!("{:#?}", msg_payload);
                                                     sort_command_type_or_console(
                                                         &Arc::clone(&arc_state_clone),
                                                         &serde_json::to_value(msg_payload).unwrap(),
                                                         &out_tx,
                                                         &cmd_tx,
                                                         &stdin_ref,
-                                                        &hostname_ref,                              
-                                                    ).await;
+                                                        &hostname_ref,
+                                                    )
+                                                    .await;
                                                 }
                                             }
-                                        } 
+                                        } else {
+                                            let command_or_console_result = sort_command_type_or_console(
+                                                &Arc::clone(&arc_state_clone),
+                                                &json_value,
+                                                &out_tx,
+                                                &cmd_tx,
+                                                &stdin_ref,
+                                                &hostname_ref,
+                                            )
+                                            .await;
+                                            if let Err(e) = command_or_console_result {
+                                                if let Some(CommandOrConsoleErrors::AuthDisconnect) = e.downcast_ref::<CommandOrConsoleErrors>() {
+                                                    kill_socket = true;
+                                                    // let _ = socket.shutdown().await;
+                                                    //drop(socket);
+                                                }
+                                            }
+
+                                        }
+                                        //          else if let Ok(msg_payload) =
+                                        //     serde_json::from_value::<IntergrationCommands>(
+                                        //         json_value.clone(),
+                                        //     )
+                                        // {
+                                        //     //println!("[{}] Successfully parsed as Value: {:#?}", addr, json_value);
+                                        //     sort_command_type_or_console(
+                                        //         &Arc::clone(&arc_state_clone),
+                                        //         &serde_json::to_value(msg_payload).unwrap(),
+                                        //         &out_tx,
+                                        //         &cmd_tx,
+                                        //         &stdin_ref,
+                                        //         &hostname_ref,
+                                        //     )
+                                        //     .await;
+                                        // }
                                         // else if let Ok(msg_payload) =
                                         //     serde_json::from_value::<IntergrationCommands>(
                                         //         json_value.clone(),
@@ -961,7 +1047,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                         //         &out_tx,
                                         //         &cmd_tx,
                                         //         &stdin_ref,
-                                        //         &hostname_ref,                              
+                                        //         &hostname_ref,
                                         //     ).await;
                                         // }
                                     } else {
@@ -1031,14 +1117,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         });
     }
 }
+#[derive(Debug)]
+enum CommandOrConsoleErrors {
+    AuthDisconnect,
+}
+impl std::error::Error for CommandOrConsoleErrors {}
+impl fmt::Display for CommandOrConsoleErrors {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CommandOrConsoleErrors::AuthDisconnect => write!(f, "Authentication disconnected"),
+        }
+    }
+}
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+struct AuthTcpMessage {
+    password: String,
+}
 
 // TODO: merge with handle_typical_command_or_console
-// At the time of writing this, i am working on getting intergration commands to work here 
+// At the time of writing this, i am working on getting intergration commands to work here
 // on the node, I did a sub-optimal solution for this command type which is, since regular
 // message payloads expect strings and immediately serializes into a structure that doesnt represent
-// how I want IntergrationCommands to work, I decided to make this function for the time being to ensure the 
-// commands are handled properly and serialized properly, as well as other commands be forwarded to 
-// the relevent function
+// how I want IntergrationCommands to work, I decided to make this function for the time being to ensure the
+// commands are handled properly and serialized properly, as well as other commands be forwarded to
+// the relevent function.
+// This now also handles auth messages
+// TODO: Merge alot of the functionality back into main at some point
 async fn sort_command_type_or_console(
     arc_state: &Arc<AppState>,
     payload: &serde_json::Value,
@@ -1046,10 +1150,13 @@ async fn sort_command_type_or_console(
     cmd_tx: &mpsc::Sender<String>,
     stdin_ref: &Arc<Mutex<Option<ChildStdin>>>,
     hostname: &Arc<Result<OsString, String>>,
-){
-   // println!("{:#?}", payload);
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    //node_password
+    let node_password: String =
+        get_env_var_or_arg("NODE_PASSWORD", Some(String::default())).unwrap();
 
-    let standard_command_payload_result: Result<MessagePayload, serde_json::Error> = serde_json::from_value(payload.clone());
+    let standard_command_payload_result: Result<MessagePayload, serde_json::Error> =
+        serde_json::from_value(payload.clone());
     if let Ok(standard_command_payload) = standard_command_payload_result {
         handle_typical_command_or_console(
             &arc_state,
@@ -1060,12 +1167,48 @@ async fn sort_command_type_or_console(
             &hostname,
         )
         .await;
+        //Ok(())
+    }
+    //let dest = request.dest.as_inner_str();
+    let file_operation_result: Result<SrcAndDest, serde_json::Error> = 
+        serde_json::from_value(payload.clone());
+    if let Ok(file_operation) = file_operation_result { 
+        let (converted_src, converted_dest): (FileOperations, FileOperations) = (file_operation.clone().src.into(), file_operation.clone().dest.into());
+        let state = Arc::clone(arc_state);
+        let mut path = get_definite_path_from_tag(
+            &state,
+            get_provider_from_servername(&state, state.current_server.clone()).await,
+        )
+        .await;
+        
+        if !path.starts_with("server/") {
+            path = format!("server/{}", path);
+        }
+        
+        execute_file_operation(converted_src, converted_dest, path);
     }
 
-    let intergration_command_payload_result: Result<IntergrationCommands, serde_json::Error> = serde_json::from_value(payload.clone());
+    let auth_payload_result: Result<AuthTcpMessage, serde_json::Error> =
+        serde_json::from_value(payload.clone());
+    if let Ok(auth_payload) = auth_payload_result {
+        if node_password != auth_payload.password {
+            println!("Authentication failed");
+            return Err(Box::new(CommandOrConsoleErrors::AuthDisconnect));
+        }
+        // if node_password == auth_payload.password {
+        //     Ok(())
+        // } else {
+        //     Err()
+        // }
+    }
+
+    let intergration_command_payload_result: Result<IntergrationCommands, serde_json::Error> =
+        serde_json::from_value(payload.clone());
     if let Ok(intergration_command_payload) = intergration_command_payload_result {
         run_intergration_commands(intergration_command_payload).await;
+        //Ok(())
     }
+    Ok(())
 }
 
 // Handles either commands or console output, should eventually be replaced by handle_commands_with_metadata
@@ -1117,7 +1260,7 @@ async fn handle_typical_command_or_console(
                 //println!("{:#?}", status_message);
                 let json_str = serde_json::to_string(&status_message).unwrap();
                 out_tx.send(json_str).await;
-            },
+            }
             "stop_server" => {
                 if let Some(prov) = get_provider(
                     &get_provider_from_servername(&state, state.current_server.clone()).await,
@@ -1236,7 +1379,6 @@ async fn handle_typical_command_or_console(
         }
     }
 }
-
 
 // TODO: this was for debugging, remove this
 async fn debug_dump_state(state: &Arc<AppState>, label: &str) {
@@ -1398,7 +1540,7 @@ async fn start_server_with_broadcast(
     Ok(())
 }
 
-// Dedicated function for stopping the server, There was already have something like this in a match statement but this function is mroe recent and handles the process, in the 
+// Dedicated function for stopping the server, There was already have something like this in a match statement but this function is mroe recent and handles the process, in the
 // match statement I should invoke this function instead of having its own logic in the match statement
 // TODO: do the above
 async fn stop_server(
@@ -1440,16 +1582,43 @@ async fn stop_server(
     Ok(())
 }
 
+
+async fn fix_path(path: String) -> String {
+    let server_root = Path::new("server");
+
+    if path.starts_with("server/") || path == "server" {
+        let canonical = fs::canonicalize(&path)
+            .await.unwrap_or_else(|_| server_root.to_path_buf());
+
+        let canonical_server_root = fs::canonicalize(server_root)
+            .await.unwrap_or_else(|_| server_root.to_path_buf());
+
+        if canonical.starts_with(&canonical_server_root) {
+            return canonical.to_string_lossy().into_owned();
+        }
+
+        let fixed = server_root.join(path.trim_start_matches("server/"));
+        return fixed.to_string_lossy().into_owned();
+    }
+
+    let forced = server_root.join(path);
+
+    let canonical_forced = fs::canonicalize(&forced)
+        .await.unwrap_or(forced);
+
+    canonical_forced.to_string_lossy().into_owned()
+}
+
 // Handles the file requests via easy match statement, easy for if i need it for another aspect of the whole gameserver stack
 // Metadata just gives the metadata from a individual file
-// PathFromTag will take a tag, usually coorosponding to a servers name or unique identifier, and return a path, 
-// as at some point it would be benifical if gameserver-rs could run 
-// servers from some nested directory so you dont need to migrate server files, delete it, then migrate newer server files 
+// PathFromTag will take a tag, usually coorosponding to a servers name or unique identifier, and return a path,
+// as at some point it would be benifical if gameserver-rs could run
+// servers from some nested directory so you dont need to migrate server files, delete it, then migrate newer server files
 // or recreate it
 // should be here and not filesystem because it contains appstate
 async fn handle_file_request(state: &Arc<AppState>, request: FileRequestMessage) -> String {
     match request.payload {
-        FileRequestPayload::Metadata { path } => match get_metadata(&path).await {
+        FileRequestPayload::Metadata { path } => match get_metadata(&fix_path(path).await).await {
             Ok(metadata) => serde_json::to_string(&FileResponseMessage {
                 in_response_to: request.id,
                 data: serde_json::to_value(metadata).unwrap(),
@@ -1462,6 +1631,7 @@ async fn handle_file_request(state: &Arc<AppState>, request: FileRequestMessage)
             .unwrap(),
         },
         FileRequestPayload::PathFromTag { tag, path } => {
+            let path = fix_path(path).await;
             let basic_path_response = BasicPath { paths: vec![] };
             serde_json::to_string(&FileResponseMessage {
                 in_response_to: request.id,
@@ -1469,7 +1639,7 @@ async fn handle_file_request(state: &Arc<AppState>, request: FileRequestMessage)
             })
             .unwrap()
         }
-        FileRequestPayload::ListDir { path } => match list_directory(&path).await {
+        FileRequestPayload::ListDir { path } => match list_directory(&fix_path(path).await).await {
             Ok(entries) => serde_json::to_string(&FileResponseMessage {
                 in_response_to: request.id,
                 data: serde_json::to_value(entries).unwrap(),
@@ -1482,7 +1652,7 @@ async fn handle_file_request(state: &Arc<AppState>, request: FileRequestMessage)
             .unwrap(),
         },
         FileRequestPayload::ListDirWithRange { path, start, end } => {
-            match list_directory_with_range(&path, start, end).await {
+            match list_directory_with_range(&fix_path(path).await, start, end).await {
                 Ok(entries) => serde_json::to_string(&FileResponseMessage {
                     in_response_to: request.id,
                     data: serde_json::to_value(entries).unwrap(),
@@ -1548,7 +1718,7 @@ pub async fn tcp_to_writer(stream: TcpStream) -> mpsc::Sender<Vec<u8>> {
                     // }
                 }
                 Err(e) => {
-                    // eprintln!("[tcp_to_writer] Failed to write message {} ({} bytes) to socket after {} total bytes: {}", 
+                    // eprintln!("[tcp_to_writer] Failed to write message {} ({} bytes) to socket after {} total bytes: {}",
                     //         message_count, msg_len, total_bytes_written, e);
                     break;
                 }
@@ -1575,7 +1745,7 @@ pub async fn tcp_to_writer(stream: TcpStream) -> mpsc::Sender<Vec<u8>> {
     tx
 }
 
-// More modern version of handle_typical_command_or_console, except currently it only handles commands, mainly this is used to the singular command which requires a 
+// More modern version of handle_typical_command_or_console, except currently it only handles commands, mainly this is used to the singular command which requires a
 // metadata feild (server data), to create a server
 // TODO: eventually replace handle_typical_command_or_console with this
 async fn handle_commands_with_metadata(
@@ -1664,10 +1834,10 @@ async fn handle_commands_with_metadata(
 }
 
 // Gets a provider out of a handpicked list of gameservers, including custom, at some point needs to be massively re-worked as
-// it might be a bit messy having this is my rust code, the majority of the code and types are in provider.rs and it just relies on 
+// it might be a bit messy having this is my rust code, the majority of the code and types are in provider.rs and it just relies on
 // structs I created changing into this provider types, which is one of the few reasons why a better system is needed, it also takes a path to put the files in (not implimented yet)
-fn get_provider(name: &str, pre_path: &str) -> Option<ProviderType> {
-    let mut path = pre_path.to_string();
+fn get_provider(name: &str, path: &str) -> Option<ProviderType> {
+    let mut path = path.to_string();
     if !path.starts_with("server/") {
         path = format!("server/{}", path);
         println!("Adjusted path to: {}", path);
@@ -1734,17 +1904,15 @@ fn get_provider(name: &str, pre_path: &str) -> Option<ProviderType> {
     }
 }
 
-// Needs to be implimented, provider and servername should not forever remain the same thing and 
-// a index needs to be kept about what provider matches to which server, the code already store the data 
+// Needs to be implimented, provider and servername should not forever remain the same thing and
+// a index needs to be kept about what provider matches to which server, the code already store the data
 // but at some point i need to decouple the two
 async fn get_provider_from_servername(state: &AppState, servername: String) -> String {
     servername
 }
 
-// paths are tagged, this is for nested servers within the server directory, so you can have the files of multiple servers in one node, and the string returned is added to the path 
+// paths are tagged, this is for nested servers within the server directory, so you can have the files of multiple servers in one node, and the string returned is added to the path
 // that create server or anything about the server before the process is created or after the process finishes needs to know
 async fn get_definite_path_from_tag(state: &AppState, tag: String) -> String {
     String::new()
 }
-
-

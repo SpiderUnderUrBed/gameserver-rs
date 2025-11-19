@@ -13,9 +13,9 @@ async function fetchNodes() {
 
             nodes.forEach((node, index) => {
                 const button = document.createElement("button");
-                button.textContent = node;
+                button.textContent = node.nodename;
                 button.className = "nodes-element";
-                button.onclick = () => alert(`Node clicked: ${node}`);
+                button.onclick = () => alert(`Node clicked: ${node.nodename}`);
                 nodes_div.appendChild(button);
             });
         } else {

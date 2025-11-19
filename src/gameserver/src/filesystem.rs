@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use std::fmt;
 use std::{
     any::Any,
     sync::{
@@ -17,10 +18,10 @@ use std::{
 };
 use tokio::fs;
 use tokio::fs::File;
+use tokio::fs::OpenOptions;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncSeekExt;
 use tokio::io::AsyncWriteExt;
-use tokio::fs::OpenOptions;
 use tokio::sync::broadcast;
 use tokio::time::timeout;
 
@@ -81,8 +82,7 @@ pub struct FileRequestMessage {
     payload: FileRequestPayload,
 }
 
-
-// FileChunk represents a portion of a file, with file name 
+// FileChunk represents a portion of a file, with file name
 // ensuring its written to the write file, offsets and size to make sure it doesnt already cover content written to a file
 // and size for defining when the size of the buffer, to ensure nothing unexpected happens (might be used to help determine when the chunk is done)
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -425,6 +425,75 @@ pub async fn send_folder_over_broadcast<P: AsRef<Path>>(
         "Successfully completed transfer of all {} files",
         entries.len()
     );
+    Ok(())
+}
+
+pub async fn send_multipart_over_broadcast(
+    mut multipart: Multipart<'_>,
+    tx: broadcast::Sender<Vec<u8>>,
+) -> std::io::Result<()> {
+    const FILE_DELIMITER: &[u8] = b"<|END_OF_FILE|>";
+
+    let mut processed_files = Vec::new();
+
+    while let Some(mut field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+    {
+        let file_name = field.file_name().unwrap_or("file.bin").to_string();
+        processed_files.push(file_name.clone());
+
+        let start_json = MessagePayload {
+            r#type: "start_file".into(),
+            message: file_name.clone(),
+            authcode: "0".into(),
+        };
+        tx.send(serde_json::to_vec(&start_json)?)
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed"))?;
+
+        let mut sent_chunks = false;
+
+        while let Some(chunk) = field
+            .chunk()
+            .await
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+        {
+            tx.send(chunk.to_vec()).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed")
+            })?;
+
+            sent_chunks = true;
+        }
+
+        if sent_chunks {
+            tx.send(FILE_DELIMITER.to_vec()).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed")
+            })?;
+        }
+
+        let end_json = MessagePayload {
+            r#type: "end_file".into(),
+            message: file_name.clone(),
+            authcode: "0".into(),
+        };
+        tx.send(serde_json::to_vec(&end_json)?)
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed"))?;
+    }
+
+    for file_name in processed_files {
+        tx.send(FILE_DELIMITER.to_vec())
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed"))?;
+
+        let clean_json = MessagePayload {
+            r#type: "clean_file".into(),
+            message: file_name,
+            authcode: "0".into(),
+        };
+        tx.send(serde_json::to_vec(&clean_json)?)
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed"))?;
+    }
+
     Ok(())
 }
 
@@ -793,6 +862,7 @@ impl FsType for TcpFs {
             authcode: "0".to_string(),
         })
     }
+    
     async fn get_path_from_tag(&mut self, tag: &str) -> std::io::Result<Vec<String>> {
         let id = self
             .send_request(FileRequestPayload::PathFromTag {
@@ -840,6 +910,7 @@ impl FsType for TcpFs {
             format!("Failed get the path for tag '{}'", tag),
         ))
     }
+    
     async fn get_metadata(&mut self, path: &str) -> std::io::Result<FsMetadata> {
         let id = self
             .send_request(FileRequestPayload::Metadata {
@@ -891,6 +962,7 @@ impl FsType for TcpFs {
             format!("Failed to parse metadata response for path '{}'", path),
         ))
     }
+    
     async fn list_directory_within_range(
         &mut self,
         path: &str,
@@ -1006,7 +1078,30 @@ impl<S: FsType> RemoteFileSystem<S> {
     pub async fn ensure_entries(&mut self) -> std::io::Result<()> {
         if self.cached_entries.is_none() {
             if let Some(state) = &mut self.state {
-                self.cached_entries = Some(state.list_directory(&self.path).await?);
+                let dir_item_count = state
+                    .get_metadata(&self.path)
+                    .await?
+                    .optional_folder_children
+                    .unwrap_or(0);
+
+                let chunk_size = ((dir_item_count as f64) / 2.0).ceil() as u64;
+
+                let mut all_entries = Vec::new();
+                let mut start = 0;
+
+                while start < dir_item_count {
+                    let end = (start + chunk_size).min(dir_item_count);
+
+                    let mut entries = state
+                        .list_directory_within_range(&self.path, Some(start), Some(end))
+                        .await?;
+
+                    all_entries.append(&mut entries);
+
+                    start = end;
+                }
+
+                self.cached_entries = Some(all_entries);
             } else {
                 println!("[RemoteFileSystem] No state instance available to fetch entries");
             }
@@ -1081,7 +1176,6 @@ impl RemoteFileSystem<TcpFs> {
     }
 }
 
-
 pub async fn get_metadata(path: &str) -> std::io::Result<FsMetadata> {
     let metadata = fs::metadata(path).await?;
     let canonical = fs::canonicalize(path).await?;
@@ -1144,6 +1238,7 @@ pub async fn list_directory_with_range(
 pub async fn list_directory(path: &str) -> std::io::Result<Vec<FsEntry>> {
     list_directory_with_range(path, None, None).await
 }
+
 pub async fn get_files_content(file_chunk: FileChunk) -> std::io::Result<MessagePayload> {
     let metadata = fs::metadata(&file_chunk.file_name).await?;
 
@@ -1210,6 +1305,167 @@ pub async fn handle_multipart_message(
                 );
             }
         }
+        _ => {}
+    }
+    Ok(())
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
+pub enum FileOperations {
+    FileDownloadOperation(String),
+    FileMoveOperation(String),
+    FileZipOperation(String),
+    FileUnzipOperation(String),
+    FileCopyOperation(String),
+    Unknown
+}
+
+impl FileOperations {
+    pub fn as_inner_str(&self) -> Option<&str> {
+        match self {
+            FileOperations::FileDownloadOperation(s) => Some(s),
+            FileOperations::FileZipOperation(s) => Some(s),
+            FileOperations::FileMoveOperation(s) => Some(s),
+            FileOperations::FileUnzipOperation(s) => Some(s),
+            FileOperations::FileCopyOperation(s) => Some(s),
+            _ => None
+        }
+    }
+}
+
+impl fmt::Display for FileOperations {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            FileOperations::FileDownloadOperation(_) => "FileDownloadOperation",
+            FileOperations::FileZipOperation(_) => "FileZipOperation",
+            FileOperations::FileMoveOperation(_) => "FileMoveOperation",
+            FileOperations::FileUnzipOperation(_) => "FileUnzipOperation",
+            FileOperations::FileCopyOperation(_) => "FileCopyOperation",
+            _ => "not implemented",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+pub fn execute_file_operation(encoded_src: FileOperations, encoded_dest: FileOperations, dir: String) -> std::io::Result<()> {
+    let dest = encoded_dest.as_inner_str().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid destination"))?;
+    let src = encoded_src.as_inner_str().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid source"))?;
+    let src_path = PathBuf::from(&dir).join(src);
+    let dest_path = PathBuf::from(&dir).join(dest);
+    
+    match &encoded_src {
+        FileOperations::FileCopyOperation(_) => {
+            let final_dest = if dest_path.exists() && dest_path.is_dir() {
+                if let Some(filename) = src_path.file_name() {
+                    dest_path.join(filename)
+                } else {
+                    dest_path
+                }
+            } else {
+                dest_path
+            };
+            std::fs::copy(&src_path, &final_dest)?;
+        },
+        FileOperations::FileMoveOperation(_) => {
+            let final_dest = if dest_path.exists() && dest_path.is_dir() {
+                if let Some(filename) = src_path.file_name() {
+                    dest_path.join(filename)
+                } else {
+                    dest_path
+                }
+            } else {
+                dest_path
+            };
+            std::fs::rename(&src_path, &final_dest)?;
+        },
+        FileOperations::FileZipOperation(_) => {
+            let mut final_dest = if dest_path.exists() && dest_path.is_dir() {
+                if let Some(filename) = src_path.file_name() {
+                    dest_path.join(filename)
+                } else {
+                    dest_path
+                }
+            } else {
+                dest_path
+            };
+            final_dest.set_extension("zip");
+            
+            let file = std::fs::File::create(&final_dest)?;
+            let mut zip = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default();
+            
+            if src_path.is_dir() {
+                let dir_name = src_path.file_name()
+                    .and_then(|n| n.to_str())
+                    .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid directory name"))?;
+                
+                fn zip_directory(zip: &mut zip::ZipWriter<std::fs::File>, path: &Path, prefix: &str, options: zip::write::SimpleFileOptions) -> std::io::Result<()> {
+                    for entry in std::fs::read_dir(path)? {
+                        let entry = entry?;
+                        let entry_path = entry.path();
+                        let name = entry_path.file_name()
+                            .and_then(|n| n.to_str())
+                            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid filename"))?;
+                        let zip_path = format!("{}/{}", prefix, name);
+                        
+                        if entry_path.is_dir() {
+                            zip.add_directory(&zip_path, options)?;
+                            zip_directory(zip, &entry_path, &zip_path, options)?;
+                        } else {
+                            zip.start_file(&zip_path, options)?;
+                            let mut f = std::fs::File::open(&entry_path)?;
+                            std::io::copy(&mut f, zip)?;
+                        }
+                    }
+                    Ok(())
+                }
+                
+                zip.add_directory(dir_name, options)?;
+                zip_directory(&mut zip, &src_path, dir_name, options)?;
+            } else {
+                let filename = src_path.file_name()
+                    .and_then(|n| n.to_str())
+                    .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid filename"))?;
+                zip.start_file(filename, options)?;
+                let mut src_file = std::fs::File::open(&src_path)?;
+                std::io::copy(&mut src_file, &mut zip)?;
+            }
+            
+            zip.finish()?;
+        },
+        FileOperations::FileUnzipOperation(_) => {
+            if !src_path.exists() {
+                return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "Source zip file not found"));
+            }
+            
+            let file = std::fs::File::open(&src_path)?;
+            let mut archive = zip::ZipArchive::new(file)?;
+            
+            let extract_dir = if dest_path.exists() && dest_path.is_dir() {
+                dest_path
+            } else {
+                std::fs::create_dir_all(&dest_path)?;
+                dest_path
+            };
+            
+            for i in 0..archive.len() {
+                let mut file = archive.by_index(i)?;
+                let outpath = extract_dir.join(file.name());
+                let is_directory = file.is_dir() || (file.size() == 0 && !file.name().contains('.'));
+                
+                if is_directory {
+                    std::fs::create_dir_all(&outpath)?;
+                } else {
+                    if let Some(p) = outpath.parent() {
+                        if !p.exists() {
+                            std::fs::create_dir_all(p)?;
+                        }
+                    }
+                    let mut outfile = std::fs::File::create(&outpath)?;
+                    std::io::copy(&mut file, &mut outfile)?;
+                }
+            }
+        },
         _ => {}
     }
     Ok(())

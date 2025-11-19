@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use std::fmt;
 use std::{
     any::Any,
     sync::{
@@ -14,11 +15,26 @@ use std::{
         Arc,
     },
 };
+use std::pin::Pin;
+
+use bytes::Bytes;
+
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::sync::broadcast::{self, Sender};
+use tokio::sync::Mutex;
 //use std::io::ErrorKind;
 use tokio::time::timeout;
+use tokio::sync::mpsc;
+use tokio::fs;
+use tokio::fs::OpenOptions;
+use tokio::io::SeekFrom;
+use tokio::io::AsyncSeekExt;
+use tokio::io::AsyncWriteExt;
+
+use futures_util::Stream;
+use futures_util::task::Context;
+use futures_util::task::Poll;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(tag = "kind", content = "data")]
@@ -47,11 +63,6 @@ pub trait FsType: Clone + Send + Sync {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct BasicPath {
-    pub paths: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FsMetadata {
     pub is_file: bool,
     pub is_dir: bool,
@@ -66,6 +77,11 @@ pub struct FsEntry {
     pub is_dir: bool,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BasicPath {
+    pub paths: Vec<String>,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct FileRequestMessage {
     id: u64,
@@ -73,6 +89,9 @@ pub struct FileRequestMessage {
     payload: FileRequestPayload,
 }
 
+// FileChunk represents a portion of a file, with file name
+// ensuring its written to the write file, offsets and size to make sure it doesnt already cover content written to a file
+// and size for defining when the size of the buffer, to ensure nothing unexpected happens (might be used to help determine when the chunk is done)
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct FileChunk {
     pub(crate) file_name: String,
@@ -130,6 +149,7 @@ impl Clone for TcpFs {
     }
 }
 
+use tokio::sync::mpsc::Sender as MpscSender;
 use tokio::time::sleep;
 
 impl TcpFs {
@@ -247,47 +267,171 @@ impl TcpFs {
     }
 }
 
+use walkdir::WalkDir;
+
+const ENABLE_BROADCAST_LOGS: bool = true;
+
 pub async fn send_folder_over_broadcast<P: AsRef<Path>>(
     folder: P,
-    broadcast_tx: Sender<Vec<u8>>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let folder = folder.as_ref();
+    writer_tx: mpsc::Sender<Vec<u8>>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    const FILE_DELIMITER: &[u8] = b"<|END_OF_FILE|>";
 
-    for entry in walkdir::WalkDir::new(folder) {
-        let entry = entry?;
-        let path = entry.path();
+    let folder_path = folder.as_ref();
 
-        if path.is_file() {
-            let rel_path = path.strip_prefix(folder)?.to_string_lossy().to_string();
-
-            let start_json = MessagePayload {
-                r#type: "start_file".into(),
-                message: rel_path.clone(),
-                authcode: "0".into(),
-            };
-            let start_bytes = serde_json::to_vec(&start_json)?;
-            let _ = broadcast_tx.send(start_bytes);
-
-            let mut file = File::open(path).await?;
-            let mut buf = [0u8; 8192];
-            loop {
-                let n = file.read(&mut buf).await?;
-                if n == 0 {
-                    break;
-                }
-                let _ = broadcast_tx.send(buf[..n].to_vec());
-            }
-
-            let end_json = MessagePayload {
-                r#type: "end_file".into(),
-                message: "".to_string(),
-                authcode: "0".into(),
-            };
-            let end_bytes = serde_json::to_vec(&end_json)?;
-            let _ = broadcast_tx.send(end_bytes);
-        }
+    if !folder_path.exists() {
+        return Err(format!("Folder does not exist: {:?}", folder_path).into());
     }
 
+    let mut entries = Vec::new();
+    collect_files(folder_path, folder_path, &mut entries)?;
+
+    println!("Starting transfer of {} files", entries.len());
+
+    for (i, (relative_path, full_path)) in entries.iter().enumerate() {
+        let expected_size = match tokio::fs::metadata(&full_path).await {
+            Ok(metadata) => metadata.len(),
+            Err(e) => {
+                eprintln!("Failed to get metadata for {}: {}", relative_path, e);
+                continue;
+            }
+        };
+
+        println!(
+            "Sending file {}/{}: {} ({} bytes expected)",
+            i + 1,
+            entries.len(),
+            relative_path,
+            expected_size
+        );
+
+        let start_msg = serde_json::json!({
+            "type": "start_file",
+            "message": relative_path,
+            "authcode": "0"
+        });
+        let start_json = format!("{}\n", start_msg);
+
+        println!("Sending start_file: {}", start_json.trim());
+
+        if let Err(e) = writer_tx.send(start_json.into_bytes()).await {
+            eprintln!(
+                "CRITICAL: Failed to send start_file for {}: {}",
+                relative_path, e
+            );
+            return Err(format!("Failed to send start_file: {}", e).into());
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+        if expected_size > 0 {
+            match tokio::fs::File::open(&full_path).await {
+                Ok(mut file) => {
+                    let mut buffer = vec![0u8; 4096];
+                    let mut total_bytes_sent = 0u64;
+                    let mut chunk_count = 0u64;
+
+                    loop {
+                        match file.read(&mut buffer).await {
+                            Ok(0) => {
+                                println!(
+                                    "EOF reached for {}: {} bytes sent in {} chunks",
+                                    relative_path, total_bytes_sent, chunk_count
+                                );
+                                break;
+                            }
+                            Ok(bytes_read) => {
+                                chunk_count += 1;
+                                let chunk_data = buffer[..bytes_read].to_vec();
+
+                                match writer_tx.send(chunk_data).await {
+                                    Ok(()) => {
+                                        total_bytes_sent += bytes_read as u64;
+
+                                        if total_bytes_sent % (5 * 1024 * 1024) == 0
+                                            || (total_bytes_sent > 0
+                                                && total_bytes_sent % 10_000_000 == 0)
+                                        {
+                                            println!(
+                                                "  Progress: {} / {} bytes ({:.1}%) for {}",
+                                                total_bytes_sent,
+                                                expected_size,
+                                                (total_bytes_sent as f64 / expected_size as f64)
+                                                    * 100.0,
+                                                relative_path
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "CRITICAL: Failed to send chunk {} for {}: {}",
+                                            chunk_count, relative_path, e
+                                        );
+                                        return Err(format!("Failed to send chunk: {}", e).into());
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to read from {}: {}", relative_path, e);
+                                return Err(format!("Failed to read file: {}", e).into());
+                            }
+                        }
+                    }
+
+                    if total_bytes_sent != expected_size {
+                        eprintln!(
+                            "WARNING: Size mismatch for {}! Expected: {}, Sent: {}",
+                            relative_path, expected_size, total_bytes_sent
+                        );
+                    } else {
+                        println!(
+                            "Successfully sent all {} bytes for: {}",
+                            total_bytes_sent, relative_path
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to open file {}: {}", relative_path, e);
+                    continue;
+                }
+            }
+        } else {
+            println!("File is empty, skipping data transfer");
+        }
+
+        let end_msg = serde_json::json!({
+            "type": "end_file",
+            "message": relative_path,
+            "authcode": "0"
+        });
+        let end_json = format!("{}\n", end_msg);
+
+        println!("Sending end_file: {}", end_json.trim());
+
+        if let Err(e) = writer_tx.send(end_json.into_bytes()).await {
+            eprintln!(
+                "CRITICAL: Failed to send end_file for {}: {}",
+                relative_path, e
+            );
+            return Err(format!("Failed to send end_file: {}", e).into());
+        }
+
+        if let Err(e) = writer_tx.send(FILE_DELIMITER.to_vec()).await {
+            eprintln!("Failed to send delimiter: {}", e);
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        println!(
+            "Completed file: {} ({} bytes)",
+            relative_path, expected_size
+        );
+    }
+
+    println!(
+        "Successfully completed transfer of all {} files",
+        entries.len()
+    );
     Ok(())
 }
 
@@ -355,6 +499,106 @@ pub async fn send_multipart_over_broadcast(
         };
         tx.send(serde_json::to_vec(&clean_json)?)
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "broadcast send failed"))?;
+    }
+
+    Ok(())
+}
+
+pub async fn cleanup_end_file_markers(file_path: &str, file_name: &str) -> std::io::Result<()> {
+    use tokio::io::AsyncReadExt;
+    use tokio::io::AsyncWriteExt;
+
+    let mut file = tokio::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(file_path)
+        .await?;
+
+    let mut content = Vec::new();
+    file.read_to_end(&mut content).await?;
+
+    let mut content_str = String::from_utf8_lossy(&content).to_string();
+
+    content_str = content_str.trim_end().to_string();
+
+    if let Some(last_brace_pos) = content_str.rfind('}') {
+        let slice_up_to_last = &content_str[..=last_brace_pos];
+        if let Some(open_brace_pos) = slice_up_to_last.rfind('{') {
+            let candidate_json = &slice_up_to_last[open_brace_pos..=last_brace_pos];
+
+            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(candidate_json) {
+                if json_value.get("type")
+                    == Some(&serde_json::Value::String("end_file".to_string()))
+                    && json_value.get("message")
+                        == Some(&serde_json::Value::String(file_name.to_string()))
+                {
+                    let truncate_len = open_brace_pos;
+                    file.set_len(truncate_len as u64).await?;
+                    file.sync_all().await?;
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn find_last_json_end(data: &[u8]) -> Option<usize> {
+    data.iter().rposition(|&b| b == b'}')
+}
+
+fn find_json_start_before(data: &[u8], end_pos: usize) -> Option<usize> {
+    let mut brace_count = 1;
+    let mut pos = end_pos;
+
+    while pos > 0 {
+        pos -= 1;
+        match data[pos] {
+            b'}' => brace_count += 1,
+            b'{' => {
+                brace_count -= 1;
+                if brace_count == 0 {
+                    return Some(pos);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn is_end_file_message(json_value: &Value, expected_filename: &str) -> bool {
+    if let (Some(msg_type), Some(message)) = (
+        json_value.get("type").and_then(|v| v.as_str()),
+        json_value.get("message").and_then(|v| v.as_str()),
+    ) {
+        msg_type == "end_file" && message == expected_filename
+    } else {
+        false
+    }
+}
+
+fn collect_files(
+    current_dir: &Path,
+    base_dir: &Path,
+    entries: &mut Vec<(String, PathBuf)>,
+) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(current_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            collect_files(&path, base_dir, entries)?;
+        } else if path.is_file() {
+            let relative_path = path
+                .strip_prefix(base_dir)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+                .to_string_lossy()
+                .to_string();
+            entries.push((relative_path, path));
+        }
     }
 
     Ok(())
@@ -562,53 +806,6 @@ impl FsType for TcpFs {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
-    async fn get_path_from_tag(&mut self, tag: &str) -> std::io::Result<Vec<String>> {
-        let id = self
-            .send_request(FileRequestPayload::PathFromTag {
-                path: "".to_string(),
-                tag: Some(tag.to_string()),
-            })
-            .await?;
-
-        let response_chunks = self.recv_response(id).await?;
-        for chunk in response_chunks.iter() {
-            if let Ok(basic_path) = serde_json::from_slice::<BasicPath>(chunk) {
-                return Ok(basic_path.paths);
-            }
-
-            if let Ok(val) = serde_json::from_slice::<Value>(chunk) {
-                if let Some(data_val) = val.get("data") {
-                    if data_val.is_object() || data_val.is_array() {
-                        if let Ok(basic_path) =
-                            serde_json::from_value::<BasicPath>(data_val.clone())
-                        {
-                            return Ok(basic_path.paths);
-                        }
-                    }
-
-                    if let Some(s) = data_val.as_str() {
-                        if let Ok(basic_path) = serde_json::from_str::<BasicPath>(s) {
-                            return Ok(basic_path.paths);
-                        }
-                    }
-                }
-
-                if let Value::String(s) = &val {
-                    if let Ok(basic_path) = serde_json::from_str::<BasicPath>(s) {
-                        return Ok(basic_path.paths);
-                    }
-                }
-
-                if let Ok(basic_path) = serde_json::from_value::<BasicPath>(val.clone()) {
-                    return Ok(basic_path.paths);
-                }
-            }
-        }
-        Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("Failed get the path for tag '{}'", tag),
-        ))
-    }
 
     async fn get_files_content(
         &mut self,
@@ -672,7 +869,55 @@ impl FsType for TcpFs {
             authcode: "0".to_string(),
         })
     }
+    
+    async fn get_path_from_tag(&mut self, tag: &str) -> std::io::Result<Vec<String>> {
+        let id = self
+            .send_request(FileRequestPayload::PathFromTag {
+                path: "".to_string(),
+                tag: Some(tag.to_string()),
+            })
+            .await?;
 
+        let response_chunks = self.recv_response(id).await?;
+        for chunk in response_chunks.iter() {
+            if let Ok(basic_path) = serde_json::from_slice::<BasicPath>(chunk) {
+                return Ok(basic_path.paths);
+            }
+
+            if let Ok(val) = serde_json::from_slice::<Value>(chunk) {
+                if let Some(data_val) = val.get("data") {
+                    if data_val.is_object() || data_val.is_array() {
+                        if let Ok(basic_path) =
+                            serde_json::from_value::<BasicPath>(data_val.clone())
+                        {
+                            return Ok(basic_path.paths);
+                        }
+                    }
+
+                    if let Some(s) = data_val.as_str() {
+                        if let Ok(basic_path) = serde_json::from_str::<BasicPath>(s) {
+                            return Ok(basic_path.paths);
+                        }
+                    }
+                }
+
+                if let Value::String(s) = &val {
+                    if let Ok(basic_path) = serde_json::from_str::<BasicPath>(s) {
+                        return Ok(basic_path.paths);
+                    }
+                }
+
+                if let Ok(basic_path) = serde_json::from_value::<BasicPath>(val.clone()) {
+                    return Ok(basic_path.paths);
+                }
+            }
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Failed get the path for tag '{}'", tag),
+        ))
+    }
+    
     async fn get_metadata(&mut self, path: &str) -> std::io::Result<FsMetadata> {
         let id = self
             .send_request(FileRequestPayload::Metadata {
@@ -724,6 +969,7 @@ impl FsType for TcpFs {
             format!("Failed to parse metadata response for path '{}'", path),
         ))
     }
+    
     async fn list_directory_within_range(
         &mut self,
         path: &str,
@@ -771,7 +1017,7 @@ impl FsType for TcpFs {
 pub struct RemoteFileSystem<S: FsType> {
     path: String,
     state: Option<S>,
-    cached_metadata: Option<FsMetadata>,
+    pub(crate) cached_metadata: Option<FsMetadata>,
     cached_entries: Option<Vec<FsEntry>>,
 }
 
@@ -836,7 +1082,6 @@ impl<S: FsType> RemoteFileSystem<S> {
         Ok(())
     }
 
-    //self.cached_entries = Some(state.list_directory(&self.path).await?);
     pub async fn ensure_entries(&mut self) -> std::io::Result<()> {
         if self.cached_entries.is_none() {
             if let Some(state) = &mut self.state {
@@ -935,5 +1180,414 @@ impl RemoteFileSystem<TcpFs> {
         }
 
         Ok(result)
+    }
+}
+
+pub async fn get_metadata(path: &str) -> std::io::Result<FsMetadata> {
+    let metadata = fs::metadata(path).await?;
+    let canonical = fs::canonicalize(path).await?;
+
+    let optional_folder_children = if metadata.is_dir() {
+        let mut count = 0;
+        let mut dir = fs::read_dir(path).await?;
+        while let Some(entry) = dir.next_entry().await? {
+            count += 1;
+        }
+        Some(count)
+    } else {
+        None
+    };
+
+    Ok(FsMetadata {
+        is_file: metadata.is_file(),
+        is_dir: metadata.is_dir(),
+        optional_folder_children,
+        canonical_path: canonical.to_string_lossy().to_string(),
+    })
+}
+
+pub async fn list_directory_with_range(
+    path: &str,
+    start: Option<u64>,
+    end: Option<u64>,
+) -> std::io::Result<Vec<FsEntry>> {
+    let mut entries = Vec::new();
+    let mut dir = fs::read_dir(path).await?;
+
+    let start_idx = start.unwrap_or(0);
+    let mut current_idx = 0u64;
+
+    while let Some(entry) = dir.next_entry().await? {
+        if current_idx < start_idx {
+            current_idx += 1;
+            continue;
+        }
+
+        if let Some(end_idx) = end {
+            if current_idx >= end_idx {
+                break;
+            }
+        }
+
+        let metadata = entry.metadata().await?;
+        entries.push(FsEntry {
+            name: entry.file_name().to_string_lossy().to_string(),
+            is_file: metadata.is_file(),
+            is_dir: metadata.is_dir(),
+        });
+
+        current_idx += 1;
+    }
+
+    Ok(entries)
+}
+
+pub async fn list_directory(path: &str) -> std::io::Result<Vec<FsEntry>> {
+    list_directory_with_range(path, None, None).await
+}
+
+pub async fn get_files_content(file_chunk: FileChunk) -> std::io::Result<MessagePayload> {
+    let metadata = fs::metadata(&file_chunk.file_name).await?;
+
+    if metadata.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("Path is a directory: {}", file_chunk.file_name),
+        ));
+    }
+
+    let mut file = File::open(&file_chunk.file_name).await?;
+    let offset: u64 = file_chunk
+        .file_chunk_offet
+        .parse()
+        .expect("Invalid file offset");
+
+    file.seek(SeekFrom::Start(offset.try_into().unwrap()))
+        .await?;
+    let chunk_size: usize = file_chunk
+        .file_chunk_size
+        .parse()
+        .expect("Invalid chunk size");
+
+    let mut buffer = vec![0; chunk_size];
+    let bytes_read = file.read(&mut buffer).await?;
+    let content = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+
+    Ok(MessagePayload {
+        r#type: "file_content".to_string(),
+        message: content,
+        authcode: "0".to_string(),
+    })
+}
+
+pub async fn handle_multipart_message(
+    payload: &MessagePayload,
+    current_file: &mut Option<File>,
+) -> std::io::Result<()> {
+    match payload.r#type.as_str() {
+        "start_file" => {
+            let file_name = format!("server/{}", payload.message);
+            tokio::fs::create_dir_all("server").await?;
+            let file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .open(&file_name)
+                .await?;
+            *current_file = Some(file);
+            println!(
+                "[handle_multipart_message] Started writing file: {}",
+                file_name
+            );
+        }
+        "end_file" => {
+            if let Some(mut file) = current_file.take() {
+                file.flush().await?;
+                println!(
+                    "[handle_multipart_message] Finished writing file: {}",
+                    payload.message
+                );
+            } else {
+                eprintln!(
+                    "[handle_multipart_message] end_file received but no file is currently open"
+                );
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
+pub enum FileOperations {
+    FileDownloadOperation(String),
+    FileMoveOperation(String),
+    FileZipOperation(String),
+    FileUnzipOperation(String),
+    FileCopyOperation(String),
+    Unknown
+}
+
+impl FileOperations {
+    pub fn as_inner_str(&self) -> Option<&str> {
+        match self {
+            FileOperations::FileDownloadOperation(s) => Some(s),
+            FileOperations::FileZipOperation(s) => Some(s),
+            FileOperations::FileMoveOperation(s) => Some(s),
+            FileOperations::FileUnzipOperation(s) => Some(s),
+            FileOperations::FileCopyOperation(s) => Some(s),
+            _ => None
+        }
+    }
+}
+
+impl fmt::Display for FileOperations {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            FileOperations::FileDownloadOperation(_) => "FileDownloadOperation",
+            FileOperations::FileZipOperation(_) => "FileZipOperation",
+            FileOperations::FileMoveOperation(_) => "FileMoveOperation",
+            FileOperations::FileUnzipOperation(_) => "FileUnzipOperation",
+            FileOperations::FileCopyOperation(_) => "FileCopyOperation",
+            _ => "not implemented",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+pub fn execute_file_operation(encoded_src: FileOperations, encoded_dest: FileOperations, dir: String) -> std::io::Result<()> {
+    let dest = encoded_dest.as_inner_str().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid destination"))?;
+    let src = encoded_src.as_inner_str().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid source"))?;
+    let src_path = PathBuf::from(&dir).join(src);
+    let dest_path = PathBuf::from(&dir).join(dest);
+    
+    match &encoded_src {
+        FileOperations::FileCopyOperation(_) => {
+            let final_dest = if dest_path.exists() && dest_path.is_dir() {
+                if let Some(filename) = src_path.file_name() {
+                    dest_path.join(filename)
+                } else {
+                    dest_path
+                }
+            } else {
+                dest_path
+            };
+            std::fs::copy(&src_path, &final_dest)?;
+        },
+        FileOperations::FileMoveOperation(_) => {
+            let final_dest = if dest_path.exists() && dest_path.is_dir() {
+                if let Some(filename) = src_path.file_name() {
+                    dest_path.join(filename)
+                } else {
+                    dest_path
+                }
+            } else {
+                dest_path
+            };
+            std::fs::rename(&src_path, &final_dest)?;
+        },
+        FileOperations::FileZipOperation(_) => {
+            // let mut final_dest = if dest_path.exists() && dest_path.is_dir() {
+            //     if let Some(filename) = src_path.file_name() {
+            //         dest_path.join(filename)
+            //     } else {
+            //         dest_path
+            //     }
+            // } else {
+            //     dest_path
+            // };
+            // final_dest.set_extension("zip");
+            
+            // let file = std::fs::File::create(&final_dest)?;
+            // let mut zip = zip::ZipWriter::new(file);
+            // let options = zip::write::SimpleFileOptions::default();
+            
+            // if src_path.is_dir() {
+            //     let dir_name = src_path.file_name()
+            //         .and_then(|n| n.to_str())
+            //         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid directory name"))?;
+                
+            //     fn zip_directory(zip: &mut zip::ZipWriter<std::fs::File>, path: &Path, prefix: &str, options: zip::write::SimpleFileOptions) -> std::io::Result<()> {
+            //         for entry in std::fs::read_dir(path)? {
+            //             let entry = entry?;
+            //             let entry_path = entry.path();
+            //             let name = entry_path.file_name()
+            //                 .and_then(|n| n.to_str())
+            //                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid filename"))?;
+            //             let zip_path = format!("{}/{}", prefix, name);
+                        
+            //             if entry_path.is_dir() {
+            //                 zip.add_directory(&zip_path, options)?;
+            //                 zip_directory(zip, &entry_path, &zip_path, options)?;
+            //             } else {
+            //                 zip.start_file(&zip_path, options)?;
+            //                 let mut f = std::fs::File::open(&entry_path)?;
+            //                 std::io::copy(&mut f, zip)?;
+            //             }
+            //         }
+            //         Ok(())
+            //     }
+                
+            //     zip.add_directory(dir_name, options)?;
+            //     zip_directory(&mut zip, &src_path, dir_name, options)?;
+            // } else {
+            //     let filename = src_path.file_name()
+            //         .and_then(|n| n.to_str())
+            //         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid filename"))?;
+            //     zip.start_file(filename, options)?;
+            //     let mut src_file = std::fs::File::open(&src_path)?;
+            //     std::io::copy(&mut src_file, &mut zip)?;
+            // }
+            
+            // zip.finish()?;
+        },
+        FileOperations::FileUnzipOperation(_) => {
+            // if !src_path.exists() {
+            //     return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "Source zip file not found"));
+            // }
+            
+            // let file = std::fs::File::open(&src_path)?;
+            // let mut archive = zip::ZipArchive::new(file)?;
+            
+            // let extract_dir = if dest_path.exists() && dest_path.is_dir() {
+            //     dest_path
+            // } else {
+            //     std::fs::create_dir_all(&dest_path)?;
+            //     dest_path
+            // };
+            
+            // for i in 0..archive.len() {
+            //     let mut file = archive.by_index(i)?;
+            //     let outpath = extract_dir.join(file.name());
+            //     let is_directory = file.is_dir() || (file.size() == 0 && !file.name().contains('.'));
+                
+            //     if is_directory {
+            //         std::fs::create_dir_all(&outpath)?;
+            //     } else {
+            //         if let Some(p) = outpath.parent() {
+            //             if !p.exists() {
+            //                 std::fs::create_dir_all(p)?;
+            //             }
+            //         }
+            //         let mut outfile = std::fs::File::create(&outpath)?;
+            //         std::io::copy(&mut file, &mut outfile)?;
+            //     }
+            // }
+        },
+        _ => {}
+    }
+    Ok(())
+}
+
+
+pub struct TcpFileStream {
+    pub tcp_fs: Arc<Mutex<TcpFs>>,
+    pub file_path: String,
+    pub current_offset: u64,
+    pub file_size: Option<u64>,
+    pub chunk_size: u64,
+    pub finished: bool,
+
+    pending_fut: Option<Pin<Box<dyn Future<Output = Result<(Bytes, bool), std::io::Error>> + Send>>>,
+}
+
+
+impl TcpFileStream {
+    pub fn new(
+        tcp_fs: Arc<Mutex<TcpFs>>,
+        file_path: String,
+        file_size: Option<u64>,
+        chunk_size: u64,
+    ) -> Self {
+        Self {
+            tcp_fs,
+            file_path,
+            current_offset: 0,
+            file_size,
+            chunk_size,
+            finished: false,
+            pending_fut: None
+        }
+    }
+}
+
+impl Stream for TcpFileStream {
+    type Item = Result<Bytes, std::io::Error>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+
+        if self.finished {
+            return Poll::Ready(None);
+        }
+
+        if let Some(size) = self.file_size {
+            if self.current_offset >= size {
+                self.finished = true;
+                return Poll::Ready(None);
+            }
+        }
+
+        if self.pending_fut.is_none() {
+            let tcp_fs = self.tcp_fs.clone();
+            let file_path = self.file_path.clone();
+            let offset = self.current_offset;
+            let chunk_size = self.chunk_size;
+            let file_size = self.file_size;
+
+            let actual_chunk_size = if let Some(size) = file_size {
+                let remaining = size.saturating_sub(offset);
+                remaining.min(chunk_size)
+            } else {
+                chunk_size
+            };
+
+            if actual_chunk_size == 0 {
+                self.finished = true;
+                return Poll::Ready(None);
+            }
+
+            let fut = async move {
+                let mut fs = tcp_fs.lock().await;
+
+                let file_chunk = FileChunk {
+                    file_name: file_path.clone(),
+                    file_chunk_offet: offset.to_string(),
+                    file_chunk_size: actual_chunk_size.to_string(),
+                };
+
+                let result = fs.get_files_content(file_chunk).await?;
+                let data = Bytes::from(result.message.into_bytes());
+                let is_eof = data.is_empty() || (data.len() as u64) < actual_chunk_size;
+
+                Ok::<(Bytes, bool), std::io::Error>((data, is_eof))
+            };
+
+            self.pending_fut = Some(Box::pin(fut));
+        }
+
+        let fut = self.pending_fut.as_mut().unwrap();
+
+        match fut.as_mut().poll(cx) {
+            Poll::Pending => Poll::Pending,
+
+            Poll::Ready(Ok((data, is_eof))) => {
+                self.pending_fut = None;
+
+                if data.is_empty() || is_eof {
+                    self.finished = true;
+                }
+
+                self.current_offset += data.len() as u64;
+                return Poll::Ready(Some(Ok(data)));
+            }
+
+            Poll::Ready(Err(e)) => {
+                self.pending_fut = None;
+                self.finished = true;
+                return Poll::Ready(Some(Err(e)));
+            }
+        }
     }
 }

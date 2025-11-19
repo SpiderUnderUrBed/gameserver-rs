@@ -5,6 +5,8 @@ let current_path = '';
 let globalWs = null;
 let uploaderVisible = false;
 
+let newSelectedMode = "None"
+
 const toggleButton = document.getElementById('toggleUploader');
 const dropzone = document.getElementById('myDropzone');
 
@@ -18,6 +20,20 @@ toggleButton.addEventListener('click', () => {
 		toggleButton.textContent = 'Show File Uploader';
 	}
 });
+
+function modeToggle(){
+	let modes = ["Copy", "Move", "Zip", "Unzip", "Download", "None"]
+	let modeSelector = document.getElementById('mode-selector');
+	if (modeSelector.dataset.mode == "None") {
+		newSelectedMode = "Copy"
+	} else {
+		console.log(modes.indexOf(modeSelector.dataset.mode))
+		newSelectedMode = modes[modes.indexOf(modeSelector.dataset.mode)+1]
+	}
+	modeSelector.dataset.mode = newSelectedMode;
+	modeSelector.textContent = `Current mode: ${newSelectedMode}`
+	console.log(modeSelector.dataset.mode)
+}
 
 function connectWebSocket() {
 	globalWs = new WebSocket(`${basePath}/api/ws`);
@@ -166,16 +182,40 @@ async function get_files(path) {
 						if (item.kind.toLowerCase() === 'folder') {
 							button.className = 'folder-button';
 							button.onclick = () => {
-								if (filename === '..') {
-									const pathParts = path.split('/').filter(p => p !== '');
-									pathParts.pop();
-									get_files(pathParts.join('/'));
+								if (newSelectedMode == "None") {
+									if (filename === '..') {
+										const pathParts = path.split('/').filter(p => p !== '');
+										pathParts.pop();
+										get_files(pathParts.join('/'));
+									} else {
+										get_files(path ? `${path}/${filename}` : filename);
+									}
 								} else {
-									get_files(path ? `${path}/${filename}` : filename);
+									if (src.textContent != "" && src.textContent != "_"){
+										let dest = document.getElementById("dest");
+										dest.textContent = `dest: ${filename}`;
+										dest.dataset.dest = filename;
+									} else {
+										src.textContent = `source: ${filename}`;
+										src.dataset.src = filename;
+									}
 								}
 							};
 						} else {
-							button.onclick = () => open_editor(filename);
+							button.onclick = () => {
+								if (newSelectedMode == "None") {
+									open_editor(filename);
+								} else {
+									let src = document.getElementById("src");
+									src.textContent = `source: ${filename}`;
+									src.dataset.src = filename;
+									// if (src.textContent != "" && src.textContent != "_"){
+									// 	let dest = document.getElementById("dest");
+									// 	dest.textContent = `dest: ${filename}`;
+									// 	dest.dataset.dest = filename;
+									// } 
+								}
+							}
 						}
 						button.textContent = filename;
 						newelement.appendChild(button);
@@ -276,3 +316,155 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
 		alert('Failed to save file.');
 	}
 });
+
+async function executeFileOperation(){
+// const res = await fetch(`${basePath}/api/getfiles`, {
+// 	method: 'POST',
+// 	headers: { 'Content-Type': 'application/json' },
+// 	body: JSON.stringify({ type: 'command', message: path, authcode: '0' })
+// });
+
+//newSelectedMode
+
+	// FileOperations::FileDownloadOperation(_) => "FileDownloadOperation",
+	// FileOperations::FileZipOperation(_) => "FileZipOperation",
+	// FileOperations::FileMoveOperation(_) => "FileMoveOperation",
+	// FileOperations::FileUnzipOperation(_) => "FileUnzipOperation",
+	// FileOperations::FileCopyOperation(_) => "FileCopyOperation",
+
+	let src_element = document.getElementById("src");
+	let dest_element = document.getElementById("dest");
+	let src = src_element.dataset.src
+	let dest = dest_element.dataset.dest || current_path || "";
+	let final_operation = "";
+	if (newSelectedMode == "Move") {
+		final_operation = "FileMoveOperation"
+	} else if (newSelectedMode == "Copy") {
+		final_operation = "FileCopyOperation"
+	} else if (newSelectedMode == "Zip"){
+		final_operation = "FileZipOperation"
+	} else if (newSelectedMode == "Unzip"){
+		final_operation = "FileUnzipOperation"
+	} else if (newSelectedMode == "Download"){
+		await downloadFileSimple(src);
+		clearFileOperation();
+		return;
+	}
+
+
+	try {
+		const res = await fetch(`${basePath}/api/fileoperations`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ 
+				src: {
+					kind: final_operation,
+					data: src
+				},
+				dest: {
+					kind: final_operation,
+					data: dest
+				},
+				metadata: ""
+			})
+		});
+		src_element.textContent = '_'
+		src_element.dataset.src = ''
+		dest_element.textContent = '_'
+		dest_element.dataset.dest = ''
+		get_files('');
+
+	} catch (e){
+		console.log(e)
+	}
+}
+// async function downloadFileSimple(filePath) {
+// 	if (!filePath) {
+// 		alert('No file selected to download');
+// 		return;
+// 	}
+
+// 	const fullFilePath = current_path ? `${current_path}/${filePath}` : filePath;
+	
+// 	const a = document.createElement('a');
+// 	a.href = `${basePath}/api/download/${encodeURIComponent(fullFilePath)}`;
+// 	a.download = filePath;
+// 	a.style.display = 'none';
+// 	document.body.appendChild(a);
+// 	a.click();
+// 	document.body.removeChild(a);
+// }
+async function downloadFileSimple(filePath) {
+    console.log('[downloadFileSimple] Starting download...');
+    console.log('[downloadFileSimple] Input filePath:', filePath);
+    console.log('[downloadFileSimple] current_path:', current_path);
+    
+    if (!filePath) {
+        console.error('[downloadFileSimple] No file path provided');
+        alert('No file selected to download');
+        return;
+    }
+    
+    const fullFilePath = current_path ? `${current_path}/${filePath}` : filePath;
+    console.log('[downloadFileSimple] Full file path:', fullFilePath);
+    
+    const encodedPath = encodeURIComponent(fullFilePath);
+    console.log('[downloadFileSimple] Encoded path:', encodedPath);
+    
+    const downloadUrl = `${basePath}/api/download/${encodedPath}`;
+    console.log('[downloadFileSimple] Download URL:', downloadUrl);
+    console.log('[downloadFileSimple] basePath:', basePath);
+    
+    // Test if the endpoint exists
+    try {
+        console.log('[downloadFileSimple] Testing endpoint with HEAD request...');
+        const testResponse = await fetch(downloadUrl, { method: 'HEAD' });
+        console.log('[downloadFileSimple] HEAD response status:', testResponse.status);
+        console.log('[downloadFileSimple] HEAD response headers:', 
+            Array.from(testResponse.headers.entries()));
+        
+        if (!testResponse.ok) {
+            console.error('[downloadFileSimple] Endpoint returned error:', testResponse.status, testResponse.statusText);
+            alert(`Download failed: ${testResponse.status} ${testResponse.statusText}`);
+            return;
+        }
+    } catch (error) {
+        console.error('[downloadFileSimple] Failed to test endpoint:', error);
+        alert('Failed to connect to download endpoint: ' + error.message);
+        return;
+    }
+    
+    console.log('[downloadFileSimple] Creating download link element...');
+    const a = document.createElement('a');
+    a.href = downloadUrl;
+    a.download = filePath;
+    a.style.display = 'none';
+    
+    console.log('[downloadFileSimple] Link properties:', {
+        href: a.href,
+        download: a.download,
+        style: a.style.cssText
+    });
+    
+    document.body.appendChild(a);
+    console.log('[downloadFileSimple] Link appended to body');
+    
+    console.log('[downloadFileSimple] Triggering click...');
+    a.click();
+    
+    // Wait a moment before removing to ensure download starts
+    setTimeout(() => {
+        document.body.removeChild(a);
+        console.log('[downloadFileSimple] Link removed from body');
+        console.log('[downloadFileSimple] Download initiated successfully');
+    }, 100);
+}
+
+function clearFileOperation(){
+	let src_element = document.getElementById("src");
+	let dest_element = document.getElementById("dest");
+	src_element.textContent = '_'
+	src_element.dataset.src = ''
+	dest_element.textContent = '_'
+	dest_element.dataset.dest = ''
+}

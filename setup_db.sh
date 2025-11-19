@@ -1,18 +1,12 @@
 #!/bin/bash
 
-# database setup script
-# creates a postgresql database and required tables
-
 set -e
 
-# config
 db_name="gameserver_db"
 db_user="gameserver"
 db_password="gameserverpass"
 db_host="localhost"
 db_port="5432"
-
-# colors
 green='\033[0;32m'
 yellow='\033[1;33m'
 red='\033[0;31m'
@@ -20,7 +14,6 @@ nc='\033[0m'
 
 echo -e "${yellow}starting database setup...${nc}"
 
-# check postgresql
 if ! command -v psql &> /dev/null; then
     echo -e "${red}postgresql not installed${nc}"
     echo "ubuntu/debian: sudo apt install postgresql postgresql-contrib"
@@ -55,7 +48,6 @@ run_sql "
 create table if not exists users (
     username varchar primary key,
     password_hash text,
-    authcode varchar default '0',
     user_perms text[] not null default '{}',
     created_at timestamptz default now(),
     updated_at timestamptz default now()
@@ -105,11 +97,32 @@ create index if not exists idx_buttons_name_lower on buttons(lower(name));
 "
 echo -e "${green}buttons table created${nc}"
 
+echo -e "${yellow}creating intergrations table...${nc}"
+run_sql "
+create table if not exists intergrations (
+    type text primary key,
+    status varchar not null,
+    settings jsonb not null default '{}'::jsonb,
+    created_at timestamptz default now(),
+    updated_at timestamptz default now()
+);
+create index if not exists idx_intergrations_type on intergrations(type);
+create index if not exists idx_intergrations_status on intergrations(status);
+"
+echo -e "${green}intergrations table created${nc}"
+
 echo -e "${yellow}creating settings table...${nc}"
 run_sql "
 create table if not exists settings (
     id serial primary key,
     toggled_default_buttons boolean not null default false,
+    status_type varchar default '',
+    enabled_rcon boolean not null default true,
+    rcon_url varchar default 'localhost:25575',
+    rcon_password varchar default 'testing',
+    driver varchar default '',
+    file_system_driver varchar default '',
+    enable_statistics_on_home_page varchar default '',
     created_at timestamptz default now(),
     updated_at timestamptz default now()
 );
@@ -120,20 +133,29 @@ echo -e "${green}settings table created${nc}"
 echo -e "${yellow}inserting default buttons...${nc}"
 run_sql "
 insert into buttons (name, link, type) values
-    ('filebrowser', '', 'default'),
-    ('statistics', '', 'default'),
-    ('workflows', '', 'default'),
-    ('intergrations', '', 'default'),
-    ('backups', '', 'default'),
-    ('settings', '', 'default')
+    ('Filebrowser', '', 'default'),
+    ('Statistics', '', 'default'),
+    ('Workflows', '', 'default'),
+    ('Intergrations', '', 'default'),
+    ('Backups', '', 'default'),
+    ('Settings', '', 'default')
 on conflict (name) do nothing;
 "
 echo -e "${green}default buttons inserted${nc}"
 
 echo -e "${yellow}inserting default settings...${nc}"
 run_sql "
-insert into settings (toggled_default_buttons)
-select false
+insert into settings (
+    toggled_default_buttons,
+    status_type,
+    enabled_rcon,
+    rcon_url,
+    rcon_password,
+    driver,
+    file_system_driver,
+    enable_statistics_on_home_page
+)
+select false, '', true, 'localhost:25575', 'testing', '', '', ''
 where not exists (select 1 from settings);
 "
 echo -e "${green}default settings inserted${nc}"

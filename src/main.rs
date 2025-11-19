@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::default;
+use std::fmt;
 use std::fmt::Debug;
 use std::{net::SocketAddr, path::Path, sync::Arc};
 
@@ -14,6 +15,7 @@ use crate::filesystem::{send_multipart_over_broadcast, FsType};
 use crate::http::HeaderMap;
 use crate::kubernetes::verify_is_k8s_gameserver;
 use crate::middleware::from_fn;
+use crate::filesystem::TcpFileStream;
 use axum::extract::ws::Message as WsMessage;
 use axum::extract::Multipart;
 use axum::extract::Query;
@@ -53,6 +55,8 @@ use crate::database::databasespec::NodesDatabase;
 use crate::database::databasespec::UserDatabase;
 use crate::database::databasespec::{Button, NodeStatus};
 use crate::database::Node;
+
+use crate::http::header;
 // miscellancious imports, future traits are used because alot of the code is asyncronus and cant fully be contained in tokio
 // mime_guess as when I am serving the files, I need to serve it with the correct mime type
 // serde_json because I exchange alot of json data between the backend and frontend and to the gameserver
@@ -79,6 +83,7 @@ use tokio::{
 };
 use tower_http::cors::{Any as CorsAny, CorsLayer};
 
+use futures_util::task::Poll;
 use futures_util::{stream, Stream, TryFutureExt};
 
 use std::error::Error;
@@ -227,7 +232,7 @@ static DOCKER_WORKS: bool = true;
 
 // dummy client and function
 #[cfg(not(feature = "full-stack"))]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Client;
 
 #[cfg(not(feature = "full-stack"))]
@@ -349,6 +354,12 @@ enum IntegrationCommands {
     MinecraftDisableRcon(serde_json::Value),
 }
 
+#[derive(Clone)]
+enum Clients {
+    K8s(Client),
+    Docker(String),
+    None
+}
 
 // console output is sometimes contained within the data feild of json, but this also might be redundant
 #[derive(Debug, Deserialize, Serialize)]
@@ -393,6 +404,11 @@ struct IncomingMessage {
     authcode: String,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct AuthTcpMessage {
+    password: String,
+}
+
 // useful and not outdated because in this case the message is a Value, as in its not a predefined data type
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct IncomingMessageWithValue {
@@ -429,7 +445,46 @@ enum ApiCalls {
     IncomingMessageWithMetadata(IncomingMessageWithMetadata),
     FileDataList(Vec<FsItem>),
     Node(Node),
+    FileMoveOperation(String),
+    FileCopyOperation(String),
+    FileZipOperation(String),
+    FileUnzipOperation(String),
+    FileDownloadOperation(String)
 }
+impl ApiCalls {
+    fn as_inner_str(&self) -> Option<&str> {
+        match self {
+            ApiCalls::FileDownloadOperation(s) => Some(s),
+            ApiCalls::FileZipOperation(s) => Some(s),
+            ApiCalls::FileMoveOperation(s) => Some(s),
+            ApiCalls::FileUnzipOperation(s) => Some(s),
+            ApiCalls::FileCopyOperation(s) => Some(s),
+            _ => None
+            // handle other variants if needed
+        }
+    }
+}
+
+impl fmt::Display for ApiCalls {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            ApiCalls::FileDownloadOperation(_) => "FileDownloadOperation",
+            ApiCalls::FileZipOperation(_) => "FileZipOperation",
+            ApiCalls::FileMoveOperation(_) => "FileMoveOperation",
+            ApiCalls::FileUnzipOperation(_) => "FileUnzipOperation",
+            ApiCalls::FileCopyOperation(_) => "FileCopyOperation",
+            _ => "not implemented",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+
+// #[derive(Debug, Deserialize, Serialize, Clone)]
+// #[serde(tag = "kind", content = "data")]
+// enum FileOperations {
+//     Move(SrcAndDest)
+// }
 
 // struct ApiCallsWithAuth {
 //     jwt: String,
@@ -464,6 +519,7 @@ enum Status {
 //     }
 // }
 
+
 // AppState, this is a global struct which will be used to store data needed across the application like in routes and etc
 // which includes the sender and reciver to the tcp connection for gameserver, the websocket sender (receiver only needs to be managed by its own handler)
 // the base path like if all the routes are prefixed with something like /gameserver-rs which is the default for my testing deployment, and database as its needed frequently
@@ -482,7 +538,8 @@ struct AppState {
     //status: Status,
     ws_tx: broadcast::Sender<String>,
     base_path: String,
-    client: Option<Client>,
+    //client: Option<Client>,
+    client: Clients,
     database: database::Database,
     cached_status_type: String,
     rcon_connection: Option<Arc<Mutex<Connection<TcpStream>>>>,
@@ -553,6 +610,12 @@ pub async fn handle_stream(
     let (reader, mut writer) = stream.split();
     let mut buf_reader = BufReader::new(reader);
     let mut buf = vec![0u8; 4096];
+
+    let initial_node_password: String = get_env_var_or_arg("INITIAL_NODE_PASSWORD", Some(String::default())).unwrap();
+    let auth_msg = serde_json::to_string(&AuthTcpMessage {
+        password: initial_node_password
+    })? + "\n";
+    writer.write_all(auth_msg.as_bytes()).await?;
 
     let capability_msg = serde_json::to_string(&List {
         list: ApiCalls::Capabilities(vec!["all".to_string()]),
@@ -635,6 +698,18 @@ pub async fn handle_stream(
                     }
                 }
             }
+            let src_and_dest_parsed: Vec<Result<SrcAndDest, serde_json::Error>> =
+                value_from_line::<SrcAndDest, _>(line_content, |line| line.contains("\"src\"")).await;
+
+            let mut src_and_dest_values: Vec<Value> = vec![];
+            for item in src_and_dest_parsed {
+                if let Ok(data) = item {
+                    if let Ok(serialized_value) = serde_json::to_value(data) {
+                        src_and_dest_values.push(serialized_value);
+                    }
+                }
+            }
+
             let integration_parsed: Vec<Result<IntegrationCommands, serde_json::Error>> =
                 value_from_line::<IntegrationCommands, _>(line_content, |line| line.contains("\"kind\"")).await;
 
@@ -647,6 +722,7 @@ pub async fn handle_stream(
                 }
             }
 
+            final_data.extend(src_and_dest_values);
             final_data.extend(integration_values);
             final_data.extend(list_values);
             final_data.extend(console_values);
@@ -696,7 +772,7 @@ pub async fn handle_stream(
                                     };
 
                                     if let Ok(nodes) = database.fetch_all_nodes().await {
-                                        let node_status = if let Some(client) = client_option {
+                                        let node_status = if let Clients::K8s(client) = client_option {
                                             let client_clone = client.clone();
                                             let ip_clone = ip.to_string();
 
@@ -716,7 +792,7 @@ pub async fn handle_stream(
                                             nodename: inner_msg.message,
                                             nodetype: {
                                                 let state_guard = arc_state.read().await;
-                                                if let Some(client) = &state_guard.client {
+                                                if let Clients::K8s(client) = &state_guard.client {
                                                     if kubernetes::verify_is_k8s_gameserver(client.clone(), ip.to_string()).await? {
                                                         NodeType::Inbuilt
                                                     } else {
@@ -729,7 +805,7 @@ pub async fn handle_stream(
                                             nodestatus: node_status,
                                             k8s_type: {
                                                 let state_guard = arc_state.read().await;
-                                                if let Some(client) = &state_guard.client {
+                                                if let Clients::K8s(client) = &state_guard.client {
                                                     if kubernetes::verify_is_k8s_gameserver(client.clone(), ip.to_string()).await? {    
                                                         if kubernetes::verify_is_k8s_pod(client, ip.to_string()).await? {
                                                             K8sType::Pod
@@ -784,21 +860,13 @@ pub async fn handle_stream(
                             let _ = ws_tx.send(data_clone.data.clone());
                         }
                     }
-                    // let final_value = match serde_json::to_vec(&value) {
-                    //     Ok(bytes) => {
-                    //         // internal_tx
-                    //         if let Err(err) = ws_tx.send(bytes) {
-                    //             eprintln!("Failed to send request over broadcast: {}", err);
-                    //         }
-                    //     }
-                    //     Err(err) => eprintln!("Failed to serialize request: {}", err),
-                    // };
+
                     if FORWARD_ALL_MESSAGES == true {
                         let all_remaining_messages_result = match serde_json::to_string(&value) {
                             Ok(string) => {
                                 // internal_tx
                                 if let Err(err) = ws_tx.send(string) {
-                                    eprintln!("Failed to send request over broadcast: {}", err);
+                                    eprintln!("Failed to send request over broadcast: {} (not fatal)", err);
                                 }
                             }
                             Err(err) => eprintln!("Failed to serialize request: {}", err),
@@ -957,41 +1025,46 @@ pub async fn connect_to_server(
 // this is where it determines wether or not to try and create the container and deployment, as attempt_connection itself is used in various diffrent contexts (like it will constantly
 // try to connect upon failing but it should not try to create the container and deployment every time it fails)
 async fn try_initial_connection(
+    conn_attempts: u64,
+    conn_timeout: u64,
     create_handler: bool,
-    state: Arc<RwLock<AppState>>,
+    state: &Arc<RwLock<AppState>>,
     tcp_url: String,
-    ws_tx: broadcast::Sender<String>,
+    ws_tx: &broadcast::Sender<String>,
     tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    match attempt_connection(tcp_url).await {
-        Ok(mut stream) => {
-            println!("Initial connection succeeded!");
-            // note, possibly I wont ever need to create a handler from the test of the intial connection
-            // TODO: think about removing create_handler and just never create a handler
-            if create_handler {
-                let (temp_tx, temp_rx) =
-                    tokio::sync::broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
-                let mut temp_rx = temp_rx;
-                handle_stream(state.clone(), &mut temp_rx, &mut stream, ws_tx.clone(), None).await?
-            } else {
-                return Ok(());
+    let mut final_error: Box<dyn std::error::Error + Send + Sync> = "This should not show up".into();
+    for _ in 0..conn_attempts {
+       // let mut has_succeeded = false;
+        match attempt_connection(tcp_url.clone()).await {
+            Ok(mut stream) => {
+                //let copy_state = &Arc::clone(&state);
+                println!("Initial connection succeeded!");
+                // note, possibly I wont ever need to create a handler from the test of the intial connection
+                // TODO: think about removing create_handler and just never create a handler
+                if create_handler {
+                    let (temp_tx, temp_rx) =
+                        tokio::sync::broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+                    let mut temp_rx = temp_rx;
+                    let stream_result = handle_stream(state.clone(), &mut temp_rx, &mut stream, ws_tx.clone(), None).await;
+                    if stream_result.is_ok() {
+                        break;
+                    } else {
+                        final_error = stream_result.err().unwrap()
+                    }
+                    //.map_err(|| "Failed conn attempt")?
+                } else {
+                    break;
+                } 
             }
-            // note, possibly I wont ever need to create a handler from the test of the intial connection
-            // TODO: think about removing create_handler and just never create a handler
-            if create_handler {
-                let (temp_tx, temp_rx) =
-                    tokio::sync::broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
-                let mut temp_rx = temp_rx;
-                handle_stream(state, &mut temp_rx, &mut stream, ws_tx, None).await
-            } else {
-                Ok(())
+            Err(e) => {
+                eprintln!("Initial connection failed: {}", e);
+                // return Err(e)
             }
         }
-        Err(e) => {
-            eprintln!("Initial connection failed: {}", e);
-            Err(e)
-        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
     }
+    Err(final_error)
 }
  
 
@@ -1054,11 +1127,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Overrides for testing or specific cases where how it worksin a setup may be diffrent
     
     let enable_k8s_client: bool = get_env_var_or_arg("ENABLE_K8S_CLIENT", Some(true)).unwrap();
-    let enable_initial_connection: bool = get_env_var_or_arg("ENABLE_INITIAL_CONNECTION", Some(true)).unwrap();
     let force_rebuild: bool = get_env_var_or_arg("FORCE_REBUILD", Some(false)).unwrap();
     let build_docker_image: bool = get_env_var_or_arg("BUILD_DOCKER_IMAGE", Some(true)).unwrap();
     let build_deployment: bool = get_env_var_or_arg("BUILD_DEPLOYMENT", Some(true)).unwrap();
     let dont_override_conn_with_k8s: bool = get_env_var_or_arg("DONT_OVERRIDE_CONN_WITH_K8S", Some(true)).unwrap();
+
+    // consider if I should not have enable_initial_connection and instead if initial_connection_attempts dont 
+    // try to connect to the server
+    let enable_initial_connection: bool = get_env_var_or_arg("ENABLE_INITIAL_CONNECTION", Some(true)).unwrap();
+    let initial_connection_attempts: u64 = get_env_var_or_arg("INITIAL_CONNECTION_ATTEMPTS", Some(5)).unwrap();
+    let initial_connection_timeout: u64 = get_env_var_or_arg("INITIAL_CONNECTION_TIMEOUT", Some(2)).unwrap();
 
     // creates a websocket broadcase and tcp channels
     let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
@@ -1066,14 +1144,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // sets the client to be none by default unless this is ran the stanard way which will be ran with the appropriate feature-flag
     // which will set the k8s client
-    let mut client: Option<Client> = None;
+    // let mut client: Option<Client> = None;
+    // if enable_k8s_client && K8S_WORKS {
+    //     client = Some(Client::try_default().await?);
+    // }
+    let mut client: Clients = Clients::None;
     if enable_k8s_client && K8S_WORKS {
-        client = Some(Client::try_default().await?);
+        client = Clients::K8s(Client::try_default().await?);
     }
 
     let mut tcp_url: String = config_tcp_url.to_string();
-    if !dont_override_conn_with_k8s && client.is_some() {
-        if let Ok(url_result) = &kubernetes::get_avalible_gameserver(client.as_ref().unwrap()).await
+    if !dont_override_conn_with_k8s && let Clients::K8s(ref inner_client) = client {
+        //let Clients::K8s(inner_client) = client;
+        if let Ok(url_result) = &kubernetes::get_avalible_gameserver(&inner_client).await
         {
             tcp_url = url_result.clone();
         } else {
@@ -1156,28 +1239,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // if there is supposed to be a initial connection and if there is a client (as it wont be able to create the deployment without it, and it would be pointless to create a docker container
     // without the abbility to deploy it)
-    if enable_initial_connection && multifaceted_state.write().await.client.is_some() {
+    if enable_initial_connection {
+    // && multifaceted_state.write().await.client.is_some() {
         println!("Trying initial connection...");
-        if try_initial_connection(
-	    false,
-            multifaceted_state.clone(),
+        let initial_connection_result = try_initial_connection(
+            initial_connection_attempts,
+            initial_connection_timeout,
+	        false,
+            &multifaceted_state.clone(),
             tcp_url.to_string(),
-            ws_tx.clone(),
+            &ws_tx.clone(),
             multifaceted_state.write().await.tcp_tx.clone(),
         )
-        .await
-        .is_err()
-            || force_rebuild
+        .await;
+        if initial_connection_result.is_err() {
+            println!("All initial connections failed");
+        }
+        if initial_connection_result.is_err() || force_rebuild
         {
-            eprintln!("Initial connection failed or force rebuild enabled");
-            if build_docker_image {
-                docker::build_docker_image().await?;
-            }
-            if build_deployment {
-                kubernetes::create_k8s_deployment(
-                    multifaceted_state.write().await.client.as_ref().unwrap(),
-                )
-                .await?;
+
+            //if matches!(multifaceted_state.write().await.client, Clients::K8s(_)) { 
+            if let Clients::K8s(client) = &multifaceted_state.write().await.client {
+                eprintln!("Initial connection failed or force rebuild enabled, will possibly enable auto-build (configurable)");
+                if build_docker_image {
+                    docker::build_docker_image().await?;
+                }
+                if build_deployment {
+                    kubernetes::create_k8s_deployment(
+                        &client,
+                    )
+                    .await?;
+                }
             }
         }
     }
@@ -1235,6 +1327,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/ws", get(ws_handler))
         // .route("getfiles", get(get_files))
         .route("/api/upload", post(upload))
+        // .route("/api/fileupload", post(stream_file_download))
+        .route("/api/download/{*wildcard}", get(stream_file_download))
         //.route("/api/uploadcontent", post(upload))
         .route("/api/statistics", get(statistics))
         .route("/api/getsettings", get(get_settings))
@@ -1357,7 +1451,23 @@ pub async fn ensure_rcon(arc_state: Arc<RwLock<AppState>>) -> Result<(), String>
 // ) -> StatusCode {
 
 // }
+async fn file_operations(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    Json(request): Json<SrcAndDest>,
+) -> StatusCode {   
+    let state = arc_state.write().await;
 
+    match serde_json::to_vec(&request) {
+        Ok(bytes) => {
+            if let Err(err) = state.tcp_tx.send(bytes) {
+                eprintln!("Failed to send request over broadcast: {}", err);
+            }
+        }
+        Err(err) => eprintln!("Failed to serialize request: {}", err),
+    }
+
+    StatusCode::CREATED
+}
 async fn upload(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     multipart: Multipart,
@@ -1710,7 +1820,7 @@ async fn set_settings(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     
-    if let (Value::Object(ref mut current), Value::Object(new)) = (&mut settings_value, inner_value) {
+    if let (Value::Object(current), Value::Object(new)) = (&mut settings_value, inner_value) {
         for (k, v) in new {
             current.insert(k, v);
         }
@@ -1911,8 +2021,8 @@ async fn modify_intergration(
                     settings.iter()
                     .filter(|(key, _)| key.starts_with("enable"))
                     .filter_map(|(key, value)| {
-                        if let Value::Bool(bool) = value {
-                            if *bool == false {
+                        if let Value::Bool(b) = value {
+                            if *b == false {
                                 Some(key)
                             } else {
                                 None
@@ -1931,7 +2041,7 @@ async fn modify_intergration(
                     if let Some(unwrapped_hook) = hook {
                         if let Some(Value::Bool(new_enabled_key)) = intergration_element.settings.get(enabled_key) {
                             if *new_enabled_key == true {
-                                println!("unwrapped hook {:#?}", unwrapped_hook.1);
+                               // println!("unwrapped hook {:#?}", unwrapped_hook.1);
                                 match serde_json::to_vec(&unwrapped_hook.1) {
                                     Ok(mut bytes) => {
                                         // Add newline delimiter for TCP stream parsing
@@ -1945,10 +2055,10 @@ async fn modify_intergration(
                                             }
                                         }
                                         
-                                        // Send to tcp_tx to forward to remote server
-                                        if let Err(err) = state.tcp_tx.send(bytes) {
-                                            eprintln!("Failed to send to TCP stream: {}", err);
-                                        }
+                                        // // Send to tcp_tx to forward to remote server
+                                        // if let Err(err) = state.tcp_tx.send(bytes) {
+                                        //     eprintln!("Failed to send to TCP stream: {}", err);
+                                        // }
                                     }
                                     Err(err) => eprintln!("Failed to serialize request: {}", err),
                                 }
@@ -2383,7 +2493,7 @@ async fn get_nodes(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl IntoR
     let mut state = arc_state.write().await;
     let mut node_list: Vec<NodeAndTCP> = vec![];
 
-    if let Some(client) = state.client.clone() {
+    if let Clients::K8s(client) = state.client.clone() {
         match kubernetes::list_node_info(client).await {
             Ok(nodes) => {
                 node_list.extend(nodes.clone());
@@ -2956,6 +3066,133 @@ async fn get_message(
             ))
         }
     }
+}
+
+pub async fn stream_file_download(
+    State(state): State<Arc<RwLock<AppState>>>,
+    axum::extract::Path(file_path): axum::extract::Path<String>,
+) -> Result<Response<Body>, StatusCode> {
+    let tcp_fs = {
+        let state = state.read().await;
+        let (tcp_tx, tcp_rx) = (state.tcp_tx.clone(), state.tcp_tx.subscribe());
+        Arc::new(Mutex::new(TcpFs::new(tcp_tx, tcp_rx)))
+    };
+    
+    let decoded_path = urlencoding::decode(&file_path)
+        .map_err(|_| StatusCode::BAD_REQUEST)?
+        .to_string();
+    
+    let normalized_path = normalize_and_secure_path(&decoded_path)?;
+    
+    
+    let metadata = {
+        let mut fs = tcp_fs.lock().await;
+        let mut remote_fs = RemoteFileSystem::new(&normalized_path, Some((*fs).clone()));
+        
+        let is_file = remote_fs.is_file().await.map_err(|e| {
+            eprintln!("Error checking if path is file: {}", e);
+            StatusCode::NOT_FOUND
+        })?;
+        
+        if !is_file {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        
+        remote_fs.ensure_metadata().await.map_err(|e| {
+            eprintln!("Error getting metadata: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        
+        remote_fs.cached_metadata.clone()
+    };
+    
+    let file_size = None;
+    let chunk_size = 64 * 1024;
+    
+    let stream = TcpFileStream::new(
+        tcp_fs.clone(),
+        normalized_path.clone(),  
+        file_size,
+        chunk_size,
+    );
+    
+    let body = Body::from_stream(stream);
+    
+    let filename = std::path::Path::new(&normalized_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("download");
+    
+    let mut response = Response::new(body);
+    let headers = response.headers_mut();
+    
+    headers.insert(
+        header::CONTENT_TYPE,
+        "application/octet-stream".parse().unwrap()
+    );
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        format!("attachment; filename=\"{}\"", filename).parse().unwrap()
+    );
+    
+    if let Some(size) = file_size {
+        headers.insert(header::CONTENT_LENGTH, size.to_string().parse().unwrap());
+    } else {
+        headers.insert(header::TRANSFER_ENCODING, "chunked".parse().unwrap());
+    }
+    
+    Ok(response)
+}
+fn normalize_and_secure_path(path: &str) -> Result<String, StatusCode> {
+    use std::path::{Path, PathBuf, Component};
+
+    let path = path.trim();
+    
+    let path_buf = PathBuf::from(path);
+    
+    let mut normalized = PathBuf::new();
+    for component in path_buf.components() {
+        match component {
+            Component::Normal(part) => normalized.push(part),
+            Component::RootDir => {
+                continue;
+            }
+            Component::CurDir => {
+                continue;
+            }
+            Component::ParentDir => {
+                if normalized.components().count() > 0 {
+                    normalized.pop();
+                }
+            }
+            _ => {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+        }
+    }
+    
+    let normalized_str = normalized.to_string_lossy().to_string();
+    
+    let server_prefix = "server/";
+    let final_path = if normalized_str.starts_with(server_prefix) {
+        normalized_str
+    } else if normalized_str.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    } else {
+        format!("{}{}", server_prefix, normalized_str)
+    };
+    
+    if !final_path.starts_with(server_prefix) {
+        eprintln!("Path traversal attempt blocked: {} -> {}", path, final_path);
+        return Err(StatusCode::FORBIDDEN);
+    }
+    
+    if final_path.contains('\0') {
+        eprintln!("Null byte in path blocked: {}", final_path);
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    
+    Ok(final_path)
 }
 
 // Unit tests

@@ -6,10 +6,15 @@ use crate::StatusCode;
 use std::error::Error;
 pub mod databasespec;
 
+use crate::SettingsDatabase;
+use crate::Intergration;
+
 pub use databasespec::{
     User, Node, Element, ModifyElementData, UserDatabase, NodesDatabase, 
     DatabaseError, Server, ServerDatabase, Button, ButtonsDatabase, Settings
 };
+use crate::database::databasespec::Intergrations;
+use databasespec::IntergrationsDatabase;
 
 #[derive(Clone)]
 pub struct Database {
@@ -439,6 +444,138 @@ impl ButtonsDatabase for Database {
             )
             .bind(&button.link)
             .bind(&button.name)
+            .execute(&self.connection)
+            .await?;
+
+            if result.rows_affected() > 0 {
+                Ok(StatusCode::CREATED)
+            } else {
+                Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+            }
+        } else {
+            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+        }
+    }
+}
+
+impl SettingsDatabase for Database {
+    async fn set_settings(&self, settings: Settings) -> Result<(), Box<dyn Error + Send + Sync>> {
+        sqlx::query(
+            r#"
+            UPDATE settings 
+            SET toggled_default_buttons = $1,
+                status_type = $2,
+                enabled_rcon = $3,
+                rcon_url = $4,
+                rcon_password = $5,
+                driver = $6,
+                file_system_driver = $7,
+                enable_statistics_on_home_page = $8
+            "#
+        )
+        .bind(&settings.toggled_default_buttons)
+        .bind(&settings.status_type)
+        .bind(&settings.enabled_rcon)
+        .bind(&settings.rcon_url)
+        .bind(&settings.rcon_password)
+        .bind(&settings.driver)
+        .bind(&settings.file_system_driver)
+        .bind(&settings.enable_statistics_on_home_page)
+        .execute(&self.connection)
+        .await?;
+        
+        Ok(())
+    }
+    
+    async fn get_settings(&self) -> Result<Settings, Box<dyn Error + Send + Sync>> {
+        let settings = sqlx::query_as::<_, Settings>("SELECT * FROM settings LIMIT 1")
+            .fetch_optional(&self.connection)
+            .await?
+            .unwrap_or_default();
+        
+        Ok(settings)
+    }
+}
+
+impl IntergrationsDatabase for Database {
+    async fn retrieve_intergrations(&self, intergration_str: String) -> Option<Intergration> {
+        match self.get_from_intergrations_database(&intergration_str).await {
+            Ok(intergration) => intergration,
+            Err(_) => None
+        }
+    }
+    
+    async fn fetch_all_intergrations(&self) -> Result<Vec<Intergration>, Box<dyn Error + Send + Sync>> {
+        let intergrations = sqlx::query_as::<_, Intergration>("SELECT * FROM intergrations")
+            .fetch_all(&self.connection)
+            .await?;
+        Ok(intergrations)
+    }
+    
+    async fn get_from_intergrations_database(&self, intergration_str: &str) -> Result<Option<Intergration>, Box<dyn Error + Send + Sync>> {
+        let intergration_type = intergration_str.parse::<Intergrations>().unwrap_or(Intergrations::Unknown);
+        let intergration = sqlx::query_as::<_, Intergration>("SELECT * FROM intergrations WHERE type = $1")
+            .bind(&intergration_type)
+            .fetch_optional(&self.connection)
+            .await?;
+        Ok(intergration)
+    }
+    
+    async fn create_intergrations_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+        if let Element::Intergration(intergration) = element.element {
+            let existing = sqlx::query_as::<_, Intergration>("SELECT * FROM intergrations WHERE type = $1")
+                .bind(&intergration.r#type)
+                .fetch_optional(&self.connection)
+                .await?;
+            
+            if existing.is_some() {
+                return Err(Box::new(DatabaseError(StatusCode::CONFLICT)));
+            }
+
+            let _result = sqlx::query_as::<_, Intergration>(
+                "INSERT INTO intergrations (status, type, settings) VALUES ($1, $2, $3) RETURNING *"
+            )
+            .bind(&intergration.status)
+            .bind(&intergration.r#type)
+            .bind(&intergration.settings)
+            .fetch_one(&self.connection)
+            .await?;
+
+            Ok(StatusCode::CREATED)
+        } else {
+            Err(Box::new(DatabaseError(StatusCode::BAD_REQUEST)))
+        }
+    }
+    
+    async fn remove_intergrations_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+        if let Element::Intergration(intergration) = element.element {
+            let result = sqlx::query("DELETE FROM intergrations WHERE type = $1")
+                .bind(&intergration.r#type)
+                .execute(&self.connection)
+                .await?;
+
+            if result.rows_affected() > 0 {
+                Ok(StatusCode::CREATED)
+            } else {
+                Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+            }
+        } else {
+            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+        }
+    }
+    
+    async fn edit_intergrations_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+        if let Element::Intergration(intergration) = element.element {
+            let result = sqlx::query(
+                r#"
+                UPDATE intergrations 
+                SET status = $1, settings = $2, updated_at = NOW()
+                WHERE type = $3
+                "#
+            )
+            .bind(&intergration.status)
+            .bind(&intergration.settings)
+            .bind(&intergration.r#type)
             .execute(&self.connection)
             .await?;
 
