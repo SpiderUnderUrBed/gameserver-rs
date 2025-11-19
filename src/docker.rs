@@ -184,7 +184,10 @@ pub async fn build_docker_image() -> Result<(), Box<dyn std::error::Error + Send
         // Tag the image before pushing
         docker
             .tag_image(
-                "gameserver:latest",
+               format!(
+                "{}/gameserver:latest",
+                repo.clone().unwrap_or("".to_string())
+                ),
                 Some(TagImageOptions {
                     //repo: "gameserver".to_string(),
                     // repo: "localhost:5000/gameserver".to_string(),
