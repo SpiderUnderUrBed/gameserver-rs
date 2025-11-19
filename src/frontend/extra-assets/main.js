@@ -395,13 +395,18 @@ async changeNode(node) {
           clone.getElementById("node-dialog-name").textContent = node.nodename;
 
           //console.log("k8s node type", node.k8s_type)
-          if (node.k8s_type.toLowerCase() == "unknown" || node.k8s_type.toLowerCase() == "none") {
+          const type = (node.k8s_type || "").toString().toLowerCase();
+
+          if (type === "unknown" || type === "none") {
             button.style.backgroundColor = "brown";
-          } else if (node.k8s_type.toLowerCase() == "pod"){
+          } else if (type === "pod") {
             button.style.backgroundColor = "blue";
-          } else if (node.k8s_type.toLowerCase() == "node"){
+          } else if (type === "node") {
             button.style.backgroundColor = "green";
+          } else {
+            button.style.backgroundColor = "gray"; 
           }
+
           button.appendChild(clone);
 
           button.addEventListener("click", () => {

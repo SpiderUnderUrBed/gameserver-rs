@@ -354,7 +354,7 @@ enum IntegrationCommands {
     MinecraftDisableRcon(serde_json::Value),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 enum Clients {
     K8s(Client),
     Docker(String),
@@ -2021,8 +2021,8 @@ async fn modify_intergration(
                     settings.iter()
                     .filter(|(key, _)| key.starts_with("enable"))
                     .filter_map(|(key, value)| {
-                        if let Value::Bool(bool) = value {
-                            if *bool == false {
+                        if let Value::Bool(b) = value {
+                            if *b == false {
                                 Some(key)
                             } else {
                                 None

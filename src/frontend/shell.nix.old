@@ -1,0 +1,13 @@
+{ pkgs ? import <nixpkgs> {} }:
+
+pkgs.mkShell {
+  buildInputs = [
+    pkgs.vite
+    pkgs.nodejs
+    pkgs.yarn
+  ];
+
+  shellHook = ''
+    export QT_QPA_PLATFORM=offscreen
+  '';
+}

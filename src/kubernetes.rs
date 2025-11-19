@@ -16,6 +16,8 @@ use crate::NodeAndTCP;
 use crate::NodeType;
 //use crate::NodeStatus;
 use crate::Status;
+use crate::K8sType;
+
 
 pub async fn list_node_info(client: Client) -> Result<Vec<NodeAndTCP>, Box<dyn Error>> {
     let nodes: Api<Node> = Api::all(client);
@@ -59,6 +61,7 @@ pub async fn list_node_info(client: Client) -> Result<Vec<NodeAndTCP>, Box<dyn E
                             nodetype: NodeType::InbuiltWithString(nodetype),
                             tcp_tx: None,
                             tcp_rx: None,
+                            k8s_type: K8sType::Unknown
                         });
                     }
                 }
