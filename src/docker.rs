@@ -6,9 +6,9 @@ use std::{
 };
 //
 use bollard::{
+    Docker,
     auth::DockerCredentials,
     image::{BuildImageOptions, TagImageOptions},
-    Docker,
 };
 use futures_util::{Stream, StreamExt, TryStreamExt};
 use http_body::Frame;
@@ -185,8 +185,8 @@ pub async fn build_docker_image() -> Result<(), Box<dyn std::error::Error + Send
         docker
             .tag_image(
                 &format!(
-                "{}/gameserver:latest",
-                repo.clone().unwrap_or("".to_string())
+                    "{}/gameserver:latest",
+                    repo.clone().unwrap_or("".to_string())
                 ),
                 Some(TagImageOptions {
                     //repo: "gameserver".to_string(),

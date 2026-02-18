@@ -7,17 +7,16 @@ use k8s_openapi::api::core::v1::Pod;
 use k8s_openapi::api::core::v1::{PersistentVolume, PersistentVolumeClaim, Service};
 use serde_json::Value;
 
+use kube::Error::Api as ErrorApi;
 use kube::api::ListParams;
 use kube::api::PostParams;
-use kube::Error::Api as ErrorApi;
 use kube::{Api, Client};
 
 use crate::NodeAndTCP;
 use crate::NodeType;
 //use crate::NodeStatus;
-use crate::Status;
 use crate::K8sType;
-
+use crate::Status;
 
 pub async fn list_node_info(client: Client) -> Result<Vec<NodeAndTCP>, Box<dyn Error>> {
     let nodes: Api<Node> = Api::all(client);
@@ -61,7 +60,7 @@ pub async fn list_node_info(client: Client) -> Result<Vec<NodeAndTCP>, Box<dyn E
                             nodetype: NodeType::InbuiltWithString(nodetype),
                             tcp_tx: None,
                             tcp_rx: None,
-                            k8s_type: K8sType::Unknown
+                            k8s_type: K8sType::Unknown,
                         });
                     }
                 }

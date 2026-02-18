@@ -5,6 +5,17 @@ let current_path = '';
 let globalWs = null;
 let uploaderVisible = false;
 
+const modes = [
+	{ id: "Copy", displayName: "Copy" },
+	{ id: "Move", displayName: "Move" },
+	{ id: "Zip", displayName: "Zip" },
+	{ id: "Unzip", displayName: "Unzip" },
+	{ id: "Download", displayName: "Download" },
+	{ id: "DownloadAll", displayName: "Download All" },
+	{ id: "UploadAll", displayName: "Upload All" },
+	{ id: "None", displayName: "None" },
+];
+
 let newSelectedMode = "None"
 
 const toggleButton = document.getElementById('toggleUploader');
@@ -22,16 +33,34 @@ toggleButton.addEventListener('click', () => {
 });
 
 function modeToggle(){
-	let modes = ["Copy", "Move", "Zip", "Unzip", "Download", "None"]
 	let modeSelector = document.getElementById('mode-selector');
 	if (modeSelector.dataset.mode == "None") {
-		newSelectedMode = "Copy"
+		newSelectedMode = modes[0].id;
 	} else {
-		console.log(modes.indexOf(modeSelector.dataset.mode))
-		newSelectedMode = modes[modes.indexOf(modeSelector.dataset.mode)+1]
+		//else if (modeSelector.dataset.mode == "DownloadAll" || modeSelector.dataset.mode == "UploadAll") {
+		//} else {
+		const currentIndex = modes.findIndex(m => m.id === modeSelector.dataset.mode);
+		newSelectedMode = modes[currentIndex + 1].id;
+		if (newSelectedMode == "DownloadAll" || newSelectedMode == "UploadAll") {
+			let src = document.getElementById('src');
+			let dest = document.getElementById('dest');
+			// src.disabled = true;
+			// dest.disabled = true;
+			src.style.color = 'grey';
+			dest.style.color = 'grey';
+		} else {
+			let src = document.getElementById('src');
+			let dest = document.getElementById('dest');
+			// src.disabled = false;
+			// dest.disabled = false;
+			src.style.color = '';
+			dest.style.color = '';
+		}
 	}
 	modeSelector.dataset.mode = newSelectedMode;
-	modeSelector.textContent = `Current mode: ${newSelectedMode}`
+	const selectedMode = modes.find(m => m.id === newSelectedMode);
+	//console.log(selectedMode.displayName)
+	modeSelector.textContent = `Current mode: ${selectedMode.displayName}`;
 	console.log(modeSelector.dataset.mode)
 }
 
@@ -343,6 +372,10 @@ async function executeFileOperation(){
 		final_operation = "FileCopyOperation"
 	} else if (newSelectedMode == "Zip"){
 		final_operation = "FileZipOperation"
+	} else if (newSelectedMode == "DownloadAll"){
+		final_operation = "FileDownloadAllOperation"
+	} else if (newSelectedMode == "UploadAll"){
+		final_operation = "FileUploadAllOperation"
 	} else if (newSelectedMode == "Unzip"){
 		final_operation = "FileUnzipOperation"
 	} else if (newSelectedMode == "Download"){

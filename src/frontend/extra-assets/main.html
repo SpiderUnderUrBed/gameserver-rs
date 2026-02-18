@@ -104,16 +104,25 @@
 		<dialog id="configureServerDialog" class="user-dialog">
 			<form method="dialog">
 				<h1>Test</h1>
+				<div>
+					<h5>Current server name: </h5>
+					<h4 id="server-name"></h4>
+					<h5>Server Selection</h5>
+					<h5 id="current-server"></h5>
+					<select id="server" name="server"></select>
+					<button onclick="changeServer()">Change server</button>
+				</div>
+				<!-- <br> -->
 				<h5>Server type:</h5>
-				<h5>Minecraft</h5>
+				<h5 id="current-server-type">Minecraft</h5>
 				<br>
 				<div>
-				<h5>Migrate from</h5>
-				<select id="migrate-from" name="migrate-from"></select>
-				</div>
-				<div>
-				<h5>Migrate to</h5>
-				<select id="migrate-to" name="migrate-to"></select>
+					<h5>Migrate from</h5>
+					<select id="migrate-from" name="migrate-from"></select>
+					</div>
+					<div>
+					<h5>Migrate to</h5>
+					<select id="migrate-to" name="migrate-to"></select>
 				</div>
 				<div class="dialog-buttons">
 					<button type="submit" onclick="updateServer()">Confirm</button>

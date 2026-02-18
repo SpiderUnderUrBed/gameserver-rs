@@ -1,36 +1,36 @@
-use crate::extra::JsonAssembler;
 use crate::MessagePayload;
-use crate::{extra, IncomingMessage};
+use crate::extra::JsonAssembler;
+use crate::{IncomingMessage, extra};
 use async_trait::async_trait;
 use axum::extract::Multipart;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
 use std::fmt;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::time::{Duration, Instant};
 use std::{
     any::Any,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
 };
-use std::pin::Pin;
 
 use bytes::Bytes;
 
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
-use tokio::sync::broadcast::{self, Sender};
 use tokio::sync::Mutex;
+use tokio::sync::broadcast::{self, Sender};
 //use std::io::ErrorKind;
-use tokio::time::timeout;
-use tokio::sync::mpsc;
 use tokio::fs;
 use tokio::fs::OpenOptions;
-use tokio::io::SeekFrom;
 use tokio::io::AsyncSeekExt;
 use tokio::io::AsyncWriteExt;
+use tokio::io::SeekFrom;
+use tokio::sync::mpsc;
+use tokio::time::timeout;
 
 use futures_util::Stream;
 use futures_util::task::Context;
@@ -869,7 +869,7 @@ impl FsType for TcpFs {
             authcode: "0".to_string(),
         })
     }
-    
+
     async fn get_path_from_tag(&mut self, tag: &str) -> std::io::Result<Vec<String>> {
         let id = self
             .send_request(FileRequestPayload::PathFromTag {
@@ -917,7 +917,7 @@ impl FsType for TcpFs {
             format!("Failed get the path for tag '{}'", tag),
         ))
     }
-    
+
     async fn get_metadata(&mut self, path: &str) -> std::io::Result<FsMetadata> {
         let id = self
             .send_request(FileRequestPayload::Metadata {
@@ -969,7 +969,7 @@ impl FsType for TcpFs {
             format!("Failed to parse metadata response for path '{}'", path),
         ))
     }
-    
+
     async fn list_directory_within_range(
         &mut self,
         path: &str,
@@ -1324,7 +1324,7 @@ pub enum FileOperations {
     FileZipOperation(String),
     FileUnzipOperation(String),
     FileCopyOperation(String),
-    Unknown
+    Unknown,
 }
 
 impl FileOperations {
@@ -1335,7 +1335,7 @@ impl FileOperations {
             FileOperations::FileMoveOperation(s) => Some(s),
             FileOperations::FileUnzipOperation(s) => Some(s),
             FileOperations::FileCopyOperation(s) => Some(s),
-            _ => None
+            _ => None,
         }
     }
 }
@@ -1354,12 +1354,20 @@ impl fmt::Display for FileOperations {
     }
 }
 
-pub fn execute_file_operation(encoded_src: FileOperations, encoded_dest: FileOperations, dir: String) -> std::io::Result<()> {
-    let dest = encoded_dest.as_inner_str().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid destination"))?;
-    let src = encoded_src.as_inner_str().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid source"))?;
+pub fn execute_file_operation(
+    encoded_src: FileOperations,
+    encoded_dest: FileOperations,
+    dir: String,
+) -> std::io::Result<()> {
+    let dest = encoded_dest.as_inner_str().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid destination")
+    })?;
+    let src = encoded_src
+        .as_inner_str()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid source"))?;
     let src_path = PathBuf::from(&dir).join(src);
     let dest_path = PathBuf::from(&dir).join(dest);
-    
+
     match &encoded_src {
         FileOperations::FileCopyOperation(_) => {
             let final_dest = if dest_path.exists() && dest_path.is_dir() {
@@ -1372,7 +1380,7 @@ pub fn execute_file_operation(encoded_src: FileOperations, encoded_dest: FileOpe
                 dest_path
             };
             std::fs::copy(&src_path, &final_dest)?;
-        },
+        }
         FileOperations::FileMoveOperation(_) => {
             let final_dest = if dest_path.exists() && dest_path.is_dir() {
                 if let Some(filename) = src_path.file_name() {
@@ -1384,7 +1392,7 @@ pub fn execute_file_operation(encoded_src: FileOperations, encoded_dest: FileOpe
                 dest_path
             };
             std::fs::rename(&src_path, &final_dest)?;
-        },
+        }
         FileOperations::FileZipOperation(_) => {
             // let mut final_dest = if dest_path.exists() && dest_path.is_dir() {
             //     if let Some(filename) = src_path.file_name() {
@@ -1396,16 +1404,16 @@ pub fn execute_file_operation(encoded_src: FileOperations, encoded_dest: FileOpe
             //     dest_path
             // };
             // final_dest.set_extension("zip");
-            
+
             // let file = std::fs::File::create(&final_dest)?;
             // let mut zip = zip::ZipWriter::new(file);
             // let options = zip::write::SimpleFileOptions::default();
-            
+
             // if src_path.is_dir() {
             //     let dir_name = src_path.file_name()
             //         .and_then(|n| n.to_str())
             //         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid directory name"))?;
-                
+
             //     fn zip_directory(zip: &mut zip::ZipWriter<std::fs::File>, path: &Path, prefix: &str, options: zip::write::SimpleFileOptions) -> std::io::Result<()> {
             //         for entry in std::fs::read_dir(path)? {
             //             let entry = entry?;
@@ -1414,7 +1422,7 @@ pub fn execute_file_operation(encoded_src: FileOperations, encoded_dest: FileOpe
             //                 .and_then(|n| n.to_str())
             //                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid filename"))?;
             //             let zip_path = format!("{}/{}", prefix, name);
-                        
+
             //             if entry_path.is_dir() {
             //                 zip.add_directory(&zip_path, options)?;
             //                 zip_directory(zip, &entry_path, &zip_path, options)?;
@@ -1426,7 +1434,7 @@ pub fn execute_file_operation(encoded_src: FileOperations, encoded_dest: FileOpe
             //         }
             //         Ok(())
             //     }
-                
+
             //     zip.add_directory(dir_name, options)?;
             //     zip_directory(&mut zip, &src_path, dir_name, options)?;
             // } else {
@@ -1437,29 +1445,29 @@ pub fn execute_file_operation(encoded_src: FileOperations, encoded_dest: FileOpe
             //     let mut src_file = std::fs::File::open(&src_path)?;
             //     std::io::copy(&mut src_file, &mut zip)?;
             // }
-            
+
             // zip.finish()?;
-        },
+        }
         FileOperations::FileUnzipOperation(_) => {
             // if !src_path.exists() {
             //     return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "Source zip file not found"));
             // }
-            
+
             // let file = std::fs::File::open(&src_path)?;
             // let mut archive = zip::ZipArchive::new(file)?;
-            
+
             // let extract_dir = if dest_path.exists() && dest_path.is_dir() {
             //     dest_path
             // } else {
             //     std::fs::create_dir_all(&dest_path)?;
             //     dest_path
             // };
-            
+
             // for i in 0..archive.len() {
             //     let mut file = archive.by_index(i)?;
             //     let outpath = extract_dir.join(file.name());
             //     let is_directory = file.is_dir() || (file.size() == 0 && !file.name().contains('.'));
-                
+
             //     if is_directory {
             //         std::fs::create_dir_all(&outpath)?;
             //     } else {
@@ -1472,12 +1480,11 @@ pub fn execute_file_operation(encoded_src: FileOperations, encoded_dest: FileOpe
             //         std::io::copy(&mut file, &mut outfile)?;
             //     }
             // }
-        },
+        }
         _ => {}
     }
     Ok(())
 }
-
 
 pub struct TcpFileStream {
     pub tcp_fs: Arc<Mutex<TcpFs>>,
@@ -1487,9 +1494,9 @@ pub struct TcpFileStream {
     pub chunk_size: u64,
     pub finished: bool,
 
-    pending_fut: Option<Pin<Box<dyn Future<Output = Result<(Bytes, bool), std::io::Error>> + Send>>>,
+    pending_fut:
+        Option<Pin<Box<dyn Future<Output = Result<(Bytes, bool), std::io::Error>> + Send>>>,
 }
-
 
 impl TcpFileStream {
     pub fn new(
@@ -1505,7 +1512,7 @@ impl TcpFileStream {
             file_size,
             chunk_size,
             finished: false,
-            pending_fut: None
+            pending_fut: None,
         }
     }
 }
@@ -1513,11 +1520,7 @@ impl TcpFileStream {
 impl Stream for TcpFileStream {
     type Item = Result<Bytes, std::io::Error>;
 
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if self.finished {
             return Poll::Ready(None);
         }

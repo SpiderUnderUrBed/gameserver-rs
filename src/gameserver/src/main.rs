@@ -80,6 +80,8 @@ struct IncomingMessage {
 
 // newer version of IncomingMessage, mainly because this includes the metadata feild which i sometimes use
 // IncomingMessageWithMetadata and IncomingMessage should be renamed to something that makes sense
+// Note, this also handles the things like MessagePayloadWithMetadata and converts it here, as 
+// from the gameservers perpective, the command payload is incoming, so it made sense not to recreate such a struct
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct IncomingMessageWithMetadata {
     message: String,

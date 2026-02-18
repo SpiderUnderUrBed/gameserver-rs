@@ -44,10 +44,19 @@ impl Error for DatabaseError {}
 // }
 
 
+// #[derive(Debug, Deserialize, Serialize, Clone)]
+// pub struct RetrieveElement {
+//     pub element: Element,
+//     pub jwt: String,
+//     pub require_auth: bool
+// }
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct RetrieveElement {
     pub element: String
 }
+
+
 
 
 
@@ -69,7 +78,8 @@ pub enum Element {
     Node(Node),
     Button(Button),
     Server(Server),
-    Intergration(Intergration)
+    Intergration(Intergration),
+    String(String)
 }
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ModifyElementData {
@@ -92,6 +102,7 @@ pub struct Settings {
     pub(crate) driver: String,
     pub(crate) file_system_driver: String,
     pub(crate) enable_statistics_on_home_page: String,
+    pub(crate) current_server: String
 }
 
 impl Default for Settings {
@@ -104,7 +115,8 @@ impl Default for Settings {
             rcon_password: "testing".to_string(),
             driver: "".to_string(),
             enable_statistics_on_home_page: "".to_string(),
-            file_system_driver: "".to_string()
+            file_system_driver: "".to_string(),
+            current_server: "".to_string(),
         }
     }
 }
@@ -120,6 +132,7 @@ pub struct Settings {
     pub(crate) driver: String,
     pub(crate) file_system_driver: String,
     pub(crate) enable_statistics_on_home_page: String,
+    pub(crate) current_server: String,
 }
 
 
@@ -446,6 +459,10 @@ pub struct Server {
     pub location: String
 }
 
+// I made the mistake of NOT documenting my original plans for provider and providertype, 
+// I'll assume provide would have been something like the game, I have no idea for provider type but 
+// ill make it represent things within the game, like some game server types maintained by the community
+// some using diffrent languages, etc
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Server {
@@ -470,7 +487,7 @@ pub trait UserDatabase {
 pub trait ServerDatabase {
     async fn retrieve_server(&self, servername: String) -> Option<Server>;
     async fn fetch_all_servers(&self) -> Result<Vec<Server>, Box<dyn Error + Send + Sync>>;
-    async fn get_from_servers_database(&self, username: &str) -> Result<Option<Server>, Box<dyn Error + Send + Sync>>;
+    async fn get_from_servers_database(&self, servername: &str) -> Result<Option<Server>, Box<dyn Error + Send + Sync>>;
     async fn create_server_in_db(&self, server: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
     async fn remove_server_in_db(&self, server: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
     async fn edit_server_in_db(&self, server: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
