@@ -385,10 +385,10 @@ struct AppState {
     server_running: Arc<Mutex<bool>>,
     server_output_tx: Arc<Mutex<Option<broadcast::Sender<String>>>>,
     server_process: Arc<Mutex<Option<Child>>>,
-    // I was wondering whether or not to use an Arc Mutex for the DB, in my main server I both have the db behind a arc mutex (behind app state)
-    // and both write queries upon any updates to the db, I have to have both, as I need to ensure when im writing new data to the database, there isnt an operation going on
-    // based on an earlier state of the database which will write it after such an operation leading to some of the newer data getting deleted
-    db: Arc<Mutex<jsondatabase::Database>>,
+    // Consider if i want to store the db at all, previously I was wondering whether or not to have an arc mutex, (arc not needed; the app state has a arc, so I just need to add a mutex
+    // so now any changes will still be in sync so you never have a case of a longer operation based on older data writting to the db overwriting the newer one).
+    // now I am considering if I need db at all, ill keep it here for now to consider parity with the main gameserver node based on design choices.
+    db: Mutex<jsondatabase::Database>, 
 }
 
 // Will remove this, this was kept because at a time there was a issue with the channels reciving messages they sent, so
@@ -498,8 +498,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Err(e) => Err(e.to_string()),
     });
 
-    let arc_db: Arc<Mutex<jsondatabase::Database>> = Arc::new(Mutex::new(load_db()));
+    let mut db = load_db();
     //let db = Arc::new(Mutex::new(load_db()));
+
+    // TODO: remove this in favor of it being both written to a persistent db and insertions happening by the server
+    // (At this point, I can edit the db without a mutex then pass it to be used in the appstate for everywhere else)
+    if !db.server_index.iter().any(|(name, _)| name == "minecraft"){
+        db.server_index.insert("minecraft".to_string(), ServerIndex::new("server/".to_string(), "minecraft".to_string()));
+        save_db(&db);
+    }
+    // let db_clone = db
 
     let mut state = AppState {
         current_server: None,
@@ -507,20 +515,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         server_output_tx: Arc::new(Mutex::new(None)),
         server_process: Arc::new(Mutex::new(None)),
         //server_index: HashMap::new(),
-        db: Arc::clone(&arc_db),
+        //db: Arc::clone(&arc_db),
+        db: db.clone().into(),
     };
 
     //state.server_index = db.servers;
     //
-
-    // TODO: remove this in favor of it being both written to a persistent db and insertions happening by the server
-    // let db_clone = db
-    let mut db = arc_db.lock().await;
-    if !db.server_index.iter().any(|(name, _)| name == "minecraft"){
-        db.server_index.insert("minecraft".to_string(), ServerIndex::new("server/".to_string(), "minecraft".to_string()));
-        save_db(&db);
-    }
-    drop(db);
 
     let arc_state = Arc::new(state);
 
@@ -1895,7 +1895,7 @@ async fn handle_commands_with_metadata(
                 }
             }
             "set_server" => {
-                
+                //state.db.server_index.  
                 Ok(())
             }
             _ => {
@@ -1992,7 +1992,8 @@ fn get_provider_object(option_name: Option<&str>, option_path: Option<&str>) -> 
 // but at some point i need to decouple the two
 async fn get_provider_from_servername(state: &AppState, name: Option<String>) -> Option<String> {
     if name.is_some() {
-        let server_path = state.server_index.iter().find(|(server_name, _)| name.clone().unwrap() == **server_name);
+        let db = state.db.lock().await;
+        let server_path = db.server_index.iter().find(|(server_name, _)| name.clone().unwrap() == **server_name);
         if server_path.is_some() {
             if let Some((_, server_index)) = server_path {
                 Some(server_index.provider.clone())
@@ -2011,7 +2012,8 @@ async fn get_provider_from_servername(state: &AppState, name: Option<String>) ->
 // that create server or anything about the server before the process is created or after the process finishes needs to know
 async fn get_definite_path_from_name(state: &AppState, name: Option<String>) -> Option<String> {
     if name.is_some() {
-        let server_path = state.server_index.iter().find(|(server_name, _)| name.clone().unwrap() == **server_name);
+        let db = state.db.lock().await;
+        let server_path = db.server_index.iter().find(|(server_name, _)| name.clone().unwrap() == **server_name);
         if server_path.is_some() {
             if let Some((_, server_index)) = server_path {
                 Some(server_index.location.clone())
