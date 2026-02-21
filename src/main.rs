@@ -5,6 +5,7 @@ use std::convert::Infallible;
 use std::default;
 use std::fmt;
 use std::fmt::Debug;
+use std::io::ErrorKind;
 use std::{net::SocketAddr, path::Path, sync::Arc};
 
 // Axum is the routing framework, and the backbone to this project helping intergrate the backend with the frontend
@@ -91,6 +92,7 @@ use futures_util::task::Poll;
 use futures_util::{Stream, TryFutureExt, stream};
 
 use std::error::Error;
+use std::io::Error as IoError;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use sysinfo::System;
@@ -1292,7 +1294,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .enable_minecraft_quirks(true)
                 .connect(&retrived_db.rcon_url, &retrived_db.rcon_password)
                 .await
-                .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)
+                .map_err(|e| e)
+                // Temporary note, you could put e in a Error::new
+                // TODO: consider doing the above, and remove this and the above comment
                 //)))
                 {
                     Ok(conn) => Some(Arc::new(Mutex::new(conn))),

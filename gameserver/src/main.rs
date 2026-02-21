@@ -58,7 +58,12 @@ mod extra;
 mod filesystem;
 mod intergrations;
 mod providers;
-mod database;
+mod jsondatabase;
+mod databasespec;
+
+use databasespec::ServerIndex;
+
+use jsondatabase::{load_db, save_db};
 
 use intergrations::{run_intergration_commands, IntergrationCommands};
 
@@ -368,20 +373,7 @@ enum ReadMode {
     //     current_file: tokio::fs::File,
     // },
 }
-#[derive(Clone, Default)]
-struct ServerIndex {
-    location: String,
-    provider: String
-}
 
-impl ServerIndex {
-    fn new(location: String, provider: String) -> ServerIndex {
-        ServerIndex {
-            location,
-            provider
-        }
-    }
-}
 
 // AppState for the Node, stores the name of the current server, the state of the process
 // whether or not its running, the channel for the output messages, and the process, makes it easier to pass and modify
@@ -389,10 +381,14 @@ impl ServerIndex {
 #[derive(Clone)]
 struct AppState {
     current_server: Option<String>,
-    server_index: HashMap<String, ServerIndex>,
+    //server_index: HashMap<String, ServerIndex>,
     server_running: Arc<Mutex<bool>>,
     server_output_tx: Arc<Mutex<Option<broadcast::Sender<String>>>>,
     server_process: Arc<Mutex<Option<Child>>>,
+    // I was wondering whether or not to use an Arc Mutex for the DB, in my main server I both have the db behind a arc mutex (behind app state)
+    // and both write queries upon any updates to the db, I have to have both, as I need to ensure when im writing new data to the database, there isnt an operation going on
+    // based on an earlier state of the database which will write it after such an operation leading to some of the newer data getting deleted
+    db: Arc<Mutex<jsondatabase::Database>>,
 }
 
 // Will remove this, this was kept because at a time there was a issue with the channels reciving messages they sent, so
@@ -502,16 +498,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Err(e) => Err(e.to_string()),
     });
 
+    let arc_db: Arc<Mutex<jsondatabase::Database>> = Arc::new(Mutex::new(load_db()));
+    //let db = Arc::new(Mutex::new(load_db()));
+
     let mut state = AppState {
-        current_server: Some("minecraft".to_string()),
+        current_server: None,
         server_running: Arc::new(Mutex::new(false)),
         server_output_tx: Arc::new(Mutex::new(None)),
         server_process: Arc::new(Mutex::new(None)),
-        server_index: HashMap::new()
+        //server_index: HashMap::new(),
+        db: Arc::clone(&arc_db),
     };
 
+    //state.server_index = db.servers;
+    //
+
     // TODO: remove this in favor of it being both written to a persistent db and insertions happening by the server
-    state.server_index.insert("minecraft".to_string(), ServerIndex::new("server/".to_string(), "minecraft".to_string()));
+    // let db_clone = db
+    let mut db = arc_db.lock().await;
+    if !db.server_index.iter().any(|(name, _)| name == "minecraft"){
+        db.server_index.insert("minecraft".to_string(), ServerIndex::new("server/".to_string(), "minecraft".to_string()));
+        save_db(&db);
+    }
+    drop(db);
 
     let arc_state = Arc::new(state);
 
