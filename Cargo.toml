@@ -57,6 +57,11 @@ full-stack = [
     "sqlx"
 ]
 
+[workspace]
+members = [
+    "gameserver"
+]
+
 [[bin]]
 name = "gameserver-rs"
 path = "src/main.rs"

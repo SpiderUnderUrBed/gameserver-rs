@@ -1,0 +1,10 @@
+[01:57:08] [ServerMain/INFO]: Environment: authHost='https://authserver.mojang.com', accountsHost='https://api.mojang.com', sessionHost='https://sessionserver.mojang.com', servicesHost='https://api.minecraftservices.com', name='PROD'
+[01:57:08] [ServerMain/ERROR]: Failed to start the minecraft server
+aog$a: /home/spiderunderurbed/projects/gameserver-rs/src/gameserver/server/./world/session.lock: already locked (possibly by other Minecraft instance?)
+	at aog$a.a(SourceFile:95) ~[server-1.20.1.jar:?]
+	at aog.a(SourceFile:41) ~[server-1.20.1.jar:?]
+	at dyy$c.<init>(SourceFile:398) ~[server-1.20.1.jar:?]
+	at dyy.c(SourceFile:377) ~[server-1.20.1.jar:?]
+	at net.minecraft.server.Main.main(SourceFile:136) ~[server-1.20.1.jar:?]
+	at net.minecraft.bundler.Main.lambda$run$0(Main.java:54) ~[?:?]
+	at java.lang.Thread.run(Thread.java:1583) ~[?:?]

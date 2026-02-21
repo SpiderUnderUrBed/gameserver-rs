@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gameserver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gameserver
+  template:
+    metadata:
+      labels:
+        app: gameserver
+    spec:
+      dnsPolicy: None
+      dnsConfig:
+        nameservers:
+          - 8.8.8.8
+      nodeSelector:
+        kubernetes.io/hostname: hostnuc
+      containers:
+        - name: gameserver
+          image: localhost:5000/gameserver:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+            - containerPort: 25565
+          volumeMounts:
+            - name: gameserver-storage
+              mountPath: /usr/src/app
+      volumes:
+        - name: gameserver-storage
+          hostPath:
+            path: /home/spiderunderurbed/projects/gameserver-rs/src/gameserver
+            type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gameserver-service
+spec:
+  selector:
+    app: gameserver
+  ports:
+    - name: web
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
+    - name: minecraft
+      protocol: TCP
+      port: 25565
+      targetPort: 25565
+  type: ClusterIP

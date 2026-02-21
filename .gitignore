@@ -2,7 +2,8 @@
 .direnv/
 
 /target
-/src/gameserver/target
+/gameserver/target
+# /src/gameserver/target
 
 app.tar.gz
 /src/gameserver/server/*
@@ -10,7 +11,12 @@ app.tar.gz
 credentials.json
 /.history
 
-/src/gameserver/svelte.old/*
-/src/gameserver/svelte/node_modules/*
-/src/gameserver/svelte/build/*
-/src/gameserver/svelte/.svelte_kit/*
+/gameserver/svelte.old/*
+/gameserver/svelte/node_modules/*
+/gameserver/svelte/build/*
+/gameserver/svelte/.svelte_kit/*
+
+# /src/gameserver/svelte.old/*
+# /src/gameserver/svelte/node_modules/*
+# /src/gameserver/svelte/build/*
+# /src/gameserver/svelte/.svelte_kit/*
