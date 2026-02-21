@@ -1287,7 +1287,8 @@ async changeNode(node) {
   async createDefaultServer() {
     this.updateStatus("up", true)
 
-    let providertype = document.getElementById("providertype-selector").value;
+    let servername = document.getElementById("server-name-entry").value;
+    let provider = document.getElementById("provider-selector").value;
 
     try {
       const res = await fetch(`${this.basePath}/api/generalwithmetadata`, {
@@ -1304,9 +1305,9 @@ async changeNode(node) {
               kind: "Server",
               data: {
                 // providertype, location, provider, servername
-                servername: providertype,
-                providertype,
-                provider: "",
+                servername,
+                providertype: "",
+                provider,
                 location: ""
               }
             }

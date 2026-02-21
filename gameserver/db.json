@@ -1,0 +1,16 @@
+{
+  "server_index": {
+    "minecraft": {
+      "location": "server/",
+      "provider": "minecraft"
+    },
+    "minecraft-2": {
+      "location": "",
+      "provider": ""
+    },
+    "mc2": {
+      "location": "",
+      "provider": "minecraft"
+    }
+  }
+}

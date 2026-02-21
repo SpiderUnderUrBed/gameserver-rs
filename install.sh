@@ -72,7 +72,7 @@ sudo systemctl enable "$MAIN_SERVICE_NAME.service"
 sudo systemctl restart "$MAIN_SERVICE_NAME.service"
 rm "$MAIN_SERVICE_FILE"
 
-cd src/gameserver
+cd gameserver
 
 cargo build --release
 

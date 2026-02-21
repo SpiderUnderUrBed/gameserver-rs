@@ -102,7 +102,7 @@ pub struct Settings {
     pub(crate) driver: String,
     pub(crate) file_system_driver: String,
     pub(crate) enable_statistics_on_home_page: String,
-    pub(crate) current_server: String
+    pub(crate) current_server: Server
 }
 
 impl Default for Settings {
@@ -116,7 +116,7 @@ impl Default for Settings {
             driver: "".to_string(),
             enable_statistics_on_home_page: "".to_string(),
             file_system_driver: "".to_string(),
-            current_server: "".to_string(),
+            current_server: Server::default(),
         }
     }
 }
@@ -451,7 +451,7 @@ pub struct Button {
 
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
-#[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize)]
+#[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize, Default, PartialEq)]
 pub struct Server {
     pub servername: String,
     pub provider: String,
@@ -464,7 +464,7 @@ pub struct Server {
 // ill make it represent things within the game, like some game server types maintained by the community
 // some using diffrent languages, etc
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
 pub struct Server {
     pub servername: String,
     pub provider: String,

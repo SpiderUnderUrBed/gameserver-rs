@@ -27,12 +27,12 @@ pub struct ProviderConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct ProviderType {
+pub struct ProviderGame {
     pub name: String,
     pub config: std::collections::HashMap<String, String>,
 }
 
-impl ProviderType {
+impl ProviderGame {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -50,7 +50,7 @@ impl ProviderType {
     }
 }
 
-impl Provider for ProviderType {
+impl Provider for ProviderGame {
     fn pre_hook(&self) -> Option<Command> {
         match self.name.as_str() {
             "minecraft" => {
@@ -147,8 +147,8 @@ impl Custom {
     }
 }
 
-impl From<ProviderType> for Custom {
-    fn from(provider: ProviderType) -> Self {
+impl From<ProviderGame> for Custom {
+    fn from(provider: ProviderGame) -> Self {
         Self {
             pre_hook_cmd: provider.get_config("pre_hook").cloned(),
             install_cmd: provider.get_config("install").cloned(),
@@ -158,9 +158,9 @@ impl From<ProviderType> for Custom {
     }
 }
 
-impl From<Custom> for ProviderType {
+impl From<Custom> for ProviderGame {
     fn from(custom: Custom) -> Self {
-        let mut provider = ProviderType::new("custom");
+        let mut provider = ProviderGame::new("custom");
 
         if let Some(cmd) = custom.pre_hook_cmd {
             provider = provider.with_config("pre_hook", cmd);
@@ -256,15 +256,15 @@ impl Provider for Custom {
 #[derive(Debug, Clone)]
 pub struct Minecraft;
 
-impl From<ProviderType> for Minecraft {
-    fn from(_provider: ProviderType) -> Self {
+impl From<ProviderGame> for Minecraft {
+    fn from(_provider: ProviderGame) -> Self {
         Minecraft
     }
 }
 
-impl From<Minecraft> for ProviderType {
+impl From<Minecraft> for ProviderGame {
     fn from(_minecraft: Minecraft) -> Self {
-        ProviderType::new("minecraft")
+        ProviderGame::new("minecraft")
     }
 }
 
@@ -343,7 +343,7 @@ struct GetState {
     stop_keyword: String,
 }
 
-fn get_provider(name: &str) -> Option<ProviderType> {
+fn get_provider(name: &str) -> Option<ProviderGame> {
     match name {
         "minecraft" => Some(Minecraft.into()),
         "custom" => Some(Custom::new().into()),
@@ -357,7 +357,7 @@ fn create_custom_provider(
     install: Option<&str>,
     post_hook: Option<&str>,
     start: Option<&str>,
-) -> ProviderType {
+) -> ProviderGame {
     let mut custom = Custom::new();
 
     if let Some(cmd) = pre_hook {

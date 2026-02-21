@@ -565,7 +565,7 @@ struct AppState {
     database: database::Database,
     cached_status_type: String,
     rcon_connection: Option<Arc<Mutex<Connection<TcpStream>>>>,
-    current_server: Option<String>, 
+    current_server: Option<Server>, 
     //sysinfo: System
 }
 impl Clone for AppState {
@@ -666,7 +666,7 @@ pub async fn handle_stream(
         ip: &str,
         server_start_keyword: &mut String,
         server_stop_keyword: &mut String,
-    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<(bool, Option<Vec<u8>>), Box<dyn std::error::Error + Send + Sync>> {
         {
             let state_guard = arc_state.read().await;
             let _ = state_guard.tcp_tx.send(raw_data.to_vec());
@@ -675,7 +675,7 @@ pub async fn handle_stream(
         if let Ok(text) = std::str::from_utf8(raw_data) {
             let line_content = text.trim();
             if line_content.is_empty() {
-                return Ok(false);
+                return Ok((false, None));
             }
 
             let mut final_data: Vec<Value> = vec![];
@@ -776,7 +776,8 @@ pub async fn handle_stream(
                         println!("Ending current connection");
                         let mut state_guard = arc_state.write().await;
                         state_guard.tcp_conn_status = Status::Down;
-                        return Ok(true);
+                        return Ok((true, None));
+                    // TODO: change this from type to message on the nodes side and here?
                     } else if payload.r#type == "server_state" {
                         //println!("Got server state");
                         let mut state_guard = arc_state.write().await;
@@ -785,11 +786,40 @@ pub async fn handle_stream(
                             true => Status::Up,
                             false => Status::Down,
                         }
+                    } else if payload.message == "request_server_metadata" {
+                        let state_guard = arc_state.read().await;
+                        let Server { servername, provider, providertype, location } = &state_guard.current_server.clone().unwrap();
+                        let metadata = MetadataTypes::Server { servername: servername.to_string(), provider: provider.to_string(), providertype: providertype.to_string(), location: location.to_string() };
+                        let payload = MessagePayloadWithMetadata { r#type: "command".to_owned(), message: "create_server".to_owned(), metadata: metadata, authcode: "0".to_owned() };
+                        let mut raw_data = serde_json::to_vec(&payload)?;
+                        raw_data.push(b'\n');
+                        return Ok((false, Some(raw_data)));
                     }
                 }
 
                 if let Ok(data_clone) = serde_json::from_value::<ConsoleData>(value.clone()) {
                     // println!("{:#?}", data_clone);
+                    if let Ok(inner_msg) = serde_json::from_str::<MessagePayload>(&data_clone.data) {
+                        if inner_msg.message == "request_server_metadata" {
+                            let state_guard = arc_state.read().await;
+                            let Server { servername, provider, providertype, location } = &state_guard.current_server.clone().unwrap();
+                            let metadata = MetadataTypes::Server { 
+                                servername: servername.to_string(), 
+                                provider: provider.to_string(), 
+                                providertype: providertype.to_string(), 
+                                location: location.to_string() 
+                            };
+                            let payload = MessagePayloadWithMetadata { 
+                                r#type: "command".to_owned(), 
+                                message: "create_server".to_owned(), 
+                                metadata, 
+                                authcode: "0".to_owned() 
+                            };
+                            let mut raw_data = serde_json::to_vec(&payload)?;
+                            raw_data.push(b'\n');
+                            return Ok((false, Some(raw_data)));
+                        }
+                    }
                     if let Ok(inner_value) =
                         serde_json::from_str::<serde_json::Value>(&data_clone.data)
                     {
@@ -959,7 +989,7 @@ pub async fn handle_stream(
                 //let _ = ws_tx.send(final_value);
             }
         }
-        Ok(false)
+        Ok((false, None))
     }
 
     loop {
@@ -970,9 +1000,15 @@ pub async fn handle_stream(
                         Ok(0) => break,
                         Ok(n) => {
                             let raw_data = &buf[..n];
-                            if process_stream_data(raw_data, &arc_state, &ws_tx, &ip, &mut server_start_keyword, &mut server_stop_keyword).await? {
-                                break;
+                            // if process_stream_data(raw_data, &arc_state, &ws_tx, &ip, &mut server_start_keyword, &mut server_stop_keyword).await?.0 {
+                            //     break;
+                            // }
+                            let (end_connection, write_data) = process_stream_data(raw_data, &arc_state, &ws_tx, &ip, &mut server_start_keyword, &mut server_stop_keyword).await?;
+                            if let Some(data) = write_data {
+                                writer.write_all(&data).await?;
+                                writer.flush().await?;
                             }
+                            if end_connection { break; }
                         }
                         Err(e) => return Err(e.into()),
                     }
@@ -980,7 +1016,7 @@ pub async fn handle_stream(
 
                 internal_result = internal_rx.recv() => {
                     if let Ok(raw_data) = internal_result {
-                        if process_stream_data(&raw_data, &arc_state, &ws_tx, &ip, &mut server_start_keyword, &mut server_stop_keyword).await? {
+                        if process_stream_data(&raw_data, &arc_state, &ws_tx, &ip, &mut server_start_keyword, &mut server_stop_keyword).await?.0 {
                             break;
                         }
                     }
@@ -1004,9 +1040,12 @@ pub async fn handle_stream(
                         Ok(0) => break,
                         Ok(n) => {
                             let raw_data = &buf[..n];
-                            if process_stream_data(raw_data, &arc_state, &ws_tx, &ip, &mut server_start_keyword, &mut server_stop_keyword).await? {
-                                break;
+                            let (end_connection, write_data) = process_stream_data(raw_data, &arc_state, &ws_tx, &ip, &mut server_start_keyword, &mut server_stop_keyword).await?;
+                            if let Some(data) = write_data {
+                                writer.write_all(&data).await?;
+                                writer.flush().await?;
                             }
+                            if end_connection { break; }
                         }
                         Err(e) => return Err(e.into()),
                     }
@@ -1311,8 +1350,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let mut current_server = None;
-    if !database.get_settings().await?.current_server.is_empty(){
-        current_server = Some(database.get_settings().await?.current_server)
+    if !(database.get_settings().await?.current_server == Server::default()) {
+        current_server = Some(
+            database.get_settings().await?.current_server
+        )
     }
 
     // use everything so far to make the app state
@@ -2331,7 +2372,14 @@ async fn set_server(
             .transpose()
             .ok_or(StatusCode::NOT_FOUND)??;
 
-        state.current_server = Some(servername);
+        state.current_server = Some(
+            Server {
+                servername: retrieved_server.servername.clone(),
+                provider: retrieved_server.provider.clone(),
+                providertype: retrieved_server.providertype.clone(),
+                location: retrieved_server.location.clone(),
+            }
+        );
 
         let msg = MessagePayloadWithMetadata {
             r#type: "command".to_string(),
@@ -2427,7 +2475,7 @@ async fn get_server(
     //let current_server = state.database.get_settings().await.
     let mut server_to_get = request.element.clone();
     if state.current_server.is_some() && request.element.is_empty() {
-        server_to_get = state.current_server.clone().unwrap();
+        server_to_get = state.current_server.clone().unwrap().servername;
         // let updated_current_server = 
         //     state.database.get_from_servers_database(&state.current_server.clone().unwrap())
         //         .await
@@ -2551,8 +2599,7 @@ async fn process_general_with_metadata(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     Json(res): Json<ApiCalls>,
 ) -> Result<Json<ResponseMessage>, (StatusCode, String)> {
-    let state = arc_state.write().await;
-    let database = &state.database;
+    let mut state = arc_state.write().await;
     if let ApiCalls::IncomingMessageWithMetadata(payload) = res {
         println!("Processing general message: {:?}", payload);
 
@@ -2564,6 +2611,12 @@ async fn process_general_with_metadata(
         };
 
         if payload.message == "create_server" {
+            if let MetadataTypes::Server { servername, provider, providertype, location } = payload.metadata.clone() {
+                state.current_server = Some(Server {
+                    servername, provider, providertype, location
+                });
+            }
+            let database = &state.database;
             let db_result = database
                 .get_from_servers_database(&payload.message.clone())
                 .await
