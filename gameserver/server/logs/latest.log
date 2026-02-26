@@ -1,16 +1,56 @@
-[03:45:36] [ServerMain/INFO]: Environment: authHost='https://authserver.mojang.com', accountsHost='https://api.mojang.com', sessionHost='https://sessionserver.mojang.com', servicesHost='https://api.minecraftservices.com', name='PROD'
-[03:45:37] [ServerMain/INFO]: Loaded 7 recipes
-[03:45:37] [ServerMain/INFO]: Loaded 1271 advancements
-[03:45:37] [Server thread/INFO]: Starting minecraft server version 1.20.1
-[03:45:37] [Server thread/INFO]: Loading properties
-[03:45:37] [Server thread/INFO]: Default game type: SURVIVAL
-[03:45:37] [Server thread/INFO]: Generating keypair
-[03:45:37] [Server thread/INFO]: Starting Minecraft server on *:25565
-[03:45:37] [Server thread/INFO]: Using epoll channel type
-[03:45:37] [Server thread/INFO]: Preparing level "world"
-[03:45:38] [Server thread/INFO]: Preparing start region for dimension minecraft:overworld
-[03:45:40] [Worker-Main-1/INFO]: Preparing spawn area: 0%
-[03:45:40] [Worker-Main-1/INFO]: Preparing spawn area: 0%
-[03:45:40] [Worker-Main-1/INFO]: Preparing spawn area: 0%
-[03:45:40] [Worker-Main-3/INFO]: Preparing spawn area: 0%
-[03:45:40] [Worker-Main-1/INFO]: Preparing spawn area: 0%
+[22:49:43] [ServerMain/ERROR]: Failed to load properties from file: server.properties
+java.nio.file.NoSuchFileException: server.properties
+	at sun.nio.fs.UnixException.translateToIOException(UnixException.java:92) ~[?:?]
+	at sun.nio.fs.UnixException.rethrowAsIOException(UnixException.java:106) ~[?:?]
+	at sun.nio.fs.UnixException.rethrowAsIOException(UnixException.java:111) ~[?:?]
+	at sun.nio.fs.UnixFileSystemProvider.newByteChannel(UnixFileSystemProvider.java:261) ~[?:?]
+	at java.nio.file.Files.newByteChannel(Files.java:380) ~[?:?]
+	at java.nio.file.Files.newByteChannel(Files.java:432) ~[?:?]
+	at java.nio.file.spi.FileSystemProvider.newInputStream(FileSystemProvider.java:420) ~[?:?]
+	at java.nio.file.Files.newInputStream(Files.java:160) ~[?:?]
+	at ahi.b(SourceFile:62) ~[server-1.20.1.jar:?]
+	at ahf.a(SourceFile:137) ~[server-1.20.1.jar:?]
+	at ahg.<init>(SourceFile:12) ~[server-1.20.1.jar:?]
+	at net.minecraft.server.Main.main(SourceFile:115) ~[server-1.20.1.jar:?]
+	at net.minecraft.bundler.Main.lambda$run$0(Main.java:54) ~[?:?]
+	at java.lang.Thread.run(Thread.java:1583) ~[?:?]
+[22:49:43] [ServerMain/INFO]: Environment: authHost='https://authserver.mojang.com', accountsHost='https://api.mojang.com', sessionHost='https://sessionserver.mojang.com', servicesHost='https://api.minecraftservices.com', name='PROD'
+[22:49:45] [ServerMain/INFO]: Loaded 7 recipes
+[22:49:45] [ServerMain/INFO]: Loaded 1271 advancements
+[22:49:45] [Server thread/INFO]: Starting minecraft server version 1.20.1
+[22:49:45] [Server thread/INFO]: Loading properties
+[22:49:45] [Server thread/INFO]: Default game type: SURVIVAL
+[22:49:45] [Server thread/INFO]: Generating keypair
+[22:49:45] [Server thread/INFO]: Starting Minecraft server on *:25565
+[22:49:45] [Server thread/INFO]: Using epoll channel type
+[22:49:45] [Server thread/INFO]: Preparing level "world"
+[22:49:48] [Server thread/INFO]: Preparing start region for dimension minecraft:overworld
+[22:49:48] [Worker-Main-12/INFO]: Preparing spawn area: 0%
+[22:49:48] [Worker-Main-14/INFO]: Preparing spawn area: 0%
+[22:49:49] [Worker-Main-10/INFO]: Preparing spawn area: 0%
+[22:49:49] [Worker-Main-12/INFO]: Preparing spawn area: 1%
+[22:49:50] [Worker-Main-4/INFO]: Preparing spawn area: 3%
+[22:49:50] [Worker-Main-5/INFO]: Preparing spawn area: 6%
+[22:49:51] [Worker-Main-8/INFO]: Preparing spawn area: 9%
+[22:49:51] [Worker-Main-13/INFO]: Preparing spawn area: 12%
+[22:49:52] [Worker-Main-15/INFO]: Preparing spawn area: 15%
+[22:49:52] [Worker-Main-15/INFO]: Preparing spawn area: 17%
+[22:49:53] [Worker-Main-11/INFO]: Preparing spawn area: 20%
+[22:49:53] [Worker-Main-14/INFO]: Preparing spawn area: 25%
+[22:49:54] [Worker-Main-5/INFO]: Preparing spawn area: 29%
+[22:49:54] [Worker-Main-5/INFO]: Preparing spawn area: 33%
+[22:49:55] [Worker-Main-10/INFO]: Preparing spawn area: 38%
+[22:49:55] [Worker-Main-11/INFO]: Preparing spawn area: 44%
+[22:49:56] [Worker-Main-7/INFO]: Preparing spawn area: 47%
+[22:49:56] [Worker-Main-13/INFO]: Preparing spawn area: 54%
+[22:49:57] [Worker-Main-4/INFO]: Preparing spawn area: 58%
+[22:49:57] [Worker-Main-5/INFO]: Preparing spawn area: 62%
+[22:49:58] [Worker-Main-14/INFO]: Preparing spawn area: 68%
+[22:49:58] [Worker-Main-2/INFO]: Preparing spawn area: 71%
+[22:49:59] [Worker-Main-4/INFO]: Preparing spawn area: 78%
+[22:49:59] [Worker-Main-14/INFO]: Preparing spawn area: 83%
+[22:50:00] [Worker-Main-1/INFO]: Preparing spawn area: 88%
+[22:50:00] [Worker-Main-4/INFO]: Preparing spawn area: 90%
+[22:50:01] [Worker-Main-2/INFO]: Preparing spawn area: 98%
+[22:50:01] [Server thread/INFO]: Time elapsed: 13055 ms
+[22:50:01] [Server thread/INFO]: Done (15.510s)! For help, type "help"

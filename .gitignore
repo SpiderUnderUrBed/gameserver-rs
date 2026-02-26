@@ -6,7 +6,8 @@
 # /src/gameserver/target
 
 app.tar.gz
-/src/gameserver/server/*
+# /src/gameserver/server/*
+/gameserver/server/*
 /src/credentials.json
 credentials.json
 /.history

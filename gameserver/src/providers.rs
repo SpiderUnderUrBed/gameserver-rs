@@ -1,15 +1,10 @@
-use serde;
-use serde::Deserialize;
-use serde::Serialize;
-use std::collections::HashMap;
 use std::process::Command;
+// use tokio::process::Command;
 
-// const SERVER_DIR: &str = if cfg!(target_os = "windows") {
-//     "C:\\minecraft_server"
-// } else {
-//     "/opt/minecraft_server"
-// };
-const SERVER_DIR: &str = "server";
+use std::collections::HashMap;
+
+use serde_json::Value;
+
 
 pub trait Provider {
     fn pre_hook(&self) -> Option<Command>;
@@ -18,18 +13,54 @@ pub trait Provider {
     fn start(&self) -> Option<Command>;
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ProviderConfig {
-    pub pre_hook: Option<String>,
-    pub install: Option<String>,
-    pub post_hook: Option<String>,
-    pub start: Option<String>,
+impl From<ProviderGame> for Custom {
+    fn from(provider: ProviderGame) -> Self {
+        Self {
+            pre_hook_cmd: provider.get_config("pre_hook").cloned(),
+            install_cmd: provider.get_config("install").cloned(),
+            post_hook_cmd: provider.get_config("post_hook").cloned(),
+            start_cmd: provider.get_config("start").cloned(),
+        }
+    }
 }
+
+impl From<Custom> for ProviderGame {
+    fn from(custom: Custom) -> Self {
+        let mut provider = ProviderGame::new("custom");
+
+        if let Some(cmd) = custom.pre_hook_cmd {
+            provider = provider.with_config("pre_hook", cmd);
+        }
+        if let Some(cmd) = custom.install_cmd {
+            provider = provider.with_config("install", cmd);
+        }
+        if let Some(cmd) = custom.post_hook_cmd {
+            provider = provider.with_config("post_hook", cmd);
+        }
+        if let Some(cmd) = custom.start_cmd {
+            provider = provider.with_config("start", cmd);
+        }
+
+        provider
+    }
+}
+
+
+//get_provider_object
+#[derive(Debug, Clone)]
+pub struct Custom {
+    pub pre_hook_cmd: Option<String>,
+    pub install_cmd: Option<String>,
+    pub post_hook_cmd: Option<String>,
+    pub start_cmd: Option<String>,
+}
+
+// const SERVER_DIR: &str = "server";
 
 #[derive(Debug, Clone)]
 pub struct ProviderGame {
     pub name: String,
-    pub config: std::collections::HashMap<String, String>,
+    pub config: std::collections::HashMap<String, Option<String>>,
 }
 
 impl ProviderGame {
@@ -41,80 +72,15 @@ impl ProviderGame {
     }
 
     pub fn with_config(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.config.insert(key.into(), value.into());
+        self.config.insert(key.into(), Some(value.into()));
         self
     }
 
     pub fn get_config(&self, key: &str) -> Option<&String> {
-        self.config.get(key)
+        self.config.get(key).unwrap().as_ref()
     }
 }
 
-impl Provider for ProviderGame {
-    fn pre_hook(&self) -> Option<Command> {
-        match self.name.as_str() {
-            "minecraft" => {
-                let minecraft: Minecraft = self.clone().into();
-                minecraft.pre_hook()
-            }
-            "custom" => {
-                let custom: Custom = self.clone().into();
-                custom.pre_hook()
-            }
-            _ => None,
-        }
-    }
-
-    fn install(&self) -> Option<Command> {
-        match self.name.as_str() {
-            "minecraft" => {
-                let minecraft: Minecraft = self.clone().into();
-                minecraft.install()
-            }
-            "custom" => {
-                let custom: Custom = self.clone().into();
-                custom.install()
-            }
-            _ => None,
-        }
-    }
-
-    fn post_hook(&self) -> Option<Command> {
-        match self.name.as_str() {
-            "minecraft" => {
-                let minecraft: Minecraft = self.clone().into();
-                minecraft.post_hook()
-            }
-            "custom" => {
-                let custom: Custom = self.clone().into();
-                custom.post_hook()
-            }
-            _ => None,
-        }
-    }
-
-    fn start(&self) -> Option<Command> {
-        match self.name.as_str() {
-            "minecraft" => {
-                let minecraft: Minecraft = self.clone().into();
-                minecraft.start()
-            }
-            "custom" => {
-                let custom: Custom = self.clone().into();
-                custom.start()
-            }
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Custom {
-    pub pre_hook_cmd: Option<String>,
-    pub install_cmd: Option<String>,
-    pub post_hook_cmd: Option<String>,
-    pub start_cmd: Option<String>,
-}
 
 impl Custom {
     pub fn new() -> Self {
@@ -147,35 +113,63 @@ impl Custom {
     }
 }
 
-impl From<ProviderGame> for Custom {
-    fn from(provider: ProviderGame) -> Self {
-        Self {
-            pre_hook_cmd: provider.get_config("pre_hook").cloned(),
-            install_cmd: provider.get_config("install").cloned(),
-            post_hook_cmd: provider.get_config("post_hook").cloned(),
-            start_cmd: provider.get_config("start").cloned(),
+
+impl Provider for ProviderGame {
+    fn pre_hook(&self) -> Option<Command> {
+        match self.name.as_str() {
+            // "minecraft" => {
+            //     let minecraft: Minecraft = self.clone().into();
+            //     minecraft.pre_hook()
+            // }
+            "custom" => {
+                let custom: Custom = self.clone().into();
+                custom.pre_hook()
+            }
+            _ => None,
         }
     }
-}
 
-impl From<Custom> for ProviderGame {
-    fn from(custom: Custom) -> Self {
-        let mut provider = ProviderGame::new("custom");
+    fn install(&self) -> Option<Command> {
+        match self.name.as_str() {
+            // "minecraft" => {
+            //     let minecraft: Minecraft = self.clone().into();
+            //     minecraft.install()
+            // }
+            // "" => {}
+            "custom" => {
+                let custom: Custom = self.clone().into();
+                custom.install()
+            }
+            _ => None,
+        }
+    }
 
-        if let Some(cmd) = custom.pre_hook_cmd {
-            provider = provider.with_config("pre_hook", cmd);
+    fn post_hook(&self) -> Option<Command> {
+        match self.name.as_str() {
+            // "minecraft" => {
+            //     let minecraft: Minecraft = self.clone().into();
+            //     minecraft.post_hook()
+            // }
+            "custom" => {
+                let custom: Custom = self.clone().into();
+                custom.post_hook()
+            }
+            _ => None,
         }
-        if let Some(cmd) = custom.install_cmd {
-            provider = provider.with_config("install", cmd);
-        }
-        if let Some(cmd) = custom.post_hook_cmd {
-            provider = provider.with_config("post_hook", cmd);
-        }
-        if let Some(cmd) = custom.start_cmd {
-            provider = provider.with_config("start", cmd);
-        }
+    }
 
-        provider
+    fn start(&self) -> Option<Command> {
+        match self.name.as_str() {
+            // "minecraft" => {
+            //     let minecraft: Minecraft = self.clone().into();
+            //     minecraft.start()
+            // }
+            "custom" => {
+                let custom: Custom = self.clone().into();
+                custom.start()
+            }
+            _ => None,
+        }
     }
 }
 
@@ -253,125 +247,79 @@ impl Provider for Custom {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Minecraft;
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ProviderConfig {
+    pub pre_hook: Option<String>,
+    pub install: Option<String>,
+    pub post_hook: Option<String>,
+    pub start: Option<String>,
+}
 
-impl From<ProviderGame> for Minecraft {
-    fn from(_provider: ProviderGame) -> Self {
-        Minecraft
+impl From<ProviderConfig> for ProviderGame {
+    fn from(config: ProviderConfig) -> Self {
+        let mut provider = ProviderGame::new("custom");
+        if let Some(cmd) = config.pre_hook {
+            provider = provider.with_config("pre_hook", cmd);
+        }
+        if let Some(cmd) = config.install {
+            provider = provider.with_config("install", cmd);
+        }
+        if let Some(cmd) = config.post_hook {
+            provider = provider.with_config("post_hook", cmd);
+        }
+        if let Some(cmd) = config.start {
+            provider = provider.with_config("start", cmd);
+        }
+        provider
     }
 }
 
-impl From<Minecraft> for ProviderGame {
-    fn from(_minecraft: Minecraft) -> Self {
-        ProviderGame::new("minecraft")
-    }
-}
-
-impl Provider for Minecraft {
-    fn pre_hook(&self) -> Option<Command> {
-        if cfg!(target_os = "linux") {
-            let mut cmd = Command::new("sh");
-            cmd.arg("-c")
-                .arg("apt-get update && apt-get install -y libssl-dev pkg-config wget");
-            Some(cmd)
-        } else if cfg!(target_os = "windows") {
-            let mut cmd = Command::new("powershell");
-            cmd.arg("-Command").arg("choco install -y wget");
-            Some(cmd)
-        } else {
-            None
-        }
-    }
-
-    fn install(&self) -> Option<Command> {
-        if cfg!(target_os = "linux") {
-            let mut cmd = Command::new("sh");
-            cmd.arg("-c").arg(
-                "apt-get install -y openjdk-17-jre-headless && update-alternatives --set java /usr/lib/jvm/java-17-openjdk-amd64/bin/java"
-            );
-            Some(cmd)
-        } else if cfg!(target_os = "windows") {
-            let mut cmd = Command::new("powershell");
-            cmd.arg("-Command").arg("choco install -y openjdk");
-            Some(cmd)
-        } else {
-            None
-        }
-    }
-
-    fn post_hook(&self) -> Option<Command> {
-        if cfg!(target_os = "linux") {
-            let mut cmd = Command::new("sh");
-            cmd.arg("-c").arg(format!(
-                "mkdir -p {dir} && cd {dir} && wget -O server.jar https://piston-data.mojang.com/v1/objects/84194a2f286ef7c14ed7ce0090dba59902951553/server.jar && echo 'eula=true' > eula.txt",
-                dir = SERVER_DIR
-            ));
-            Some(cmd)
-        } else if cfg!(target_os = "windows") {
-            let mut cmd = Command::new("powershell");
-            cmd.arg("-Command").arg(format!(
-                "New-Item -ItemType Directory -Force -Path {dir}; cd {dir}; Invoke-WebRequest -Uri https://piston-data.mojang.com/v1/objects/84194a2f286ef7c14ed7ce0090dba59902951553/server.jar -OutFile server.jar; 'eula=true' | Out-File -Encoding ASCII eula.txt",
-                dir = SERVER_DIR
-            ));
-            Some(cmd)
-        } else {
-            None
-        }
-    }
-
-    fn start(&self) -> Option<Command> {
-        if cfg!(target_os = "linux") {
-            let mut cmd = Command::new("java");
-            cmd.args(&["-Xmx1024M", "-Xms1024M", "-jar", "server.jar", "nogui"])
-                .current_dir(SERVER_DIR);
-            Some(cmd)
-        } else if cfg!(target_os = "windows") {
-            let mut cmd = Command::new("java");
-            cmd.args(&["-Xmx1024M", "-Xms1024M", "-jar", "server.jar", "nogui"])
-                .current_dir(SERVER_DIR);
-            Some(cmd)
-        } else {
-            None
+impl From<ProviderGame> for ProviderConfig {
+    fn from(game: ProviderGame) -> Self {
+        Self {
+            pre_hook: game.get_config("pre_hook").cloned(),
+            install: game.get_config("install").cloned(),
+            post_hook: game.get_config("post_hook").cloned(),
+            start: game.get_config("start").cloned(),
         }
     }
 }
 
-#[derive(serde::Serialize)]
-struct GetState {
-    start_keyword: String,
-    stop_keyword: String,
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct BasicProvider {
+    pub pre_hook: String,
+    pub install: String,
+    pub post_hook: String,
+    pub start: String,
 }
 
-fn get_provider(name: &str) -> Option<ProviderGame> {
-    match name {
-        "minecraft" => Some(Minecraft.into()),
-        "custom" => Some(Custom::new().into()),
-        _ => None,
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct Platforms {
+    pub(crate) linux: Option<ProviderConfig>,
+    pub(crate) windows: Option<ProviderConfig>
+}
+
+impl Platforms {
+    pub fn custom(config: ProviderConfig) -> Self {
+        Self {
+            linux: Some(config.clone()),
+            windows: Some(config),
+        }
+    }
+}
+impl From<Custom> for Platforms {
+    fn from(custom: Custom) -> Self {
+        let config = ProviderConfig {
+            pre_hook: custom.pre_hook_cmd,
+            install: custom.install_cmd,
+            post_hook: custom.post_hook_cmd,
+            start: custom.start_cmd,
+        };
+        Platforms::custom(config)
     }
 }
 
-// Helper function to create a custom provider with specific commands
-fn create_custom_provider(
-    pre_hook: Option<&str>,
-    install: Option<&str>,
-    post_hook: Option<&str>,
-    start: Option<&str>,
-) -> ProviderGame {
-    let mut custom = Custom::new();
-
-    if let Some(cmd) = pre_hook {
-        custom = custom.with_pre_hook(cmd);
-    }
-    if let Some(cmd) = install {
-        custom = custom.with_install(cmd);
-    }
-    if let Some(cmd) = post_hook {
-        custom = custom.with_post_hook(cmd);
-    }
-    if let Some(cmd) = start {
-        custom = custom.with_start(cmd);
-    }
-
-    custom.into()
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ProviderDbList {
+    pub list: HashMap<String, Platforms>
 }

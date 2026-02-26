@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 #[cfg(any(feature = "full-stack", feature = "database"))]
 use std::default;
+#[cfg(any(feature = "full-stack", feature = "database"))]
+use std::default;
 // use sqlx::Error;
 use std::fmt;
 use std::error::Error;
@@ -137,11 +139,12 @@ pub struct Settings {
 
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, sqlx::Type)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, sqlx::Type, Default)]
 // #[sqlx(type_name = "node_status", rename_all = "snake_case")]
 #[sqlx(type_name = "text")]
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
 pub enum NodeStatus {
+    #[default]
     Unknown,
     Enabled, 
     Disabled, 
@@ -192,10 +195,11 @@ use serde_json::Value;
     not(feature = "docker"),
     not(feature = "database")
 ))]
-#[derive(Debug, Serialize, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Serialize, Clone, Deserialize, PartialEq, Default)]
 // #[sqlx(type_name = "node_status", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
 pub enum NodeStatus {
+    #[default]
     Unknown,
     Enabled, 
     Disabled, 
@@ -393,7 +397,7 @@ pub struct User {
 
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
-#[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize, PartialEq, Default)]
 pub struct Node {
     pub nodename: String,
     pub ip: String,
@@ -404,7 +408,7 @@ pub struct Node {
 
 
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
 pub struct Node {
     pub nodename: String,
     pub ip: String,
@@ -469,7 +473,8 @@ pub struct Server {
     pub servername: String,
     pub provider: String,
     pub providertype: String,
-    pub location: String
+    pub location: String,
+    pub node: Node
 } 
 
 

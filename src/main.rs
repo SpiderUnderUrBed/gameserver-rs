@@ -99,6 +99,7 @@ use sysinfo::System;
 
 static CONNECTION_COUNTER: AtomicUsize = AtomicUsize::new(0);
 static FORWARD_ALL_MESSAGES: bool = true;
+static LOG_NONFATAL_FORWARD_REQUESTS: bool = false;
 
 // For now I only restrict the json backend for running this without kubernetes
 // the json backend is only for testing in most cases, simple deployments would use full-stack feature flag
@@ -786,40 +787,10 @@ pub async fn handle_stream(
                             true => Status::Up,
                             false => Status::Down,
                         }
-                    } else if payload.message == "request_server_metadata" {
-                        let state_guard = arc_state.read().await;
-                        let Server { servername, provider, providertype, location } = &state_guard.current_server.clone().unwrap();
-                        let metadata = MetadataTypes::Server { servername: servername.to_string(), provider: provider.to_string(), providertype: providertype.to_string(), location: location.to_string() };
-                        let payload = MessagePayloadWithMetadata { r#type: "command".to_owned(), message: "create_server".to_owned(), metadata: metadata, authcode: "0".to_owned() };
-                        let mut raw_data = serde_json::to_vec(&payload)?;
-                        raw_data.push(b'\n');
-                        return Ok((false, Some(raw_data)));
                     }
                 }
 
                 if let Ok(data_clone) = serde_json::from_value::<ConsoleData>(value.clone()) {
-                    // println!("{:#?}", data_clone);
-                    if let Ok(inner_msg) = serde_json::from_str::<MessagePayload>(&data_clone.data) {
-                        if inner_msg.message == "request_server_metadata" {
-                            let state_guard = arc_state.read().await;
-                            let Server { servername, provider, providertype, location } = &state_guard.current_server.clone().unwrap();
-                            let metadata = MetadataTypes::Server { 
-                                servername: servername.to_string(), 
-                                provider: provider.to_string(), 
-                                providertype: providertype.to_string(), 
-                                location: location.to_string() 
-                            };
-                            let payload = MessagePayloadWithMetadata { 
-                                r#type: "command".to_owned(), 
-                                message: "create_server".to_owned(), 
-                                metadata, 
-                                authcode: "0".to_owned() 
-                            };
-                            let mut raw_data = serde_json::to_vec(&payload)?;
-                            raw_data.push(b'\n');
-                            return Ok((false, Some(raw_data)));
-                        }
-                    }
                     if let Ok(inner_value) =
                         serde_json::from_str::<serde_json::Value>(&data_clone.data)
                     {
@@ -977,10 +948,12 @@ pub async fn handle_stream(
                         Ok(string) => {
                             // internal_tx
                             if let Err(err) = ws_tx.send(string) {
-                                eprintln!(
-                                    "Failed to send request over broadcast: {} (not fatal)",
-                                    err
-                                );
+                                if LOG_NONFATAL_FORWARD_REQUESTS {
+                                    eprintln!(
+                                        "Failed to send request over broadcast: {} (not fatal)",
+                                        err
+                                    );
+                                }
                             }
                         }
                         Err(err) => eprintln!("Failed to serialize request: {}", err),
@@ -2112,6 +2085,8 @@ async fn add_node(
     result
 }
 
+// Not currently in use
+// TODO: consider removing this
 async fn add_server(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<ModifyElementData>,
@@ -2378,6 +2353,13 @@ async fn set_server(
                 provider: retrieved_server.provider.clone(),
                 providertype: retrieved_server.providertype.clone(),
                 location: retrieved_server.location.clone(),
+                node: Node { 
+                    nodename: state.current_node.name.clone(),
+                    ip: state.current_node.ip.clone(), 
+                    nodestatus: NodeStatus::Unknown, 
+                    nodetype: state.current_node.nodetype.clone(), 
+                    k8s_type: state.current_node.k8s_type.clone()
+                },
             }
         );
 
@@ -2602,7 +2584,7 @@ async fn process_general_with_metadata(
     let mut state = arc_state.write().await;
     if let ApiCalls::IncomingMessageWithMetadata(payload) = res {
         println!("Processing general message: {:?}", payload);
-
+    
         let json_payload = IncomingMessageWithMetadata {
             message_type: payload.message_type.clone(),
             message: payload.message.clone(),
@@ -2612,40 +2594,55 @@ async fn process_general_with_metadata(
 
         if payload.message == "create_server" {
             if let MetadataTypes::Server { servername, provider, providertype, location } = payload.metadata.clone() {
-                state.current_server = Some(Server {
-                    servername, provider, providertype, location
-                });
-            }
-            let database = &state.database;
-            let db_result = database
-                .get_from_servers_database(&payload.message.clone())
-                .await
-                .map_err(|_| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "Error connecting to database".to_string(),
-                    )
-                });
-            if db_result?.is_none() {
-                if let MetadataTypes::Server {
-                    providertype,
-                    location,
-                    provider,
-                    servername,
-                } = payload.metadata.clone()
-                {
-                    let _ = database
-                        .create_server_in_db(ModifyElementData {
-                            element: Element::Server(Server {
-                                servername: payload.message.clone(),
-                                provider: String::new(),
-                                providertype,
-                                location,
-                            }),
-                            jwt: payload.authcode,
-                            require_auth: false,
-                        })
-                        .await;
+                    state.current_server = Some(Server {
+                        servername: servername.clone(), provider, providertype, location,
+                        node: Node { 
+                            nodename: state.current_node.name.clone(),
+                            ip: state.current_node.ip.clone(), 
+                            nodestatus: NodeStatus::Unknown, 
+                            nodetype: state.current_node.nodetype.clone(), 
+                            k8s_type: state.current_node.k8s_type.clone()
+                        },
+                    });
+                
+                let database = &state.database;
+                let db_result = database
+                    .get_from_servers_database(&servername)
+                    .await
+                    .map_err(|_| {
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "Error connecting to database".to_string(),
+                        )
+                    });
+                if db_result?.is_none() {
+                    if let MetadataTypes::Server {
+                        providertype,
+                        location,
+                        provider,
+                        servername,
+                    } = payload.metadata.clone()
+                    {
+                        let _ = database
+                            .create_server_in_db(ModifyElementData {
+                                element: Element::Server(Server {
+                                    servername,
+                                    provider,
+                                    providertype,
+                                    location,
+                                    node: Node { 
+                                        nodename: state.current_node.name.clone(),
+                                        ip: state.current_node.ip.clone(), 
+                                        nodestatus: NodeStatus::Unknown, 
+                                        nodetype: state.current_node.nodetype.clone(), 
+                                        k8s_type: state.current_node.k8s_type.clone()
+                                    },
+                                }),
+                                jwt: payload.authcode,
+                                require_auth: false,
+                            })
+                            .await;
+                    }
                 }
             }
         }
@@ -3131,7 +3128,7 @@ async fn get_files_content(
         .canonicalize()
         .await
         .map_err(|e| {
-            eprintln!("[get_files] Invalid path: {}", e);
+            eprintln!("Invalid path: {}", e);
             (StatusCode::BAD_REQUEST, "Invalid path").into_response()
         })?;
 
@@ -3189,11 +3186,11 @@ pub async fn get_files(
     {
         Ok(Ok(p)) => p,
         Ok(Err(e)) => {
-            eprintln!("[get_files] Invalid path '{}': {}", fs_path, e);
+            eprintln!("Invalid path '{}': {}", fs_path, e);
             return (StatusCode::BAD_REQUEST, "Invalid path").into_response();
         }
         Err(_) => {
-            eprintln!("[get_files] Timeout resolving '{}'", fs_path);
+            eprintln!("Timeout resolving '{}'", fs_path);
             return (StatusCode::GATEWAY_TIMEOUT, "Request timed out").into_response();
         }
     };

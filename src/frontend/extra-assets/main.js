@@ -1289,6 +1289,7 @@ async changeNode(node) {
 
     let servername = document.getElementById("server-name-entry").value;
     let provider = document.getElementById("provider-selector").value;
+    let location = document.getElementById("server-location-entry").value;
 
     try {
       const res = await fetch(`${this.basePath}/api/generalwithmetadata`, {
@@ -1308,7 +1309,7 @@ async changeNode(node) {
                 servername,
                 providertype: "",
                 provider,
-                location: ""
+                location
               }
             }
           },
