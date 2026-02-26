@@ -2,16 +2,18 @@
   "list": {
     "minecraft": {
       "linux": {
-        "pre_hook": "apt-get update && apt-get install -y libssl-dev pkg-config wget",
-        "install": "apt-get install -y openjdk-17-jre-headless && update-alternatives --set java /usr/lib/jvm/java-17-openjdk-amd64/bin/java",
-        "post_hook": "mkdir -p server && cd server && wget -O server.jar https://piston-data.mojang.com/v1/objects/84194a2f286ef7c14ed7ce0090dba59902951553/server.jar && echo 'eula=true' > eula.txt",
-        "start": "cd server && java -Xmx1024M -Xms1024M -jar server.jar nogui"
+        "location": "",
+        "pre_hook": "cd {{SERVERLOCATION}} && apt-get update && apt-get install -y libssl-dev pkg-config wget",
+        "install": "cd {{SERVERLOCATION}} && apt-get install -y openjdk-17-jre-headless && update-alternatives --set java /usr/lib/jvm/java-17-openjdk-amd64/bin/java",
+        "post_hook": "cd {{SERVERLOCATION}} && wget -O server.jar https://piston-data.mojang.com/v1/objects/84194a2f286ef7c14ed7ce0090dba59902951553/server.jar && echo 'eula=true' > eula.txt",
+        "start": "cd {{SERVERLOCATION}} && java -Xmx1024M -Xms1024M -jar server.jar nogui"
       },
       "windows": {
-        "pre_hook": "choco install -y wget",
-        "install": "choco install -y openjdk",
-        "post_hook": "New-Item -ItemType Directory -Force -Path server; cd server; Invoke-WebRequest -Uri https://piston-data.mojang.com/v1/objects/84194a2f286ef7c14ed7ce0090dba59902951553/server.jar -OutFile server.jar; 'eula=true' | Out-File -Encoding ASCII eula.txt",
-        "start": "cd server && java -Xmx1024M -Xms1024M -jar server.jar nogui"
+        "location": "",
+        "pre_hook": "cd {{SERVERLOCATION}}; choco install -y wget",
+        "install": "cd {{SERVERLOCATION}}; choco install -y openjdk",
+        "post_hook": "cd {{SERVERLOCATION}}; Invoke-WebRequest -Uri https://piston-data.mojang.com/v1/objects/84194a2f286ef7c14ed7ce0090dba59902951553/server.jar -OutFile server.jar; 'eula=true' | Out-File -Encoding ASCII eula.txt",
+        "start": "cd {{SERVERLOCATION}}; java -Xmx1024M -Xms1024M -jar server.jar nogui"
       }
     }
   }

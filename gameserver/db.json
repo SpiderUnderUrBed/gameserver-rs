@@ -1,59 +1,15 @@
 {
   "server_index": {
+    "dxxx": {
+      "location": "server/eee",
+      "provider": "minecraft"
+    },
+    "xxdd": {
+      "location": "server/xxc",
+      "provider": "minecraft"
+    },
     "minecraft": {
       "location": "server/",
-      "provider": "minecraft"
-    },
-    "": {
-      "location": "server/",
-      "provider": "minecraft"
-    },
-    "mxc": {
-      "location": "server/",
-      "provider": "minecraft"
-    },
-    "m": {
-      "location": "server/",
-      "provider": "minecraft"
-    },
-    "rrr": {
-      "location": "server/test",
-      "provider": "minecraft"
-    },
-    "mx": {
-      "location": "server/",
-      "provider": "minecraft"
-    },
-    "e": {
-      "location": "server/",
-      "provider": "minecraft"
-    },
-    "mxcd": {
-      "location": "server/",
-      "provider": "minecraft"
-    },
-    "r": {
-      "location": "server/",
-      "provider": "minecraft"
-    },
-    "mc2": {
-      "location": "",
-      "provider": "minecraft"
-    },
-    "rrree": {
-      "location": "server/test",
-      "provider": "minecraft"
-    },
-    "c": {
-      "location": "server/",
-      "provider": "minecraft"
-    },
-    "minecraft-2": {
-      "location": "",
-      "provider": ""
-    },
-    "etr": {
-      "location": "server/err",
       "provider": "minecraft"
     }
   }

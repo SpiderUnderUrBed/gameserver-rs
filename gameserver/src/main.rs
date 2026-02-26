@@ -1400,10 +1400,13 @@ async fn handle_typical_command_or_console(
                     provider.as_deref(),
                     get_definite_path_from_name(&state, provider.clone()).await.as_deref(),
                 ).await {
-                    let provider_game_commands: ProviderGame = match pick_platform(provider_platform) {
+                    let mut provider_game_commands: ProviderGame = match pick_platform(provider_platform) {
                         Some(prov) => prov.into(),
                         None => return Err("no platform".into()),
                     };
+                    if let Some(location) = get_definite_path_from_name(&state, provider.clone()).await.as_deref() {
+                        let _ = provider_game_commands.set_location(location.to_owned());
+                    }
                     if let Some(cmd) = provider_game_commands.start() {
                         let tx = cmd_tx.clone();
                         let stdin_clone = stdin_ref.clone();
@@ -1577,10 +1580,13 @@ async fn start_server_with_broadcast(
         //     )
         //     .await;
         // }
-        let provider_game_commands: ProviderGame = match pick_platform(provider_type.1) {
+        let mut provider_game_commands: ProviderGame = match pick_platform(provider_type.1) {
             Some(prov) => prov.into(),
             None => return Err("no platform".into()),
         };
+        if let Some(location) = get_definite_path_from_name(&state, provider.clone()).await.as_deref() {
+            let _ = provider_game_commands.set_location(location.to_owned());
+        }
         let start_command = provider_game_commands
             .start()
             .ok_or("Provider does not support starting servers")?;
@@ -1962,10 +1968,12 @@ Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     provider.as_deref(),
                     path.as_deref(),
                 ).await {
-                    let prov: ProviderGame = match pick_platform(provider_platforms) {
+                    let mut prov: ProviderGame = match pick_platform(provider_platforms) {
                         Some(prov) => prov,
                         None => return Err("No platform".into())
                     }.into();
+
+                    let _ = prov.set_location(filtered_location);
 
                     if let Some(cmd) = prov.pre_hook() {
                         run_command_live_output(&state, cmd, "Pre-hook".into(), Some(cmd_tx.clone()), None).await.ok();
@@ -1985,7 +1993,6 @@ Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         });
                         let _ = cmd_tx.send("Server started".into()).await;
                     }
-
                     Ok(())
                 } else {
                     Ok(())
