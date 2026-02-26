@@ -1,13 +1,16 @@
+use file_transfer_system::server;
 use hostname::get;
 use serde_json::{json, Value};
+use zip::result;
 use std::convert::TryFrom;
-use std::error::Error;
+use std::io::Error;
 use std::ffi::OsString;
 use std::fmt;
-use std::io::SeekFrom;
+use std::io::{ErrorKind, SeekFrom};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::path::Path;
+use std::collections::HashMap;
 use tokio::fs;
 use tokio::fs::OpenOptions;
 use tokio::io;
@@ -33,12 +36,13 @@ use crate::FileOperations::FileDownloadOperation;
 use crate::FileOperations::FileZipOperation;
 use crate::FileOperations::FileUnzipOperation;
 use crate::FileOperations::FileCopyOperation;
+use crate::providers::{Custom, Platforms, Provider, ProviderConfig, ProviderDbList, ProviderGame};
 
-use crate::providers::Custom;
-use crate::providers::Minecraft;
-use crate::providers::Provider;
-use crate::providers::ProviderConfig;
-use crate::providers::ProviderType;
+// use crate::providers::Custom;
+// use crate::providers::Minecraft;
+// use crate::providers::Provider;
+// use crate::providers::ProviderConfig;
+// use crate::providers::ProviderGame;
 
 use tokio::fs::File;
 use tokio::io::AsyncRead;
@@ -56,6 +60,12 @@ mod extra;
 mod filesystem;
 mod intergrations;
 mod providers;
+mod jsondatabase;
+mod databasespec;
+
+use databasespec::ServerIndex;
+
+use jsondatabase::{load_db, save_db};
 
 use intergrations::{run_intergration_commands, IntergrationCommands};
 
@@ -80,6 +90,8 @@ struct IncomingMessage {
 
 // newer version of IncomingMessage, mainly because this includes the metadata feild which i sometimes use
 // IncomingMessageWithMetadata and IncomingMessage should be renamed to something that makes sense
+// Note, this also handles the things like MessagePayloadWithMetadata and converts it here, as 
+// from the gameservers perpective, the command payload is incoming, so it made sense not to recreate such a struct
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct IncomingMessageWithMetadata {
     message: String,
@@ -236,6 +248,25 @@ struct GetState {
     stop_keyword: String,
 }
 
+fn filter(line: String) -> bool {
+    if line.contains('%') {
+        if let Some(pct_str) = line.split('%').next()
+            .and_then(|s| s.split_whitespace().last())
+            .and_then(|s| s.parse::<u32>().ok())
+        {
+            if pct_str % 5 != 0 {
+                true
+            } else {
+                false
+            }
+        } else {
+            true
+        }
+    } else {
+        false
+    }
+}
+
 // runs a command and forwards the output of the command to the given channel, which in this case would be back to
 // the main server
 async fn run_command_live_output(
@@ -257,40 +288,59 @@ async fn run_command_live_output(
         *stdin_slot.lock().await = child_stdin;
     }
 
-    if let Some(stdout) = child.stdout.take() {
+    let stdout_handle = if let Some(stdout) = child.stdout.take() {
         let tx = sender.clone();
         let lbl = label.clone();
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             let mut reader = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = reader.next_line().await {
+                if filter(line.clone()) { continue; }
                 if let Some(tx) = &tx {
-                    let msg =
-                        json!({"type":"stdout","data":format!("[{}] {}", lbl, line)}).to_string();
-                    let _ = tx.send(msg).await;
+                    let msg = json!({"type":"stdout","data":format!("[{}] {}", lbl, line)}).to_string();
+                    let _ = tx.try_send(msg);
                 }
             }
-        });
-    }
+        }))
+    } else {
+        None
+    };
 
-    if let Some(stderr) = child.stderr.take() {
+    let stderr_handle = if let Some(stderr) = child.stderr.take() {
         let tx = sender.clone();
         let lbl = label.clone();
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = reader.next_line().await {
+                if line.contains('%') {
+                    if let Some(pct_str) = line.split('%').next()
+                        .and_then(|s| s.split_whitespace().last())
+                        .and_then(|s| s.parse::<u32>().ok())
+                    {
+                        if pct_str % 5 != 0 {
+                            continue;
+                        }
+                    } else {
+                        continue; 
+                    }
+                }
                 if let Some(tx) = &tx {
-                    let msg =
-                        json!({"type":"stderr","data":format!("[{}] {}", lbl, line)}).to_string();
-                    let _ = tx.send(msg).await;
+                    let msg = json!({"type":"stderr","data":format!("[{}] {}", lbl, line)}).to_string();
+                    let _ = tx.try_send(msg);
                 }
             }
-        });
-    }
+        }))
+    } else {
+        None
+    };
 
-    let status = child.wait().await?;
+    child.wait().await?;
+    println!("Post-hook process exited");
+    if let Some(h) = stdout_handle { let _ = h.await; }
+    if let Some(h) = stderr_handle { let _ = h.await; }
+    println!("Post-hook output fully flushed");
+
     Ok(())
 }
-
 // Custom metadata for file, not its actual metadata, as it might not be relevent for my file tree
 // sandboxing, and determining all of a folders children was listed
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -364,15 +414,22 @@ enum ReadMode {
     // },
 }
 
+
 // AppState for the Node, stores the name of the current server, the state of the process
 // whether or not its running, the channel for the output messages, and the process, makes it easier to pass and modify
 // between functions
 #[derive(Clone)]
 struct AppState {
-    current_server: String,
+    // current_server has to be an arc mutex because you cant assign data to an arc
+    current_server: Arc<Mutex<Option<String>>>,
+    //server_index: HashMap<String, ServerIndex>,
     server_running: Arc<Mutex<bool>>,
     server_output_tx: Arc<Mutex<Option<broadcast::Sender<String>>>>,
     server_process: Arc<Mutex<Option<Child>>>,
+    // Consider if i want to store the db at all, previously I was wondering whether or not to have an arc mutex, (arc not needed; the app state has a arc, so I just need to add a mutex
+    // so now any changes will still be in sync so you never have a case of a longer operation based on older data writting to the db overwriting the newer one).
+    // now I am considering if I need db at all, ill keep it here for now to consider parity with the main gameserver node based on design choices.
+    db: Arc<Mutex<jsondatabase::Database>>, 
 }
 
 // Will remove this, this was kept because at a time there was a issue with the channels reciving messages they sent, so
@@ -482,12 +539,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Err(e) => Err(e.to_string()),
     });
 
-    let state = AppState {
-        current_server: "minecraft".to_string(),
+    //let mut db = load_db();
+    let arc_db = Arc::new(Mutex::new(load_db()));
+
+    // TODO: remove this in favor of it being both written to a persistent db and insertions happening by the server
+    let mut db = arc_db.lock().await;
+    if !db.server_index.iter().any(|(name, _)| name == "minecraft"){
+        db.server_index.insert("minecraft".to_string(), ServerIndex::new("server/".to_string(), "minecraft".to_string()));
+        save_db(&db);
+    }
+    drop(db);
+    // let db_clone = db
+
+    let mut state = AppState {
+        current_server: Arc::new(Mutex::new(None)),
         server_running: Arc::new(Mutex::new(false)),
         server_output_tx: Arc::new(Mutex::new(None)),
         server_process: Arc::new(Mutex::new(None)),
+        //server_index: HashMap::new(),
+        db: Arc::clone(&arc_db),
+        //db: db.clone().into(),
     };
+
+    //state.server_index = db.servers;
+    //
+
     let arc_state = Arc::new(state);
 
     let health_monitor_state = arc_state.clone();
@@ -566,7 +642,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             let (mut read_half, mut write_half) = socket.into_split();
             let (out_tx, mut out_rx) = mpsc::channel::<String>(128);
-            let (cmd_tx, mut cmd_rx) = mpsc::channel::<String>(128);
+            let (cmd_tx, mut cmd_rx) = mpsc::channel::<String>(10_000);
 
             let mut server_output_rx = {
                 let server_running_lock = arc_state_clone.server_running.lock().await;
@@ -768,7 +844,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 if line_str.trim().starts_with('{')
                                     && line_str.trim().ends_with('}')
                                 {
-                                    // println!("[{}] Received JSON line: {}", addr, line_str.trim());
+                                    println!("[{}] Received JSON line: {}", addr, line_str.trim());
                                     if let Ok(json_value) = serde_json::from_slice::<Value>(line) {
                                         if let Ok(request) =
                                             serde_json::from_value::<FileRequestMessage>(
@@ -785,6 +861,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                 .await;
                                                 let _ = out_tx_clone.send(response_json).await;
                                             });
+                                        } else if let Ok(msg_payload) =
+                                            serde_json::from_value::<IncomingMessageWithMetadata>(
+                                                json_value.clone(),
+                                            )
+                                        {
+                                            println!(
+                                                "[{}] DEBUG: Processing command with metadata: {}",
+                                                addr, msg_payload.message
+                                            );
+                                            let _ = handle_commands_with_metadata(
+                                                arc_state_clone.clone(),
+                                                &msg_payload,
+                                                &cmd_tx,
+                                                &stdin_ref,
+                                                &hostname_ref,
+                                            )
+                                            .await;
                                         } else if let Ok(payload) =
                                             serde_json::from_value::<SrcAndDest>(json_value.clone())
                                         {
@@ -810,7 +903,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                     ),
                                                 }
                                             } else {
-                                                sort_command_type_or_console(
+                                                let _ = sort_command_type_or_console(
                                                     &Arc::clone(&arc_state_clone),
                                                     &json_value,
                                                     &out_tx,
@@ -820,24 +913,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                 )
                                                 .await;
                                             }
-                                        } else if let Ok(msg_payload) =
-                                            serde_json::from_value::<IncomingMessageWithMetadata>(
-                                                json_value.clone(),
-                                            )
-                                        {
-                                            println!(
-                                                "[{}] DEBUG: Processing command with metadata: {}",
-                                                addr, msg_payload.message
-                                            );
-                                            handle_commands_with_metadata(
-                                                arc_state_clone.clone(),
-                                                &msg_payload,
-                                                &cmd_tx,
-                                                &stdin_ref,
-                                                &hostname_ref,
-                                            )
-                                            .await;
-                                        }
+                                        } 
                                         //  else if let Ok(msg_payload) =
                                         //     serde_json::from_value::<IntergrationCommands>(
                                         //         json_value.clone(),
@@ -1002,6 +1078,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                 }
                                             }
                                         } else {
+                                            // This is when there is no match for any existing data structure
+                                            // println!("{:#?}", json_value.clone());
+
                                             let command_or_console_result = sort_command_type_or_console(
                                                 &Arc::clone(&arc_state_clone),
                                                 &json_value,
@@ -1143,6 +1222,7 @@ struct AuthTcpMessage {
 // the relevent function.
 // This now also handles auth messages
 // TODO: Merge alot of the functionality back into main at some point
+// TODO: remove excessive Ok's and have proper error handling for cases which should not return OK
 async fn sort_command_type_or_console(
     arc_state: &Arc<AppState>,
     payload: &serde_json::Value,
@@ -1151,41 +1231,52 @@ async fn sort_command_type_or_console(
     stdin_ref: &Arc<Mutex<Option<ChildStdin>>>,
     hostname: &Arc<Result<OsString, String>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    //node_password
     let node_password: String =
         get_env_var_or_arg("NODE_PASSWORD", Some(String::default())).unwrap();
 
     let standard_command_payload_result: Result<MessagePayload, serde_json::Error> =
         serde_json::from_value(payload.clone());
     if let Ok(standard_command_payload) = standard_command_payload_result {
-        handle_typical_command_or_console(
-            &arc_state,
-            &standard_command_payload,
-            &out_tx,
-            &cmd_tx,
-            &stdin_ref,
-            &hostname,
-        )
-        .await;
-        //Ok(())
-    }
-    //let dest = request.dest.as_inner_str();
-    let file_operation_result: Result<SrcAndDest, serde_json::Error> = 
-        serde_json::from_value(payload.clone());
-    if let Ok(file_operation) = file_operation_result { 
-        let (converted_src, converted_dest): (FileOperations, FileOperations) = (file_operation.clone().src.into(), file_operation.clone().dest.into());
-        let state = Arc::clone(arc_state);
-        let mut path = get_definite_path_from_tag(
-            &state,
-            get_provider_from_servername(&state, state.current_server.clone()).await,
-        )
-        .await;
-        
-        if !path.starts_with("server/") {
-            path = format!("server/{}", path);
+        // Skip create_server here — it's handled by handle_commands_with_metadata
+        // which has the metadata field. Handling it here would cause an infinite loop
+        // because handle_typical_command_or_console sends request_server_metadata again.
+        if standard_command_payload.message != "create_server" {
+            let _ = handle_typical_command_or_console(
+                &arc_state,
+                &standard_command_payload,
+                &out_tx,
+                &cmd_tx,
+                &stdin_ref,
+                &hostname,
+            )
+            .await;
         }
-        
-        execute_file_operation(converted_src, converted_dest, path);
+    }
+
+    let file_operation_result: Result<SrcAndDest, serde_json::Error> =
+        serde_json::from_value(payload.clone());
+    if let Ok(file_operation) = file_operation_result {
+        let (converted_src, converted_dest): (FileOperations, FileOperations) = (
+            file_operation.clone().src.into(),
+            file_operation.clone().dest.into(),
+        );
+        let state = Arc::clone(arc_state);
+        let option_path = get_definite_path_from_name(
+            &state,
+            get_provider_from_servername(
+                &state,
+                Some(state.current_server.lock().await.clone().ok_or("there is no current server")?),
+            )
+            .await,
+        )
+        .await;
+
+        if let Some(mut path) = option_path {
+            if !path.starts_with("server/") {
+                path = format!("server/{}", path);
+            }
+            execute_file_operation(converted_src, converted_dest, path);
+        }
     }
 
     let auth_payload_result: Result<AuthTcpMessage, serde_json::Error> =
@@ -1195,19 +1286,14 @@ async fn sort_command_type_or_console(
             println!("Authentication failed");
             return Err(Box::new(CommandOrConsoleErrors::AuthDisconnect));
         }
-        // if node_password == auth_payload.password {
-        //     Ok(())
-        // } else {
-        //     Err()
-        // }
     }
 
     let intergration_command_payload_result: Result<IntergrationCommands, serde_json::Error> =
         serde_json::from_value(payload.clone());
     if let Ok(intergration_command_payload) = intergration_command_payload_result {
         run_intergration_commands(intergration_command_payload).await;
-        //Ok(())
     }
+
     Ok(())
 }
 
@@ -1222,30 +1308,36 @@ async fn handle_typical_command_or_console(
     cmd_tx: &mpsc::Sender<String>,
     stdin_ref: &Arc<Mutex<Option<ChildStdin>>>,
     hostname: &Arc<Result<OsString, String>>,
-) {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let typ = payload.r#type.clone();
     let state = Arc::clone(arc_state);
     if typ == "command" {
         let cmd_str = payload.message.clone();
         match cmd_str.as_str() {
             "delete_server" => {
-                let mut path = get_definite_path_from_tag(
+                let option_path = get_definite_path_from_name(
                     &state,
-                    get_provider_from_servername(&state, state.current_server.clone()).await,
+                    get_provider_from_servername(&state, Some(state.current_server.lock().await.clone().ok_or("there is no current server")?)).await,
                 )
                 .await;
-
-                if !path.starts_with("server/") {
-                    path = format!("server/{}", path);
-                }
-                if let Err(errro) = fs::remove_dir_all(&path).await {
-                    eprintln!("Failed to delete directory {}: {}", path, errro);
-                } else {
-                    if let Err(errro) = fs::create_dir(&path).await {
-                        eprintln!("Failed to recreate directory {}: {}", path, errro);
-                    } else {
-                        println!("Successfully cleared directory: {}", path);
+                if let Some(mut path) = option_path { 
+                    if !path.starts_with("server/") {
+                        path = format!("server/{}", path);
                     }
+                    if let Err(errro) = fs::remove_dir_all(&path).await {
+                        eprintln!("Failed to delete directory {}: {}", path, errro);
+                        Ok(())
+                    } else {
+                        if let Err(errro) = fs::create_dir(&path).await {
+                            eprintln!("Failed to recreate directory {}: {}", path, errro);
+                            Ok(())
+                        } else {
+                            println!("Successfully cleared directory: {}", path);
+                            Ok(())
+                        }
+                    }
+                } else {
+                    Ok(())
                 }
             }
             "server_state" => {
@@ -1260,23 +1352,31 @@ async fn handle_typical_command_or_console(
                 //println!("{:#?}", status_message);
                 let json_str = serde_json::to_string(&status_message).unwrap();
                 out_tx.send(json_str).await;
+                Ok(())
             }
             "stop_server" => {
-                if let Some(prov) = get_provider(
-                    &get_provider_from_servername(&state, state.current_server.clone()).await,
-                    &get_definite_path_from_tag(
-                        &state,
-                        get_provider_from_servername(&state, state.current_server.clone()).await,
-                    )
-                    .await,
-                ) {
+                let current_server = state.current_server.lock().await
+                    .clone()
+                    .ok_or("there is no current server")?;
+                
+                let provider = get_provider_from_servername(&state, Some(current_server)).await;
+                
+                if let Some(_) = get_provider_object(
+                    provider.as_deref(),
+                    get_definite_path_from_name(&state, provider.clone()).await.as_deref(),
+                ).await {
                     let input = "stop";
                     let mut guard = stdin_ref.lock().await;
                     if let Some(stdin) = guard.as_mut() {
                         let _ = stdin.write_all(format!("{}\n", input).as_bytes()).await;
                         let _ = stdin.flush().await;
                         let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
+                        Ok(())
+                    } else {
+                        Ok(())
                     }
+                } else {
+                    Ok(())
                 }
             }
             "start_server" => {
@@ -1286,19 +1386,28 @@ async fn handle_typical_command_or_console(
                         let _ = cmd_tx
                             .send("Server is already running. Use 'stop_server' first.".into())
                             .await;
-                        return;
+                        return Ok(());
                     }
                 }
 
-                if let Some(prov) = get_provider(
-                    &get_provider_from_servername(&state, state.current_server.clone()).await,
-                    &get_definite_path_from_tag(
-                        &state,
-                        get_provider_from_servername(&state, state.current_server.clone()).await,
-                    )
-                    .await,
-                ) {
-                    if let Some(cmd) = prov.start() {
+                let current_server = state.current_server.lock().await
+                    .clone()
+                    .ok_or("there is no current server")?;
+                
+                let provider = get_provider_from_servername(&state, Some(current_server)).await;
+                
+                if let Some((_, provider_platform)) = get_provider_object(
+                    provider.as_deref(),
+                    get_definite_path_from_name(&state, provider.clone()).await.as_deref(),
+                ).await {
+                    let mut provider_game_commands: ProviderGame = match pick_platform(provider_platform) {
+                        Some(prov) => prov.into(),
+                        None => return Err("no platform".into()),
+                    };
+                    if let Some(location) = get_definite_path_from_name(&state, provider.clone()).await.as_deref() {
+                        let _ = provider_game_commands.set_location(location.to_owned());
+                    }
+                    if let Some(cmd) = provider_game_commands.start() {
                         let tx = cmd_tx.clone();
                         let stdin_clone = stdin_ref.clone();
 
@@ -1327,15 +1436,18 @@ async fn handle_typical_command_or_console(
                         });
 
                         let _ = cmd_tx.send("Server started".into()).await;
+                        Ok(())
                     } else {
                         let _ = cmd_tx
                             .send("No start command available for this provider".into())
                             .await;
+                        Ok(())
                     }
                 } else {
                     let _ = cmd_tx
                         .send("Failed to get provider for server".into())
                         .await;
+                    Ok(())
                 }
             }
             "server_data" => {
@@ -1348,6 +1460,7 @@ async fn handle_typical_command_or_console(
                         .unwrap(),
                     )
                     .await;
+                Ok(())
             }
             "server_name" => {
                 let hostname_str = match hostname.as_ref() {
@@ -1364,9 +1477,23 @@ async fn handle_typical_command_or_console(
                         .unwrap(),
                     )
                     .await;
+                Ok(())
+            }
+            "create_server" => {
+                //println!("{:#?}", serde_json::to_value(payload)?);
+                println!("This should not be running");
+                let request = MessagePayload {
+                    r#type: "command".to_owned(),
+                    message: "request_server_metadata".to_owned(),
+                    authcode: "0".to_owned(),
+                };
+                let _ = cmd_tx.send(serde_json::to_string(&request)? + "\n").await;
+                Ok(())
+                //create_server(state, cmd_tx, stdin_ref, serde_json::to_value(payload)?).await
             }
             other => {
                 let _ = cmd_tx.send(format!("Unknown command: {}", other)).await;
+                Ok(())
             }
         }
     } else if typ == "console" {
@@ -1376,7 +1503,12 @@ async fn handle_typical_command_or_console(
             let _ = stdin.write_all(format!("{}\n", input).as_bytes()).await;
             let _ = stdin.flush().await;
             let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
+            Ok(())
+        } else {
+            Ok(())
         }
+    } else {
+        Ok(())
     }
 }
 
@@ -1425,15 +1557,17 @@ async fn start_server_with_broadcast(
     let (broadcast_tx, _) = broadcast::channel(1000);
 
     println!("Adjusted path to: server/");
-    if let Some(provider_type) = get_provider(
-        &get_provider_from_servername(&state, state.current_server.clone()).await,
-        &get_definite_path_from_tag(
-            state,
-            get_provider_from_servername(&state, state.current_server.clone()).await,
-        )
-        .await,
-    ) {
-        println!("Selected provider: {}", provider_type.name);
+    let current_server = state.current_server.lock().await
+        .clone()
+        .ok_or("there is no current server")?;
+    
+    let provider = get_provider_from_servername(&state, Some(current_server)).await;
+    
+    if let Some(provider_type) = get_provider_object(
+        provider.as_deref(),
+        get_definite_path_from_name(&state, provider.clone()).await.as_deref(),
+    ).await {
+        println!("Selected provider: {}", provider_type.0);
 
         // if let Some(pre_hook_cmd) = provider_type.pre_hook() {
         //     let mut cmd = pre_hook_cmd;
@@ -1446,8 +1580,14 @@ async fn start_server_with_broadcast(
         //     )
         //     .await;
         // }
-
-        let start_command = provider_type
+        let mut provider_game_commands: ProviderGame = match pick_platform(provider_type.1) {
+            Some(prov) => prov.into(),
+            None => return Err("no platform".into()),
+        };
+        if let Some(location) = get_definite_path_from_name(&state, provider.clone()).await.as_deref() {
+            let _ = provider_game_commands.set_location(location.to_owned());
+        }
+        let start_command = provider_game_commands
             .start()
             .ok_or("Provider does not support starting servers")?;
 
@@ -1754,101 +1894,167 @@ async fn handle_commands_with_metadata(
     cmd_tx: &mpsc::Sender<String>,
     stdin_ref: &Arc<Mutex<Option<ChildStdin>>>,
     hostname: &Arc<Result<OsString, String>>,
-) {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let typ = payload.message_type.clone();
     if typ == "command" {
         let cmd_str = payload.message.clone();
         match cmd_str.as_str() {
             "create_server" => {
-                if let MetadataTypes::Server {
-                    providertype,
-                    location,
-                    provider,
-                    servername,
-                } = &payload.metadata.clone()
-                {
-                    if let Some(prov) = get_provider(
-                        providertype,
-                        &get_definite_path_from_tag(
-                            &state,
-                            get_provider_from_servername(&state, state.current_server.clone())
-                                .await,
-                        )
-                        .await,
-                    ) {
-                        if let Some(cmd) = prov.pre_hook() {
-                            run_command_live_output(
-                                &state,
-                                cmd,
-                                "Pre-hook".into(),
-                                Some(cmd_tx.clone()),
-                                None,
-                            )
-                            .await
-                            .ok();
-                        }
-                        if let Some(cmd) = prov.install() {
-                            run_command_live_output(
-                                &state,
-                                cmd,
-                                "Install".into(),
-                                Some(cmd_tx.clone()),
-                                None,
-                            )
-                            .await
-                            .ok();
-                        }
-                        if let Some(cmd) = prov.post_hook() {
-                            run_command_live_output(
-                                &state,
-                                cmd,
-                                "Post-hook".into(),
-                                Some(cmd_tx.clone()),
-                                None,
-                            )
-                            .await
-                            .ok();
-                        }
-                        if let Some(cmd) = prov.start() {
-                            let tx = cmd_tx.clone();
-                            let stdin_clone = stdin_ref.clone();
-                            tokio::spawn(async move {
-                                run_command_live_output(
-                                    &state,
-                                    cmd,
-                                    "Server".into(),
-                                    Some(tx),
-                                    Some(stdin_clone),
-                                )
-                                .await
-                                .ok();
-                            });
-                            let _ = cmd_tx.send("Server started".into()).await;
-                        }
-                    }
+                // println!("Running create server function");
+                let result = create_server(state, cmd_tx, stdin_ref, serde_json::to_value(payload)?).await;
+                if let Err(error) = result {
+                    println!("{:#?}", error);
+                    return Err(error);
+                } else {
+                    return Ok(())
                 }
             }
-            _ => {}
+            "set_server" => {
+                // let mut  db = state.db.lock().await;
+                // if let MetadataTypes::Server { servername, provider, location, providertype: _ } = &payload.metadata {
+                //     db.server_index.insert(servername.to_string(), ServerIndex { location: location.to_string(), provider: provider.to_string() });
+                //     Ok(())
+                // } else {
+                //     Ok(())
+                // }
+                // println!("Raw JSON: {}", serde_json::to_string_pretty(&payload_raw_value).unwrap_or_default());
+                if let MetadataTypes::Server { servername, provider, location, providertype } = &payload.metadata {
+                    let mut mutable_server = state.current_server.lock().await;
+                    *mutable_server = Some(servername.to_string());
+                    Ok(())
+                } else {
+                    Ok(())
+                }
+            }
+            _ => {
+                Ok(())
+            }
         }
+    } else {
+        //Ok(())
+        Err(Error::new(
+            ErrorKind::Other,
+            "This should not be here"
+        ))?
     }
 }
+
+async fn create_server(state: Arc<AppState>, cmd_tx: &mpsc::Sender<String>, stdin_ref: &Arc<Mutex<Option<ChildStdin>>>, payload_raw_value: Value) ->
+Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if let Ok(payload) = serde_json::from_value::<IncomingMessageWithMetadata>(payload_raw_value){
+        if let MetadataTypes::Server {
+            providertype,
+            location,
+            provider,
+            servername,
+        } = &payload.metadata.clone()
+        {
+            let mut db = state.db.lock().await;
+            if let MetadataTypes::Server { servername, provider, location, providertype: _ } = &payload.metadata {
+                let filtered_location = if location.starts_with("server/") {
+                    location.clone()
+                } else {
+                    format!("server/{}", location)
+                };
+
+                db.server_index.insert(servername.to_string(), ServerIndex { location: filtered_location.to_string(), provider: provider.to_string() });
+                save_db(&db);
+                drop(db);
+
+                let provider = get_provider_from_servername(&state, Some(servername.to_string())).await;
+                let path = get_definite_path_from_name(&state, Some(servername.to_string())).await;
+
+                if let Some((name, provider_platforms)) = get_provider_object(
+                    provider.as_deref(),
+                    path.as_deref(),
+                ).await {
+                    let mut prov: ProviderGame = match pick_platform(provider_platforms) {
+                        Some(prov) => prov,
+                        None => return Err("No platform".into())
+                    }.into();
+
+                    let _ = prov.set_location(filtered_location);
+
+                    if let Some(cmd) = prov.pre_hook() {
+                        run_command_live_output(&state, cmd, "Pre-hook".into(), Some(cmd_tx.clone()), None).await.ok();
+                    }
+                    if let Some(cmd) = prov.install() {
+                        run_command_live_output(&state, cmd, "Install".into(), Some(cmd_tx.clone()), None).await.ok();
+                    }
+                    if let Some(cmd) = prov.post_hook() {
+                        run_command_live_output(&state, cmd, "Post-hook".into(), Some(cmd_tx.clone()), None).await.ok();
+                    }
+                    if let Some(cmd) = prov.start() {
+                        let tx = cmd_tx.clone();
+                        let stdin_clone = stdin_ref.clone();
+                        let state_clone = Arc::clone(&state);
+                        tokio::spawn(async move {
+                            run_command_live_output(&state_clone, cmd, "Server".into(), Some(tx), Some(stdin_clone)).await.ok();
+                        });
+                        let _ = cmd_tx.send("Server started".into()).await;
+                    }
+                    Ok(())
+                } else {
+                    Ok(())
+                }
+            } else {
+                Ok(())
+            }
+        } else {
+            Ok(())
+        }
+    } else {
+        Ok(())
+    }
+}
+
+fn pick_platform(platform: Platforms) -> Option<ProviderConfig> { 
+    println!("test");
+    if cfg!(target_os = "linux") {
+        return platform.linux;
+    } else if cfg!(target_os = "windows") {
+        return platform.windows;
+    } else {
+        return None
+    }
+}
+
+// use std::process::Command;
+const PROVIDER_PATH: &str = "provider-db.json";
 
 // Gets a provider out of a handpicked list of gameservers, including custom, at some point needs to be massively re-worked as
 // it might be a bit messy having this is my rust code, the majority of the code and types are in provider.rs and it just relies on
 // structs I created changing into this provider types, which is one of the few reasons why a better system is needed, it also takes a path to put the files in (not implimented yet)
-fn get_provider(name: &str, path: &str) -> Option<ProviderType> {
+async fn get_provider_object(option_name: Option<&str>, option_path: Option<&str>) -> Option<(String, Platforms)> {
+    if option_name.is_none() || option_path.is_none() {
+        return None
+    }
+    let (path, name) = (option_path.unwrap(), option_name.unwrap());
+
     let mut path = path.to_string();
     if !path.starts_with("server/") {
         path = format!("server/{}", path);
         println!("Adjusted path to: {}", path);
     }
 
-    match name {
-        "minecraft" => {
-            println!("Selected provider: Minecraft");
-            Some(Minecraft.into())
+    let contents: Result<ProviderDbList, serde_json::Error> = serde_json::from_str(&match fs::read_to_string(PROVIDER_PATH).await {
+        Ok(prov) => {
+            println!("Read provider DB file OK ({} bytes)", prov.len());
+            prov
+        },
+        Err(e) => {
+            println!("ERROR: Failed to read PROVIDER_PATH='{}': {}", PROVIDER_PATH, e);
+            return None;
         }
-        "custom" => {
+    });
+    //.expect("Failed to read provider db file");
+    //match name {
+        // "minecraft" => {
+        //     println!("Selected provider: Minecraft");
+        //     Some(Minecraft::new(path).into())
+        // }
+        //"custom" => {
+        if name == "custom" {
             let provider_json_path = format!("{}/provider.json", path);
             println!(
                 "Looking for custom provider config at: {}",
@@ -1880,11 +2086,11 @@ fn get_provider(name: &str, path: &str) -> Option<ProviderType> {
                                 custom = custom.with_start(cmd);
                             }
 
-                            Some(custom.into())
+                            return Some((name.to_string(), custom.into()))
                         }
                         Err(e) => {
                             println!("[ERROR] Failed to parse provider.json: {}", e);
-                            Some(Custom::new().into())
+                            return Some((name.to_owned(), Custom::new().into()))
                         }
                     }
                 }
@@ -1893,26 +2099,76 @@ fn get_provider(name: &str, path: &str) -> Option<ProviderType> {
                         "[WARN] Could not read provider.json at {}: {}",
                         provider_json_path, e
                     );
-                    None
+                    return None
                 }
             }
-        }
-        _ => {
-            println!("[WARN] Unknown provider: {}", name);
-            None
-        }
-    }
+        } else {
+            println!("Looking up '{}' in provider DB at: {}", name, PROVIDER_PATH);
+            
+            let db = match contents {
+                Ok(db) => {
+                    println!("Provider DB loaded, entries: {:?}", db.list.keys().collect::<Vec<_>>());
+                    db
+                },
+                Err(e) => {
+                    println!("ERROR: Failed to parse provider DB: {}", e);
+                    return None;
+                }
+            };
+
+            if let Some((inner_provider_name, inner_provider)) = db.list.iter().find(|(provider_name, _)| *provider_name == name) {
+                println!("found provider: {}", inner_provider_name);
+                return Some((inner_provider_name.to_string(), inner_provider.clone()))
+            } else {
+                println!("'{}' not found in DB. Available: {:?}", name, db.list.keys().collect::<Vec<_>>());
+                return None
+            }
+        };
+        // }
+        // _ => {
+        //     println!("[WARN] Unknown provider: {}", name);
+        //     None
+        // }
 }
+
 
 // Needs to be implimented, provider and servername should not forever remain the same thing and
 // a index needs to be kept about what provider matches to which server, the code already store the data
 // but at some point i need to decouple the two
-async fn get_provider_from_servername(state: &AppState, servername: String) -> String {
-    servername
+async fn get_provider_from_servername(state: &AppState, name: Option<String>) -> Option<String> {
+    if name.is_some() {
+        let db = state.db.lock().await;
+        let server_path = db.server_index.iter().find(|(server_name, _)| name.clone().unwrap() == **server_name);
+        if server_path.is_some() {
+            if let Some((_, server_index)) = server_path {
+                Some(server_index.provider.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    }
 }
 
-// paths are tagged, this is for nested servers within the server directory, so you can have the files of multiple servers in one node, and the string returned is added to the path
+// paths are tagged (with the name), this is for nested servers within the server directory, so you can have the files of multiple servers in one node, and the string returned is added to the path
 // that create server or anything about the server before the process is created or after the process finishes needs to know
-async fn get_definite_path_from_tag(state: &AppState, tag: String) -> String {
-    String::new()
+async fn get_definite_path_from_name(state: &AppState, name: Option<String>) -> Option<String> {
+    if name.is_some() {
+        let db = state.db.lock().await;
+        let server_path = db.server_index.iter().find(|(server_name, _)| name.clone().unwrap() == **server_name);
+        if server_path.is_some() {
+            if let Some((_, server_index)) = server_path {
+                Some(server_index.location.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    }
 }

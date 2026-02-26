@@ -29,12 +29,12 @@
 		</aside>
 
 		<div class="topmost-bar">
-			<button id="filebrowser">Filebrowser</button>
-			<button id="statistics">Statistics</button>
-			<button id="workflows">Workflows</button>	
-			<button id="intergrations">Intergrations</button>	
-			<button id="backups">Backups</button>
-			<button id="settings">Settings</button>
+			<button id="filebrowser" onclick="window.location.href='filebrowser.html'">Filebrowser</button>
+			<button id="statistics" onclick="window.location.href='statistics.html'">Statistics</button>
+			<button id="workflows" onclick="window.location.href='workflows.html'">Workflows</button>
+			<button id="intergrations" onclick="window.location.href='integrations.html'">Integrations</button>
+			<button id="backups" onclick="window.location.href='backups.html'">Backups</button>
+			<button id="settings" onclick="window.location.href='settings.html'">Settings</button>
 
 			<button onclick="toggleButtons()">Manage buttons</button>
 			<div class="management-buttons" id="management-buttons">
@@ -91,10 +91,12 @@
 					<div action="" class="dropzone" id="myDropzone"></div>
 					<button id="uploadBtn" type="button">Upload</button>
 				</div>
-				<select id="providertype-selector" name="providertype-selector">
+				<select id="provider-selector" name="provider-selector">
 						<option value="custom">Custom</option>
 						<option value="minecraft" selected="selected">Vanilla minecraft</option>
 				</select>
+				<input id="server-name-entry" placeholder="Server name"></input>
+				<input id="server-location-entry" placeholder="Server location"></input>
 				<div class="dialog-buttons">
 					<button type="button" onclick="createDefaultServer()">Standard Create Server</button>
 					<button type="button" onclick="this.closest('dialog').close()">Cancel</button>
@@ -104,16 +106,25 @@
 		<dialog id="configureServerDialog" class="user-dialog">
 			<form method="dialog">
 				<h1>Test</h1>
+				<div>
+					<h5>Current server name: </h5>
+					<h4 id="server-name"></h4>
+					<h5>Server Selection</h5>
+					<h5 id="current-server"></h5>
+					<select id="server" name="server"></select>
+					<button onclick="changeServer()">Change server</button>
+				</div>
+				<!-- <br> -->
 				<h5>Server type:</h5>
-				<h5>Minecraft</h5>
+				<h5 id="current-server-type">Minecraft</h5>
 				<br>
 				<div>
-				<h5>Migrate from</h5>
-				<select id="migrate-from" name="migrate-from"></select>
-				</div>
-				<div>
-				<h5>Migrate to</h5>
-				<select id="migrate-to" name="migrate-to"></select>
+					<h5>Migrate from</h5>
+					<select id="migrate-from" name="migrate-from"></select>
+					</div>
+					<div>
+					<h5>Migrate to</h5>
+					<select id="migrate-to" name="migrate-to"></select>
 				</div>
 				<div class="dialog-buttons">
 					<button type="submit" onclick="updateServer()">Confirm</button>

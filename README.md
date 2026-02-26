@@ -1,6 +1,9 @@
 # Gameserver-rs, Game hosting for kubernetes and beyond!
+[![Discord](https://img.shields.io/discord/1469855997467295967?label=Discord&logo=discord)](https://discord.gg/XARWzcuCGW)
+<!-- ![Project icon](docs/images/icon.png) -->
+<img src="docs/images/icon.png" width="400">
 
-**NOT READY FOR PRODUCTION** \
+**NOT READY FOR PRODUCTION** 
 Currently alot of Kubernetes specific features do not work yet, like moving games to specific nodes, redundancy, etc but by editing the deployment in src/gameserver, you can add a nodeSelector for the server hosting the game.
 
 I dont recommend this for not tech-savvy users at the moment, and even then I would mostly recommend it to contributers who can help get this to users.

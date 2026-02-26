@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 #[cfg(any(feature = "full-stack", feature = "database"))]
 use std::default;
+//#[cfg(any(feature = "full-stack", feature = "database"))]
+//use std::default;
 // use sqlx::Error;
 use std::fmt;
 use std::error::Error;
@@ -8,12 +10,13 @@ use crate::Serialize;
 use crate::Deserialize;
 use crate::StatusCode;
 
-
 use serde::Deserializer;
 
 // use crate::NodeType;
 
 use serde::ser::StdError;
+
+use sqlx::types::Json;
 
 #[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
 use sqlx::{postgres::{PgValueRef, PgArgumentBuffer}, Postgres, Type, Decode, Encode};
@@ -44,10 +47,19 @@ impl Error for DatabaseError {}
 // }
 
 
+// #[derive(Debug, Deserialize, Serialize, Clone)]
+// pub struct RetrieveElement {
+//     pub element: Element,
+//     pub jwt: String,
+//     pub require_auth: bool
+// }
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct RetrieveElement {
     pub element: String
 }
+
+
 
 
 
@@ -69,7 +81,8 @@ pub enum Element {
     Node(Node),
     Button(Button),
     Server(Server),
-    Intergration(Intergration)
+    Intergration(Intergration),
+    String(String)
 }
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ModifyElementData {
@@ -92,6 +105,9 @@ pub struct Settings {
     pub(crate) driver: String,
     pub(crate) file_system_driver: String,
     pub(crate) enable_statistics_on_home_page: String,
+
+    //#[sqlx(flatten)]
+    pub(crate) current_server: Server
 }
 
 impl Default for Settings {
@@ -104,7 +120,10 @@ impl Default for Settings {
             rcon_password: "testing".to_string(),
             driver: "".to_string(),
             enable_statistics_on_home_page: "".to_string(),
-            file_system_driver: "".to_string()
+            file_system_driver: "".to_string(),
+
+	    //#[sqlx(flatten)]
+            current_server: Server::default().into(),
         }
     }
 }
@@ -120,15 +139,18 @@ pub struct Settings {
     pub(crate) driver: String,
     pub(crate) file_system_driver: String,
     pub(crate) enable_statistics_on_home_page: String,
+    //#[sqlx(flatten)]
+    pub(crate) current_server: Json<Server>,
 }
 
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, sqlx::Type)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, sqlx::Type, Default)]
 // #[sqlx(type_name = "node_status", rename_all = "snake_case")]
 #[sqlx(type_name = "text")]
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
 pub enum NodeStatus {
+    #[default]
     Unknown,
     Enabled, 
     Disabled, 
@@ -179,10 +201,11 @@ use serde_json::Value;
     not(feature = "docker"),
     not(feature = "database")
 ))]
-#[derive(Debug, Serialize, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Serialize, Clone, Deserialize, PartialEq, Default)]
 // #[sqlx(type_name = "node_status", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
 pub enum NodeStatus {
+    #[default]
     Unknown,
     Enabled, 
     Disabled, 
@@ -380,7 +403,7 @@ pub struct User {
 
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
-#[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize, PartialEq, Default)]
 pub struct Node {
     pub nodename: String,
     pub ip: String,
@@ -391,7 +414,7 @@ pub struct Node {
 
 
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
 pub struct Node {
     pub nodename: String,
     pub ip: String,
@@ -438,24 +461,87 @@ pub struct Button {
 
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
-#[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize)]
+#[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize, Default, PartialEq)]
+//#[sqlx(flatten)]
 pub struct Server {
+    #[serde(default)]
     pub servername: String,
+    #[serde(default)]
     pub provider: String,
+    #[serde(default)]
     pub providertype: String,
-    pub location: String
+    #[serde(default)]
+    pub location: String,
+    #[serde(default)]
+    pub node: Json<Node>
 }
 
+// I made the mistake of NOT documenting my original plans for provider and providertype, 
+// I'll assume provide would have been something like the game, I have no idea for provider type but 
+// ill make it represent things within the game, like some game server types maintained by the community
+// some using diffrent languages, etc
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
 pub struct Server {
     pub servername: String,
     pub provider: String,
     pub providertype: String,
-    pub location: String
+    pub location: String,
+    pub node: Node
 } 
 
+pub trait IntoServer {
+    fn into_server(self) -> Server;
+}
 
+impl IntoServer for Server {
+    fn into_server(self) -> Server {
+        self
+    }
+}
+
+#[cfg(any(feature = "full-stack", feature = "database"))]
+impl IntoServer for sqlx::types::Json<Server> {
+    fn into_server(self) -> Server {
+        self.0
+    }
+}
+
+// impl From<Json<Server>> for Server {
+//     fn from(json_server: Json<Server>) -> Self {
+//         json_server.0
+//     }
+// }
+
+// impl From<Json<Node>> for Node {
+//     fn from(json_node: Json<Node>) -> Self {
+//         json_node.0
+//     }
+// }
+
+// impl From<Json<Server>> for Server {
+//     fn from(json_server: Json<Server>) -> Self {
+//         json_server.0
+//     }
+// }
+
+// impl From<Server> for Json<Server> {
+//     fn from(server: Server) -> Self {
+//         Json(server)
+//     }
+// }
+
+// impl From<Json<Node>> for Node {
+//     fn from(json_node: Json<Node>) -> Self {
+//         json_node.0
+//     }
+// }
+
+// impl From<Node> for Json<Node> {
+//     fn from(node: Node) -> Self {
+//         Json(node)
+//     }
+// }
 
 // #[async_trait]
 pub trait UserDatabase {
@@ -470,7 +556,7 @@ pub trait UserDatabase {
 pub trait ServerDatabase {
     async fn retrieve_server(&self, servername: String) -> Option<Server>;
     async fn fetch_all_servers(&self) -> Result<Vec<Server>, Box<dyn Error + Send + Sync>>;
-    async fn get_from_servers_database(&self, username: &str) -> Result<Option<Server>, Box<dyn Error + Send + Sync>>;
+    async fn get_from_servers_database(&self, servername: &str) -> Result<Option<Server>, Box<dyn Error + Send + Sync>>;
     async fn create_server_in_db(&self, server: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
     async fn remove_server_in_db(&self, server: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
     async fn edit_server_in_db(&self, server: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;

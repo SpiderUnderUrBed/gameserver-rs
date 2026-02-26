@@ -1,5 +1,5 @@
 {
-    "nixEnvSelector.nixFile": "${workspaceFolder}/shell.nix",
+    "nixEnvSelector.nixFile": "${workspaceFolder}/flake.nix",
     "rust-analyzer.diagnostics.disabled": [
         "unresolved-proc-macro"
     ]

@@ -1,0 +1,16 @@
+{
+  "server_index": {
+    "dxxx": {
+      "location": "server/eee",
+      "provider": "minecraft"
+    },
+    "xxdd": {
+      "location": "server/xxc",
+      "provider": "minecraft"
+    },
+    "minecraft": {
+      "location": "server/",
+      "provider": "minecraft"
+    }
+  }
+}

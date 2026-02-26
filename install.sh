@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# note to developer, no need to have the postgres db script ran within here, as only json is avalible atm
 set -e
 
 REPO_URL="https://github.com/SpiderUnderUrBed/gameserver-rs"
@@ -72,7 +73,7 @@ sudo systemctl enable "$MAIN_SERVICE_NAME.service"
 sudo systemctl restart "$MAIN_SERVICE_NAME.service"
 rm "$MAIN_SERVICE_FILE"
 
-cd src/gameserver
+cd gameserver
 
 cargo build --release
 

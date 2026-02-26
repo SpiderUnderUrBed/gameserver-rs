@@ -33,7 +33,8 @@ class ServerConsole {
     this.loadFileUpload();
     this.updateStatus("up", false)
     this.tooltipHandlers();
-    
+
+    window.changeServer = () => this.changeServer();
     window.showStatusDialog = () => this.showStatusDialog();
     window.fetchNodes = () => this.fetchNodes();
     window.showServerDialog = () => this.showServerDialog();
@@ -1115,9 +1116,97 @@ async changeNode(node) {
     } 
   }
 
-  configureServer(){
+  async changeServer(){
+    const serverSelect = document.getElementById("server");
+    console.log("Changing server");
+         try {
+      const res = await fetch(`${this.basePath}/api/setserver`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          element: {
+            kind: "String",
+            data: serverSelect.value
+          },
+          jwt: "",
+          require_auth: true
+        }),
+      });
+
+      const text = await res.text();
+      console.log(res.status)
+      if (res.ok) {
+        try {
+          const data = JSON.parse(text);
+          console.log( `Server Response: ${data.response}`);
+        } catch {
+          console.log(`Invalid JSON response: ${text}`);
+        }
+      } else {
+        console.log(`Failed (${res.status}): ${text}`)
+      }
+    } catch (err) {
+      console.log(`Error: ${err.message}`)
+    }
+  }
+
+  async configureServer(){
     const serverDialog = document.getElementById("configureServerDialog");
+    const serverSelect = document.getElementById("server");
+    const serverName = document.getElementById("server-name");
+
     serverDialog.showModal()
+    try {
+      const res = await fetch(`${this.basePath}/api/servers`, {
+        method: "GET",
+      });
+
+      const text = await res.text();
+      if (res.ok) {
+        try {
+          //console.log(text)
+          const data = JSON.parse(text);
+          console.log( `Server Response: ${JSON.stringify(data)}`);
+          for (let i = 0; i < data.list.data.length; i++) {
+              const server = data.list.data[i];
+              const option = document.createElement("option");
+              option.value = server.servername;
+              option.text = server.servername;
+              serverSelect.appendChild(option);
+          }
+        } catch {
+          console.log(`Invalid JSON response: ${text}`);
+        }
+      } else {
+        console.log(`Failed (${res.status}): ${text}`)
+      }
+    } catch (err) {
+      console.log(`Error: ${err.message}`)
+    }
+    try {
+      const res = await fetch(`${this.basePath}/api/getserver`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          element: ""
+        }),
+      });
+
+      const text = await res.text();
+      if (res.ok) {
+        try {
+          const data = JSON.parse(text);
+          serverName.textContent = data.servername;
+          console.log( `Server Response: ${JSON.stringify(data)}`);
+        } catch {
+          console.log(`Invalid JSON response: ${text}`);
+        }
+      } else {
+        console.log(`Failed (${res.status}): ${text}`)
+      }
+    } catch (err) {
+      console.log(`Error: ${err.message}`)
+    }
   }
   async startServer() {
     this.updateStatus("up", true)
@@ -1198,7 +1287,9 @@ async changeNode(node) {
   async createDefaultServer() {
     this.updateStatus("up", true)
 
-    let providertype = document.getElementById("providertype-selector").value;
+    let servername = document.getElementById("server-name-entry").value;
+    let provider = document.getElementById("provider-selector").value;
+    let location = document.getElementById("server-location-entry").value;
 
     try {
       const res = await fetch(`${this.basePath}/api/generalwithmetadata`, {
@@ -1215,10 +1306,10 @@ async changeNode(node) {
               kind: "Server",
               data: {
                 // providertype, location, provider, servername
-                servername: providertype,
-                providertype,
-                provider: "",
-                location: ""
+                servername,
+                providertype: "",
+                provider,
+                location
               }
             }
           },

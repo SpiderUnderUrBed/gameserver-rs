@@ -19,9 +19,7 @@
     ];
     
     commonNativeBuildInputs = with pkgs; [
-      rustup
-      rustc
-      cargo
+      # Remove rustup, rustc, cargo from here - they're already in buildInputs
       openssl
       pkg-config
       postgresql

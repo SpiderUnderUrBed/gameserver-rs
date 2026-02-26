@@ -233,13 +233,13 @@ impl ServerDatabase for Database {
         Ok(database.servers.iter().find(|server| server.servername == servername).cloned())  
     }
     async fn create_server_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
-        if let Element::Server(Server {servername, provider, providertype, location }) = element.element {
+        if let Element::Server(Server {servername, provider, providertype, location, node }) = element.element {
             let mut database = self.get_database().await?;
     
             if database.servers.iter().any(|server| server.servername == servername){
                 return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
             } else {
-                let server = Server { servername, provider, providertype, location };
+                let server = Server { servername, provider, providertype, location, node };
                 database.servers.push(server.clone());
             }
         
@@ -251,7 +251,7 @@ impl ServerDatabase for Database {
     }
     async fn remove_server_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         let mut database = self.get_database().await?;
-        if let Element::Server(Server {servername, provider, providertype, location }) = element.element {
+        if let Element::Server(Server {servername, provider, providertype, location, node }) = element.element {
             database.servers.retain(|db_server| db_server.servername != servername);
         } else {
             return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
@@ -262,7 +262,7 @@ impl ServerDatabase for Database {
         Ok(StatusCode::CREATED)
     }
     async fn edit_server_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
-        if let Element::Server(Server {servername, provider, providertype, location }) = element.element {
+        if let Element::Server(Server {servername, provider, providertype, location, node }) = element.element {
             let mut database = self.get_database().await?;
             if let Some(db_server) = database.servers.iter_mut().find(|db_server| db_server.servername == servername) {
                 // db_server.user_perms = user_perms.clone();
