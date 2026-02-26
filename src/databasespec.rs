@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 #[cfg(any(feature = "full-stack", feature = "database"))]
 use std::default;
-#[cfg(any(feature = "full-stack", feature = "database"))]
-use std::default;
+//#[cfg(any(feature = "full-stack", feature = "database"))]
+//use std::default;
 // use sqlx::Error;
 use std::fmt;
 use std::error::Error;
@@ -10,12 +10,13 @@ use crate::Serialize;
 use crate::Deserialize;
 use crate::StatusCode;
 
-
 use serde::Deserializer;
 
 // use crate::NodeType;
 
 use serde::ser::StdError;
+
+use sqlx::types::Json;
 
 #[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
 use sqlx::{postgres::{PgValueRef, PgArgumentBuffer}, Postgres, Type, Decode, Encode};
@@ -104,6 +105,8 @@ pub struct Settings {
     pub(crate) driver: String,
     pub(crate) file_system_driver: String,
     pub(crate) enable_statistics_on_home_page: String,
+
+    //#[sqlx(flatten)]
     pub(crate) current_server: Server
 }
 
@@ -118,7 +121,9 @@ impl Default for Settings {
             driver: "".to_string(),
             enable_statistics_on_home_page: "".to_string(),
             file_system_driver: "".to_string(),
-            current_server: Server::default(),
+
+	    //#[sqlx(flatten)]
+            current_server: Server::default().into(),
         }
     }
 }
@@ -134,7 +139,8 @@ pub struct Settings {
     pub(crate) driver: String,
     pub(crate) file_system_driver: String,
     pub(crate) enable_statistics_on_home_page: String,
-    pub(crate) current_server: String,
+    //#[sqlx(flatten)]
+    pub(crate) current_server: Json<Server>,
 }
 
 
@@ -456,11 +462,18 @@ pub struct Button {
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
 #[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize, Default, PartialEq)]
+//#[sqlx(flatten)]
 pub struct Server {
+    #[serde(default)]
     pub servername: String,
+    #[serde(default)]
     pub provider: String,
+    #[serde(default)]
     pub providertype: String,
-    pub location: String
+    #[serde(default)]
+    pub location: String,
+    #[serde(default)]
+    pub node: Json<Node>
 }
 
 // I made the mistake of NOT documenting my original plans for provider and providertype, 
@@ -477,7 +490,58 @@ pub struct Server {
     pub node: Node
 } 
 
+pub trait IntoServer {
+    fn into_server(self) -> Server;
+}
 
+impl IntoServer for Server {
+    fn into_server(self) -> Server {
+        self
+    }
+}
+
+#[cfg(any(feature = "full-stack", feature = "database"))]
+impl IntoServer for sqlx::types::Json<Server> {
+    fn into_server(self) -> Server {
+        self.0
+    }
+}
+
+// impl From<Json<Server>> for Server {
+//     fn from(json_server: Json<Server>) -> Self {
+//         json_server.0
+//     }
+// }
+
+// impl From<Json<Node>> for Node {
+//     fn from(json_node: Json<Node>) -> Self {
+//         json_node.0
+//     }
+// }
+
+// impl From<Json<Server>> for Server {
+//     fn from(json_server: Json<Server>) -> Self {
+//         json_server.0
+//     }
+// }
+
+// impl From<Server> for Json<Server> {
+//     fn from(server: Server) -> Self {
+//         Json(server)
+//     }
+// }
+
+// impl From<Json<Node>> for Node {
+//     fn from(json_node: Json<Node>) -> Self {
+//         json_node.0
+//     }
+// }
+
+// impl From<Node> for Json<Node> {
+//     fn from(node: Node) -> Self {
+//         Json(node)
+//     }
+// }
 
 // #[async_trait]
 pub trait UserDatabase {

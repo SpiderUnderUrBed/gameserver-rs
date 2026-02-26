@@ -43,6 +43,7 @@ fi
 
 echo -e "${yellow}creating tables...${nc}"
 
+# Users table
 echo -e "${yellow}creating users table...${nc}"
 run_sql "
 create table if not exists users (
@@ -70,6 +71,7 @@ create index if not exists idx_nodes_nodename on nodes(nodename);
 "
 echo -e "${green}nodes table created${nc}"
 
+# Servers table
 echo -e "${yellow}creating servers table...${nc}"
 run_sql "
 create table if not exists servers (
@@ -123,6 +125,7 @@ create table if not exists settings (
     driver varchar default '',
     file_system_driver varchar default '',
     enable_statistics_on_home_page varchar default '',
+    current_server jsonb default '{}'::jsonb,
     created_at timestamptz default now(),
     updated_at timestamptz default now()
 );
@@ -153,9 +156,10 @@ insert into settings (
     rcon_password,
     driver,
     file_system_driver,
-    enable_statistics_on_home_page
+    enable_statistics_on_home_page,
+    current_server
 )
-select false, '', true, 'localhost:25575', 'testing', '', '', ''
+select false, '', true, 'localhost:25575', 'testing', '', '', '', '{}'::jsonb
 where not exists (select 1 from settings);
 "
 echo -e "${green}default settings inserted${nc}"

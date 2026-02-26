@@ -12,12 +12,25 @@ app.tar.gz
 credentials.json
 /.history
 
-/gameserver/svelte.old/*
-/gameserver/svelte/node_modules/*
-/gameserver/svelte/build/*
-/gameserver/svelte/.svelte_kit/*
+#/gameserver/svelte.old/*
+#/gameserver/svelte/node_modules/*
+#/gameserver/svelte/build/*
+#/gameserver/svelte/.svelte_kit/*
 
-# /src/gameserver/svelte.old/*
-# /src/gameserver/svelte/node_modules/*
-# /src/gameserver/svelte/build/*
-# /src/gameserver/svelte/.svelte_kit/*
+/src/svelte.old/*
+/src/svelte/node_modules/*
+/src/svelte/build/*
+/src/svelte/.svelte_kit/*
+
+
+**/.svelte-kit/
+**/build/
+
+**/node_modules/*
+
+#/src/gameserver/svelte.old/*
+#/src/gameserver/svelte/node_modules/*
+#/src/gameserver/svelte/build/*
+#/src/gameserver/svelte/.svelte_kit/*
+
+activate-cargo-watch.txt

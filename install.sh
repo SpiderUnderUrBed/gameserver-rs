@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# note to developer, no need to have the postgres db script ran within here, as only json is avalible atm
 set -e
 
 REPO_URL="https://github.com/SpiderUnderUrBed/gameserver-rs"

@@ -17,6 +17,8 @@ use crate::filesystem::{FsType, send_multipart_over_broadcast};
 use crate::http::HeaderMap;
 use crate::kubernetes::verify_is_k8s_gameserver;
 use crate::middleware::from_fn;
+// use crate::databasespec::IntoServer;
+use crate::database::databasespec::IntoServer;
 use axum::Form;
 use axum::extract::Multipart;
 use axum::extract::Query;
@@ -108,6 +110,8 @@ static LOG_NONFATAL_FORWARD_REQUESTS: bool = false;
 mod database {
     include!("pgdatabase.rs");
 }
+// #[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
+// static DATABASE_TYPE = "postgres";
 
 #[cfg(all(
     not(feature = "full-stack"),
@@ -117,6 +121,13 @@ mod database {
 mod database {
     include!("jsondatabase.rs");
 }
+
+// #[cfg(all(
+//     not(feature = "full-stack"),
+//     not(feature = "docker"),
+//     not(feature = "database")
+// ))]
+// static DATABASE_TYPE = "json";
 
 // JsonDatabase is only something that would be unique to Json and not any other database managed by sqlx
 #[cfg(all(
@@ -1323,11 +1334,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let mut current_server = None;
-    if !(database.get_settings().await?.current_server == Server::default()) {
+    if !(database.get_settings().await?.current_server.into_server() == Server::default()) {
         current_server = Some(
-            database.get_settings().await?.current_server
+            database.get_settings().await?.current_server.into_server()
         )
     }
+    // if (DATABASE_TYPE == "json") {
+    //     if !(database.get_settings().await?.current_server == Server::default()) {
+    //         current_server = Some(
+    //             database.get_settings().await?.current_server
+    //         )
+    //     }
+    // } else {
+    //     if !(database.get_settings().await?.current_server == sqlx::types::Json(Server::default())) {
+    //         current_server = Some(
+    //             database.get_settings().await?.current_server
+    //         )
+    //     }
+    // }
 
     // use everything so far to make the app state
     let mut state: AppState = AppState {
@@ -2359,8 +2383,8 @@ async fn set_server(
                     nodestatus: NodeStatus::Unknown, 
                     nodetype: state.current_node.nodetype.clone(), 
                     k8s_type: state.current_node.k8s_type.clone()
-                },
-            }
+                }.into(),
+            }.into()
         );
 
         let msg = MessagePayloadWithMetadata {
@@ -2602,7 +2626,7 @@ async fn process_general_with_metadata(
                             nodestatus: NodeStatus::Unknown, 
                             nodetype: state.current_node.nodetype.clone(), 
                             k8s_type: state.current_node.k8s_type.clone()
-                        },
+                        }.into(),
                     });
                 
                 let database = &state.database;
@@ -2636,7 +2660,7 @@ async fn process_general_with_metadata(
                                         nodestatus: NodeStatus::Unknown, 
                                         nodetype: state.current_node.nodetype.clone(), 
                                         k8s_type: state.current_node.k8s_type.clone()
-                                    },
+                                    }.into(),
                                 }),
                                 jwt: payload.authcode,
                                 require_auth: false,
