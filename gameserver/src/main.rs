@@ -429,7 +429,7 @@ struct AppState {
     // Consider if i want to store the db at all, previously I was wondering whether or not to have an arc mutex, (arc not needed; the app state has a arc, so I just need to add a mutex
     // so now any changes will still be in sync so you never have a case of a longer operation based on older data writting to the db overwriting the newer one).
     // now I am considering if I need db at all, ill keep it here for now to consider parity with the main gameserver node based on design choices.
-    db: Arc<Mutex<jsondatabase::Database>>, 
+    db: Arc<Mutex<databasespec::Database>>, 
 }
 
 // Will remove this, this was kept because at a time there was a issue with the channels reciving messages they sent, so
@@ -560,9 +560,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         db: Arc::clone(&arc_db),
         //db: db.clone().into(),
     };
-
-    //state.server_index = db.servers;
-    //
+    
+    let db_current_server = state.db.lock().await.current_server.clone();
+    *state.current_server.lock().await = if !db_current_server.is_empty() {
+        Some(db_current_server)
+    } else {
+        drop(db_current_server);
+        None
+    };
 
     let arc_state = Arc::new(state);
 
@@ -1394,18 +1399,21 @@ async fn handle_typical_command_or_console(
                     .clone()
                     .ok_or("there is no current server")?;
                 
-                let provider = get_provider_from_servername(&state, Some(current_server)).await;
-                
+                let provider = get_provider_from_servername(&state, Some(current_server.clone())).await;
+                let location = get_definite_path_from_name(&state, Some(current_server.clone())).await;
+                // println!("DEBUG current_server: '{}'", current_server);
+                // println!("DEBUG location: '{:?}'", location);
+
                 if let Some((_, provider_platform)) = get_provider_object(
                     provider.as_deref(),
-                    get_definite_path_from_name(&state, provider.clone()).await.as_deref(),
+                    location.as_deref(),
                 ).await {
                     let mut provider_game_commands: ProviderGame = match pick_platform(provider_platform) {
                         Some(prov) => prov.into(),
                         None => return Err("no platform".into()),
                     };
-                    if let Some(location) = get_definite_path_from_name(&state, provider.clone()).await.as_deref() {
-                        let _ = provider_game_commands.set_location(location.to_owned());
+                    if let Some(ref loc) = location {
+                        let _ = provider_game_commands.set_location(loc.to_owned());
                     }
                     if let Some(cmd) = provider_game_commands.start() {
                         let tx = cmd_tx.clone();
@@ -1560,44 +1568,30 @@ async fn start_server_with_broadcast(
     let current_server = state.current_server.lock().await
         .clone()
         .ok_or("there is no current server")?;
-    
-    let provider = get_provider_from_servername(&state, Some(current_server)).await;
+
+    let provider = get_provider_from_servername(&state, Some(current_server.clone())).await;
+    let location = get_definite_path_from_name(&state, Some(current_server.clone())).await;
     
     if let Some(provider_type) = get_provider_object(
         provider.as_deref(),
-        get_definite_path_from_name(&state, provider.clone()).await.as_deref(),
+        location.as_deref(),
     ).await {
-        println!("Selected provider: {}", provider_type.0);
-
-        // if let Some(pre_hook_cmd) = provider_type.pre_hook() {
-        //     let mut cmd = pre_hook_cmd;
-        //     cmd.current_dir("server/");
-        //     let _ = run_command_live_output(
-        //         cmd,
-        //         "Pre-hook".into(),
-        //         Some(cmd_tx.clone()),
-        //         None,
-        //     )
-        //     .await;
-        // }
         let mut provider_game_commands: ProviderGame = match pick_platform(provider_type.1) {
             Some(prov) => prov.into(),
             None => return Err("no platform".into()),
         };
-        if let Some(location) = get_definite_path_from_name(&state, provider.clone()).await.as_deref() {
-            let _ = provider_game_commands.set_location(location.to_owned());
+        if let Some(ref loc) = location {
+            let _ = provider_game_commands.set_location(loc.to_owned());
         }
         let start_command = provider_game_commands
             .start()
             .ok_or("Provider does not support starting servers")?;
 
         let mut child = tokio::process::Command::from(start_command)
-            .current_dir("server/")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
-
         let stdin = child.stdin.take().expect("Failed to open stdin");
         let stdout = child.stdout.take().expect("Failed to open stdout");
         let stderr = child.stderr.take().expect("Failed to open stderr");
@@ -1919,6 +1913,9 @@ async fn handle_commands_with_metadata(
                 // }
                 // println!("Raw JSON: {}", serde_json::to_string_pretty(&payload_raw_value).unwrap_or_default());
                 if let MetadataTypes::Server { servername, provider, location, providertype } = &payload.metadata {
+                    let mut db = state.db.lock().await;
+                    db.current_server = servername.clone();
+                    save_db(&db);
                     let mut mutable_server = state.current_server.lock().await;
                     *mutable_server = Some(servername.to_string());
                     Ok(())
@@ -1960,13 +1957,17 @@ Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 db.server_index.insert(servername.to_string(), ServerIndex { location: filtered_location.to_string(), provider: provider.to_string() });
                 save_db(&db);
                 drop(db);
+                let debug_db = state.db.lock().await;
 
+                let current_server = state.current_server.lock().await;
                 let provider = get_provider_from_servername(&state, Some(servername.to_string())).await;
-                let path = get_definite_path_from_name(&state, Some(servername.to_string())).await;
+
+                //let provider = get_provider_from_servername(&state, current_server.clone()).await;
+                //let path = get_definite_path_from_name(&state, Some(servername.to_string())).await;
 
                 if let Some((name, provider_platforms)) = get_provider_object(
                     provider.as_deref(),
-                    path.as_deref(),
+                    get_definite_path_from_name(&state, current_server.clone()).await.as_deref(),
                 ).await {
                     let mut prov: ProviderGame = match pick_platform(provider_platforms) {
                         Some(prov) => prov,

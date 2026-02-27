@@ -1,4 +1,13 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+pub struct Database {
+    pub current_server: String, 
+    pub server_index: HashMap<String, ServerIndex>,
+}
+
 
 #[derive(Clone, Default, Debug, Deserialize, Serialize)]
 pub struct ServerIndex {

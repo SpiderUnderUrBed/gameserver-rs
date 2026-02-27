@@ -1,11 +1,20 @@
 {
+  "current_server": "test2",
   "server_index": {
-    "dxxx": {
-      "location": "server/eee",
-      "provider": "minecraft"
-    },
     "xxdd": {
       "location": "server/xxc",
+      "provider": "minecraft"
+    },
+    "test1": {
+      "location": "server/test1",
+      "provider": "minecraft"
+    },
+    "test2": {
+      "location": "server/test2",
+      "provider": "minecraft"
+    },
+    "dxxx": {
+      "location": "server/eee",
       "provider": "minecraft"
     },
     "minecraft": {
