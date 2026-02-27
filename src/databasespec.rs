@@ -16,6 +16,7 @@ use serde::Deserializer;
 
 use serde::ser::StdError;
 
+#[cfg(any(feature = "full-stack", feature = "database"))]
 use sqlx::types::Json;
 
 #[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
