@@ -1,9 +1,6 @@
 use async_trait::async_trait;
 #[cfg(any(feature = "full-stack", feature = "database"))]
 use std::default;
-//#[cfg(any(feature = "full-stack", feature = "database"))]
-//use std::default;
-// use sqlx::Error;
 use std::fmt;
 use std::error::Error;
 use crate::Serialize;
@@ -11,8 +8,6 @@ use crate::Deserialize;
 use crate::StatusCode;
 
 use serde::Deserializer;
-
-// use crate::NodeType;
 
 use serde::ser::StdError;
 
@@ -22,7 +17,6 @@ use sqlx::types::Json;
 #[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
 use sqlx::{postgres::{PgValueRef, PgArgumentBuffer}, Postgres, Type, Decode, Encode};
 
-//use sqlx::error::BoxDynError;
 
 use std::str::FromStr;
 use futures_util::TryFutureExt;
@@ -40,36 +34,11 @@ impl fmt::Display for DatabaseError {
 
 impl Error for DatabaseError {}
 
-
-
-// #[derive(Debug, Deserialize, Serialize, Clone)]
-// pub struct RetrieveUser {
-//     pub user: String
-// }
-
-
-// #[derive(Debug, Deserialize, Serialize, Clone)]
-// pub struct RetrieveElement {
-//     pub element: Element,
-//     pub jwt: String,
-//     pub require_auth: bool
-// }
-
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct RetrieveElement {
     pub element: String
 }
 
-
-
-
-
-// #[derive(Debug, Deserialize, Serialize, Clone)]
-// pub struct ModifyElementData {
-//     pub element: String,
-//     pub jwt: String,
-//     pub(crate) require_auth: bool
-// }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(tag = "kind", content = "data")]
@@ -88,14 +57,11 @@ pub enum Element {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ModifyElementData {
     pub element: Element,
-    // pub password: String,
     pub jwt: String,
     pub require_auth: bool,
-//     pub user_perms: Vec<String>
 }
 
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
-// #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Settings {
     pub(crate) toggled_default_buttons: bool,
@@ -106,8 +72,6 @@ pub struct Settings {
     pub(crate) driver: String,
     pub(crate) file_system_driver: String,
     pub(crate) enable_statistics_on_home_page: String,
-
-    //#[sqlx(flatten)]
     pub(crate) current_server: Server
 }
 
@@ -122,8 +86,6 @@ impl Default for Settings {
             driver: "".to_string(),
             enable_statistics_on_home_page: "".to_string(),
             file_system_driver: "".to_string(),
-
-	    //#[sqlx(flatten)]
             current_server: Server::default().into(),
         }
     }
@@ -140,14 +102,12 @@ pub struct Settings {
     pub(crate) driver: String,
     pub(crate) file_system_driver: String,
     pub(crate) enable_statistics_on_home_page: String,
-    //#[sqlx(flatten)]
     pub(crate) current_server: Json<Server>,
 }
 
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, sqlx::Type, Default)]
-// #[sqlx(type_name = "node_status", rename_all = "snake_case")]
 #[sqlx(type_name = "text")]
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
 pub enum NodeStatus {
@@ -160,50 +120,13 @@ pub enum NodeStatus {
 }
 
 use serde_json::Value;
-// impl<'de> Deserialize<'de> for NodeStatus {
-//     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-//     where
-//         D: Deserializer<'de>,
-//     {
-//         let raw = serde_json::Value::deserialize(deserializer)?;
-//         println!("Raw JSON being parsed: {}", serde_json::to_string_pretty(&raw).unwrap_or_else(|_| format!("{:?}", raw)));
-        
-//         if let Some(s) = raw.as_str() {
-//             let s = s.to_lowercase();
-//             return Ok(match s.as_str() {
-//                 "enabled" => NodeStatus::Enabled,
-//                 "disabled" => NodeStatus::Disabled,
-//                 "immutably_enabled" => NodeStatus::ImmutablyEnabled,
-//                 "immutably_disabled" => NodeStatus::ImmutablyDisabled,
-//                 _ => NodeStatus::Unknown,
-//             });
-//         }
-        
-//       
-//         if let Some(obj) = raw.as_object() {
-//             if let Some(state_val) = obj.get("state").and_then(|v| v.as_str()) {
-//                 let s = state_val.to_lowercase();
-//                 return Ok(match s.as_str() {
-//                     "enabled" => NodeStatus::Enabled,
-//                     "disabled" => NodeStatus::Disabled,
-//                     "immutably_enabled" => NodeStatus::ImmutablyEnabled,
-//                     "immutably_disabled" => NodeStatus::ImmutablyDisabled,
-//                     _ => NodeStatus::Unknown,
-//                 });
-//             }
-//         }
-        
-//         println!("Unknown format for NodeStatus: {:?}", raw);
-//         Ok(NodeStatus::Unknown)
-//     }
-// }
+
 #[cfg(all(
     not(feature = "full-stack"),
     not(feature = "docker"),
     not(feature = "database")
 ))]
 #[derive(Debug, Serialize, Clone, Deserialize, PartialEq, Default)]
-// #[sqlx(type_name = "node_status", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
 pub enum NodeStatus {
     #[default]
@@ -226,7 +149,6 @@ pub enum K8sType {
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, sqlx::Type)]
-// #[sqlx(type_name = "node_status", rename_all = "snake_case")]
 #[sqlx(type_name = "text")]
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
 pub enum K8sType {
@@ -258,9 +180,7 @@ pub enum NodeType {
 }
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
-// #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq, sqlx::Type)]
 #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
-// #[sqlx(type_name = "node_status", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
 pub enum NodeType {
     #[default]

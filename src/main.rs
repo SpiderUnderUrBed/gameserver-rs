@@ -17,7 +17,6 @@ use crate::filesystem::{FsType, send_multipart_over_broadcast};
 use crate::http::HeaderMap;
 use crate::kubernetes::verify_is_k8s_gameserver;
 use crate::middleware::from_fn;
-// use crate::databasespec::IntoServer;
 use crate::database::databasespec::IntoServer;
 use axum::Form;
 use axum::extract::Multipart;
@@ -50,8 +49,6 @@ use tokio::sync::{RwLock, mpsc};
 
 use rcon::Connection;
 
-// mod databasespec;
-// use databasespec::UserDatabase;
 use crate::database::Node;
 use crate::database::databasespec::Intergration;
 use crate::database::databasespec::NodeType;
@@ -110,7 +107,7 @@ static LOG_NONFATAL_FORWARD_REQUESTS: bool = false;
 mod database {
     include!("pgdatabase.rs");
 }
-// #[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
+// TODO: consider if i want to have a varible that represents the database type enabled
 // static DATABASE_TYPE = "postgres";
 
 #[cfg(all(
@@ -121,13 +118,6 @@ mod database {
 mod database {
     include!("jsondatabase.rs");
 }
-
-// #[cfg(all(
-//     not(feature = "full-stack"),
-//     not(feature = "docker"),
-//     not(feature = "database")
-// ))]
-// static DATABASE_TYPE = "json";
 
 // JsonDatabase is only something that would be unique to Json and not any other database managed by sqlx
 #[cfg(all(
@@ -141,9 +131,6 @@ use database::JsonBackend;
 use crate::database::databasespec::RetrieveElement;
 use database::ModifyElementData;
 use database::User;
-
-// mod intergrations;
-// use intergrations::{IntergrationCommands, run_intergration_commands};
 
 mod extra;
 use extra::value_from_line;
@@ -229,6 +216,7 @@ static StaticLocalUrl: &str = "127.0.0.1:8081";
 #[cfg(not(feature = "full-stack"))]
 static K8S_WORKS: bool = false;
 
+// TODO: consider having some feature thats aware if docker is avalible or not
 #[cfg(not(feature = "docker"))]
 static DOCKER_WORKS: bool = false;
 
@@ -238,7 +226,6 @@ static StaticTcpUrl: &str = "gameserver-service:8080";
 #[cfg(feature = "full-stack")]
 static StaticLocalUrl: &str = "127.0.0.1:8080";
 
-static WEBSOCKET_DEBUGGING: bool = false;
 // K8S_WORKS needs to be true in the case where the full stack is running and not if that is not the case
 // to avoid calling the dummy functions
 #[cfg(feature = "full-stack")]
@@ -380,8 +367,6 @@ enum MetadataTypes {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(tag = "kind", content = "data")]
 enum IntegrationCommands {
-    // MinecraftEnableRcon(serde_json::Value),
-    // MinecraftDisableRcon(serde_json::Value),
     MinecraftEnableRcon(serde_json::Value),
     MinecraftDisableRcon(serde_json::Value),
 }
@@ -420,12 +405,6 @@ struct Statistics {
 struct List {
     list: ApiCalls,
 }
-
-// #[derive(Debug, serde::Deserialize)]
-// struct KeywordPayload {
-//     start_keyword: Option<String>,
-//     stop_keyword: Option<String>,
-// }
 
 // May be redundant, but this is a struct for incoming messages
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -516,12 +495,7 @@ impl fmt::Display for ApiCalls {
     }
 }
 
-// #[derive(Debug, Deserialize, Serialize, Clone)]
-// #[serde(tag = "kind", content = "data")]
-// enum FileOperations {
-//     Move(SrcAndDest)
-// }
-
+// TODO: consider using this or implimenting a broader struct for any object
 // struct ApiCallsWithAuth {
 //     jwt: String,
 //     require_auth: String,
@@ -538,22 +512,6 @@ enum Status {
     Unhealthy,
 }
 
-// impl<'de> Deserialize<'de> for Status {
-//     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-//     where
-//         D: Deserializer<'de>,
-//     {
-//         let s = String::deserialize(deserializer)?.to_lowercase();
-//         Ok(match s.as_str() {
-//             "up" => Status::Up,
-//             "healthy" => Status::Healthy,
-//             "down" => Status::Down,
-//             "unhealthy" => Status::Unhealthy,
-//             _ => Status::Unknown,
-//         })
-//     }
-// }
-
 // AppState, this is a global struct which will be used to store data needed across the application like in routes and etc
 // which includes the sender and reciver to the tcp connection for gameserver, the websocket sender (receiver only needs to be managed by its own handler)
 // the base path like if all the routes are prefixed with something like /gameserver-rs which is the default for my testing deployment, and database as its needed frequently
@@ -566,19 +524,14 @@ struct AppState {
     internal_rx: Option<broadcast::Receiver<Vec<u8>>>,
     internal_tx: Option<broadcast::Sender<Vec<u8>>>,
     additonal_node_tcp: Vec<NodeAndTCP>,
-    //additonal_node_tcp: Vec<(tokio::sync::broadcast::Sender<Vec<u8>>, tokio::sync::broadcast::Receiver<Vec<u8>>)>,
     current_node: NodeAndTCP,
-    //gameserver: Value,
-    //status: Status,
     ws_tx: broadcast::Sender<String>,
     base_path: String,
-    //client: Option<Client>,
     client: Clients,
     database: database::Database,
     cached_status_type: String,
     rcon_connection: Option<Arc<Mutex<Connection<TcpStream>>>>,
-    current_server: Option<Server>, 
-    //sysinfo: System
+    current_server: Option<Server>,
 }
 impl Clone for AppState {
     fn clone(&self) -> Self {
@@ -587,15 +540,12 @@ impl Clone for AppState {
             tcp_rx: self.tcp_rx.resubscribe(),
             internal_rx: self.internal_rx.as_ref().map(|r| r.resubscribe()),
             internal_tx: self.internal_tx.clone(),
-            //gameserver: self.gameserver.clone(),
-            //status: self.status.clone(),
             ws_tx: self.ws_tx.clone(),
             base_path: self.base_path.clone(),
             client: self.client.clone(),
             current_node: self.current_node.clone(),
             database: self.database.clone(),
             tcp_conn_status: Status::Unknown,
-            //sysinfo: System::new_all(),
             additonal_node_tcp: self
                 .additonal_node_tcp
                 .iter()
@@ -633,8 +583,6 @@ async fn attempt_connection(
         .map_err(Into::into)
 }
 
-// use tokio::sync::broadcast::error::RecvError::Lagged;
-// use tokio::sync::broadcast::error::RecvError::Closed;
 pub async fn handle_stream(
     arc_state: Arc<RwLock<AppState>>,
     rx: &mut tokio::sync::broadcast::Receiver<Vec<u8>>,
@@ -736,7 +684,6 @@ pub async fn handle_stream(
                 })
                 .await;
 
-            //println!("value: \n {:#?}, line: \n {}", message_parsed, line_content);
             let mut message_values: Vec<Value> = vec![];
             for item in message_parsed {
                 if let Ok(data) = item {
@@ -778,12 +725,9 @@ pub async fn handle_stream(
             final_data.extend(list_values);
             final_data.extend(console_values);
             final_data.extend(message_values);
-            //println!("{:#?}", final_data);
 
             for value in final_data.iter() {
-                //println!("{:#?}", value);
                 if let Ok(payload) = serde_json::from_value::<MessagePayload>(value.clone()) {
-                    //println!("{:#?}", payload);
                     if payload.message == "end_conn" {
                         println!("Ending current connection");
                         let mut state_guard = arc_state.write().await;
@@ -791,7 +735,6 @@ pub async fn handle_stream(
                         return Ok((true, None));
                     // TODO: change this from type to message on the nodes side and here?
                     } else if payload.r#type == "server_state" {
-                        //println!("Got server state");
                         let mut state_guard = arc_state.write().await;
                         let sent_status = payload.message.parse().unwrap_or(false);
                         state_guard.current_node.status = match sent_status {
@@ -805,12 +748,10 @@ pub async fn handle_stream(
                     if let Ok(inner_value) =
                         serde_json::from_str::<serde_json::Value>(&data_clone.data)
                     {
-                        // println!("{:#?}", inner_value);
                         if let (Some(start_kw), Some(stop_kw)) = (
                             inner_value.get("start_keyword").and_then(|v| v.as_str()),
                             inner_value.get("stop_keyword").and_then(|v| v.as_str()),
                         ) {
-                            //println!("Changing keyword {} {}", start_kw.to_string().clone(), stop_kw.to_string().clone());
                             *server_start_keyword = start_kw.to_string();
                             *server_stop_keyword = stop_kw.to_string();
                         }
@@ -955,9 +896,9 @@ pub async fn handle_stream(
                 }
 
                 if FORWARD_ALL_MESSAGES == true {
+                    // TODO: Consider if i want to finish implimenting all_remaining_messages_result
                     let all_remaining_messages_result = match serde_json::to_string(&value) {
                         Ok(string) => {
-                            // internal_tx
                             if let Err(err) = ws_tx.send(string) {
                                 if LOG_NONFATAL_FORWARD_REQUESTS {
                                     eprintln!(
@@ -970,7 +911,6 @@ pub async fn handle_stream(
                         Err(err) => eprintln!("Failed to serialize request: {}", err),
                     };
                 }
-                //let _ = ws_tx.send(final_value);
             }
         }
         Ok((false, None))
@@ -984,9 +924,6 @@ pub async fn handle_stream(
                         Ok(0) => break,
                         Ok(n) => {
                             let raw_data = &buf[..n];
-                            // if process_stream_data(raw_data, &arc_state, &ws_tx, &ip, &mut server_start_keyword, &mut server_stop_keyword).await?.0 {
-                            //     break;
-                            // }
                             let (end_connection, write_data) = process_stream_data(raw_data, &arc_state, &ws_tx, &ip, &mut server_start_keyword, &mut server_stop_keyword).await?;
                             if let Some(data) = write_data {
                                 writer.write_all(&data).await?;
@@ -1052,9 +989,6 @@ pub async fn handle_stream(
     Ok(())
 }
 
-// use tokio::sync::broadcast::error::RecvError::Lagged;
-// use tokio::sync::broadcast::error::RecvError::Closed;
-
 // does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
 pub async fn connect_to_server(
     arc_state: Arc<RwLock<AppState>>,
@@ -1064,10 +998,8 @@ pub async fn connect_to_server(
     internal_stream: Option<broadcast::Receiver<Vec<u8>>>,
     end_if_timeout: bool,
     block_with_stream: bool,
-    //overall_timeout: Option<Duration>,
 ) -> Result<SocketAddr, Box<dyn Error + Send + Sync>> {
     let deadline: Instant = Instant::now() + CONNECTION_TIMEOUT;
-    //overall_timeout.unwrap_or(CONNECTION_TIMEOUT);
 
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -1107,16 +1039,9 @@ pub async fn connect_to_server(
                 eprintln!("TCP connect error: {}", e);
                 let mut state_guard = arc_state.write().await;
                 if let Some(tx) = &state_guard.internal_tx {
-                    tx.send("end_conn".into());
+                    let _ = tx.send("end_conn".into());
                 }
                 state_guard.tcp_conn_status = Status::Down;
-                // if check_channel_health(&state_guard.tcp_tx, state_guard.tcp_rx.resubscribe()).await {
-                //     // println!("up");
-                //     state_guard.tcp_conn_status = Status::Up
-                // } else {
-                //     //println!("down");
-                //     state_guard.tcp_conn_status = Status::Down
-                // }
                 println!("Done");
             }
             Err(_) => {
@@ -1147,15 +1072,13 @@ async fn try_initial_connection(
     let mut final_error: Box<dyn std::error::Error + Send + Sync> =
         "This should not show up".into();
     for _ in 0..conn_attempts {
-        // let mut has_succeeded = false;
         match attempt_connection(tcp_url.clone()).await {
             Ok(mut stream) => {
-                //let copy_state = &Arc::clone(&state);
                 println!("Initial connection succeeded!");
                 // note, possibly I wont ever need to create a handler from the test of the intial connection
                 // TODO: think about removing create_handler and just never create a handler
                 if create_handler {
-                    let (temp_tx, temp_rx) =
+                    let (_, temp_rx) =
                         tokio::sync::broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
                     let mut temp_rx = temp_rx;
                     let stream_result = handle_stream(
@@ -1171,14 +1094,12 @@ async fn try_initial_connection(
                     } else {
                         final_error = stream_result.err().unwrap()
                     }
-                    //.map_err(|| "Failed conn attempt")?
                 } else {
                     break;
                 }
             }
             Err(e) => {
                 eprintln!("Initial connection failed: {}", e);
-                // return Err(e)
             }
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -1186,14 +1107,7 @@ async fn try_initial_connection(
     Err(final_error)
 }
 
-// fn get_arg_or_env_var<T: std::str::FromStr>(env_var: &str, arg: Option<T>) -> Option<T> {
-//     arg.or_else(|| env::var(env_var).ok().and_then(|s| s.parse().ok()))
-// }
-
 // Looks for a env varible, if its not found, try the specified default, if none is found it will use the default of whatever that type is
-// fn get_env_var_or_arg<T: std::str::FromStr>(env_var: &str, default: Option<T>) -> Option<T> {
-//     env::var(env_var).ok().and_then(|s| s.parse().ok()).or(default)
-// }
 fn get_env_var_or_arg<T>(env_var: &str, default: Option<T>) -> Option<T>
 where
     T: std::str::FromStr + Clone,
@@ -1203,12 +1117,6 @@ where
         .and_then(|s| s.parse::<T>().ok())
         .or(default)
 }
-
-// fn get_env_var_or_required_arg<T: std::str::FromStr>(env_var: &str, arg: Option<T>, field_name: &str) -> T {
-//     get_env_var_or_arg(env_var, arg).unwrap_or_else(|| {
-//         panic!("{} must be provided either as argument or through {}", field_name, env_var)
-//     })
-// }
 
 // main function handles the initial connection
 // initilizing the database struct, getting and setting the base path as well as alot of defaults in AppState
@@ -1242,7 +1150,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         get_env_var_or_arg("LOCALURL", Some(StaticLocalUrl.to_string())).unwrap();
 
     // Overrides for testing or specific cases where how it worksin a setup may be diffrent
-
     let enable_k8s_client: bool = get_env_var_or_arg("ENABLE_K8S_CLIENT", Some(true)).unwrap();
     let force_rebuild: bool = get_env_var_or_arg("FORCE_REBUILD", Some(false)).unwrap();
     let build_docker_image: bool = get_env_var_or_arg("BUILD_DOCKER_IMAGE", Some(true)).unwrap();
@@ -1250,6 +1157,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let dont_override_conn_with_k8s: bool =
         get_env_var_or_arg("DONT_OVERRIDE_CONN_WITH_K8S", Some(true)).unwrap();
 
+    // TODO:
     // consider if I should not have enable_initial_connection and instead if initial_connection_attempts dont
     // try to connect to the server
     let enable_initial_connection: bool =
@@ -1265,10 +1173,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // sets the client to be none by default unless this is ran the stanard way which will be ran with the appropriate feature-flag
     // which will set the k8s client
-    // let mut client: Option<Client> = None;
-    // if enable_k8s_client && K8S_WORKS {
-    //     client = Some(Client::try_default().await?);
-    // }
     let mut client: Clients = Clients::None;
     if enable_k8s_client && K8S_WORKS {
         client = Clients::K8s(Client::try_default().await?);
@@ -1276,7 +1180,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut tcp_url: String = config_tcp_url.to_string();
     if !dont_override_conn_with_k8s && let Clients::K8s(ref inner_client) = client {
-        //let Clients::K8s(inner_client) = client;
         if let Ok(url_result) = &kubernetes::get_avalible_gameserver(&inner_client).await {
             tcp_url = url_result.clone();
         } else {
@@ -1320,7 +1223,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .map_err(|e| e)
                 // Temporary note, you could put e in a Error::new
                 // TODO: consider doing the above, and remove this and the above comment
-                //)))
                 {
                     Ok(conn) => Some(Arc::new(Mutex::new(conn))),
                     Err(e) => {
@@ -1328,37 +1230,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         None
                         // Connection stays None
                     }
-                //retrived_db
                 }
         }
     }
 
     let mut current_server = None;
     if !(database.get_settings().await?.current_server.into_server() == Server::default()) {
-        current_server = Some(
-            database.get_settings().await?.current_server.into_server()
-        )
+        current_server = Some(database.get_settings().await?.current_server.into_server())
     }
-    // if (DATABASE_TYPE == "json") {
-    //     if !(database.get_settings().await?.current_server == Server::default()) {
-    //         current_server = Some(
-    //             database.get_settings().await?.current_server
-    //         )
-    //     }
-    // } else {
-    //     if !(database.get_settings().await?.current_server == sqlx::types::Json(Server::default())) {
-    //         current_server = Some(
-    //             database.get_settings().await?.current_server
-    //         )
-    //     }
-    // }
 
     // use everything so far to make the app state
     let mut state: AppState = AppState {
-        //gameserver: json!({}),
-        //status: Status::Down,
         tcp_tx: tcp_tx,
-        // tcp_rx: Arc::new(Mutex::new(tcp_rx)),
         tcp_rx: tcp_rx,
         internal_rx: Some(internal_rx.resubscribe()),
         internal_tx: Some(internal_tx),
@@ -1371,8 +1254,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         tcp_conn_status: Status::Unknown,
         cached_status_type: String::new(),
         rcon_connection,
-        current_server, 
-        //sysinfo: System::new_all()
+        current_server,
     };
     state.tcp_conn_status = {
         if check_channel_health(&state.tcp_tx, state.tcp_rx.resubscribe()).await {
@@ -1383,12 +1265,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
 
     let multifaceted_state = Arc::new(RwLock::new(state));
-    load_settings(multifaceted_state.clone()).await;
+    let _ = load_settings(multifaceted_state.clone()).await;
 
     // if there is supposed to be a initial connection and if there is a client (as it wont be able to create the deployment without it, and it would be pointless to create a docker container
     // without the abbility to deploy it)
     if enable_initial_connection {
-        // && multifaceted_state.write().await.client.is_some() {
         println!("Trying initial connection...");
         let initial_connection_result = try_initial_connection(
             initial_connection_attempts,
@@ -1404,7 +1285,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             println!("All initial connections failed");
         }
         if initial_connection_result.is_err() || force_rebuild {
-            //if matches!(multifaceted_state.write().await.client, Clients::K8s(_)) {
             if let Clients::K8s(client) = &multifaceted_state.write().await.client {
                 eprintln!(
                     "Initial connection failed or force rebuild enabled, will possibly enable auto-build (configurable)"
@@ -1427,30 +1307,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let arc_state_clone = multifaceted_state.clone();
 
-    tokio::spawn(async move {
-        if let Err(e) = connect_to_server(
-            server_connection_state,
-            tcp_url.to_string(),
-            bridge_rx,
-            bridge_tx,
-            internal_stream,
-            false,
-            false,
-        )
-        .await
-        {
-            eprintln!("Connection task failed: {}", e);
-            let mut temporary_state = arc_state_clone.write().await;
-            // if check_channel_health(&temporary_state.tcp_tx, temporary_state.tcp_rx.resubscribe()).await {
-            //     // println!("up");
-            //     temporary_state.tcp_conn_status = Status::Up
-            // } else {
-            //     //println!("down");
-            //     temporary_state.tcp_conn_status = Status::Down
-            // }
-        }
-    });
-
     // Currently very permissive CORS for permissions
     let cors = CorsLayer::new()
         .allow_origin(CorsAny)
@@ -1470,11 +1326,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/servers", get(get_servers))
         .route("/api/users", get(users))
         .route("/api/ws", get(ws_handler))
-        // .route("getfiles", get(get_files))
         .route("/api/upload", post(upload))
-        // .route("/api/fileupload", post(stream_file_download))
         .route("/api/download/{*wildcard}", get(stream_file_download))
-        //.route("/api/uploadcontent", post(upload))
         .route("/api/statistics", get(statistics))
         .route("/api/getsettings", get(get_settings))
         .route("/api/awaitserverstatus", get(ongoing_server_status))
@@ -1590,29 +1443,8 @@ pub async fn ensure_rcon(arc_state: Arc<RwLock<AppState>>) -> Result<(), String>
 
     Ok(())
 }
-// async fn uploadcontent(
-//     State(arc_state): State<Arc<RwLock<AppState>>>,
-//     multipart: Multipart,
-// ) -> StatusCode {
 
-// }
-async fn file_operations(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
-    Json(request): Json<SrcAndDest>,
-) -> StatusCode {
-    let state = arc_state.write().await;
 
-    match serde_json::to_vec(&request) {
-        Ok(bytes) => {
-            if let Err(err) = state.tcp_tx.send(bytes) {
-                eprintln!("Failed to send request over broadcast: {}", err);
-            }
-        }
-        Err(err) => eprintln!("Failed to serialize request: {}", err),
-    }
-
-    StatusCode::CREATED
-}
 async fn upload(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     multipart: Multipart,
@@ -1632,8 +1464,6 @@ async fn migrate(
 ) -> impl IntoResponse {
     let state = arc_state.read().await;
 
-    //println!("{:#?}", request.clone());
-    // &state.tcp_tx {
     match serde_json::to_vec(&request) {
         Ok(bytes) => {
             if let Err(err) = state.tcp_tx.send(bytes) {
@@ -1648,7 +1478,6 @@ async fn migrate(
 }
 async fn refresh_status(
     State(arc_state): State<Arc<RwLock<AppState>>>,
-    // Json(_): Json<IncomingMessage>,
 ) {
     let mut state = arc_state.write().await;
     state.tcp_conn_status = {
@@ -1712,14 +1541,12 @@ async fn edit_buttons(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
-    //println!("Got request");
     let state = arc_state.write().await;
     let result = state
         .database
         .edit_button_in_db(request)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
-    //println!("Got result");
     result
 }
 async fn button_reset(
@@ -1778,11 +1605,9 @@ async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
         let mut broadcast_rx = broadcast_rx;
         while let Ok(mut msg) = broadcast_rx.recv().await {
             // msg is a String here
-            // println!("[Conn {}] Forwarding raw message: {}", conn_id, msg);
 
             // Try to parse msg as JSON Value
             if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&msg) {
-                // println!("[Conn {}] Forwarding raw message: {:#?}", conn_id, v);
                 if let Some(data_val) = v.get_mut("data") {
                     if data_val.is_array() {
                         let arr = data_val.as_array().unwrap();
@@ -1838,8 +1663,7 @@ async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
                     state.tcp_tx.clone()
                 };
 
-                // let mut lock = tcp_tx.lock().await;
-                let mut lock = tcp_tx;
+                let lock = tcp_tx;
                 let _ = lock.send(bytes);
             }
         }
@@ -1853,7 +1677,6 @@ async fn ws_handler(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    // let state = arc_state.write().await;
     ws.max_frame_size(1024 * 1024)
         .max_message_size(1024 * 1024)
         .on_failed_upgrade(|e| {
@@ -1927,11 +1750,6 @@ fn routes_static(state: Arc<RwLock<AppState>>) -> Router<Arc<RwLock<AppState>>> 
         .layer(auth_layer)
 }
 
-// async fn status(state: &AppState) -> String {
-//     state.status
-// }
-
-// #[axum::debug_handler]
 async fn load_settings(
     arc_state: Arc<RwLock<AppState>>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -1944,8 +1762,6 @@ async fn load_settings(
             ));
         }
     };
-    // println!("Loading settings");
-    // println!("{:#?}", state.cached_status_type);
     state.cached_status_type = settings.status_type;
 
     Ok(())
@@ -1956,8 +1772,7 @@ async fn set_settings(
     Json(request): Json<IncomingMessageWithValue>,
 ) -> impl IntoResponse {
     let inner_value = request.message;
-    //IncomingMessageWithValue
-    let mut state = arc_state.write().await;
+    let state = arc_state.write().await;
     let settings = match state.database.get_settings().await {
         Ok(s) => s,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -1986,9 +1801,7 @@ async fn set_settings(
         _ => {}
     };
     drop(state);
-    //println!("Starting it");
     let _ = load_settings(arc_state).await;
-    //println!("past it");
     if has_created {
         StatusCode::CREATED.into_response()
     } else {
@@ -2001,16 +1814,12 @@ async fn statistics(
 ) -> Sse<impl Stream<Item = Result<Event, Box<dyn Error + Send + Sync>>>> {
     let interval = interval(Duration::from_secs(3));
     let system = System::new_all();
-    //let state_clone = arc_state.clone();
 
     let updates = stream::unfold(
         (interval, system),
         move |(mut interval, mut system)| async move {
             interval.tick().await;
             system.refresh_all();
-            // let state = arc_state.write().await;
-            // let mut system = state.sysinfo;
-            // system.refresh_all();
 
             let core_data: Vec<String> = system
                 .cpus()
@@ -2028,8 +1837,6 @@ async fn statistics(
                 Err(_) => Err("Error".into()),
             };
             Some((event, (interval, system)))
-            // drop(state);
-            //Some((Ok(Event::default().data(serde_json::to_string(statistics)), (interval, system))))
         },
     );
     Sse::new(updates).keep_alive(axum::response::sse::KeepAlive::default())
@@ -2061,7 +1868,6 @@ async fn ongoing_server_status(
         (interval, state_clone),
         move |(mut interval, arc_state)| async move {
             interval.tick().await;
-            //println!("start");
             let status = {
                 let state = arc_state.read().await;
 
@@ -2078,8 +1884,6 @@ async fn ongoing_server_status(
                 }
             };
 
-            //println!("{:#?}", status);
-            // println!("past");
             let status_str = match status {
                 Status::Up => "up",
                 Status::Healthy => "healthy",
@@ -2153,7 +1957,6 @@ async fn modify_intergration(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    //let mut fetched_intergration: Option<Result<Option<Intergration>, StatusCode>>;
     if let Element::Intergration(ref intergration_element) = request.element {
         let fetched_intergration_result = state
             .database
@@ -2161,7 +1964,6 @@ async fn modify_intergration(
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
         if let Ok(Some(final_intergration)) = fetched_intergration_result {
-            // if final_intergration.settings.get("enable_")
             if let Some(settings) = final_intergration.settings.as_object() {
                 let enabled_keys: Vec<&String> = settings
                     .iter()
@@ -2173,21 +1975,17 @@ async fn modify_intergration(
                             None
                         }
                     })
-                    //.filter(|(_, value)| matches!(value, Value::Bool(_)))
-                    //.map(|(key, _)| key)
                     .collect();
 
                 for enabled_key in enabled_keys {
                     let hook = settings
                         .iter()
                         .find(|(key, _)| key.starts_with(&format!("_{}_hook", enabled_key)));
-                    //println!("{:#?}", hook);
                     if let Some(unwrapped_hook) = hook {
                         if let Some(Value::Bool(new_enabled_key)) =
                             intergration_element.settings.get(enabled_key)
                         {
                             if *new_enabled_key == true {
-                                // println!("unwrapped hook {:#?}", unwrapped_hook.1);
                                 match serde_json::to_vec(&unwrapped_hook.1) {
                                     Ok(mut bytes) => {
                                         // Add newline delimiter for TCP stream parsing
@@ -2204,6 +2002,7 @@ async fn modify_intergration(
                                             }
                                         }
 
+                                        // TODO: consider if this is useful at all
                                         // // Send to tcp_tx to forward to remote server
                                         // if let Err(err) = state.tcp_tx.send(bytes) {
                                         //     eprintln!("Failed to send to TCP stream: {}", err);
@@ -2211,22 +2010,10 @@ async fn modify_intergration(
                                     }
                                     Err(err) => eprintln!("Failed to serialize request: {}", err),
                                 }
-                                // let maybe_command: Result<IntergrationCommands, _> = serde_json::from_value(unwrapped_hook.1.clone());
-                                // if let Ok(command) = maybe_command {
-                                //     run_intergration_commands(command)
-                                // }
-                                // if let IntergrationCommands = unwrapped_hook.1 {
-                                //     println!("{}", command);
-                                // }
                             }
                         }
                     }
                 }
-                // for (key, value) in settings {
-                //    if key.starts_with("enable"){
-
-                //    }
-                // }
             }
         }
     } else {
@@ -2243,7 +2030,6 @@ async fn modify_intergration(
         )
             .into_response(),
         Err(e) => {
-            //eprintln!("Database error: {:#?}", e);
 
             let status_code = if let Some(db_err) = e.downcast_ref::<DatabaseError>() {
                 db_err.0
@@ -2288,7 +2074,6 @@ async fn create_intergration(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
-    //println!("Received request: {:#?}", request);
     let state = arc_state.write().await;
 
     match state.database.create_intergrations_in_db(request).await {
@@ -2301,8 +2086,6 @@ async fn create_intergration(
         )
             .into_response(),
         Err(e) => {
-            // eprintln!("Database error: {:#?}", e);
-            // eprintln!("Error source: {:?}", e.source());
 
             let status_code = if let Some(db_err) = e.downcast_ref::<DatabaseError>() {
                 db_err.0
@@ -2377,14 +2160,16 @@ async fn set_server(
                 provider: retrieved_server.provider.clone(),
                 providertype: retrieved_server.providertype.clone(),
                 location: retrieved_server.location.clone(),
-                node: Node { 
+                node: Node {
                     nodename: state.current_node.name.clone(),
-                    ip: state.current_node.ip.clone(), 
-                    nodestatus: NodeStatus::Unknown, 
-                    nodetype: state.current_node.nodetype.clone(), 
-                    k8s_type: state.current_node.k8s_type.clone()
-                }.into(),
-            }.into()
+                    ip: state.current_node.ip.clone(),
+                    nodestatus: NodeStatus::Unknown,
+                    nodetype: state.current_node.nodetype.clone(),
+                    k8s_type: state.current_node.k8s_type.clone(),
+                }
+                .into(),
+            }
+            .into(),
         );
 
         let msg = MessagePayloadWithMetadata {
@@ -2401,7 +2186,10 @@ async fn set_server(
 
         let mut bytes = serde_json::to_vec(&msg).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         bytes.push(b'\n');
-        state.tcp_tx.send(bytes).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        state
+            .tcp_tx
+            .send(bytes)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
         Ok(StatusCode::OK)
     } else {
@@ -2409,87 +2197,16 @@ async fn set_server(
     }
 }
 
-// async fn set_server(
-//     State(arc_state): State<Arc<RwLock<AppState>>>,
-//     Json(request): Json<ModifyElementData>,
-// ) -> impl IntoResponse {
-//     let state = arc_state.write().await;
-//     if let Element::Server(server) = request.element {
-//         //if state.database.get_from_servers_database(&server.servername).await.ok().is_some() {
-//         if let Ok(retrived_server_option) = state
-//             .database
-//             .get_from_servers_database(&server.servername)
-//             .await
-//         {
-//         if let Some(retrieved_server) = retrived_server_option {
-//                 let msg = MessagePayloadWithMetadata {
-//                     r#type: "command".to_string(),
-//                     message: "set_server".to_string(),
-//                     metadata: MetadataTypes::Server {
-//                         servername: retrieved_server.servername,
-//                         provider: retrieved_server.provider,
-//                         providertype: retrieved_server.providertype,
-//                         location: retrieved_server.location,
-//                     },
-//                     authcode: "0".to_string(),
-//                 };
-
-//                 match serde_json::to_vec(&msg) {
-//                     Ok(mut bytes) => {
-//                         bytes.push(b'\n');
-//                         if let Err(err) = state.tcp_tx.send(bytes) {
-//                             eprintln!("Failed to send over TCP: {}", err);
-//                             return StatusCode::INTERNAL_SERVER_ERROR;
-//                         }
-//                     }
-//                     Err(err) => {
-//                         eprintln!("Failed to serialize: {}", err);
-//                         return StatusCode::INTERNAL_SERVER_ERROR;
-//                     }
-//                 }
-//                 StatusCode::OK
-//             } else {
-//                 StatusCode::INTERNAL_SERVER_ERROR
-//             }
-//         } else {
-//             StatusCode::INTERNAL_SERVER_ERROR
-//         }
-//         // if let Ok(servers) = state.database.fetch_all_servers().await {
-//         //     state.server = server;
-//         //     StatusCode::Ok
-//         // } else {
-//         //     StatusCode::INTERNAL_SERVER_ERROR
-//         // }
-//     } else {
-//         StatusCode::INTERNAL_SERVER_ERROR
-//     }
-//     // let result = state
-//     //     .database
-//     //     .edit_user_in_db(request)
-//     //     .await
-//     //     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
-//     // result
-// }
-
 // gets the server from the database, if the incoming request is empty, it will give the current server
 async fn get_server(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<RetrieveElement>,
 ) -> Result<Json<Server>, StatusCode> {
     let state = arc_state.write().await;
-    //if let Some(unwrapped_current_server) = &state.current_server {
-    //let current_server = state.database.get_settings().await.
     let mut server_to_get = request.element.clone();
     if state.current_server.is_some() && request.element.is_empty() {
         server_to_get = state.current_server.clone().unwrap().servername;
-        // let updated_current_server = 
-        //     state.database.get_from_servers_database(&state.current_server.clone().unwrap())
-        //         .await
-        //         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
-        //         .transpose()
-        //         .ok_or(StatusCode::NOT_FOUND)??;               
-        //Ok(Json(updated_current_server))
-    } else {}
+    } 
 
     // A bit unusual to have two ?? but it works in this case
     let result = state
@@ -2537,7 +2254,6 @@ async fn capabilities(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl In
     let state = arc_state.write().await;
     let mut capabilities: Vec<String> = vec![];
     capabilities.push("all".to_string());
-    // capabilities.push("all");
     Json({ capabilities }).into_response()
 }
 
@@ -2596,7 +2312,6 @@ async fn process_general(
         ))
     }
 }
-//process_general_with_metadata
 
 // as I said in main, this is temporary, because IncomingMessageWithMetadata is supposed to replace IncomingMessage
 // but for now I will have it as a seprate route for new routes which need a metadata feild until a replace everything
@@ -2608,7 +2323,7 @@ async fn process_general_with_metadata(
     let mut state = arc_state.write().await;
     if let ApiCalls::IncomingMessageWithMetadata(payload) = res {
         println!("Processing general message: {:?}", payload);
-    
+
         let json_payload = IncomingMessageWithMetadata {
             message_type: payload.message_type.clone(),
             message: payload.message.clone(),
@@ -2617,18 +2332,28 @@ async fn process_general_with_metadata(
         };
 
         if payload.message == "create_server" {
-            if let MetadataTypes::Server { servername, provider, providertype, location } = payload.metadata.clone() {
-                    state.current_server = Some(Server {
-                        servername: servername.clone(), provider, providertype, location,
-                        node: Node { 
-                            nodename: state.current_node.name.clone(),
-                            ip: state.current_node.ip.clone(), 
-                            nodestatus: NodeStatus::Unknown, 
-                            nodetype: state.current_node.nodetype.clone(), 
-                            k8s_type: state.current_node.k8s_type.clone()
-                        }.into(),
-                    });
-                
+            if let MetadataTypes::Server {
+                servername,
+                provider,
+                providertype,
+                location,
+            } = payload.metadata.clone()
+            {
+                state.current_server = Some(Server {
+                    servername: servername.clone(),
+                    provider,
+                    providertype,
+                    location,
+                    node: Node {
+                        nodename: state.current_node.name.clone(),
+                        ip: state.current_node.ip.clone(),
+                        nodestatus: NodeStatus::Unknown,
+                        nodetype: state.current_node.nodetype.clone(),
+                        k8s_type: state.current_node.k8s_type.clone(),
+                    }
+                    .into(),
+                });
+
                 let database = &state.database;
                 let db_result = database
                     .get_from_servers_database(&servername)
@@ -2654,13 +2379,14 @@ async fn process_general_with_metadata(
                                     provider,
                                     providertype,
                                     location,
-                                    node: Node { 
+                                    node: Node {
                                         nodename: state.current_node.name.clone(),
-                                        ip: state.current_node.ip.clone(), 
-                                        nodestatus: NodeStatus::Unknown, 
-                                        nodetype: state.current_node.nodetype.clone(), 
-                                        k8s_type: state.current_node.k8s_type.clone()
-                                    }.into(),
+                                        ip: state.current_node.ip.clone(),
+                                        nodestatus: NodeStatus::Unknown,
+                                        nodetype: state.current_node.nodetype.clone(),
+                                        k8s_type: state.current_node.k8s_type.clone(),
+                                    }
+                                    .into(),
                                 }),
                                 jwt: payload.authcode,
                                 require_auth: false,
@@ -2857,7 +2583,6 @@ async fn get_nodes(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl IntoR
         }
     }
 
-    //let node_name_list: Vec<String> = node_list.into_iter().map(|node| node.name).collect();
     let regular_node_list: Vec<Node> = node_list
         .into_iter()
         .map(|node_and_tcp| Node {
@@ -2877,14 +2602,13 @@ async fn get_nodes(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl IntoR
 async fn get_servers(
     State(arc_state): State<Arc<RwLock<AppState>>>,
 ) -> Result<Json<List>, StatusCode> {
-    let mut state = arc_state.write().await;
+    let state = arc_state.write().await;
     let result = match state.database.fetch_all_servers().await {
         Ok(servers) => Ok(Json(List {
             list: ApiCalls::ServerDataList(servers),
         })),
         Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
     };
-    //println!("{:#?}", result);
     result
 }
 // TODO:, REMOVE THIS
@@ -3752,5 +3476,4 @@ mod tests {
             }
         }
     }
-    // Ok(())
 }
