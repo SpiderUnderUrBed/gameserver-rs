@@ -165,7 +165,7 @@ pub async fn create_k8s_deployment(
     };
 
     let deployment_yaml =
-        fs::read_to_string(format!("/usr/src/app/src/gameserver/{}", deployment))?;
+        fs::read_to_string(format!("/usr/src/app/gameserver/{}", deployment))?;
 
     for doc in deployment_yaml.split("---") {
         let trimmed = doc.trim();

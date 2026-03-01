@@ -31,7 +31,7 @@ spec:
       volumes:
         - name: gameserver-storage
           hostPath:
-            path: /home/spiderunderurbed/projects/gameserver-rs/src/gameserver
+            path: /home/spiderunderurbed/projects/gameserver-rs/gameserver
             type: Directory
 ---
 apiVersion: v1
