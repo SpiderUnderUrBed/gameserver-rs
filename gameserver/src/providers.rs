@@ -1,15 +1,16 @@
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-// use tokio::process::Command;
 
 use std::collections::HashMap;
 
 use serde_json::Value;
 
-
 pub trait Provider {
-    fn set_location(&mut self, location: String) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    fn set_location(
+        &mut self,
+        location: String,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     fn pre_hook(&self) -> Option<Command>;
     fn install(&self) -> Option<Command>;
     fn post_hook(&self) -> Option<Command>;
@@ -23,7 +24,10 @@ impl From<ProviderGame> for Custom {
             install_cmd: provider.get_config("install").cloned(),
             post_hook_cmd: provider.get_config("post_hook").cloned(),
             start_cmd: provider.get_config("start").cloned(),
-            location: provider.get_config("location").cloned().unwrap_or(String::new()),
+            location: provider
+                .get_config("location")
+                .cloned()
+                .unwrap_or(String::new()),
         }
     }
 }
@@ -49,8 +53,6 @@ impl From<Custom> for ProviderGame {
     }
 }
 
-
-//get_provider_object
 #[derive(Debug, Clone)]
 pub struct Custom {
     pub pre_hook_cmd: Option<String>,
@@ -60,7 +62,6 @@ pub struct Custom {
     pub location: String,
 }
 
-// const SERVER_DIR: &str = "server";
 
 #[derive(Debug, Clone)]
 pub struct ProviderGame {
@@ -85,7 +86,7 @@ impl ProviderGame {
 
     pub fn get_config(&self, key: &str) -> Option<&String> {
         //println!("{:#?}", self.config);
-        if let Some(unwrapped_key) = self.config.get(key){
+        if let Some(unwrapped_key) = self.config.get(key) {
             unwrapped_key.as_ref()
         } else {
             println!("Failed to get key");
@@ -93,7 +94,6 @@ impl ProviderGame {
         }
     }
 }
-
 
 impl Custom {
     pub fn new() -> Self {
@@ -127,18 +127,12 @@ impl Custom {
     }
 }
 
-
 impl Provider for ProviderGame {
     fn pre_hook(&self) -> Option<Command> {
         match self.name.as_str() {
             "custom" => Custom::from(self.clone()).pre_hook(),
             _ => self.get_config("pre_hook").map(|cmd| {
-                // let final_command = if !self.location.is_empty() {
-                //     cmd.replace("{{SERVERLOCATION}}", &self.location)
-                // } else {
-                //     cmd.replace("{{SERVERLOCATION}}", "server/")
-                // };
-                let mut command = if cfg!(target_os = "windows") {
+                let command = if cfg!(target_os = "windows") {
                     let mut c = Command::new("powershell");
                     c.arg("-Command").arg(cmd);
                     c
@@ -156,12 +150,7 @@ impl Provider for ProviderGame {
         match self.name.as_str() {
             "custom" => Custom::from(self.clone()).install(),
             _ => self.get_config("install").map(|cmd| {
-                // let final_command = if !self.location.is_empty() {
-                //     cmd.replace("{{SERVERLOCATION}}", &self.location)
-                // } else {
-                //     cmd.replace("{{SERVERLOCATION}}", "server/")
-                // };
-                let mut command = if cfg!(target_os = "windows") {
+                let command = if cfg!(target_os = "windows") {
                     let mut c = Command::new("powershell");
                     c.arg("-Command").arg(cmd);
                     c
@@ -179,12 +168,7 @@ impl Provider for ProviderGame {
         match self.name.as_str() {
             "custom" => Custom::from(self.clone()).post_hook(),
             _ => self.get_config("post_hook").map(|cmd| {
-                // let final_command = if !self.location.is_empty() {
-                //     cmd.replace("{{SERVERLOCATION}}", &self.location)
-                // } else {
-                //     cmd.replace("{{SERVERLOCATION}}", "server/")
-                // };
-                let mut command = if cfg!(target_os = "windows") {
+                let command = if cfg!(target_os = "windows") {
                     let mut c = Command::new("powershell");
                     c.arg("-Command").arg(cmd);
                     c
@@ -199,19 +183,14 @@ impl Provider for ProviderGame {
     }
 
     fn start(&self) -> Option<Command> {
-        if !Path::new(&self.location).exists(){
+        if !Path::new(&self.location).exists() {
             println!("{}", self.location);
             let _ = fs::create_dir(&self.location);
-        } 
+        }
         match self.name.as_str() {
             "custom" => Custom::from(self.clone()).start(),
             _ => self.get_config("start").map(|cmd| {
-                // let final_command = if !self.location.is_empty() {
-                //     cmd.replace("{{SERVERLOCATION}}", &self.location)
-                // } else {
-                //     cmd.replace("{{SERVERLOCATION}}", "server/")
-                // };
-                let mut command = if cfg!(target_os = "windows") {
+                let command = if cfg!(target_os = "windows") {
                     let mut c = Command::new("powershell");
                     c.arg("-Command").arg(cmd);
                     c
@@ -225,17 +204,20 @@ impl Provider for ProviderGame {
         }
     }
 
-    fn set_location(&mut self, location: String) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if !Path::new(&location).exists(){
+    fn set_location(
+        &mut self,
+        location: String,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if !Path::new(&location).exists() {
             fs::create_dir(&location)?;
-        } 
+        }
 
         for value in self.config.values_mut() {
             if let Some(cmd) = value {
                 *cmd = cmd.replace("{{SERVERLOCATION}}", &location);
             }
         }
-        
+
         self.location = location;
         Ok(())
     }
@@ -245,11 +227,6 @@ impl Provider for Custom {
     fn pre_hook(&self) -> Option<Command> {
         println!("{}", self.location);
         self.pre_hook_cmd.as_ref().map(|cmd| {
-            // let final_command = if !self.location.is_empty() {
-            //     cmd.replace("{{SERVERLOCATION}}", &self.location)
-            // } else {
-            //     cmd.replace("{{SERVERLOCATION}}", "server/")
-            // };
             if cfg!(target_os = "linux") {
                 let mut command = Command::new("sh");
                 command.arg("-c").arg(cmd);
@@ -268,11 +245,6 @@ impl Provider for Custom {
 
     fn install(&self) -> Option<Command> {
         self.install_cmd.as_ref().map(|cmd| {
-            // let final_command = if !self.location.is_empty() {
-            //     cmd.replace("{{SERVERLOCATION}}", &self.location)
-            // } else {
-            //     cmd.replace("{{SERVERLOCATION}}", "server/")
-            // };
             if cfg!(target_os = "linux") {
                 let mut command = Command::new("sh");
                 command.arg("-c").arg(cmd);
@@ -291,11 +263,6 @@ impl Provider for Custom {
 
     fn post_hook(&self) -> Option<Command> {
         self.post_hook_cmd.as_ref().map(|cmd| {
-            // let final_command = if !self.location.is_empty() {
-            //     cmd.replace("{{SERVERLOCATION}}", &self.location)
-            // } else {
-            //     cmd.replace("{{SERVERLOCATION}}", "server/")
-            // };
             if cfg!(target_os = "linux") {
                 let mut command = Command::new("sh");
                 command.arg("-c").arg(cmd);
@@ -315,12 +282,6 @@ impl Provider for Custom {
     fn start(&self) -> Option<Command> {
         self.start_cmd.as_ref().map(|cmd| {
             println!("location: {:#?}", self.location);
-            // let mut final_command = cmd; 
-            // let final_command = if !self.location.is_empty() {
-            //     cmd.replace("{{SERVERLOCATION}}", &self.location)
-            // } else {
-            //     cmd.replace("{{SERVERLOCATION}}", "server/")
-            // };
             if cfg!(target_os = "linux") {
                 let mut command = Command::new("sh");
                 command.arg("-c").arg(cmd);
@@ -336,10 +297,13 @@ impl Provider for Custom {
             }
         })
     }
-    
-    fn set_location(&mut self, location: String) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+
+    fn set_location(
+        &mut self,
+        location: String,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.location = location;
-        return Ok(())
+        return Ok(());
     }
 }
 
@@ -379,23 +343,19 @@ impl From<ProviderGame> for ProviderConfig {
             install: game.get_config("install").cloned(),
             post_hook: game.get_config("post_hook").cloned(),
             start: game.get_config("start").cloned(),
-            location: game.get_config("location").cloned().unwrap_or(String::new()),
+            location: game
+                .get_config("location")
+                .cloned()
+                .unwrap_or(String::new()),
         }
     }
 }
 
-// #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-// pub struct BasicProvider {
-//     pub pre_hook: String,
-//     pub install: String,
-//     pub post_hook: String,
-//     pub start: String,
-// }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct Platforms {
     pub(crate) linux: Option<ProviderConfig>,
-    pub(crate) windows: Option<ProviderConfig>
+    pub(crate) windows: Option<ProviderConfig>,
 }
 
 impl Platforms {
@@ -421,5 +381,5 @@ impl From<Custom> for Platforms {
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct ProviderDbList {
-    pub list: HashMap<String, Platforms>
+    pub list: HashMap<String, Platforms>,
 }
