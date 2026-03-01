@@ -3,14 +3,10 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use crate::databasespec;
+use crate::databasespec::{self, Database};
 
 use databasespec::ServerIndex;
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
-pub struct Database {
-    pub server_index: HashMap<String, ServerIndex>,
-}
 
 const DB_PATH: &str = "db.json";
 

@@ -40,7 +40,7 @@ pub async fn build_docker_image() -> Result<(), Box<dyn std::error::Error + Send
     //    let docker = Docker::connect_with_local_defaults()?;
     let docker =
         Docker::connect_with_unix("/var/run/docker.sock", 120, bollard::API_DEFAULT_VERSION)?;
-    let context_path = Path::new("src/gameserver");
+    let context_path = Path::new("gameserver");
     // 1. Create in-memory tar archive with strict filtering
     let mut archive = Vec::new();
     {
@@ -68,7 +68,7 @@ pub async fn build_docker_image() -> Result<(), Box<dyn std::error::Error + Send
                     continue; // Skip the top-level "target" directory and its contents
                 }
             }
-            if relative_path.starts_with("src/gameserver/target") {
+            if relative_path.starts_with("gameserver/target") {
                 continue;
             }
             if relative_path
