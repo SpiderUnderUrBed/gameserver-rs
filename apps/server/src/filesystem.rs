@@ -1393,6 +1393,7 @@ pub fn execute_file_operation(
             };
             std::fs::rename(&src_path, &final_dest)?;
         }
+        // TODO: consider if i want file zip and unzip operations 
         FileOperations::FileZipOperation(_) => {
             // let mut final_dest = if dest_path.exists() && dest_path.is_dir() {
             //     if let Some(filename) = src_path.file_name() {
