@@ -1753,120 +1753,56 @@ async fn handle_commands_with_metadata(
     }
 }
 
-async fn create_server(
-    state: Arc<AppState>,
-    cmd_tx: &mpsc::Sender<String>,
-    stdin_ref: &Arc<Mutex<Option<ChildStdin>>>,
-    payload_raw_value: Value,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn create_server(state: Arc<AppState>, cmd_tx: &mpsc::Sender<String>, stdin_ref: &Arc<Mutex<Option<ChildStdin>>>, payload_raw_value: Value) ->
+Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Ok(payload) = serde_json::from_value::<IncomingMessageWithMetadata>(payload_raw_value) {
-        if let MetadataTypes::Server {
-            providertype: _,
-            location: _,
-            provider: _,
-            servername: _,
-        } = &payload.metadata.clone()
-        {
-            let mut db = state.db.lock().await;
-            if let MetadataTypes::Server {
-                servername,
-                provider,
-                location,
-                providertype: _,
-            } = &payload.metadata
-            {
-                let filtered_location = if location.starts_with("server/") {
-                    location.clone()
-                } else {
-                    format!("server/{}", location)
-                };
-
-                db.server_index.insert(
-                    servername.to_string(),
-                    ServerIndex {
-                        location: filtered_location.to_string(),
-                        provider: provider.to_string(),
-                    },
-                );
-                save_db(&db);
-                drop(db);
-                let current_server = state.current_server.lock().await;
-                let provider =
-                    get_provider_from_servername(&state, Some(servername.to_string())).await;
-
-                if let Some((_, provider_platforms)) = get_provider_object(
-                    provider.as_deref(),
-                    get_definite_path_from_name(&state, current_server.clone())
-                        .await
-                        .as_deref(),
-                )
-                .await
-                {
-                    let mut prov: ProviderGame = match pick_platform(provider_platforms) {
-                        Some(prov) => prov,
-                        None => return Err("No platform".into()),
-                    }
-                    .into();
-
-                    let _ = prov.set_location(filtered_location);
-
-                    if let Some(cmd) = prov.pre_hook() {
-                        run_command_live_output(
-                            &state,
-                            cmd,
-                            "Pre-hook".into(),
-                            Some(cmd_tx.clone()),
-                            None,
-                        )
-                        .await
-                        .ok();
-                    }
-                    if let Some(cmd) = prov.install() {
-                        run_command_live_output(
-                            &state,
-                            cmd,
-                            "Install".into(),
-                            Some(cmd_tx.clone()),
-                            None,
-                        )
-                        .await
-                        .ok();
-                    }
-                    if let Some(cmd) = prov.post_hook() {
-                        run_command_live_output(
-                            &state,
-                            cmd,
-                            "Post-hook".into(),
-                            Some(cmd_tx.clone()),
-                            None,
-                        )
-                        .await
-                        .ok();
-                    }
-                    if let Some(cmd) = prov.start() {
-                        let tx = cmd_tx.clone();
-                        let stdin_clone = stdin_ref.clone();
-                        let state_clone = Arc::clone(&state);
-                        tokio::spawn(async move {
-                            run_command_live_output(
-                                &state_clone,
-                                cmd,
-                                "Server".into(),
-                                Some(tx),
-                                Some(stdin_clone),
-                            )
-                            .await
-                            .ok();
-                        });
-                        let _ = cmd_tx.send("Server started".into()).await;
-                    }
-                    Ok(())
-                } else {
-                    Ok(())
-                }
+        if let MetadataTypes::Server { servername, provider: _, location, providertype: _ } = &payload.metadata.clone() {
+            let filtered_location = if location.starts_with("server/") {
+                location.clone()
             } else {
-                Ok(())
+                format!("server/{}", location)
+            };
+
+            {
+                let mut db = state.db.lock().await;
+                db.server_index.insert(servername.to_string(), ServerIndex { location: filtered_location.to_string(), provider: {
+                    if let MetadataTypes::Server { provider, .. } = &payload.metadata { provider.clone() } else { return Ok(()); }
+                }});
+                save_db(&db);
             }
+
+            let current_server = state.current_server.lock().await.clone();
+            let provider = get_provider_from_servername(&state, Some(servername.to_string())).await;
+            let path = get_definite_path_from_name(&state, current_server.clone()).await;
+
+            if let Some((name, provider_platforms)) = get_provider_object(provider.as_deref(), path.as_deref()).await {
+                let mut prov: ProviderGame = match pick_platform(provider_platforms) {
+                    Some(prov) => prov,
+                    None => return Err("No platform".into())
+                }.into();
+
+                let _ = prov.set_location(filtered_location);
+
+                if let Some(cmd) = prov.pre_hook() {
+                    run_command_live_output(&state, cmd, "Pre-hook".into(), Some(cmd_tx.clone()), None).await.ok();
+                }
+                if let Some(cmd) = prov.install() {
+                    run_command_live_output(&state, cmd, "Install".into(), Some(cmd_tx.clone()), None).await.ok();
+                }
+                if let Some(cmd) = prov.post_hook() {
+                    run_command_live_output(&state, cmd, "Post-hook".into(), Some(cmd_tx.clone()), None).await.ok();
+                }
+                if let Some(cmd) = prov.start() {
+                    let tx = cmd_tx.clone();
+                    let stdin_clone = stdin_ref.clone();
+                    let state_clone = Arc::clone(&state);
+                    tokio::spawn(async move {
+                        run_command_live_output(&state_clone, cmd, "Server".into(), Some(tx), Some(stdin_clone)).await.ok();
+                    });
+                    let _ = cmd_tx.send("Server started".into()).await;
+                }
+            }
+            Ok(())
         } else {
             Ok(())
         }
