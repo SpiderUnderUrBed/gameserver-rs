@@ -32,9 +32,6 @@ use tokio::net::TcpStream;
 use std::net::SocketAddr;
 use tokio::sync::broadcast;
 
-//TODO: consider removing a bunch of warning silencers and considering leaving up the warnings until i finish
-// my TODO's
-
 // I use the same code as in the main server
 // with a few diffrences in stuff like filesystem
 mod databasespec;
@@ -720,8 +717,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     current_file: tokio::fs::File,
                     file_name: String,
                     bytes_written: u64,
-                    // Consider 
-                    #[warn(dead_code)]
+                    // TODO: Consider removing this, as its not used
                     last_logged_mb: u64,
                     last_activity: tokio::time::Instant,
                 },
