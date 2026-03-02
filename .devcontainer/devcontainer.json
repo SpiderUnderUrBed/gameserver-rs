@@ -1,0 +1,51 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/typescript-node
+{
+    "name": "gameserver-rs",
+    // Using a Debian-based Rust image as the foundation
+    "build": {
+        "dockerfile": "Dockerfile",
+        "context": ".."
+    },
+    "features": {
+        // 1. Install Node.js & TypeScript
+        "ghcr.io/devcontainers/features/node:1": {
+            "version": "24",
+            "pnpmVersion": "latest",
+            "nvmVersion": "latest"
+        },
+        // 2. Enable Docker (required for k3d)
+        "ghcr.io/devcontainers/features/docker-outside-of-docker": {
+            "version": "latest"
+        },
+        // 3. Install Kubernetes tools (kubectl & helm)
+        "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {
+            "version": "latest",
+            "minikube": "none"
+        }
+    },
+    "containerEnv": {
+        "DOCKER_EXTRA_OPTS": "--storage-driver=vfs"
+    },
+    // Important for Docker-in-Docker/k3d
+    "privileged": true,
+    "remoteUser": "vscode",
+    // This ensures the user ID mapping is handled correctly between host and container
+    "updateRemoteUserUID": true,
+    "userEnvProbe": "loginShell",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "rust-lang.rust-analyzer",
+                "tamasfe.even-better-toml",
+                "dbaeumer.vscode-eslint",
+                "ms-kubernetes-tools.vscode-kubernetes-tools"
+            ],
+            "settings": {
+                "rust-analyzer.check.command": "clippy"
+            }
+        }
+    },
+    // Now postCreate is only for things that change per-repo, like cluster creation
+    "postCreateCommand": ".devcontainer/post-create.sh"
+}
