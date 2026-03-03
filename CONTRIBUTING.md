@@ -2,6 +2,9 @@
 # Contributors Guide: Project Workspace Setup
 
 Welcome to the project! Follow these steps to set up your development environment:
+## Ai policy
+
+Any AI assistence of any form needs to be disclosed in any PR's. All contributers are fully accountable for the code they submit, whether its by an AI or not. Contributers are expected to have full understanding of the code they written and some of the relevent code surrounding their contribution.
 
 ## 1. Devcontainer Environment
 
