@@ -1,0 +1,14 @@
+// TODO: phase this out in the future
+// This contains some default intergrations for certain types of gameservers, e.g minecraft, which does not
+// belong in main as main should aim to be intergration agnostic
+use serde::{self, Serialize, Deserialize};
+
+#[serde(tag = "kind", content = "data")]
+#[derive(Deserialize, Serialize)]
+pub enum IntergrationCommands {
+    MinecraftEnableRcon
+}
+
+pub fn run_intergration_commands(intergration_command: IntergrationCommands) {
+
+}
