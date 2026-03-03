@@ -11,6 +11,9 @@ ports:
   - port: 8080:80
     nodeFilters:
       - loadbalancer
+  - port: 5432:5432
+    nodeFilters:
+      - loadbalancer
 registries:
   create:
     name: registry.localhost

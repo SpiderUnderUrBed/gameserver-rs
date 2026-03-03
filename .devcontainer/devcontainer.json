@@ -26,6 +26,12 @@
             "minikube": "none"
         }
     },
+    "containerEnv": {
+        "PGHOST": "127.0.0.1",
+        "PGUSER": "postgres",
+        "PGDATABASE": "postgres",
+        "PGPASSWORD": "postgres"
+    },
     "remoteUser": "vscode",
     "customizations": {
         "vscode": {
