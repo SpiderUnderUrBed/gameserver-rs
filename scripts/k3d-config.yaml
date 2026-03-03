@@ -1,0 +1,35 @@
+# yaml-language-server: $schema=https://github.com/k3d-io/k3d/raw/refs/heads/main/pkg/config/v1alpha5/schema.json
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: dev-cluster
+servers: 1
+agents: 2
+kubeAPI:
+  hostPort: "6443"
+ports:
+  - port: 8080:80
+    nodeFilters:
+      - loadbalancer
+  - port: 5432:5432
+    nodeFilters:
+      - loadbalancer
+registries:
+  create:
+    name: registry.localhost
+    host: "127.0.0.1"
+    hostPort: "5000"
+    image: docker.io/library/registry:2
+
+options:
+  k3d:
+    wait: true
+    timeout: 60s
+  k3s:
+    extraArgs:
+      - arg: --tls-san=k3d-dev-cluster-server-0
+        nodeFilters:
+          - server:*
+  kubeconfig:
+    updateDefaultKubeconfig: true
+    switchCurrentContext: true
