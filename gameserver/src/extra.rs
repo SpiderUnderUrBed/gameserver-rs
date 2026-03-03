@@ -1,4 +1,3 @@
-use std::io;
 use std::time::{Duration, Instant};
 
 use serde_json;
@@ -101,7 +100,7 @@ impl JsonAssembler {
 
                                         return completed;
                                     }
-                                    Err(e) => {}
+                                    Err(_) => {}
                                 }
                             }
                         }

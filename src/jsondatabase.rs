@@ -6,7 +6,6 @@ use std::error::Error;
 use std::result;
 pub mod databasespec;
 pub use databasespec::{User, Node, Element, ModifyElementData, UserDatabase, NodesDatabase, RetrieveElement, DatabaseError};
-// use std::path::Path;
 use std::path::PathBuf;
 use std::fs::OpenOptions;
 use std::fs::File;
@@ -21,12 +20,10 @@ use crate::database::databasespec::Server;
 use crate::database::databasespec::ServerDatabase;
 use crate::database::databasespec::Settings;
 use crate::database::databasespec::NodeType;
-// use crate::database::databasespec::CustomType;
 use crate::database::databasespec::Button;
 use crate::database::databasespec::ButtonsDatabase;
 
 use crate::database::databasespec::SettingsDatabase;
-// use crate::database::Database;
 use crate::StatusCode;
 
 #[derive(Clone)]
@@ -43,7 +40,6 @@ pub struct JsonBackendContent {
     pub intergrations: Vec<Intergration>,
     pub toggled_buttons: Vec<Button>,
     pub settings: Settings
-    //pub buttons: HashMap<String, Node>
 }
 impl Default for JsonBackendContent {
     fn default() -> JsonBackendContent {
@@ -52,30 +48,21 @@ impl Default for JsonBackendContent {
                 name: "Filebrowser".to_string(),
                 link: "".to_string(),
                 r#type: "default".to_string()
-                //CustomType::Default
             },
             Button {
                 name: "Statistics".to_string(),
                 link: "".to_string(),
                 r#type: "default".to_string()
             },
-            // Button {
-            //     name: "Scedules".to_string(),
-            //     link: "".to_string(),
-            //     r#type: "default".to_string()
-            //     //CustomType::Default
-            // },
             Button {
                 name: "Workflows".to_string(),
                 link: "".to_string(),
                 r#type: "default".to_string()
-                //CustomType::Default
             },
             Button {
                 name: "Intergrations".to_string(),
                 link: "".to_string(),
                 r#type: "default".to_string()
-                //CustomType::Default
             },
             Button {
                 name: "Backups".to_string(),
@@ -201,7 +188,7 @@ impl Database {
         let mut contents = String::new();
         read_file.read_to_string(&mut contents).map_err(|e| format!("Read error: {}", e))?;
     
-        let mut database: Result<JsonBackendContent, String> = if contents.trim().is_empty() {
+        let database: Result<JsonBackendContent, String> = if contents.trim().is_empty() {
             Ok(JsonBackendContent::default())
         } else {
             //println!("{:#?}", contents.clone());
@@ -243,7 +230,7 @@ impl ServerDatabase for Database {
                 database.servers.push(server.clone());
             }
         
-            self.write_database(database).await;  
+            let _ = self.write_database(database).await;  
             Ok(StatusCode::CREATED)
         } else {
             Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
@@ -257,7 +244,7 @@ impl ServerDatabase for Database {
             return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
         }
 
-        self.write_database(database).await;
+        let _ = self.write_database(database).await;
 
         Ok(StatusCode::CREATED)
     }
@@ -276,11 +263,6 @@ impl ServerDatabase for Database {
         }
     }
 }
-// pub struct Server {
-//     pub servername: String,
-//     pub provider: String,
-//     pub providertype: String
-// } 
 
 impl UserDatabase for Database {
     async fn retrieve_user(&self, username: String) -> Option<User> {
@@ -461,15 +443,10 @@ impl ButtonsDatabase for Database {
         if let Element::Button(button) = element.element {
             if let Button { name, link, r#type } = button {
                 let mut database = self.get_database().await?;
-                // println!("{}", name);
                 if let Some(db_button) = database.buttons.iter_mut().find(|db_button| db_button.name.to_lowercase()  == name.to_lowercase() ) {
-                    // println!("{}", db_button.link);
                     db_button.link = link.clone();
                     db_button.r#type = "custom".to_string(); 
-                    //CustomType::Custom; 
-                    // println!("{}", db_button.link);
                 }
-                //println!("Editing button");
                 self.write_database(database).await?;
                 Ok(StatusCode::CREATED)
             } else {
@@ -522,7 +499,7 @@ impl IntergrationsDatabase for Database {
                 database.intergrations.push(intergration.clone());
             }
             
-            self.write_database(database).await;  
+            let _ = self.write_database(database).await;  
             Ok(StatusCode::CREATED)
         } else {
             Err(Box::new(DatabaseError(StatusCode::BAD_REQUEST)))
@@ -536,7 +513,7 @@ impl IntergrationsDatabase for Database {
             return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
         }
 
-        self.write_database(database).await;
+        let _ = self.write_database(database).await;
 
         Ok(StatusCode::CREATED)
     }

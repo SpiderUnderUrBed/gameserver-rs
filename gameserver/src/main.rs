@@ -1,20 +1,15 @@
-use file_transfer_system::server;
-use hostname::get;
+
 use serde_json::{json, Value};
-use zip::result;
 use std::convert::TryFrom;
-use std::io::Error;
 use std::ffi::OsString;
 use std::fmt;
-use std::io::{ErrorKind, SeekFrom};
+use std::io::Error;
+use std::io::{ErrorKind};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::path::Path;
-use std::collections::HashMap;
 use tokio::fs;
-use tokio::fs::OpenOptions;
-use tokio::io;
-use tokio::io::{split, AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::process::Child;
 use tokio::process::{ChildStdin, Command as TokioCommand};
@@ -22,6 +17,7 @@ use tokio::sync::{mpsc, Mutex};
 
 use crate::broadcast::Sender;
 use crate::filesystem::cleanup_end_file_markers;
+use crate::filesystem::execute_file_operation;
 use crate::filesystem::get_files_content;
 use crate::filesystem::get_metadata;
 use crate::filesystem::list_directory;
@@ -30,46 +26,26 @@ use crate::filesystem::send_folder_over_broadcast;
 use crate::filesystem::BasicPath;
 use crate::filesystem::FileChunk;
 use crate::filesystem::FileOperations;
-use crate::filesystem::execute_file_operation;
-use crate::FileOperations::FileMoveOperation;
-use crate::FileOperations::FileDownloadOperation;
-use crate::FileOperations::FileZipOperation;
-use crate::FileOperations::FileUnzipOperation;
-use crate::FileOperations::FileCopyOperation;
 use crate::providers::{Custom, Platforms, Provider, ProviderConfig, ProviderDbList, ProviderGame};
-
-// use crate::providers::Custom;
-// use crate::providers::Minecraft;
-// use crate::providers::Provider;
-// use crate::providers::ProviderConfig;
-// use crate::providers::ProviderGame;
-
-use tokio::fs::File;
-use tokio::io::AsyncRead;
 use tokio::net::TcpStream;
-use uuid::Uuid;
 
 use std::net::SocketAddr;
 use tokio::sync::broadcast;
 
-//use futures::TryFutureExt;
-
 // I use the same code as in the main server
 // with a few diffrences in stuff like filesystem
+mod databasespec;
 mod extra;
 mod filesystem;
 mod intergrations;
-mod providers;
 mod jsondatabase;
-mod databasespec;
+mod providers;
 
 use databasespec::ServerIndex;
 
 use jsondatabase::{load_db, save_db};
 
 use intergrations::{run_intergration_commands, IntergrationCommands};
-
-// const ENABLE_BROADCAST_LOGS: bool = true;
 
 // Server directory as in the one at the root of this project (../server)
 // all server files are sandboxed in there including nested server directories
@@ -90,7 +66,7 @@ struct IncomingMessage {
 
 // newer version of IncomingMessage, mainly because this includes the metadata feild which i sometimes use
 // IncomingMessageWithMetadata and IncomingMessage should be renamed to something that makes sense
-// Note, this also handles the things like MessagePayloadWithMetadata and converts it here, as 
+// Note, this also handles the things like MessagePayloadWithMetadata and converts it here, as
 // from the gameservers perpective, the command payload is incoming, so it made sense not to recreate such a struct
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct IncomingMessageWithMetadata {
@@ -189,7 +165,7 @@ enum ApiCalls {
     FileMoveOperation(String),
     FileZipOperation(String),
     FileUnzipOperation(String),
-    FileCopyOperation(String)
+    FileCopyOperation(String),
 }
 
 impl From<ApiCalls> for FileOperations {
@@ -200,7 +176,7 @@ impl From<ApiCalls> for FileOperations {
             ApiCalls::FileZipOperation(s) => FileOperations::FileZipOperation(s),
             ApiCalls::FileUnzipOperation(s) => FileOperations::FileUnzipOperation(s),
             ApiCalls::FileCopyOperation(s) => FileOperations::FileCopyOperation(s),
-            _ => FileOperations::Unknown
+            _ => FileOperations::Unknown,
         }
     }
 }
@@ -234,12 +210,6 @@ static StaticLocalUrl: &str = "0.0.0.0:8080";
 #[cfg(not(feature = "full-stack"))]
 static StaticLocalUrl: &str = "0.0.0.0:8082";
 
-// #[cfg(feature = "full-stack")]
-// static PORT: &str = "8080";
-
-// #[cfg(not(feature = "full-stack"))]
-// static PORT: &str = "8082";
-
 // the server state, currently only holds keywords for what messages to look for when declaring the server as started or stopped
 // might be phased out in favor of determining whether or not the process is running or not
 #[derive(serde::Serialize)]
@@ -250,7 +220,9 @@ struct GetState {
 
 fn filter(line: String) -> bool {
     if line.contains('%') {
-        if let Some(pct_str) = line.split('%').next()
+        if let Some(pct_str) = line
+            .split('%')
+            .next()
             .and_then(|s| s.split_whitespace().last())
             .and_then(|s| s.parse::<u32>().ok())
         {
@@ -269,6 +241,7 @@ fn filter(line: String) -> bool {
 
 // runs a command and forwards the output of the command to the given channel, which in this case would be back to
 // the main server
+// TODO: consider rem
 async fn run_command_live_output(
     state: &AppState,
     cmd: Command,
@@ -294,9 +267,12 @@ async fn run_command_live_output(
         Some(tokio::spawn(async move {
             let mut reader = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = reader.next_line().await {
-                if filter(line.clone()) { continue; }
+                if filter(line.clone()) {
+                    continue;
+                }
                 if let Some(tx) = &tx {
-                    let msg = json!({"type":"stdout","data":format!("[{}] {}", lbl, line)}).to_string();
+                    let msg =
+                        json!({"type":"stdout","data":format!("[{}] {}", lbl, line)}).to_string();
                     let _ = tx.try_send(msg);
                 }
             }
@@ -312,7 +288,9 @@ async fn run_command_live_output(
             let mut reader = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = reader.next_line().await {
                 if line.contains('%') {
-                    if let Some(pct_str) = line.split('%').next()
+                    if let Some(pct_str) = line
+                        .split('%')
+                        .next()
                         .and_then(|s| s.split_whitespace().last())
                         .and_then(|s| s.parse::<u32>().ok())
                     {
@@ -320,11 +298,12 @@ async fn run_command_live_output(
                             continue;
                         }
                     } else {
-                        continue; 
+                        continue;
                     }
                 }
                 if let Some(tx) = &tx {
-                    let msg = json!({"type":"stderr","data":format!("[{}] {}", lbl, line)}).to_string();
+                    let msg =
+                        json!({"type":"stderr","data":format!("[{}] {}", lbl, line)}).to_string();
                     let _ = tx.try_send(msg);
                 }
             }
@@ -335,8 +314,12 @@ async fn run_command_live_output(
 
     child.wait().await?;
     println!("Post-hook process exited");
-    if let Some(h) = stdout_handle { let _ = h.await; }
-    if let Some(h) = stderr_handle { let _ = h.await; }
+    if let Some(h) = stdout_handle {
+        let _ = h.await;
+    }
+    if let Some(h) = stderr_handle {
+        let _ = h.await;
+    }
     println!("Post-hook output fully flushed");
 
     Ok(())
@@ -397,24 +380,6 @@ struct FileResponseMessage {
     data: serde_json::Value,
 }
 
-// There are two main read modes, Json for message processing and MigrationFile for file transfers, althought it should
-// be renamed to just file transfer, as it switches to this mode during a migration or from the file transfers from the server
-// the reason I seperated it is because of the fact that raw bytes are sent very quickly from a node or the main server
-// which can cause some weirdness if mixed with the json logic, and seperations of concerns
-// TODO: change the name from MigrationFile to something more represenative of the use cases
-enum ReadMode {
-    Json,
-    MigrationFile {
-        current_file: tokio::fs::File,
-        file_name: String,
-        bytes_written: u64,
-    },
-    // NormalFile {
-    //     current_file: tokio::fs::File,
-    // },
-}
-
-
 // AppState for the Node, stores the name of the current server, the state of the process
 // whether or not its running, the channel for the output messages, and the process, makes it easier to pass and modify
 // between functions
@@ -429,7 +394,7 @@ struct AppState {
     // Consider if i want to store the db at all, previously I was wondering whether or not to have an arc mutex, (arc not needed; the app state has a arc, so I just need to add a mutex
     // so now any changes will still be in sync so you never have a case of a longer operation based on older data writting to the db overwriting the newer one).
     // now I am considering if I need db at all, ill keep it here for now to consider parity with the main gameserver node based on design choices.
-    db: Arc<Mutex<databasespec::Database>>, 
+    db: Arc<Mutex<databasespec::Database>>,
 }
 
 // Will remove this, this was kept because at a time there was a issue with the channels reciving messages they sent, so
@@ -473,7 +438,7 @@ pub async fn unsure_ip_or_port_tcp_conn(
 // Takes a regular tcp stream and converts it to a broadcast channel
 // forwards the messages from the stream to a broadcast
 pub async fn tcp_to_broadcast(stream: TcpStream) -> Sender<Vec<u8>> {
-    let (tx, mut rx) = broadcast::channel::<Vec<u8>>(16);
+    let (tx, rx) = broadcast::channel::<Vec<u8>>(16);
 
     let (mut reader, mut writer) = stream.into_split();
 
@@ -507,10 +472,6 @@ pub async fn tcp_to_broadcast(stream: TcpStream) -> Sender<Vec<u8>> {
     tx
 }
 
-// fn get_arg_or_env_var<T: std::str::FromStr>(env_var: &str, arg: Option<T>) -> Option<T> {
-//     arg.or_else(|| env::var(env_var).ok().and_then(|s| s.parse().ok()))
-// }
-
 // Looks for a env varible, if its not found, try the specified default, if none is found it will use the default of whatever that type is
 fn get_env_var_or_arg<T: std::str::FromStr>(env_var: &str, default: Option<T>) -> Option<T> {
     env::var(env_var)
@@ -526,10 +487,7 @@ fn get_env_var_or_arg<T: std::str::FromStr>(env_var: &str, default: Option<T>) -
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config_local_url = get_env_var_or_arg("LOCALURL", Some(StaticLocalUrl.to_string()));
-    // let node_password: String = get_env_var_or_arg("NODE_PASSWORD", Some(String::default())).unwrap();
 
-    //const PORT: u16 = 8082;
-    //let listener = TcpListener::bind(format!("0.0.0.0:{}", PORT)).await?;
     let listener = TcpListener::bind(config_local_url.clone().unwrap()).await?;
     println!("Listening on {}", config_local_url.unwrap());
 
@@ -539,28 +497,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Err(e) => Err(e.to_string()),
     });
 
-    //let mut db = load_db();
     let arc_db = Arc::new(Mutex::new(load_db()));
 
     // TODO: remove this in favor of it being both written to a persistent db and insertions happening by the server
     let mut db = arc_db.lock().await;
-    if !db.server_index.iter().any(|(name, _)| name == "minecraft"){
-        db.server_index.insert("minecraft".to_string(), ServerIndex::new("server/".to_string(), "minecraft".to_string()));
+    if !db.server_index.iter().any(|(name, _)| name == "minecraft") {
+        db.server_index.insert(
+            "minecraft".to_string(),
+            ServerIndex::new(SERVER_DIR.to_string(), "minecraft".to_string()),
+        );
         save_db(&db);
     }
     drop(db);
-    // let db_clone = db
 
-    let mut state = AppState {
+    let state = AppState {
         current_server: Arc::new(Mutex::new(None)),
         server_running: Arc::new(Mutex::new(false)),
         server_output_tx: Arc::new(Mutex::new(None)),
         server_process: Arc::new(Mutex::new(None)),
-        //server_index: HashMap::new(),
         db: Arc::clone(&arc_db),
-        //db: db.clone().into(),
     };
-    
+
     let db_current_server = state.db.lock().await.current_server.clone();
     *state.current_server.lock().await = if !db_current_server.is_empty() {
         Some(db_current_server)
@@ -586,7 +543,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             if *server_running {
                 if let Some(process) = server_process.as_mut() {
                     match process.try_wait() {
-                        Ok(Some(status)) => {
+                        Ok(Some(_)) => {
                             drop(server_running);
                             drop(server_process);
 
@@ -635,8 +592,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     loop {
         let (socket, addr) = listener.accept().await?;
         println!("[Connection] New client from {}", addr);
-
-        debug_dump_state(&arc_state, &format!("New connection from {}", addr)).await;
 
         let stdin_ref = shared_stdin.clone();
         let hostname_ref = hostname_ref.clone();
@@ -751,19 +706,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let mut read_buf = Vec::new();
             let mut temp_buf = [0u8; 20632];
 
+            // There are two main read modes, Json for message processing and MigrationFile for file transfers, althought it should
+            // be renamed to just file transfer, as it switches to this mode during a migration or from the file transfers from the server
+            // the reason I seperated it is because of the fact that raw bytes are sent very quickly from a node or the main server
+            // which can cause some weirdness if mixed with the json logic, and seperations of concerns
+            // TODO: change the name from MigrationFile to something more represenative of the use cases
             enum ReadMode {
                 Json,
                 File {
                     current_file: tokio::fs::File,
                     file_name: String,
                     bytes_written: u64,
+                    // TODO: Consider removing this, as its not used
                     last_logged_mb: u64,
                     last_activity: tokio::time::Instant,
                 },
             }
 
             let mut mode = ReadMode::Json;
-            let mut files_received = 0;
+            // TODO: consider whether or not to remove the file counter
+            // let mut files_received = 0;
 
             let mut tick = tokio::time::interval(tokio::time::Duration::from_secs(1));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -803,7 +765,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 }
 
                 loop {
-
                     match &mut mode {
                         ReadMode::Json => {
                             let mut found_message = false;
@@ -832,20 +793,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                     found_message = true;
                                     continue;
                                 }
-                                // else if let Ok(msg_payload) =
-                                //     serde_json::from_value::<IntergrationCommands>(
-                                //         json_value.clone(),
-                                //     ){
-                                //     println!("[{}] Successfully parsed as Value: {:#?}", addr, json_value);
-                                //     sort_command_type_or_console(
-                                //         &Arc::clone(&arc_state_clone),
-                                //         &serde_json::to_value(msg_payload).unwrap(),
-                                //         &out_tx,
-                                //         &cmd_tx,
-                                //         &stdin_ref,
-                                //         &hostname_ref,
-                                //     ).await;
-                                // }
                                 if line_str.trim().starts_with('{')
                                     && line_str.trim().ends_with('}')
                                 {
@@ -897,7 +844,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                         let writer_tx = tcp_to_writer(conn).await;
                                                         tokio::spawn(async move {
                                                             let _ = send_folder_over_broadcast(
-                                                                "server/", writer_tx,
+                                                                SERVER_DIR.to_string(), writer_tx,
                                                             )
                                                             .await;
                                                         });
@@ -918,23 +865,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                 )
                                                 .await;
                                             }
-                                        } 
-                                        //  else if let Ok(msg_payload) =
-                                        //     serde_json::from_value::<IntergrationCommands>(
-                                        //         json_value.clone(),
-                                        //     )
-                                        // {
-                                        //     //println!("[{}] Successfully parsed as Value: {:#?}", addr, json_value);
-                                        //     sort_command_type_or_console(
-                                        //         &Arc::clone(&arc_state_clone),
-                                        //         &serde_json::to_value(msg_payload).unwrap(),
-                                        //         &out_tx,
-                                        //         &cmd_tx,
-                                        //         &stdin_ref,
-                                        //         &hostname_ref,
-                                        //     )
-                                        //     .await;
-                                        // }
+                                        }
                                         else if let Ok(msg_payload) =
                                             serde_json::from_value::<MessagePayload>(
                                                 json_value.clone(),
@@ -942,13 +873,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                         {
                                             match msg_payload.r#type.as_str() {
                                                 "start_file" => {
-                                                    files_received += 1;
+                                                    // TODO: consider whether or not to remove the file counter
+                                                    // files_received += 1;
                                                     println!(
                                                         "[File Transfer] {} is being transferred",
                                                         msg_payload.message
                                                     );
                                                     let file_path =
-                                                        format!("server/{}", msg_payload.message);
+                                                        format!("{}/{}", SERVER_DIR, msg_payload.message);
                                                     let _ = tokio::fs::create_dir_all(
                                                         file_path.clone(),
                                                     )
@@ -996,7 +928,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                 }
                                                 "clean_file" => {
                                                     let file_path =
-                                                        format!("server/{}", msg_payload.message);
+                                                        format!("{}/{}", SERVER_DIR, msg_payload.message);
                                                     if tokio::fs::metadata(&file_path).await.is_ok()
                                                     {
                                                         let _ = cleanup_end_file_markers(
@@ -1016,14 +948,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                 "command" => {
                                                     println!("{} {}", addr, msg_payload.message);
                                                     if msg_payload.message == "start_server" {
-                                                        debug_dump_state(
-                                                            &arc_state_clone,
-                                                            &format!(
-                                                                "Before start_server from {}",
-                                                                addr
-                                                            ),
-                                                        )
-                                                        .await;
 
                                                         if let Err(e) = start_server_with_broadcast(
                                                             &arc_state_clone,
@@ -1037,27 +961,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                                 addr, e
                                                             );
                                                         }
-
-                                                        debug_dump_state(
-                                                            &arc_state_clone,
-                                                            &format!(
-                                                                "After start_server from {}",
-                                                                addr
-                                                            ),
-                                                        )
-                                                        .await;
                                                     } else {
-                                                        // handle_typical_command_or_console(
-                                                        //     &Arc::clone(&arc_state_clone),
-                                                        //     &msg_payload,
-                                                        //     &out_tx,
-                                                        //     &cmd_tx,
-                                                        //     &stdin_ref,
-                                                        //     &hostname_ref,
-                                                        // )
-                                                        // .await;
-                                                        // println!("{:#?}", msg_payload);
-                                                        sort_command_type_or_console(
+                                                        let _ = sort_command_type_or_console(
                                                             &Arc::clone(&arc_state_clone),
                                                             &serde_json::to_value(msg_payload)
                                                                 .unwrap(),
@@ -1070,8 +975,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                     }
                                                 }
                                                 _ => {
-                                                    // println!("{:#?}", msg_payload);
-                                                    sort_command_type_or_console(
+                                                    let _ = sort_command_type_or_console(
                                                         &Arc::clone(&arc_state_clone),
                                                         &serde_json::to_value(msg_payload).unwrap(),
                                                         &out_tx,
@@ -1084,56 +988,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                             }
                                         } else {
                                             // This is when there is no match for any existing data structure
-                                            // println!("{:#?}", json_value.clone());
-
-                                            let command_or_console_result = sort_command_type_or_console(
-                                                &Arc::clone(&arc_state_clone),
-                                                &json_value,
-                                                &out_tx,
-                                                &cmd_tx,
-                                                &stdin_ref,
-                                                &hostname_ref,
-                                            )
-                                            .await;
+                                            let command_or_console_result =
+                                                sort_command_type_or_console(
+                                                    &Arc::clone(&arc_state_clone),
+                                                    &json_value,
+                                                    &out_tx,
+                                                    &cmd_tx,
+                                                    &stdin_ref,
+                                                    &hostname_ref,
+                                                )
+                                                .await;
                                             if let Err(e) = command_or_console_result {
-                                                if let Some(CommandOrConsoleErrors::AuthDisconnect) = e.downcast_ref::<CommandOrConsoleErrors>() {
+                                                if let Some(
+                                                    CommandOrConsoleErrors::AuthDisconnect,
+                                                ) = e.downcast_ref::<CommandOrConsoleErrors>()
+                                                {
                                                     kill_socket = true;
-                                                    // let _ = socket.shutdown().await;
-                                                    //drop(socket);
                                                 }
                                             }
-
                                         }
-                                        //          else if let Ok(msg_payload) =
-                                        //     serde_json::from_value::<IntergrationCommands>(
-                                        //         json_value.clone(),
-                                        //     )
-                                        // {
-                                        //     //println!("[{}] Successfully parsed as Value: {:#?}", addr, json_value);
-                                        //     sort_command_type_or_console(
-                                        //         &Arc::clone(&arc_state_clone),
-                                        //         &serde_json::to_value(msg_payload).unwrap(),
-                                        //         &out_tx,
-                                        //         &cmd_tx,
-                                        //         &stdin_ref,
-                                        //         &hostname_ref,
-                                        //     )
-                                        //     .await;
-                                        // }
-                                        // else if let Ok(msg_payload) =
-                                        //     serde_json::from_value::<IntergrationCommands>(
-                                        //         json_value.clone(),
-                                        //     ){
-                                        //     println!("[{}] Successfully parsed as Value: {:#?}", addr, json_value);
-                                        //     sort_command_type_or_console(
-                                        //         &Arc::clone(&arc_state_clone),
-                                        //         &serde_json::to_value(msg_payload).unwrap(),
-                                        //         &out_tx,
-                                        //         &cmd_tx,
-                                        //         &stdin_ref,
-                                        //         &hostname_ref,
-                                        //     ).await;
-                                        // }
                                     } else {
                                         break;
                                     }
@@ -1159,7 +1032,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             current_file,
                             file_name,
                             bytes_written,
-                            last_logged_mb,
+                            // TODO: consider removing last_logged_mb, its unused
+                            last_logged_mb: _,
                             last_activity,
                         } => {
                             *last_activity = tokio::time::Instant::now();
@@ -1270,7 +1144,14 @@ async fn sort_command_type_or_console(
             &state,
             get_provider_from_servername(
                 &state,
-                Some(state.current_server.lock().await.clone().ok_or("there is no current server")?),
+                Some(
+                    state
+                        .current_server
+                        .lock()
+                        .await
+                        .clone()
+                        .ok_or("there is no current server")?,
+                ),
             )
             .await,
         )
@@ -1280,7 +1161,7 @@ async fn sort_command_type_or_console(
             if !path.starts_with("server/") {
                 path = format!("server/{}", path);
             }
-            execute_file_operation(converted_src, converted_dest, path);
+            let _ = execute_file_operation(converted_src, converted_dest, path);
         }
     }
 
@@ -1322,10 +1203,21 @@ async fn handle_typical_command_or_console(
             "delete_server" => {
                 let option_path = get_definite_path_from_name(
                     &state,
-                    get_provider_from_servername(&state, Some(state.current_server.lock().await.clone().ok_or("there is no current server")?)).await,
+                    get_provider_from_servername(
+                        &state,
+                        Some(
+                            state
+                                .current_server
+                                .lock()
+                                .await
+                                .clone()
+                                .ok_or("there is no current server")?,
+                        ),
+                    )
+                    .await,
                 )
                 .await;
-                if let Some(mut path) = option_path { 
+                if let Some(mut path) = option_path {
                     if !path.starts_with("server/") {
                         path = format!("server/{}", path);
                     }
@@ -1356,20 +1248,27 @@ async fn handle_typical_command_or_console(
                 };
                 //println!("{:#?}", status_message);
                 let json_str = serde_json::to_string(&status_message).unwrap();
-                out_tx.send(json_str).await;
+                let _ = out_tx.send(json_str).await;
                 Ok(())
             }
             "stop_server" => {
-                let current_server = state.current_server.lock().await
+                let current_server = state
+                    .current_server
+                    .lock()
+                    .await
                     .clone()
                     .ok_or("there is no current server")?;
-                
+
                 let provider = get_provider_from_servername(&state, Some(current_server)).await;
-                
+
                 if let Some(_) = get_provider_object(
                     provider.as_deref(),
-                    get_definite_path_from_name(&state, provider.clone()).await.as_deref(),
-                ).await {
+                    get_definite_path_from_name(&state, provider.clone())
+                        .await
+                        .as_deref(),
+                )
+                .await
+                {
                     let input = "stop";
                     let mut guard = stdin_ref.lock().await;
                     if let Some(stdin) = guard.as_mut() {
@@ -1395,23 +1294,28 @@ async fn handle_typical_command_or_console(
                     }
                 }
 
-                let current_server = state.current_server.lock().await
+                let current_server = state
+                    .current_server
+                    .lock()
+                    .await
                     .clone()
                     .ok_or("there is no current server")?;
-                
-                let provider = get_provider_from_servername(&state, Some(current_server.clone())).await;
-                let location = get_definite_path_from_name(&state, Some(current_server.clone())).await;
+
+                let provider =
+                    get_provider_from_servername(&state, Some(current_server.clone())).await;
+                let location =
+                    get_definite_path_from_name(&state, Some(current_server.clone())).await;
                 // println!("DEBUG current_server: '{}'", current_server);
                 // println!("DEBUG location: '{:?}'", location);
 
-                if let Some((_, provider_platform)) = get_provider_object(
-                    provider.as_deref(),
-                    location.as_deref(),
-                ).await {
-                    let mut provider_game_commands: ProviderGame = match pick_platform(provider_platform) {
-                        Some(prov) => prov.into(),
-                        None => return Err("no platform".into()),
-                    };
+                if let Some((_, provider_platform)) =
+                    get_provider_object(provider.as_deref(), location.as_deref()).await
+                {
+                    let mut provider_game_commands: ProviderGame =
+                        match pick_platform(provider_platform) {
+                            Some(prov) => prov.into(),
+                            None => return Err("no platform".into()),
+                        };
                     if let Some(ref loc) = location {
                         let _ = provider_game_commands.set_location(loc.to_owned());
                     }
@@ -1520,28 +1424,12 @@ async fn handle_typical_command_or_console(
     }
 }
 
-// TODO: this was for debugging, remove this
-async fn debug_dump_state(state: &Arc<AppState>, label: &str) {
-    // let server_running = state.server_running.lock().await;
-    // let output_tx_lock = state.server_output_tx.lock().await;
-    // let process_lock = state.server_process.lock().await;
-
-    // println!("DEBUG DUMP [{}]:", label);
-    // println!("  - server_running: {}", *server_running);
-    // println!("  - output_tx exists: {}", output_tx_lock.is_some());
-    // println!("  - process exists: {}", process_lock.is_some());
-    // println!("  - current_server: {}", state.current_server);
-
-    // if let Some(ref tx) = *output_tx_lock {
-    //     println!("  - broadcast receiver_count: {}", tx.receiver_count());
-    // }
-}
-
 // starts the server with the channel (broadcast) in which it will receive and send out commands (for the server, not server management commands)
 async fn start_server_with_broadcast(
     state: &Arc<AppState>,
     shared_stdin: &Arc<Mutex<Option<ChildStdin>>>,
-    cmd_tx: &mpsc::Sender<String>,
+    // TODO: consider removing _cmd_tx, as its unused
+    _cmd_tx: &mpsc::Sender<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     {
         let server_running = state.server_running.lock().await;
@@ -1565,17 +1453,18 @@ async fn start_server_with_broadcast(
     let (broadcast_tx, _) = broadcast::channel(1000);
 
     println!("Adjusted path to: server/");
-    let current_server = state.current_server.lock().await
+    let current_server = state
+        .current_server
+        .lock()
+        .await
         .clone()
         .ok_or("there is no current server")?;
 
     let provider = get_provider_from_servername(&state, Some(current_server.clone())).await;
     let location = get_definite_path_from_name(&state, Some(current_server.clone())).await;
-    
-    if let Some(provider_type) = get_provider_object(
-        provider.as_deref(),
-        location.as_deref(),
-    ).await {
+
+    if let Some(provider_type) = get_provider_object(provider.as_deref(), location.as_deref()).await
+    {
         let mut provider_game_commands: ProviderGame = match pick_platform(provider_type.1) {
             Some(prov) => prov.into(),
             None => return Err("no platform".into()),
@@ -1615,21 +1504,6 @@ async fn start_server_with_broadcast(
             let mut server_running = state.server_running.lock().await;
             *server_running = true;
         }
-
-        // if let Some(post_hook_cmd) = provider_type.post_hook() {
-        //     let cmd_tx_clone = cmd_tx.clone();
-        //     tokio::spawn(async move {
-        //         let mut cmd = post_hook_cmd;
-        //         cmd.current_dir("server/");
-        //         let _ = run_command_live_output(
-        //             cmd,
-        //             "Post-hook".into(),
-        //             Some(cmd_tx_clone),
-        //             None,
-        //         )
-        //         .await;
-        //     });
-        // }
 
         let broadcast_tx_clone = broadcast_tx.clone();
         tokio::spawn(async move {
@@ -1674,58 +1548,17 @@ async fn start_server_with_broadcast(
     Ok(())
 }
 
-// Dedicated function for stopping the server, There was already have something like this in a match statement but this function is mroe recent and handles the process, in the
-// match statement I should invoke this function instead of having its own logic in the match statement
-// TODO: do the above
-async fn stop_server(
-    state: &Arc<AppState>,
-    shared_stdin: &Arc<Mutex<Option<ChildStdin>>>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut server_running = state.server_running.lock().await;
-    if !*server_running {
-        return Ok(());
-    }
-
-    {
-        let mut stdin_lock = shared_stdin.lock().await;
-        if let Some(ref mut stdin) = *stdin_lock {
-            let _ = stdin.write_all(b"stop\n").await;
-        }
-    }
-
-    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-
-    {
-        let mut process_lock = state.server_process.lock().await;
-        if let Some(mut child) = process_lock.take() {
-            let _ = child.kill().await;
-        }
-    }
-
-    {
-        let mut stdin_lock = shared_stdin.lock().await;
-        *stdin_lock = None;
-    }
-
-    {
-        let mut output_tx_lock = state.server_output_tx.lock().await;
-        *output_tx_lock = None;
-    }
-
-    *server_running = false;
-    Ok(())
-}
-
-
 async fn fix_path(path: String) -> String {
     let server_root = Path::new("server");
 
     if path.starts_with("server/") || path == "server" {
         let canonical = fs::canonicalize(&path)
-            .await.unwrap_or_else(|_| server_root.to_path_buf());
+            .await
+            .unwrap_or_else(|_| server_root.to_path_buf());
 
         let canonical_server_root = fs::canonicalize(server_root)
-            .await.unwrap_or_else(|_| server_root.to_path_buf());
+            .await
+            .unwrap_or_else(|_| server_root.to_path_buf());
 
         if canonical.starts_with(&canonical_server_root) {
             return canonical.to_string_lossy().into_owned();
@@ -1737,8 +1570,7 @@ async fn fix_path(path: String) -> String {
 
     let forced = server_root.join(path);
 
-    let canonical_forced = fs::canonicalize(&forced)
-        .await.unwrap_or(forced);
+    let canonical_forced = fs::canonicalize(&forced).await.unwrap_or(forced);
 
     canonical_forced.to_string_lossy().into_owned()
 }
@@ -1750,7 +1582,8 @@ async fn fix_path(path: String) -> String {
 // servers from some nested directory so you dont need to migrate server files, delete it, then migrate newer server files
 // or recreate it
 // should be here and not filesystem because it contains appstate
-async fn handle_file_request(state: &Arc<AppState>, request: FileRequestMessage) -> String {
+// TODO: consider removing _state as its unused
+async fn handle_file_request(_state: &Arc<AppState>, request: FileRequestMessage) -> String {
     match request.payload {
         FileRequestPayload::Metadata { path } => match get_metadata(&fix_path(path).await).await {
             Ok(metadata) => serde_json::to_string(&FileResponseMessage {
@@ -1764,8 +1597,7 @@ async fn handle_file_request(state: &Arc<AppState>, request: FileRequestMessage)
             })
             .unwrap(),
         },
-        FileRequestPayload::PathFromTag { tag, path } => {
-            let path = fix_path(path).await;
+        FileRequestPayload::PathFromTag { tag: _, path: _ } => {
             let basic_path_response = BasicPath { paths: vec![] };
             serde_json::to_string(&FileResponseMessage {
                 in_response_to: request.id,
@@ -1843,17 +1675,8 @@ pub async fn tcp_to_writer(stream: TcpStream) -> mpsc::Sender<Vec<u8>> {
             match writer.write_all(&msg).await {
                 Ok(()) => {
                     total_bytes_written += msg_len as u64;
-
-                    // if message_count % 1000 == 0 || total_bytes_written % 10_000_000 == 0 {
-                    //     println!(
-                    //         "[tcp_to_writer] Wrote {} messages, {} total bytes",
-                    //         message_count, total_bytes_written
-                    //     );
-                    // }
                 }
-                Err(e) => {
-                    // eprintln!("[tcp_to_writer] Failed to write message {} ({} bytes) to socket after {} total bytes: {}",
-                    //         message_count, msg_len, total_bytes_written, e);
+                Err(_) => {
                     break;
                 }
             }
@@ -1887,32 +1710,31 @@ async fn handle_commands_with_metadata(
     payload: &IncomingMessageWithMetadata,
     cmd_tx: &mpsc::Sender<String>,
     stdin_ref: &Arc<Mutex<Option<ChildStdin>>>,
-    hostname: &Arc<Result<OsString, String>>,
+    // TODO: consider removing hostname, as its unused
+    _hostname: &Arc<Result<OsString, String>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let typ = payload.message_type.clone();
     if typ == "command" {
         let cmd_str = payload.message.clone();
         match cmd_str.as_str() {
             "create_server" => {
-                // println!("Running create server function");
-                let result = create_server(state, cmd_tx, stdin_ref, serde_json::to_value(payload)?).await;
+                let result =
+                    create_server(state, cmd_tx, stdin_ref, serde_json::to_value(payload)?).await;
                 if let Err(error) = result {
                     println!("{:#?}", error);
                     return Err(error);
                 } else {
-                    return Ok(())
+                    return Ok(());
                 }
             }
             "set_server" => {
-                // let mut  db = state.db.lock().await;
-                // if let MetadataTypes::Server { servername, provider, location, providertype: _ } = &payload.metadata {
-                //     db.server_index.insert(servername.to_string(), ServerIndex { location: location.to_string(), provider: provider.to_string() });
-                //     Ok(())
-                // } else {
-                //     Ok(())
-                // }
-                // println!("Raw JSON: {}", serde_json::to_string_pretty(&payload_raw_value).unwrap_or_default());
-                if let MetadataTypes::Server { servername, provider, location, providertype } = &payload.metadata {
+                if let MetadataTypes::Server {
+                    servername,
+                    provider: _,
+                    location: _,
+                    providertype: _,
+                } = &payload.metadata
+                {
                     let mut db = state.db.lock().await;
                     db.current_server = servername.clone();
                     save_db(&db);
@@ -1923,84 +1745,64 @@ async fn handle_commands_with_metadata(
                     Ok(())
                 }
             }
-            _ => {
-                Ok(())
-            }
+            _ => Ok(()),
         }
     } else {
         //Ok(())
-        Err(Error::new(
-            ErrorKind::Other,
-            "This should not be here"
-        ))?
+        Err(Error::new(ErrorKind::Other, "This should not be here"))?
     }
 }
 
 async fn create_server(state: Arc<AppState>, cmd_tx: &mpsc::Sender<String>, stdin_ref: &Arc<Mutex<Option<ChildStdin>>>, payload_raw_value: Value) ->
 Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if let Ok(payload) = serde_json::from_value::<IncomingMessageWithMetadata>(payload_raw_value){
-        if let MetadataTypes::Server {
-            providertype,
-            location,
-            provider,
-            servername,
-        } = &payload.metadata.clone()
-        {
-            let mut db = state.db.lock().await;
-            if let MetadataTypes::Server { servername, provider, location, providertype: _ } = &payload.metadata {
-                let filtered_location = if location.starts_with("server/") {
-                    location.clone()
-                } else {
-                    format!("server/{}", location)
-                };
-
-                db.server_index.insert(servername.to_string(), ServerIndex { location: filtered_location.to_string(), provider: provider.to_string() });
-                save_db(&db);
-                drop(db);
-                let debug_db = state.db.lock().await;
-
-                let current_server = state.current_server.lock().await;
-                let provider = get_provider_from_servername(&state, Some(servername.to_string())).await;
-
-                //let provider = get_provider_from_servername(&state, current_server.clone()).await;
-                //let path = get_definite_path_from_name(&state, Some(servername.to_string())).await;
-
-                if let Some((name, provider_platforms)) = get_provider_object(
-                    provider.as_deref(),
-                    get_definite_path_from_name(&state, current_server.clone()).await.as_deref(),
-                ).await {
-                    let mut prov: ProviderGame = match pick_platform(provider_platforms) {
-                        Some(prov) => prov,
-                        None => return Err("No platform".into())
-                    }.into();
-
-                    let _ = prov.set_location(filtered_location);
-
-                    if let Some(cmd) = prov.pre_hook() {
-                        run_command_live_output(&state, cmd, "Pre-hook".into(), Some(cmd_tx.clone()), None).await.ok();
-                    }
-                    if let Some(cmd) = prov.install() {
-                        run_command_live_output(&state, cmd, "Install".into(), Some(cmd_tx.clone()), None).await.ok();
-                    }
-                    if let Some(cmd) = prov.post_hook() {
-                        run_command_live_output(&state, cmd, "Post-hook".into(), Some(cmd_tx.clone()), None).await.ok();
-                    }
-                    if let Some(cmd) = prov.start() {
-                        let tx = cmd_tx.clone();
-                        let stdin_clone = stdin_ref.clone();
-                        let state_clone = Arc::clone(&state);
-                        tokio::spawn(async move {
-                            run_command_live_output(&state_clone, cmd, "Server".into(), Some(tx), Some(stdin_clone)).await.ok();
-                        });
-                        let _ = cmd_tx.send("Server started".into()).await;
-                    }
-                    Ok(())
-                } else {
-                    Ok(())
-                }
+    if let Ok(payload) = serde_json::from_value::<IncomingMessageWithMetadata>(payload_raw_value) {
+        if let MetadataTypes::Server { servername, provider: _, location, providertype: _ } = &payload.metadata.clone() {
+            let filtered_location = if location.starts_with("server/") {
+                location.clone()
             } else {
-                Ok(())
+                format!("server/{}", location)
+            };
+
+            {
+                let mut db = state.db.lock().await;
+                db.server_index.insert(servername.to_string(), ServerIndex { location: filtered_location.to_string(), provider: {
+                    if let MetadataTypes::Server { provider, .. } = &payload.metadata { provider.clone() } else { return Ok(()); }
+                }});
+                save_db(&db);
             }
+
+            let current_server = state.current_server.lock().await.clone();
+            let provider = get_provider_from_servername(&state, Some(servername.to_string())).await;
+            let path = get_definite_path_from_name(&state, current_server.clone()).await;
+
+            if let Some((name, provider_platforms)) = get_provider_object(provider.as_deref(), path.as_deref()).await {
+                let mut prov: ProviderGame = match pick_platform(provider_platforms) {
+                    Some(prov) => prov,
+                    None => return Err("No platform".into())
+                }.into();
+
+                let _ = prov.set_location(filtered_location);
+
+                if let Some(cmd) = prov.pre_hook() {
+                    run_command_live_output(&state, cmd, "Pre-hook".into(), Some(cmd_tx.clone()), None).await.ok();
+                }
+                if let Some(cmd) = prov.install() {
+                    run_command_live_output(&state, cmd, "Install".into(), Some(cmd_tx.clone()), None).await.ok();
+                }
+                if let Some(cmd) = prov.post_hook() {
+                    run_command_live_output(&state, cmd, "Post-hook".into(), Some(cmd_tx.clone()), None).await.ok();
+                }
+                if let Some(cmd) = prov.start() {
+                    let tx = cmd_tx.clone();
+                    let stdin_clone = stdin_ref.clone();
+                    let state_clone = Arc::clone(&state);
+                    tokio::spawn(async move {
+                        run_command_live_output(&state_clone, cmd, "Server".into(), Some(tx), Some(stdin_clone)).await.ok();
+                    });
+                    let _ = cmd_tx.send("Server started".into()).await;
+                }
+            }
+            Ok(())
         } else {
             Ok(())
         }
@@ -2009,14 +1811,14 @@ Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 }
 
-fn pick_platform(platform: Platforms) -> Option<ProviderConfig> { 
+fn pick_platform(platform: Platforms) -> Option<ProviderConfig> {
     println!("test");
     if cfg!(target_os = "linux") {
         return platform.linux;
     } else if cfg!(target_os = "windows") {
         return platform.windows;
     } else {
-        return None
+        return None;
     }
 }
 
@@ -2026,9 +1828,12 @@ const PROVIDER_PATH: &str = "provider-db.json";
 // Gets a provider out of a handpicked list of gameservers, including custom, at some point needs to be massively re-worked as
 // it might be a bit messy having this is my rust code, the majority of the code and types are in provider.rs and it just relies on
 // structs I created changing into this provider types, which is one of the few reasons why a better system is needed, it also takes a path to put the files in (not implimented yet)
-async fn get_provider_object(option_name: Option<&str>, option_path: Option<&str>) -> Option<(String, Platforms)> {
+async fn get_provider_object(
+    option_name: Option<&str>,
+    option_path: Option<&str>,
+) -> Option<(String, Platforms)> {
     if option_name.is_none() || option_path.is_none() {
-        return None
+        return None;
     }
     let (path, name) = (option_path.unwrap(), option_name.unwrap());
 
@@ -2038,100 +1843,107 @@ async fn get_provider_object(option_name: Option<&str>, option_path: Option<&str
         println!("Adjusted path to: {}", path);
     }
 
-    let contents: Result<ProviderDbList, serde_json::Error> = serde_json::from_str(&match fs::read_to_string(PROVIDER_PATH).await {
-        Ok(prov) => {
-            println!("Read provider DB file OK ({} bytes)", prov.len());
-            prov
-        },
-        Err(e) => {
-            println!("ERROR: Failed to read PROVIDER_PATH='{}': {}", PROVIDER_PATH, e);
-            return None;
-        }
-    });
-    //.expect("Failed to read provider db file");
-    //match name {
-        // "minecraft" => {
-        //     println!("Selected provider: Minecraft");
-        //     Some(Minecraft::new(path).into())
-        // }
-        //"custom" => {
-        if name == "custom" {
-            let provider_json_path = format!("{}/provider.json", path);
-            println!(
-                "Looking for custom provider config at: {}",
-                provider_json_path
-            );
+    let contents: Result<ProviderDbList, serde_json::Error> =
+        serde_json::from_str(&match fs::read_to_string(PROVIDER_PATH).await {
+            Ok(prov) => {
+                println!("Read provider DB file OK ({} bytes)", prov.len());
+                prov
+            }
+            Err(e) => {
+                println!(
+                    "ERROR: Failed to read PROVIDER_PATH='{}': {}",
+                    PROVIDER_PATH, e
+                );
+                return None;
+            }
+        });
+    if name == "custom" {
+        let provider_json_path = format!("{}/provider.json", path);
+        println!(
+            "Looking for custom provider config at: {}",
+            provider_json_path
+        );
 
-            match std::fs::read_to_string(&provider_json_path) {
-                Ok(json_content) => {
-                    println!("Successfully read provider.json");
-                    match serde_json::from_str::<ProviderConfig>(&json_content) {
-                        Ok(config) => {
-                            println!("Loaded custom provider config successfully");
-                            let mut custom = Custom::new();
+        match std::fs::read_to_string(&provider_json_path) {
+            Ok(json_content) => {
+                println!("Successfully read provider.json");
+                match serde_json::from_str::<ProviderConfig>(&json_content) {
+                    Ok(config) => {
+                        println!("Loaded custom provider config successfully");
+                        let mut custom = Custom::new();
 
-                            if let Some(cmd) = config.pre_hook {
-                                println!("Adding pre_hook: {}", cmd);
-                                custom = custom.with_pre_hook(cmd);
-                            }
-                            if let Some(cmd) = config.install {
-                                println!("Adding install: {}", cmd);
-                                custom = custom.with_install(cmd);
-                            }
-                            if let Some(cmd) = config.post_hook {
-                                println!("Adding post_hook: {}", cmd);
-                                custom = custom.with_post_hook(cmd);
-                            }
-                            if let Some(cmd) = config.start {
-                                println!("Adding start: {}", cmd);
-                                custom = custom.with_start(cmd);
-                            }
-
-                            return Some((name.to_string(), custom.into()))
+                        if let Some(cmd) = config.pre_hook {
+                            println!("Adding pre_hook: {}", cmd);
+                            custom = custom.with_pre_hook(cmd);
                         }
-                        Err(e) => {
-                            println!("[ERROR] Failed to parse provider.json: {}", e);
-                            return Some((name.to_owned(), Custom::new().into()))
+                        if let Some(cmd) = config.install {
+                            println!("Adding install: {}", cmd);
+                            custom = custom.with_install(cmd);
                         }
+                        if let Some(cmd) = config.post_hook {
+                            println!("Adding post_hook: {}", cmd);
+                            custom = custom.with_post_hook(cmd);
+                        }
+                        if let Some(cmd) = config.start {
+                            println!("Adding start: {}", cmd);
+                            custom = custom.with_start(cmd);
+                        }
+
+                        return Some((name.to_string(), custom.into()));
+                    }
+                    Err(e) => {
+                        println!("[ERROR] Failed to parse provider.json: {}", e);
+                        return Some((name.to_owned(), Custom::new().into()));
                     }
                 }
-                Err(e) => {
-                    println!(
-                        "[WARN] Could not read provider.json at {}: {}",
-                        provider_json_path, e
-                    );
-                    return None
-                }
             }
-        } else {
-            println!("Looking up '{}' in provider DB at: {}", name, PROVIDER_PATH);
-            
-            let db = match contents {
-                Ok(db) => {
-                    println!("Provider DB loaded, entries: {:?}", db.list.keys().collect::<Vec<_>>());
-                    db
-                },
-                Err(e) => {
-                    println!("ERROR: Failed to parse provider DB: {}", e);
-                    return None;
-                }
-            };
+            Err(e) => {
+                println!(
+                    "[WARN] Could not read provider.json at {}: {}",
+                    provider_json_path, e
+                );
+                return None;
+            }
+        }
+    } else {
+        println!("Looking up '{}' in provider DB at: {}", name, PROVIDER_PATH);
 
-            if let Some((inner_provider_name, inner_provider)) = db.list.iter().find(|(provider_name, _)| *provider_name == name) {
-                println!("found provider: {}", inner_provider_name);
-                return Some((inner_provider_name.to_string(), inner_provider.clone()))
-            } else {
-                println!("'{}' not found in DB. Available: {:?}", name, db.list.keys().collect::<Vec<_>>());
-                return None
+        let db = match contents {
+            Ok(db) => {
+                println!(
+                    "Provider DB loaded, entries: {:?}",
+                    db.list.keys().collect::<Vec<_>>()
+                );
+                db
+            }
+            Err(e) => {
+                println!("ERROR: Failed to parse provider DB: {}", e);
+                return None;
             }
         };
-        // }
-        // _ => {
-        //     println!("[WARN] Unknown provider: {}", name);
-        //     None
-        // }
-}
 
+        if let Some((inner_provider_name, inner_provider)) = db
+            .list
+            .iter()
+            .find(|(provider_name, _)| *provider_name == name)
+        {
+            println!("found provider: {}", inner_provider_name);
+            return Some((inner_provider_name.to_string(), inner_provider.clone()));
+        } else {
+            println!(
+                "'{}' not found in DB. Available: {:?}",
+                name,
+                db.list.keys().collect::<Vec<_>>()
+            );
+            return None;
+        }
+    };
+    // }
+    // _ => {
+    //     println!("[WARN] Unknown provider: {}", name);
+    //     None
+    // }
+}
 
 // Needs to be implimented, provider and servername should not forever remain the same thing and
 // a index needs to be kept about what provider matches to which server, the code already store the data
@@ -2139,7 +1951,10 @@ async fn get_provider_object(option_name: Option<&str>, option_path: Option<&str
 async fn get_provider_from_servername(state: &AppState, name: Option<String>) -> Option<String> {
     if name.is_some() {
         let db = state.db.lock().await;
-        let server_path = db.server_index.iter().find(|(server_name, _)| name.clone().unwrap() == **server_name);
+        let server_path = db
+            .server_index
+            .iter()
+            .find(|(server_name, _)| name.clone().unwrap() == **server_name);
         if server_path.is_some() {
             if let Some((_, server_index)) = server_path {
                 Some(server_index.provider.clone())
@@ -2159,7 +1974,10 @@ async fn get_provider_from_servername(state: &AppState, name: Option<String>) ->
 async fn get_definite_path_from_name(state: &AppState, name: Option<String>) -> Option<String> {
     if name.is_some() {
         let db = state.db.lock().await;
-        let server_path = db.server_index.iter().find(|(server_name, _)| name.clone().unwrap() == **server_name);
+        let server_path = db
+            .server_index
+            .iter()
+            .find(|(server_name, _)| name.clone().unwrap() == **server_name);
         if server_path.is_some() {
             if let Some((_, server_index)) = server_path {
                 Some(server_index.location.clone())

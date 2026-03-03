@@ -14,7 +14,6 @@ use kube::{Api, Client};
 
 use crate::NodeAndTCP;
 use crate::NodeType;
-//use crate::NodeStatus;
 use crate::K8sType;
 use crate::Status;
 
@@ -156,7 +155,6 @@ pub async fn verify_is_k8s_gameserver(
 pub async fn create_k8s_deployment(
     client: &Client,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    //let testing_deployment = !std::env::var("TESTING_DEPLOYMENT").unwrap_or("").is_empty();
     let deployment = if std::env::var("TESTING").is_ok() {
         println!("Using dev deployment");
         "deployment-dev.yaml"
@@ -164,8 +162,7 @@ pub async fn create_k8s_deployment(
         "deployment.yaml"
     };
 
-    let deployment_yaml =
-        fs::read_to_string(format!("/usr/src/app/gameserver/{}", deployment))?;
+    let deployment_yaml = fs::read_to_string(format!("/usr/src/app/gameserver/{}", deployment))?;
 
     for doc in deployment_yaml.split("---") {
         let trimmed = doc.trim();
