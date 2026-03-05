@@ -1,0 +1,41 @@
+[package]
+name = "gameserver-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde_json.workspace = true
+bollard = { workspace = true, optional = true }
+sqlx = { workspace = true, optional = true }
+kube = { workspace = true, optional = true }
+k8s-openapi = { workspace = true, optional = true }
+tar = { workspace = true, optional = true }
+serde_yaml = { workspace = true, optional = true }
+axum.workspace = true
+tokio.workspace = true
+urlencoding.workspace = true
+axum-login.workspace = true
+bcrypt.workspace = true
+serde.workspace = true
+mime_guess.workspace = true
+async-trait.workspace = true
+futures-util.workspace = true
+chrono.workspace = true
+rcon.workspace = true
+bytes.workspace = true
+jsonwebtoken.workspace = true
+serial_test.workspace = true
+tower-http.workspace = true
+env.workspace = true
+walkdir.workspace = true
+sysinfo.workspace = true
+
+[features]
+default = []
+database = []
+docker = ["bollard", "sqlx"]
+full-stack = ["kube", "k8s-openapi", "bollard", "tar", "serde_yaml", "sqlx"]
+
+[[bin]]
+name = "gameserver-rs"
+path = "src/main.rs"
