@@ -9,6 +9,7 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use tokio::fs;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::process::Child;
 use tokio::process::{ChildStdin, Command as TokioCommand};
@@ -16,6 +17,7 @@ use tokio::sync::{mpsc, Mutex};
 
 use crate::broadcast::Sender;
 use crate::filesystem::cleanup_end_file_markers;
+use crate::filesystem::execute_file_operation;
 use crate::filesystem::execute_file_operation;
 use crate::filesystem::get_files_content;
 use crate::filesystem::get_metadata;
@@ -34,10 +36,12 @@ use tokio::sync::broadcast;
 // I use the same code as in the main server
 // with a few diffrences in stuff like filesystem
 mod databasespec;
+mod databasespec;
 mod extra;
 mod filesystem;
 mod intergrations;
 mod jsondatabase;
+mod providers;
 mod providers;
 
 use databasespec::ServerIndex;
@@ -872,6 +876,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                         {
                                             match msg_payload.r#type.as_str() {
                                                 "start_file" => {
+                                                    // TODO: consider whether or not to remove the file counter
+                                                    // files_received += 1;
                                                     // TODO: consider whether or not to remove the file counter
                                                     // files_received += 1;
                                                     println!(
@@ -1792,7 +1798,11 @@ async fn create_server(
                 );
                 save_db(&db);
             }
+            }
 
+            let current_server = state.current_server.lock().await.clone();
+            let provider = get_provider_from_servername(&state, Some(servername.to_string())).await;
+            let path = get_definite_path_from_name(&state, current_server.clone()).await;
             let current_server = state.current_server.lock().await.clone();
             let provider = get_provider_from_servername(&state, Some(servername.to_string())).await;
             let path = get_definite_path_from_name(&state, current_server.clone()).await;
