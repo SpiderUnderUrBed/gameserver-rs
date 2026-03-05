@@ -1,11 +1,11 @@
+use crate::Deserialize;
+use crate::Serialize;
+use crate::StatusCode;
 use async_trait::async_trait;
 #[cfg(any(feature = "full-stack", feature = "database"))]
 use std::default;
-use std::fmt;
 use std::error::Error;
-use crate::Serialize;
-use crate::Deserialize;
-use crate::StatusCode;
+use std::fmt;
 
 use serde::Deserializer;
 
@@ -15,11 +15,13 @@ use serde::ser::StdError;
 use sqlx::types::Json;
 
 #[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
-use sqlx::{postgres::{PgValueRef, PgArgumentBuffer}, Postgres, Type, Decode, Encode};
+use sqlx::{
+    Decode, Encode, Postgres, Type,
+    postgres::{PgArgumentBuffer, PgValueRef},
+};
 
-
-use std::str::FromStr;
 use futures_util::TryFutureExt;
+use std::str::FromStr;
 
 type BoxDynError = Box<dyn StdError + Send + Sync>;
 
@@ -36,23 +38,22 @@ impl Error for DatabaseError {}
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct RetrieveElement {
-    pub element: String
+    pub element: String,
 }
-
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(tag = "kind", content = "data")]
 pub enum Element {
-    User {  
+    User {
         password: String,
         user: String,
-        user_perms: Vec<String>
+        user_perms: Vec<String>,
     },
     Node(Node),
     Button(Button),
     Server(Server),
     Intergration(Intergration),
-    String(String)
+    String(String),
 }
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ModifyElementData {
@@ -72,16 +73,16 @@ pub struct Settings {
     pub(crate) driver: String,
     pub(crate) file_system_driver: String,
     pub(crate) enable_statistics_on_home_page: String,
-    pub(crate) current_server: Server
+    pub(crate) current_server: Server,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { 
-            toggled_default_buttons: Default::default(), 
-            status_type: Default::default(), 
-            enabled_rcon: true, 
-            rcon_url: "localhost:25575".to_string(), 
+        Self {
+            toggled_default_buttons: Default::default(),
+            status_type: Default::default(),
+            enabled_rcon: true,
+            rcon_url: "localhost:25575".to_string(),
             rcon_password: "testing".to_string(),
             driver: "".to_string(),
             enable_statistics_on_home_page: "".to_string(),
@@ -105,7 +106,6 @@ pub struct Settings {
     pub(crate) current_server: Json<Server>,
 }
 
-
 #[cfg(any(feature = "full-stack", feature = "database"))]
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, sqlx::Type, Default)]
 #[sqlx(type_name = "text")]
@@ -113,8 +113,8 @@ pub struct Settings {
 pub enum NodeStatus {
     #[default]
     Unknown,
-    Enabled, 
-    Disabled, 
+    Enabled,
+    Disabled,
     ImmutablyEnabled,
     ImmutablyDisabled,
 }
@@ -131,8 +131,8 @@ use serde_json::Value;
 pub enum NodeStatus {
     #[default]
     Unknown,
-    Enabled, 
-    Disabled, 
+    Enabled,
+    Disabled,
     ImmutablyEnabled,
     ImmutablyDisabled,
 }
@@ -144,7 +144,7 @@ pub enum K8sType {
     Pod,
     #[default]
     None,
-    Unknown
+    Unknown,
 }
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
@@ -156,7 +156,7 @@ pub enum K8sType {
     Pod,
     #[default]
     None,
-    Unknown
+    Unknown,
 }
 
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
@@ -176,7 +176,7 @@ pub enum NodeType {
     // InbuiltNode,
     // InbuiltPod,
     Inbuilt,
-    Main
+    Main,
 }
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
@@ -197,7 +197,7 @@ pub enum NodeType {
     // InbuiltNode,
     // InbuiltPod,
     Inbuilt,
-    Main
+    Main,
 }
 #[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
 impl<'r> Decode<'r, Postgres> for NodeType {
@@ -207,12 +207,11 @@ impl<'r> Decode<'r, Postgres> for NodeType {
     }
 }
 
-
 #[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
 impl<'q> Encode<'q, Postgres> for NodeType {
     fn encode_by_ref(
         &self,
-        buf: &mut PgArgumentBuffer
+        buf: &mut PgArgumentBuffer,
     ) -> Result<sqlx::encode::IsNull, BoxDynError> {
         <String as Encode<Postgres>>::encode_by_ref(&self.to_string(), buf)
             .map_err(|e| Box::<dyn StdError + Send + Sync>::from(e))
@@ -222,7 +221,6 @@ impl<'q> Encode<'q, Postgres> for NodeType {
         self.to_string().len()
     }
 }
-
 
 impl From<String> for NodeType {
     fn from(s: String) -> Self {
@@ -243,12 +241,10 @@ impl ToString for NodeType {
             NodeType::Main => "main".to_string(),
             NodeType::CustomWithString(s) => s.clone(),
             NodeType::InbuiltWithString(s) => s.clone(),
-	   _ => String::new()
+            _ => String::new(),
         }
     }
 }
-
-
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, sqlx::Type)]
@@ -259,19 +255,19 @@ pub enum Intergrations {
     Minecraft,
     Other,
     #[default]
-    Unknown
+    Unknown,
 }
 
 // Ideally I dont hardcode any intergrations like minecraft or any specific provider, but it would be meaningless to move it to its own file when
 // its much more readable in this spec, and until i have a better solution down the line or decide to keep this
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
-#[serde(rename_all = "lowercase")]
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
 pub enum Intergrations {
     Minecraft,
     Other,
     #[default]
-    Unknown
+    Unknown,
 }
 
 #[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
@@ -280,7 +276,6 @@ impl Type<Postgres> for NodeType {
         <String as Type<Postgres>>::type_info()
     }
 }
-
 
 // TODO: Consider removing the string to enum varient matching
 impl FromStr for Intergrations {
@@ -295,7 +290,6 @@ impl FromStr for Intergrations {
     }
 }
 impl ToString for Intergrations {
-
     fn to_string(&self) -> String {
         match self {
             Intergrations::Minecraft => "minecraft".to_string(),
@@ -305,13 +299,12 @@ impl ToString for Intergrations {
     }
 }
 
-
 #[cfg(any(feature = "full-stack", feature = "database"))]
 #[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize)]
 pub struct User {
     pub username: String,
     pub password_hash: Option<String>,
-    pub user_perms: Vec<String>
+    pub user_perms: Vec<String>,
 }
 
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
@@ -319,9 +312,8 @@ pub struct User {
 pub struct User {
     pub username: String,
     pub password_hash: Option<String>,
-    pub user_perms: Vec<String>
+    pub user_perms: Vec<String>,
 }
-
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
 #[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize, PartialEq, Default)]
@@ -330,9 +322,8 @@ pub struct Node {
     pub ip: String,
     pub nodestatus: NodeStatus,
     pub nodetype: NodeType,
-    pub k8s_type: K8sType
+    pub k8s_type: K8sType,
 }
-
 
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
@@ -341,7 +332,7 @@ pub struct Node {
     pub ip: String,
     pub nodestatus: NodeStatus,
     pub nodetype: NodeType,
-    pub k8s_type: K8sType
+    pub k8s_type: K8sType,
 }
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
@@ -349,37 +340,34 @@ pub struct Node {
 pub struct Button {
     pub name: String,
     pub link: String,
-    pub r#type: String
-    //CustomType
+    pub r#type: String, //CustomType
 }
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
 #[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize, PartialEq)]
 pub struct Intergration {
-   // name: String,
+    // name: String,
     pub status: String,
     pub r#type: Intergrations,
-    pub settings: Value
+    pub settings: Value,
 }
 
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Intergration {
-   // name: String,
+    // name: String,
     pub status: String,
     pub r#type: Intergrations,
-    pub settings: Value
+    pub settings: Value,
 }
-
 
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Button {
     pub name: String,
     pub link: String,
-    pub r#type: String
+    pub r#type: String,
 }
-
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
 #[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize, Default, PartialEq)]
@@ -394,11 +382,11 @@ pub struct Server {
     #[serde(default)]
     pub location: String,
     #[serde(default)]
-    pub node: Json<Node>
+    pub node: Json<Node>,
 }
 
-// I made the mistake of NOT documenting my original plans for provider and providertype, 
-// I'll assume provide would have been something like the game, I have no idea for provider type but 
+// I made the mistake of NOT documenting my original plans for provider and providertype,
+// I'll assume provide would have been something like the game, I have no idea for provider type but
 // ill make it represent things within the game, like some game server types maintained by the community
 // some using diffrent languages, etc
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
@@ -408,8 +396,8 @@ pub struct Server {
     pub provider: String,
     pub providertype: String,
     pub location: String,
-    pub node: Node
-} 
+    pub node: Node,
+}
 
 pub trait IntoServer {
     fn into_server(self) -> Server;
@@ -468,32 +456,68 @@ impl IntoServer for sqlx::types::Json<Server> {
 pub trait UserDatabase {
     async fn retrieve_user(&self, username: String) -> Option<User>;
     async fn fetch_all(&self) -> Result<Vec<User>, Box<dyn Error + Send + Sync>>;
-    async fn get_from_database(&self, username: &str) -> Result<Option<User>, Box<dyn Error + Send + Sync>>;
-    async fn create_user_in_db(&self, user: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
-    async fn remove_user_in_db(&self, user: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
-    async fn edit_user_in_db(&self, user: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn get_from_database(
+        &self,
+        username: &str,
+    ) -> Result<Option<User>, Box<dyn Error + Send + Sync>>;
+    async fn create_user_in_db(
+        &self,
+        user: ModifyElementData,
+    ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn remove_user_in_db(
+        &self,
+        user: ModifyElementData,
+    ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn edit_user_in_db(
+        &self,
+        user: ModifyElementData,
+    ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
 }
 
 pub trait ServerDatabase {
     async fn retrieve_server(&self, servername: String) -> Option<Server>;
     async fn fetch_all_servers(&self) -> Result<Vec<Server>, Box<dyn Error + Send + Sync>>;
-    async fn get_from_servers_database(&self, servername: &str) -> Result<Option<Server>, Box<dyn Error + Send + Sync>>;
-    async fn create_server_in_db(&self, server: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
-    async fn remove_server_in_db(&self, server: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
-    async fn edit_server_in_db(&self, server: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn get_from_servers_database(
+        &self,
+        servername: &str,
+    ) -> Result<Option<Server>, Box<dyn Error + Send + Sync>>;
+    async fn create_server_in_db(
+        &self,
+        server: ModifyElementData,
+    ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn remove_server_in_db(
+        &self,
+        server: ModifyElementData,
+    ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn edit_server_in_db(
+        &self,
+        server: ModifyElementData,
+    ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
 }
 pub trait NodesDatabase {
     async fn retrieve_nodes(&self, nodename: String) -> Option<Node>;
     async fn fetch_all_nodes(&self) -> Result<Vec<Node>, Box<dyn Error + Send + Sync>>;
-    async fn get_from_nodes_database(&self, nodename: &str) -> Result<Option<Node>, Box<dyn Error + Send + Sync>>;
-    async fn create_nodes_in_db(&self, node: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
-    async fn remove_node_in_db(&self, node: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
-    async fn edit_node_in_db(&self, node: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn get_from_nodes_database(
+        &self,
+        nodename: &str,
+    ) -> Result<Option<Node>, Box<dyn Error + Send + Sync>>;
+    async fn create_nodes_in_db(
+        &self,
+        node: ModifyElementData,
+    ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn remove_node_in_db(
+        &self,
+        node: ModifyElementData,
+    ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn edit_node_in_db(
+        &self,
+        node: ModifyElementData,
+    ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
 }
 
 pub trait SettingsDatabase {
-    async fn set_settings(&self, value: Settings) ->  Result<(), Box<dyn Error + Send + Sync>>;
-    async fn get_settings(&self) ->  Result<Settings, Box<dyn Error + Send + Sync>>;
+    async fn set_settings(&self, value: Settings) -> Result<(), Box<dyn Error + Send + Sync>>;
+    async fn get_settings(&self) -> Result<Settings, Box<dyn Error + Send + Sync>>;
 }
 pub trait ButtonsDatabase {
     async fn retrieve_buttons(&self, name: String) -> Option<Button>;
@@ -501,15 +525,35 @@ pub trait ButtonsDatabase {
     async fn toggle_default_buttons(&self) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
     async fn toggle_button_state(&self) -> Result<bool, Box<dyn Error + Send + Sync>>;
     async fn reset_buttons(&self) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
-    async fn get_from_buttons_database(&self, name: &str) -> Result<Option<Button>, Box<dyn Error + Send + Sync>>;
-    async fn edit_button_in_db(&self, button: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn get_from_buttons_database(
+        &self,
+        name: &str,
+    ) -> Result<Option<Button>, Box<dyn Error + Send + Sync>>;
+    async fn edit_button_in_db(
+        &self,
+        button: ModifyElementData,
+    ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
 }
 
 pub trait IntergrationsDatabase {
     async fn retrieve_intergrations(&self, intergration: String) -> Option<Intergration>;
-    async fn fetch_all_intergrations(&self) -> Result<Vec<Intergration>, Box<dyn Error + Send + Sync>>;
-    async fn get_from_intergrations_database(&self, intergration: &str) -> Result<Option<Intergration>, Box<dyn Error + Send + Sync>>;
-    async fn create_intergrations_in_db(&self, intergration: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
-    async fn remove_intergrations_in_db(&self, intergration: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
-    async fn edit_intergrations_in_db(&self, intergration: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn fetch_all_intergrations(
+        &self,
+    ) -> Result<Vec<Intergration>, Box<dyn Error + Send + Sync>>;
+    async fn get_from_intergrations_database(
+        &self,
+        intergration: &str,
+    ) -> Result<Option<Intergration>, Box<dyn Error + Send + Sync>>;
+    async fn create_intergrations_in_db(
+        &self,
+        intergration: ModifyElementData,
+    ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn remove_intergrations_in_db(
+        &self,
+        intergration: ModifyElementData,
+    ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn edit_intergrations_in_db(
+        &self,
+        intergration: ModifyElementData,
+    ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
 }
