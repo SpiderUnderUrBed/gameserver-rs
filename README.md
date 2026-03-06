@@ -3,10 +3,9 @@
 <!-- ![Project icon](docs/images/icon.png) -->
 <div style="display:flex; flex-direction: column; gap: 2rem; align-items:center; padding-bottom: 1rem">
     <img src="docs/images/icon.png" width="360px"/>
-    <strong style="font-size: 1.5rem">NOT READY FOR PRODUCTION</strong>
 </div>
 
-
+<strong style="font-size: 1.5rem">NOT READY FOR PRODUCTION</strong>
 > Currently alot of Kubernetes specific features do not work yet, like moving games to specific nodes, redundancy, etc but by editing the deployment in src/gameserver, you can add a nodeSelector for the server hosting the game.
 > 
 > I dont recommend this for not tech-savvy users at the moment, and even then I would mostly recommend it to contributers who can help get this to users.
