@@ -1,9 +1,8 @@
 # Use an official Rust image as a base
 FROM rust:latest
 
-# Install Node.js, npm, and git
-RUN apt-get update && apt-get install -y git curl && \
-    curl -fsSL https://deb.nodesource.com/setup_current.x | bash - && \
+# Install Node.js and npm
+RUN curl -fsSL https://deb.nodesource.com/setup_current.x | bash - && \
     apt-get install -y nodejs
 
 # Set the working directory
@@ -12,11 +11,12 @@ WORKDIR /usr/src/app
 # Install cargo-watch for live reloading
 RUN cargo install cargo-watch
 
-# Clone the repository
-RUN git clone https://github.com/SpiderUnderUrBed/gameserver-rs.git .
+# Copy the Rust project into the container
+COPY . .
 
 # Build Svelte assets
 WORKDIR /usr/src/app/src/frontend
+#RUN mkdir -p build && npm install && npm run build
 RUN mkdir -p build && npm install && npm run build
 
 # Return to main working directory
