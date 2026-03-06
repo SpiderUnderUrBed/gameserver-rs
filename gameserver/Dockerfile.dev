@@ -6,7 +6,7 @@ RUN cargo install cargo-watch
 
 COPY . .
 
-VOLUME ["/usr/src/app"]
+VOLUME ["/usr/src/app/server"]
 
 EXPOSE 8080
 

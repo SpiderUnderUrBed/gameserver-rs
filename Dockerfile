@@ -22,14 +22,11 @@ RUN mkdir -p build && npm install && npm run build
 # Return to main working directory
 WORKDIR /usr/src/app
 
-# Set up a volume for live-editing
-VOLUME ["/usr/src/app"]
-
 # Expose the port the app runs on
 EXPOSE 8080
 
 # Start with cargo-watch for hot-reloading
-CMD ["cargo", "watch", "--ignore", "src/vanilla/*", "--ignore", "src/svelte/*", "--ignore", "gameserver/*", "-x", "run --features full-stack"]
+CMD ["cargo", "run", "--features", "full-stack"]
 #CMD ["cargo", "watch", "--ignore", "src/html/*", "--ignore", "src/css/*", "--ignore", "src/scripts/*", "--ignore", "src/gameserver/*", "-x", "run --features full-stack"]
 #CMD ["cargo", "watch", "--ignore", "src/vanilla/*", "--ignore", "src/svelte/*", "--ignore", "src/gameserver/*", "-x", "run --features full-stack"]
 # -x watch

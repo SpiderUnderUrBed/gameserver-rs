@@ -22,9 +22,6 @@ RUN mkdir -p build && npm install && npm run build
 # Return to main working directory
 WORKDIR /usr/src/app
 
-# Set up a volume for live-editing
-VOLUME ["/usr/src/app"]
-
 # Expose the port the app runs on
 EXPOSE 8080
 
