@@ -30,7 +30,8 @@
         "PGHOST": "127.0.0.1",
         "PGUSER": "postgres",
         "PGDATABASE": "postgres",
-        "PGPASSWORD": "postgres"
+        "PGPASSWORD": "postgres",
+        "DATABASE_URL": "postgresql://postgres:postgres@localhost/postgres"
     },
     "remoteUser": "vscode",
     "customizations": {
@@ -39,7 +40,10 @@
                 "rust-lang.rust-analyzer",
                 "tamasfe.even-better-toml",
                 "dbaeumer.vscode-eslint",
-                "ms-kubernetes-tools.vscode-kubernetes-tools"
+                "ms-kubernetes-tools.vscode-kubernetes-tools",
+                "1YiB.svelte-bundle",
+                "esbenp.prettier-vscode",
+                "bradlc.vscode-tailwindcss"
             ],
             "settings": {
                 "rust-analyzer.check.command": "clippy"

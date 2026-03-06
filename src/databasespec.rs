@@ -265,8 +265,8 @@ pub enum Intergrations {
 // Ideally I dont hardcode any intergrations like minecraft or any specific provider, but it would be meaningless to move it to its own file when
 // its much more readable in this spec, and until i have a better solution down the line or decide to keep this
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
-#[serde(rename_all = "lowercase")]
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
 pub enum Intergrations {
     Minecraft,
     Other,

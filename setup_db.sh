@@ -2,9 +2,9 @@
 
 set -e
 
-db_name="gameserver_db"
-db_user="gameserver"
-db_password="gameserverpass"
+db_name="postgres"
+db_user="postgres"
+db_password="postgres"
 db_host="localhost"
 db_port="5432"
 green='\033[0;32m'
