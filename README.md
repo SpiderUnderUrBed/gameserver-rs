@@ -26,8 +26,12 @@ Running it in kubernetes:
 $ docker run -d -p 5000:5000 --name my-registry registry:2
 $ git clone https://github.com/SpiderUnderUrBed/gameserver-rs.git
 $ cd gameserver-rs
-$ kubectl apply -f .
-$ cd src/gameserver 
+$ docker build . -t "localhost:5000/rust-k8s:latest"
+$ docker build gameserver/. -t "localhost:5000/rust-k8s:latest"
+$ docker push localhost:5000/rust-k8s:latest
+$ docker push localhost:5000/gameserver:latest
+$ kubectl apply -f deployment.yaml
+$ cd src/gameserver
 ```
 EDIT:
 You no longer need to run npm install and build when setting it up
