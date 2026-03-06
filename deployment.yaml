@@ -114,8 +114,6 @@ spec:
           env:  
             - name: SECRET 
               value: "test"  
-            - name: SITE_URL 
-              value: "/gameserver-rs"  
             - name: POSTGRES_USER
               value: "gameserver"
             - name: POSTGRES_PASSWORD
