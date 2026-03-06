@@ -1,15 +1,13 @@
 FROM rust:latest
 
-RUN apt-get update && apt-get install -y git
-
-WORKDIR /usr/src
+WORKDIR /usr/src/app
 
 RUN cargo install cargo-watch
 
-RUN git clone https://github.com/SpiderUnderUrBed/gameserver-rs.git
+COPY . .
 
-WORKDIR /usr/src/gameserver-rs/gameserver
+VOLUME ["/usr/src/app/server"]
 
 EXPOSE 8080
 
-CMD ["cargo", "watch", "--ignore", "server/*", "-x", "run --features full-stack"]
+CMD ["cargo", "run", "--features", "full-stack"]
