@@ -12,8 +12,8 @@ WORKDIR /usr/src/app
 # Install cargo-watch for live reloading
 RUN cargo install cargo-watch
 
-# Clone the repository
-RUN git clone https://github.com/SpiderUnderUrBed/gameserver-rs.git .
+# Copy the project files
+COPY . .
 
 # Build Svelte assets
 WORKDIR /usr/src/app/src/frontend
