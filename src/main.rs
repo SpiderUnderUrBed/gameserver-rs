@@ -2771,19 +2771,42 @@ pub async fn sign_in(
     Form(request): Form<LoginData>,
 ) -> Result<Json<ResponseMessage>, StatusCode> {
     let state = arc_state.write().await;
-    let user = state
-        .database
-        .retrieve_user(request.user.clone())
-        .await
-        .ok_or(StatusCode::UNAUTHORIZED)?;
-    let password_valid = verify_password(request.password, user.password_hash.unwrap())
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    if !password_valid {
-        return Err(StatusCode::UNAUTHORIZED);
+    let mut username: Option<String> = None;
+
+    let admin_enabled: bool =
+        get_env_var_or_arg("ENABLE_ADMIN_USER", Some(false)).unwrap();
+    if (admin_enabled) {
+        let admin_user: String =
+            get_env_var_or_arg("ADMIN_USER", Some(String::new())).unwrap();
+        let admin_password: String =
+            get_env_var_or_arg("ADMIN_PASSWORD", Some(String::new())).unwrap();
+
+        if request.user != admin_user || request.password != admin_password {
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+
+        username = Some(admin_user);
+    } else {
+        let user = state
+            .database
+            .retrieve_user(request.user.clone())
+            .await
+            .ok_or(StatusCode::UNAUTHORIZED)?;
+        let password_valid = verify_password(request.password, user.password_hash.unwrap())
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        if !password_valid {
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+
+        username = Some(user.username);
     }
 
-    let token = encode_token(user.username)?;
+    if username.is_none(){
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    let token = encode_token(username.unwrap())?;
     Ok(Json(ResponseMessage { response: token }))
 }
 
