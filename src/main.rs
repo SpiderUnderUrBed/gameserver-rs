@@ -2337,7 +2337,7 @@ async fn process_general_with_metadata(
             metadata: payload.metadata.clone(),
         };
 
-        if payload.message == "create_server" {
+if payload.message == "create_server" {
             if let MetadataTypes::Server {
                 servername,
                 provider,
@@ -2345,6 +2345,8 @@ async fn process_general_with_metadata(
                 location,
             } = payload.metadata.clone()
             {
+                // Sets the server on the local server when creating a new game server
+                // TODO: maybe in the future have a tickbox to ask if the user wants to change the current server
                 state.current_server = Some(Server {
                     servername: servername.clone(),
                     provider,
@@ -2359,7 +2361,6 @@ async fn process_general_with_metadata(
                     }
                     .into(),
                 });
-
                 let database = &state.database;
                 let db_result = database
                     .get_from_servers_database(&servername)
@@ -2381,7 +2382,7 @@ async fn process_general_with_metadata(
                         let _ = database
                             .create_server_in_db(ModifyElementData {
                                 element: Element::Server(Server {
-                                    servername,
+                                    servername: servername.clone(),
                                     provider,
                                     providertype,
                                     location,
@@ -2398,11 +2399,30 @@ async fn process_general_with_metadata(
                                 require_auth: false,
                             })
                             .await;
+                        // Sets the server on the remote node when creating a new server
+                        // TODO: maybe in the future have a tickbox to ask if the user wants to change the current game server
+                        let retrieved_server = state.current_server.clone().ok_or((StatusCode::INTERNAL_SERVER_ERROR, "Error setting server".to_string()))?;
+                        let msg = MessagePayloadWithMetadata {
+                            r#type: "command".to_string(),
+                            message: "set_server".to_string(),
+                            metadata: MetadataTypes::Server {
+                                servername: retrieved_server.servername,
+                                provider: retrieved_server.provider,
+                                providertype: retrieved_server.providertype,
+                                location: retrieved_server.location,
+                            },
+                            authcode: "0".to_string(),
+                        };
+                        let mut bytes = serde_json::to_vec(&msg).map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Error setting server".to_string()))?;
+                        bytes.push(b'\n');
+                        state
+                            .tcp_tx
+                            .send(bytes)
+                            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Error setting server".to_string()))?;
                     }
                 }
             }
         }
-
         match serde_json::to_vec(&json_payload) {
             Ok(mut json_bytes) => {
                 json_bytes.push(b'\n');

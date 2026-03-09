@@ -314,6 +314,7 @@ async fn run_command_live_output(
 
     child.wait().await?;
     println!("Post-hook process exited");
+    // TODO: have it tell the main server that it exited
     if let Some(h) = stdout_handle {
         let _ = h.await;
     }
