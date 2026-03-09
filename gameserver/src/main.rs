@@ -1773,7 +1773,7 @@ Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             let current_server = state.current_server.lock().await.clone();
             let provider = get_provider_from_servername(&state, Some(servername.to_string())).await;
-            let path = get_definite_path_from_name(&state, current_server.clone()).await;
+            let path = get_definite_path_from_name(&state, Some(servername.to_string())).await;
 
             if let Some((name, provider_platforms)) = get_provider_object(provider.as_deref(), path.as_deref()).await {
                 let mut prov: ProviderGame = match pick_platform(provider_platforms) {
