@@ -159,8 +159,26 @@ pub enum K8sType {
     Unknown
 }
 
+// impl<'de> serde::Deserialize<'de> for NodeType {
+//     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+//         let v = serde_json::Value::deserialize(d)?;
+//         match &v {
+//             serde_json::Value::String(s) => Ok(NodeType::from(s.clone())),
+//             serde_json::Value::Object(map) => {
+//                 if let Some(serde_json::Value::String(kind)) = map.get("kind") {
+//                     Ok(NodeType::from(kind.clone()))
+//                 } else {
+//                     Ok(NodeType::Unknown)
+//                 }
+//             }
+//             _ => Ok(NodeType::Unknown),
+//         }
+//     }
+// }
+
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+#[derive(Debug, Serialize, Clone, PartialEq, Default, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "data")]
 pub enum NodeType {
     #[default]
     Unknown,
