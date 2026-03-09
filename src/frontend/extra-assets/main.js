@@ -52,7 +52,7 @@ class ServerConsole {
     window.addNode = () => this.addNode();
     window.toggleNodes = () => this.toggleNodes();
     window.toggleRaw = () => this.toggleRaw();
-    window.addMore = () => this.addMore();
+    window.addNodeDialog = () => this.addNodeDialog();
     window.startServer = () => this.startServer();
     window.createDefaultServer = () => this.createDefaultServer();
     window.enableDeveloperOptions = () => this.enableDeveloperOptions();
@@ -305,21 +305,19 @@ class ServerConsole {
     this.updateStatus("none", true);
   }
   selectedNodeType(){
-    const selector = document.getElementById("nodetype-selector");
-    const ip = document.getElementById("nodeip");
-    
-    selector.addEventListener("change", function () {
-        const selectedValue = selector.value;
+      const selector = document.getElementById("nodetype-selector");
+      const ip = document.getElementById("nodeip");
 
-        if (selectedValue === "custom") {
-            console.log("Custom selected");
-            ip.disabled = false;
-        } else if (selectedValue === "main") {
-            console.log("Main selected");
-            ip.value = "";
-            ip.disabled = true;
-        }
-    });
+      selector.addEventListener("change", function () {
+          const selectedValue = selector.value;
+
+          if (selectedValue === "Custom") {
+              ip.disabled = false;
+          } else if (selectedValue === "Main") {
+              ip.value = "";
+              ip.disabled = true;
+          }
+      });
   }
 
 
@@ -801,7 +799,7 @@ async changeNode(node) {
               data: {
                   nodename, 
                   ip: nodeip, 
-                  nodetype, 
+                  nodetype: { kind: nodetype.toLowerCase(), data: null },
                   nodestatus: { kind: "enabled", data: null },
                   k8s_type: "Unknown",
                   //nodetype.charAt(0).toUpperCase() + nodetype.slice(1),
@@ -995,7 +993,7 @@ async changeNode(node) {
     }
   }
 
-  addMore() {
+  addNodeDialog() {
     console.log("Add more functionality");
     const addServer = document.getElementById("addNodeDialog");
     addServer.showModal()
