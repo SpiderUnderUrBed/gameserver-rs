@@ -1691,7 +1691,13 @@ async fn ws_handler(
 // routes_static provides middlewares for authentication as well as serving all the user-orintated content
 fn routes_static(state: Arc<RwLock<AppState>>) -> Router<Arc<RwLock<AppState>>> {
     let session_store = MemoryStore::default();
-    let session_layer = SessionManagerLayer::new(session_store);
+    // TODO:
+    // In the future, once cookies work, improve overrall https support
+    // there was an issue where users could not log in because cookies have the Secure flag
+    // but the site is http, which causes the cookie to be blocked 
+    // meaning every request to protected routes had no session and redirected back to login
+    let session_layer = SessionManagerLayer::new(session_store)
+        .with_secure(false);
     let backend = Backend::default();
     let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
 
