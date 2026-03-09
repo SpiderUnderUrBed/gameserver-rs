@@ -796,18 +796,33 @@ async changeNode(node) {
       const nodetype = document.getElementById('nodetype-selector').value;
       const jwt = "";
       const json_response = JSON.stringify({
-                element: {
-                    kind: "Node",
-                    data: {
-                        nodename, 
-                        ip: nodeip, 
-                        nodetype, 
-                        nodestatus: { kind: "enabled", data: null }
-                    }
-                },
-                jwt,
-                require_auth: true
-            });
+          element: {
+              kind: "Node",
+              data: {
+                  nodename, 
+                  ip: nodeip, 
+                  nodetype, 
+                  nodestatus: { kind: "enabled", data: null },
+                  k8s_type: "Unknown",
+                  //nodetype.charAt(0).toUpperCase() + nodetype.slice(1),
+              }
+          },
+          jwt,
+          require_auth: true
+      });
+      // const json_response = JSON.stringify({
+      //           element: {
+      //               kind: "Node",
+      //               data: {
+      //                   nodename, 
+      //                   ip: nodeip, 
+      //                   nodetype, 
+      //                   nodestatus: { kind: "enabled", data: null }
+      //               }
+      //           },
+      //           jwt,
+      //           require_auth: true
+      //       });
 
       try {
         const response = await fetch(`${this.basePath}/api/addnode`, {
