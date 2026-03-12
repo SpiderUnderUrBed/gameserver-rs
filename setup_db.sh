@@ -49,6 +49,7 @@ run_sql "
 create table if not exists users (
     username varchar primary key,
     password_hash text,
+    authcode text default '',
     user_perms text[] not null default '{}',
     created_at timestamptz default now(),
     updated_at timestamptz default now()

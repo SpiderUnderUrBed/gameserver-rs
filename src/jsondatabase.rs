@@ -534,3 +534,17 @@ impl IntergrationsDatabase for Database {
         }
     }
 }
+
+// #[cfg(all(
+//     not(feature = "full-stack"),
+//     not(feature = "docker"),
+//     not(feature = "database")
+// ))]
+async fn create_db_for_tests() -> Result<Database, String> {
+    // Create credentials.json if it doesn't exist so clear_db() doesn't fail
+    let path = std::path::Path::new("credentials.json");
+    if !path.exists() {
+        std::fs::write(path, "{}").map_err(|e| e.to_string())?;
+    }
+    Ok(Database::new(None))
+}

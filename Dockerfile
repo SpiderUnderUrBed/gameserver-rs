@@ -1,34 +1,37 @@
-# Use an official Rust image as a base
-FROM rust:latest
+# --- Stage 1: Frontend Build ---
+FROM node:24-slim AS frontend-builder
+WORKDIR /app
+# Copy only package files first to leverage Docker cache
+COPY src/frontend/package*.json ./
+RUN npm install && mkdir build
+# Copy the rest of the frontend source and build
+COPY src/frontend/ ./
+RUN npm run build
 
-# Install Node.js, npm, and git
-RUN apt-get update && apt-get install -y git curl && \
-    curl -fsSL https://deb.nodesource.com/setup_current.x | bash - && \
-    apt-get install -y nodejs
-
-# Set the working directory
-WORKDIR /usr/src/app
-
-# Install cargo-watch for live reloading
-RUN cargo install cargo-watch
-
-# Copy the project files
+# --- Stage 2: Rust Build ---
+FROM rust:1.76-slim AS rust-builder
+WORKDIR /app
+# Install build dependencies (linker, etc.)
+RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+# Copy the entire project
 COPY . .
+# Copy the built assets from the frontend stage (if Rust needs to embed them)
+COPY --from=frontend-builder /app/build ./src/frontend/build
+# Build the production binary
+RUN cargo build --release --features full-stack
 
-# Build Svelte assets
-WORKDIR /usr/src/app/src/frontend
-RUN mkdir -p build && npm install && npm run build
-
-# Return to main working directory
-WORKDIR /usr/src/app
+# --- Stage 3: Final Runtime ---
+FROM debian:bookworm-slim
+WORKDIR /app
+# Install minimal runtime dependencies (SSL is usually needed for web servers)
+RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
+# Copy the binary from the rust-builder
+COPY --from=rust-builder /app/target/release/gameserver-rs ./gameserver
+# Copy frontend assets if your binary serves them at runtime
+COPY --from=frontend-builder /app/build ./src/frontend/build
 
 # Expose the port the app runs on
 EXPOSE 8080
 
-# Start with cargo-watch for hot-reloading
-CMD ["cargo", "run", "--features", "full-stack"]
-#CMD ["cargo", "watch", "--ignore", "src/html/*", "--ignore", "src/css/*", "--ignore", "src/scripts/*", "--ignore", "src/gameserver/*", "-x", "run --features full-stack"]
-#CMD ["cargo", "watch", "--ignore", "src/vanilla/*", "--ignore", "src/svelte/*", "--ignore", "src/gameserver/*", "-x", "run --features full-stack"]
-# -x watch
-# cargo run .
-# cargo watch -x run
+# Run the binary directly
+CMD ["./gameserver"]
