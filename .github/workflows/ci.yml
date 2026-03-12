@@ -93,7 +93,7 @@ jobs:
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
           DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Fix Docker overlay2 and create k3d cluster with local registry (port 5001)
+      - name: Fix Docker overlay2 and pre-pull images
         run: |
           docker run --rm --privileged \
             -v /var/lib/docker:/var/lib/docker \
@@ -110,8 +110,22 @@ jobs:
               echo "Removed $count broken layers"
             '
 
-          docker system prune -af --volumes || true
+          # Restart Docker daemon to clear any corrupted state
+          sudo systemctl restart docker
+          sleep 5
 
+          # Pre-pull with retries so overlay2 corruption doesn't fail us
+          for img in registry:2 alpine:latest; do
+            for j in 1 2 3 4 5; do
+              docker pull $img && break
+              echo "Pull of $img attempt $j failed, retrying..."
+              sudo systemctl restart docker
+              sleep 5
+            done
+          done
+
+      - name: Create k3d cluster with local registry (port 5001)
+        run: |
           for i in 1 2 3; do
             k3d registry delete localregistry-fullstack 2>/dev/null || true
             k3d cluster delete ci-full-stack 2>/dev/null || true
@@ -121,7 +135,14 @@ jobs:
             fi
             echo "Attempt $i failed, pruning and retrying..."
             docker system prune -af --volumes || true
+            sudo systemctl restart docker
             sleep 10
+            for j in 1 2 3 4 5; do
+              docker pull registry:2 && break
+              echo "registry:2 pull attempt $j failed, retrying..."
+              sudo systemctl restart docker
+              sleep 5
+            done
             if [ $i -eq 3 ]; then
               echo "All registry creation attempts failed"
               exit 1
@@ -357,6 +378,37 @@ jobs:
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
           DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
 
+      - name: Fix Docker overlay2 and pre-pull images
+        run: |
+          docker run --rm --privileged \
+            -v /var/lib/docker:/var/lib/docker \
+            alpine sh -c '
+              count=0
+              for dir in /var/lib/docker/overlay2/*/; do
+                [ -d "$dir" ] || continue
+                if [ ! -f "${dir}link" ]; then
+                  echo "Removing broken overlay2 layer: $dir"
+                  rm -rf "$dir"
+                  count=$((count+1))
+                fi
+              done
+              echo "Removed $count broken layers"
+            '
+
+          # Restart Docker daemon to clear any corrupted state
+          sudo systemctl restart docker
+          sleep 5
+
+          # Pre-pull with retries so overlay2 corruption doesn't fail us
+          for img in registry:2 alpine:latest postgres:15; do
+            for j in 1 2 3 4 5; do
+              docker pull $img && break
+              echo "Pull of $img attempt $j failed, retrying..."
+              sudo systemctl restart docker
+              sleep 5
+            done
+          done
+
       - name: Start PostgreSQL
         run: |
           docker run -d --name postgres \
@@ -378,25 +430,8 @@ jobs:
           PGUSER: gameserver
           PGDATABASE: gameserver_db
 
-      - name: Fix Docker overlay2 and create k3d cluster with local registry (port 5002)
+      - name: Create k3d cluster with local registry (port 5002)
         run: |
-          docker run --rm --privileged \
-            -v /var/lib/docker:/var/lib/docker \
-            alpine sh -c '
-              count=0
-              for dir in /var/lib/docker/overlay2/*/; do
-                [ -d "$dir" ] || continue
-                if [ ! -f "${dir}link" ]; then
-                  echo "Removing broken overlay2 layer: $dir"
-                  rm -rf "$dir"
-                  count=$((count+1))
-                fi
-              done
-              echo "Removed $count broken layers"
-            '
-
-          docker system prune -af --volumes || true
-
           for i in 1 2 3; do
             k3d registry delete localregistry-gameserver 2>/dev/null || true
             k3d cluster delete ci-gameserver 2>/dev/null || true
@@ -406,7 +441,14 @@ jobs:
             fi
             echo "Attempt $i failed, pruning and retrying..."
             docker system prune -af --volumes || true
+            sudo systemctl restart docker
             sleep 10
+            for j in 1 2 3 4 5; do
+              docker pull registry:2 && break
+              echo "registry:2 pull attempt $j failed, retrying..."
+              sudo systemctl restart docker
+              sleep 5
+            done
             if [ $i -eq 3 ]; then
               echo "All registry creation attempts failed"
               exit 1
