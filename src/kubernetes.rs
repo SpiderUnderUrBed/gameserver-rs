@@ -12,9 +12,9 @@ use kube::api::ListParams;
 use kube::api::PostParams;
 use kube::{Api, Client};
 
+use crate::K8sType;
 use crate::NodeAndTCP;
 use crate::NodeType;
-use crate::K8sType;
 use crate::Status;
 
 pub async fn list_node_info(client: Client) -> Result<Vec<NodeAndTCP>, Box<dyn Error>> {

@@ -62,7 +62,6 @@ pub struct Custom {
     pub location: String,
 }
 
-
 #[derive(Debug, Clone)]
 pub struct ProviderGame {
     pub location: String,
@@ -350,7 +349,6 @@ impl From<ProviderGame> for ProviderConfig {
         }
     }
 }
-
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct Platforms {

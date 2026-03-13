@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use crate::databasespec::{Database};
+use crate::databasespec::Database;
 
 const DB_PATH: &str = "db.json";
 

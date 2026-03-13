@@ -23,6 +23,10 @@ use axum::body::Bytes;
 use bollard::image::PushImageOptions;
 use bytes::Bytes as BytesRaw;
 
+// TODO:
+// Manually parse or enter the .dockerignore and also
+// make sure the root is correct (should it be ./Dockefile or within gameserver/Dockerfile?)
+
 const ENABLE_TAG_AND_PUSH: bool = true;
 
 #[derive(Debug)]

@@ -1,0 +1,274 @@
+name: CI
+
+on:
+  pull_request:
+    branches: ["*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Job 1: Plain tests — no features, uses credentials.json (Database::new(None))
+  # cfg(not(feature="full-stack"), not(feature="docker"), not(feature="database"))
+  # ─────────────────────────────────────────────────────────────────────────────
+  test-plain:
+    name: Tests (no features / credentials.json)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-plain-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Create credentials.json
+        run: echo '{}' > credentials.json
+
+      - name: Run tests (no features)
+        run: cargo test --no-default-features
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Job 2: k3d — inner gameserver deployment (child node / workspace member)
+  # Uses registry on port 5002
+  # ─────────────────────────────────────────────────────────────────────────────
+  test-k3d-gameserver:
+    name: Tests (full-stack feature / k3d inner gameserver)
+    runs-on: ubuntu-latest
+
+    env:
+      SECRET: test
+      SITE_URL: /gameserver-rs
+      DOCKER_REPO: localhost:5002
+      TESTING: "true"
+      POSTGRES_USER: gameserver
+      POSTGRES_PASSWORD: gameserverpass
+      POSTGRES_DB: gameserver_db
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-k3d-gs-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install k3d
+        run: |
+          curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Install psql client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Docker login (optional)
+        if: ${{ env.DOCKER_USERNAME != '' && env.DOCKER_PASSWORD != '' }}
+        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Fix Docker overlay2 and pre-pull images
+        run: |
+          docker run --rm --privileged \
+            -v /var/lib/docker:/var/lib/docker \
+            alpine sh -c '
+              count=0
+              for dir in /var/lib/docker/overlay2/*/; do
+                [ -d "$dir" ] || continue
+                if [ ! -f "${dir}link" ]; then
+                  echo "Removing broken overlay2 layer: $dir"
+                  rm -rf "$dir"
+                  count=$((count+1))
+                fi
+              done
+              echo "Removed $count broken layers"
+            '
+
+          # Restart Docker daemon to clear any corrupted state
+          sudo systemctl restart docker
+          sleep 5
+
+          # Pre-pull with retries so overlay2 corruption doesn't fail us
+          for img in registry:2 alpine:latest postgres:15; do
+            for j in 1 2 3 4 5; do
+              docker pull $img && break
+              echo "Pull of $img attempt $j failed, retrying..."
+              sudo systemctl restart docker
+              sleep 5
+            done
+          done
+
+      - name: Start PostgreSQL
+        run: |
+          docker run -d --name postgres \
+            -e POSTGRES_USER=gameserver \
+            -e POSTGRES_PASSWORD=gameserverpass \
+            -e POSTGRES_DB=gameserver_db \
+            -p 5432:5432 \
+            postgres:15
+          for i in $(seq 1 30); do
+            pg_isready -h localhost -p 5432 -U gameserver && break
+            echo "Waiting for PostgreSQL... ($i/30)"
+            sleep 2
+          done
+          bash setup_db.sh
+        env:
+          PGPASSWORD: gameserverpass
+          PGHOST: localhost
+          PGPORT: "5432"
+          PGUSER: gameserver
+          PGDATABASE: gameserver_db
+
+      - name: Create k3d cluster with local registry (port 5002)
+        run: |
+          for i in 1 2 3; do
+            k3d registry delete localregistry-gameserver 2>/dev/null || true
+            k3d cluster delete ci-gameserver 2>/dev/null || true
+            if k3d registry create localregistry-gameserver --port 5002; then
+              echo "Registry created on attempt $i"
+              break
+            fi
+            echo "Attempt $i failed, pruning and retrying..."
+            docker system prune -af --volumes || true
+            sudo systemctl restart docker
+            sleep 10
+            for j in 1 2 3 4 5; do
+              docker pull registry:2 && break
+              echo "registry:2 pull attempt $j failed, retrying..."
+              sudo systemctl restart docker
+              sleep 5
+            done
+            if [ $i -eq 3 ]; then
+              echo "All registry creation attempts failed"
+              exit 1
+            fi
+          done
+          k3d cluster create ci-gameserver \
+            --registry-use k3d-localregistry-gameserver:5002 \
+            --wait \
+            --timeout 120s
+
+      - name: Build and push gameserver image
+        run: |
+          docker build -f gameserver/Dockerfile -t localhost:5002/gameserver:latest .
+
+          echo "=== Verifying image configuration ==="
+          IMAGE_CMD=$(docker inspect localhost:5002/gameserver:latest | jq -r '.[0].Config.Cmd | join(" ")')
+          echo "CMD: $IMAGE_CMD"
+
+          if [[ "$IMAGE_CMD" == *"cargo"* ]]; then
+            echo "❌ ERROR: Built development image (contains cargo) instead of production image"
+            exit 1
+          fi
+          echo "✅ Correct production image built"
+
+          echo "=== Verifying binary ==="
+          if docker run --rm localhost:5002/gameserver:latest test -x /app/gameserver-node; then
+            echo "✅ Binary found at /app/gameserver-node"
+          else
+            echo "❌ Binary NOT found at /app/gameserver-node"
+            docker run --rm localhost:5002/gameserver:latest ls -la /app/ 2>/dev/null || echo "No /app directory"
+            docker run --rm localhost:5002/gameserver:latest find / -name "gameserver*" -type f 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "=== Pushing image to registry ==="
+          docker push localhost:5002/gameserver:latest
+
+          echo "=== Verifying image in registry ==="
+          curl -s http://localhost:5002/v2/gameserver/tags/list
+
+      - name: Deploy inner gameserver manifest
+        run: |
+          mkdir -p /tmp/gameserver-rs
+          kubectl apply -f - <<'EOF'
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: gameserver
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: gameserver
+            template:
+              metadata:
+                labels:
+                  app: gameserver
+              spec:
+                dnsPolicy: None
+                dnsConfig:
+                  nameservers:
+                    - 8.8.8.8
+                containers:
+                  - name: gameserver
+                    image: k3d-localregistry-gameserver:5002/gameserver:latest
+                    imagePullPolicy: Always
+                    ports:
+                      - containerPort: 8080
+                      - containerPort: 25565
+                    volumeMounts:
+                      - name: gameserver-storage
+                        mountPath: /usr/src/app
+                volumes:
+                  - name: gameserver-storage
+                    hostPath:
+                      path: /tmp/gameserver-rs
+                      type: DirectoryOrCreate
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: gameserver-service
+          spec:
+            selector:
+              app: gameserver
+            ports:
+              - name: web
+                protocol: TCP
+                port: 8080
+                targetPort: 8080
+              - name: minecraft
+                protocol: TCP
+                port: 25565
+                targetPort: 25565
+            type: ClusterIP
+          EOF
+
+      - name: Wait for gameserver rollout
+        run: kubectl rollout status deployment/gameserver --timeout=120s
+
+      - name: Run tests (full-stack feature) with gameserver port-forwarded
+        run: |
+          kubectl port-forward svc/gameserver-service 8080:8080 &
+          PF_PID=$!
+          sleep 5
+          cargo test --features full-stack
+          kill $PF_PID || true
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          kubectl logs -l app=gameserver --tail=100 || true
+          kubectl get pods -A || true
+          kubectl get events --sort-by='.lastTimestamp' || true

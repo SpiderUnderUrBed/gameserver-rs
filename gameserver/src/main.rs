@@ -1,10 +1,9 @@
-
 use serde_json::{json, Value};
 use std::convert::TryFrom;
 use std::ffi::OsString;
 use std::fmt;
 use std::io::Error;
-use std::io::{ErrorKind};
+use std::io::ErrorKind;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -845,7 +844,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                         let writer_tx = tcp_to_writer(conn).await;
                                                         tokio::spawn(async move {
                                                             let _ = send_folder_over_broadcast(
-                                                                SERVER_DIR.to_string(), writer_tx,
+                                                                SERVER_DIR.to_string(),
+                                                                writer_tx,
                                                             )
                                                             .await;
                                                         });
@@ -866,8 +866,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                 )
                                                 .await;
                                             }
-                                        }
-                                        else if let Ok(msg_payload) =
+                                        } else if let Ok(msg_payload) =
                                             serde_json::from_value::<MessagePayload>(
                                                 json_value.clone(),
                                             )
@@ -880,8 +879,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                         "[File Transfer] {} is being transferred",
                                                         msg_payload.message
                                                     );
-                                                    let file_path =
-                                                        format!("{}/{}", SERVER_DIR, msg_payload.message);
+                                                    let file_path = format!(
+                                                        "{}/{}",
+                                                        SERVER_DIR, msg_payload.message
+                                                    );
                                                     let _ = tokio::fs::create_dir_all(
                                                         file_path.clone(),
                                                     )
@@ -928,8 +929,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                     continue;
                                                 }
                                                 "clean_file" => {
-                                                    let file_path =
-                                                        format!("{}/{}", SERVER_DIR, msg_payload.message);
+                                                    let file_path = format!(
+                                                        "{}/{}",
+                                                        SERVER_DIR, msg_payload.message
+                                                    );
                                                     if tokio::fs::metadata(&file_path).await.is_ok()
                                                     {
                                                         let _ = cleanup_end_file_markers(
@@ -949,7 +952,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                 "command" => {
                                                     println!("{} {}", addr, msg_payload.message);
                                                     if msg_payload.message == "start_server" {
-
                                                         if let Err(e) = start_server_with_broadcast(
                                                             &arc_state_clone,
                                                             &stdin_ref,
@@ -1364,7 +1366,7 @@ async fn handle_typical_command_or_console(
                 }
             }
             "server_data" => {
-                let _ = cmd_tx
+                let _ = out_tx
                     .send(
                         serde_json::to_string(&GetState {
                             start_keyword: "help".to_string(),
@@ -1380,7 +1382,7 @@ async fn handle_typical_command_or_console(
                     Ok(os) => os.to_string_lossy().to_string(),
                     Err(e) => e.clone(),
                 };
-                let _ = cmd_tx
+                let _ = out_tx
                     .send(
                         serde_json::to_string(&MessagePayload {
                             r#type: "command".to_string(),
@@ -1754,10 +1756,20 @@ async fn handle_commands_with_metadata(
     }
 }
 
-async fn create_server(state: Arc<AppState>, cmd_tx: &mpsc::Sender<String>, stdin_ref: &Arc<Mutex<Option<ChildStdin>>>, payload_raw_value: Value) ->
-Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn create_server(
+    state: Arc<AppState>,
+    cmd_tx: &mpsc::Sender<String>,
+    stdin_ref: &Arc<Mutex<Option<ChildStdin>>>,
+    payload_raw_value: Value,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Ok(payload) = serde_json::from_value::<IncomingMessageWithMetadata>(payload_raw_value) {
-        if let MetadataTypes::Server { servername, provider: _, location, providertype: _ } = &payload.metadata.clone() {
+        if let MetadataTypes::Server {
+            servername,
+            provider: _,
+            location,
+            providertype: _,
+        } = &payload.metadata.clone()
+        {
             let filtered_location = if location.starts_with("server/") {
                 location.clone()
             } else {
@@ -1766,9 +1778,19 @@ Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             {
                 let mut db = state.db.lock().await;
-                db.server_index.insert(servername.to_string(), ServerIndex { location: filtered_location.to_string(), provider: {
-                    if let MetadataTypes::Server { provider, .. } = &payload.metadata { provider.clone() } else { return Ok(()); }
-                }});
+                db.server_index.insert(
+                    servername.to_string(),
+                    ServerIndex {
+                        location: filtered_location.to_string(),
+                        provider: {
+                            if let MetadataTypes::Server { provider, .. } = &payload.metadata {
+                                provider.clone()
+                            } else {
+                                return Ok(());
+                            }
+                        },
+                    },
+                );
                 save_db(&db);
             }
 
@@ -1776,29 +1798,64 @@ Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let provider = get_provider_from_servername(&state, Some(servername.to_string())).await;
             let path = get_definite_path_from_name(&state, Some(servername.to_string())).await;
 
-            if let Some((name, provider_platforms)) = get_provider_object(provider.as_deref(), path.as_deref()).await {
+            if let Some((name, provider_platforms)) =
+                get_provider_object(provider.as_deref(), path.as_deref()).await
+            {
                 let mut prov: ProviderGame = match pick_platform(provider_platforms) {
                     Some(prov) => prov,
-                    None => return Err("No platform".into())
-                }.into();
+                    None => return Err("No platform".into()),
+                }
+                .into();
 
                 let _ = prov.set_location(filtered_location);
 
                 if let Some(cmd) = prov.pre_hook() {
-                    run_command_live_output(&state, cmd, "Pre-hook".into(), Some(cmd_tx.clone()), None).await.ok();
+                    run_command_live_output(
+                        &state,
+                        cmd,
+                        "Pre-hook".into(),
+                        Some(cmd_tx.clone()),
+                        None,
+                    )
+                    .await
+                    .ok();
                 }
                 if let Some(cmd) = prov.install() {
-                    run_command_live_output(&state, cmd, "Install".into(), Some(cmd_tx.clone()), None).await.ok();
+                    run_command_live_output(
+                        &state,
+                        cmd,
+                        "Install".into(),
+                        Some(cmd_tx.clone()),
+                        None,
+                    )
+                    .await
+                    .ok();
                 }
                 if let Some(cmd) = prov.post_hook() {
-                    run_command_live_output(&state, cmd, "Post-hook".into(), Some(cmd_tx.clone()), None).await.ok();
+                    run_command_live_output(
+                        &state,
+                        cmd,
+                        "Post-hook".into(),
+                        Some(cmd_tx.clone()),
+                        None,
+                    )
+                    .await
+                    .ok();
                 }
                 if let Some(cmd) = prov.start() {
                     let tx = cmd_tx.clone();
                     let stdin_clone = stdin_ref.clone();
                     let state_clone = Arc::clone(&state);
                     tokio::spawn(async move {
-                        run_command_live_output(&state_clone, cmd, "Server".into(), Some(tx), Some(stdin_clone)).await.ok();
+                        run_command_live_output(
+                            &state_clone,
+                            cmd,
+                            "Server".into(),
+                            Some(tx),
+                            Some(stdin_clone),
+                        )
+                        .await
+                        .ok();
                     });
                     let _ = cmd_tx.send("Server started".into()).await;
                 }
