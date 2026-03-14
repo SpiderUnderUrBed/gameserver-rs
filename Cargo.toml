@@ -40,6 +40,7 @@ sysinfo = "0.37.0"
 env = "1.0.1"
 rcon = { version = "0.6.0", features = ["rt-tokio"] }
 bytes = "1.11.0"
+tower-sessions = "0.15.0"
 
 [features]
 default = []
