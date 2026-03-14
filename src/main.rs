@@ -45,6 +45,7 @@ use axum_login::{AuthManagerLayerBuilder, AuthnBackend};
 use futures_util::FutureExt;
 use serde::de::{self, DeserializeOwned};
 use tokio::fs::File;
+use tokio::net::unix::pipe::Receiver;
 use tokio::sync::{RwLock, mpsc};
 
 use rcon::Connection;
@@ -1076,11 +1077,15 @@ async fn try_initial_connection(
             Ok(mut stream) => {
                 println!("Initial connection succeeded!");
                 // note, possibly I wont ever need to create a handler from the test of the intial connection
-                // TODO: think about removing create_handler and just never create a handler
+                // TODO: think about removing create_handler and just never create a handler here
+                // I was considering to return the handler from here, but it wouldnt make sense to add that complexity 
+                // when I only create the initial tcp stream within the main function, it would involve either a thread here, or in the main function
+                // and i rather keep this function focused on testing the connection (there might be a very NICHE case for making a handler here, but if there isnt ill remove it)
                 if create_handler {
                     let (_, temp_rx) =
                         tokio::sync::broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
                     let mut temp_rx = temp_rx;
+
                     let stream_result = handle_stream(
                         state.clone(),
                         &mut temp_rx,
@@ -1090,12 +1095,13 @@ async fn try_initial_connection(
                     )
                     .await;
                     if stream_result.is_ok() {
-                        break;
+                        println!("Stream finished");
+                        return Ok(());
                     } else {
                         final_error = stream_result.err().unwrap()
                     }
                 } else {
-                    break;
+                    return Ok(());
                 }
             }
             Err(e) => {
@@ -1106,6 +1112,25 @@ async fn try_initial_connection(
     }
     Err(final_error)
 }
+/*
+    let handle = tokio::spawn(async move {
+        let mut temp_rx = temp_rx;
+        handle_stream(
+            state_clone,
+            &mut temp_rx,
+            &mut stream,
+            ws_tx_clone,
+            None,
+        )
+        .await
+    });
+
+    match handle.await {
+        Ok(Ok(_)) => break,
+        Ok(Err(e)) => final_error = e,
+        Err(e) => final_error = Box::new(e),
+    }
+*/
 
 // Looks for a env varible, if its not found, try the specified default, if none is found it will use the default of whatever that type is
 fn get_env_var_or_arg<T>(env_var: &str, default: Option<T>) -> Option<T>
@@ -1269,32 +1294,86 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // if there is supposed to be a initial connection and if there is a client (as it wont be able to create the deployment without it, and it would be pointless to create a docker container
     // without the abbility to deploy it)
+    let inner_state = Arc::clone(&multifaceted_state);
     if enable_initial_connection {
         println!("Trying initial connection...");
-        let initial_connection_result = try_initial_connection(
-            initial_connection_attempts,
-            initial_connection_timeout,
-            false,
-            &multifaceted_state.clone(),
-            tcp_url.to_string(),
-            &ws_tx.clone(),
-            multifaceted_state.write().await.tcp_tx.clone(),
-        )
-        .await;
-        if initial_connection_result.is_err() {
-            println!("All initial connections failed");
-        }
-        if initial_connection_result.is_err() || force_rebuild {
-            if let Clients::K8s(client) = &multifaceted_state.write().await.client {
-                eprintln!(
-                    "Initial connection failed or force rebuild enabled, will possibly enable auto-build (configurable)"
-                );
-                if build_docker_image {
-                    docker::build_docker_image().await?;
+        let state_clone = inner_state.clone();
+        let ws_tx_clone = ws_tx.clone();
+        let tcp_tx_clone = inner_state.write().await.tcp_tx.clone();
+        let tcp_url_clone = tcp_url.to_string();
+
+        // TODO: Since I never create a handler with initial connections, should i take it out of the thread?, or rather, 
+        // leave it to set a TcpStream for the appstate for when it sorts itself out
+        let handle = tokio::spawn(async move {
+            let initial_connection_result = try_initial_connection(
+                initial_connection_attempts,
+                initial_connection_timeout,
+                false,
+                &state_clone,
+                tcp_url_clone,
+                &ws_tx_clone,
+                tcp_tx_clone,
+            )
+            .await;
+            if initial_connection_result.is_err() {
+                println!("All initial connections failed");
+            }
+            if initial_connection_result.is_err() || force_rebuild {
+                if let Clients::K8s(client) = &inner_state.write().await.client {
+                    eprintln!(
+                        "Initial connection failed or force rebuild enabled, will possibly enable auto-build (configurable)"
+                    );
+                    let mut unbuilt_img_was_the_issue = false;
+                    if build_docker_image {
+                        unbuilt_img_was_the_issue = true;
+                        docker::build_docker_image().await?;
+                    }
+                    if build_deployment {
+                        unbuilt_img_was_the_issue = true;
+                        kubernetes::create_k8s_deployment(&client).await?;
+                    }
+                    if !unbuilt_img_was_the_issue {
+                        println!("{:#?}", initial_connection_result.as_ref().err().unwrap());
+                    }
+                } else {
+                    println!("{:#?}", initial_connection_result.as_ref().err().unwrap());
                 }
-                if build_deployment {
-                    kubernetes::create_k8s_deployment(&client).await?;
+            }
+            if initial_connection_result.is_ok() {
+                println!("Creating a new connection");
+                //&inner_state.write().await.
+                let (new_tcp_tx, new_tcp_rx) = broadcast::channel::<Vec<u8>>(100);
+                let (internal_tx, internal_rx) = broadcast::channel::<Vec<u8>>(100);
+
+                {
+                    let mut state = inner_state.write().await;
+                    state.tcp_tx = new_tcp_tx.clone();
+                    state.tcp_rx = new_tcp_rx.resubscribe();
+                    state.internal_tx = Some(internal_tx);
+                    state.internal_rx = Some(internal_rx.resubscribe());
                 }
+
+                let bridge_rx = new_tcp_tx.subscribe();
+                let bridge_tx = inner_state.read().await.ws_tx.clone();
+                let internal_stream = Some(internal_rx);
+                //println!("Near to making a new connection");
+                let connect_to_server_result = connect_to_server(inner_state, tcp_url, bridge_rx, bridge_tx, internal_stream, true, false).await;
+                if let Err(err) = connect_to_server_result {
+                    println!("{:#?}", err);
+                }
+            }
+            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+        });
+
+        // This will make sure that the results of the initial connections attempt to build a docker image, or create a k8s deployment succeeded
+        // and it will log the result, will if its an error. An error not logging here does not mean the initial connection went fine
+        match handle.await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                eprintln!("The initial connection failed with: {:#?}", e)
+            }
+            Err(e) => {
+                eprintln!("The initial connection failed with: {:#?}", e)
             }
         }
     }
@@ -1386,6 +1465,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     Ok(())
 }
+
 pub async fn rcon_command(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<IncomingMessage>,
@@ -3305,26 +3385,29 @@ fn normalize_and_secure_path(path: &str) -> Result<String, StatusCode> {
 mod tests {
     use super::*;
     mod internal {
+        use crate::database::Database;
+
         use super::*;
+        async fn create_db_for_tests() -> Result<Database, String> {
+            Ok(Database::new(None))
+        }
+
+        #[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
+        async fn create_db_for_tests() -> Result<Database, sqlx::Error> {
+            let conn = first_connection().await?;
+            let database = database::Database::new(Some(conn));
+            Ok(database)
+        }
+
         mod users {
             use super::*;
-            use crate::database::{Database, Element};
+            use crate::database::Element;
 
-            #[cfg(all(
-                not(feature = "full-stack"),
-                not(feature = "docker"),
-                not(feature = "database")
-            ))]
-            async fn create_db_for_tests() -> Result<Database, String> {
-                Ok(Database::new(None))
-            }
-
-            #[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
-            async fn create_db_for_tests() -> Result<Database, sqlx::Error> {
-                let conn = first_connection().await?;
-                let database = database::Database::new(Some(conn));
-                Ok(database)
-            }
+            // #[cfg(all(
+            //     not(feature = "full-stack"),
+            //     not(feature = "docker"),
+            //     not(feature = "database")
+            // ))]
 
             #[tokio::test]
             #[serial]
@@ -3528,9 +3611,69 @@ mod tests {
                 }
             }
         }
-    }
-    mod http {
+        mod nodes {
+            use super::*;
 
+            #[tokio::test]
+            #[serial]
+            async fn create_node() {
+                let database = create_db_for_tests().await.unwrap();
+                database.clear_db().await.expect("Failed to clear DB");
+                let node = ModifyElementData {
+                    element: Element::Node(Node {
+                        nodename: "main".to_string(),
+                        ip: StaticLocalUrl.to_string(),
+                        nodestatus: NodeStatus::Unknown,
+                        nodetype: NodeType::Custom,
+                        k8s_type: K8sType::Unknown,
+                    }),
+                    jwt: "".to_string(),
+                    require_auth: true,
+                };
+                let result = database.create_nodes_in_db(node).await;
+                if result.is_err() {
+                    assert!(false);
+                } else {
+                    assert!(true);
+                }
+            }
+            #[tokio::test]
+            #[serial]
+            async fn duplicate_node() {
+                let database = create_db_for_tests().await.unwrap();
+                database.clear_db().await.expect("Failed to clear DB");
+                let nodeA = ModifyElementData {
+                    element: Element::Node(Node { 
+                        nodename: "main".to_string(),
+                        ip: StaticLocalUrl.to_string(),
+                        nodestatus: NodeStatus::Unknown,
+                        nodetype: NodeType::Custom,
+                        k8s_type: K8sType::Unknown,
+                    }),
+                    require_auth: true,
+                    jwt: "".to_owned(),
+                };
+                let nodeB = ModifyElementData {
+                    element: Element::Node(Node {
+                        nodename: "main".to_string(),
+                        ip: StaticLocalUrl.to_string(),
+                        nodestatus: NodeStatus::Unknown,
+                        nodetype: NodeType::Custom,
+                        k8s_type: K8sType::Unknown,
+                    }),
+                    require_auth: true,
+                    jwt: "".to_owned(),
+                };
+                let resultA = database.create_user_in_db(nodeA).await;
+                let resultB = database.create_user_in_db(nodeB).await;
+
+                if resultB.is_err() {
+                    assert!(true)
+                } else {
+                    assert!(false)
+                }
+            }
+        }
     }
+    mod http {}
 }
-
