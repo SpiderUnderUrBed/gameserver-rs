@@ -350,25 +350,21 @@ fn ensure_server_user(username: &str) -> std::io::Result<(u32, u32)> {
 // This recursively goes down a directory and makes sure the file owner and permissions are the same
 // I think this is needed as I dont think i noticed that just chmoding and chowning the server directory 
 // + the subdir of the server stuff worked for this
-fn set_permissions_recursive(path: &str, uid: u32, gid: u32, mode: u32) -> std::io::Result<()> {
+fn set_permissions_recursive(path: &str, uid: u32, gid: u32) -> std::io::Result<()> {
+    let metadata = std::fs::metadata(path)?;
     set_file_owner(path, uid, gid)?;
-    set_file_permissions(path, mode)?;
-
-    let dir = std::fs::read_dir(path)?;
-    for entry in dir {
-        let entry = entry?;
-        let entry_path = entry.path();
-        let entry_str = entry_path.to_string_lossy().to_string();
-        if entry_path.is_dir() {
-            set_permissions_recursive(&entry_str, uid, gid, mode)?;
-        } else {
-            set_file_owner(&entry_str, uid, gid)?;
-            set_file_permissions(&entry_str, mode)?;
+    if metadata.is_dir() {
+        set_file_permissions(path, 0o755)?;
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
+            let entry_str = entry.path().to_string_lossy().to_string();
+            set_permissions_recursive(&entry_str, uid, gid)?;
         }
+    } else {
+        set_file_permissions(path, 0o644)?;
     }
     Ok(())
 }
-
 // For any time a server related process will run, this process hook needs to run before that
 // if the user enabled the sandbox for a server, or they were forced too by lack of permissions 
 // (e.g a admin set sandbox to always enable), then this will use bwrap to wrap the command
@@ -380,38 +376,17 @@ fn process_hook(state: &AppState, provider: ProviderConfig, sandbox: bool, locat
     if sandbox {
         #[cfg(target_os = "linux")]
         {
-            // Starts off with getting the current working directory (cwd) of the project files
-            // then appending server, and making sure the last part of the cwd does not include server
-            // then merges the path
             let cwd = std::env::current_dir().unwrap_or_default();
             let location = location_option.unwrap_or_default();
             let location_stripped = location.trim_start_matches("server/");
             let resolved = cwd.join("server").join(location_stripped);
-            let resolved_str = resolved.to_string_lossy().to_string();
+            let resolved_str = resolved.to_string_lossy().trim_end_matches('/').to_string();
 
-            // Sets the file owner and permissions for the server subdir within the 'server' folder
-            let _ = set_file_owner(&resolved_str, 0, 0);
-            let _ = set_file_permissions(&resolved_str, 0o755);
-            // Gets the UID and GUI, then it will go into the server directory of the current 'on' server
-            // and makes sure that the permissions are 100% correct (maybe there is a bit of boilerplate here)
             if let Some((uid, gid)) = get_uid_gid(&state.jailed_user) {
-                if let Ok(entries) = std::fs::read_dir(&resolved_str) {
-                    for entry in entries.flatten() {
-                        let entry_path = entry.path();
-                        let entry_str = entry_path.to_string_lossy().to_string();
-                        if entry_path.is_dir() {
-                            let _ = set_file_owner(&entry_str, uid, gid);
-                            let _ = set_file_permissions(&entry_str, 0o755);
-                            let _ = set_permissions_recursive(&entry_str, uid, gid, 0o666);
-                        } else {
-                            let _ = set_file_owner(&entry_str, uid, gid);
-                            let _ = set_file_permissions(&entry_str, 0o666);
-                        }
-                    }
-                }
+                let _ = std::fs::create_dir_all(&resolved_str);
+                let _ = set_permissions_recursive(&resolved_str, uid, gid);
             }
 
-            // Finds the binary path of bwrap
             let bwrap_path = Command::new("which")
                 .arg("bwrap")
                 .output()
@@ -420,42 +395,44 @@ fn process_hook(state: &AppState, provider: ProviderConfig, sandbox: bool, locat
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
                 .unwrap_or_else(|| "bwrap".to_string());
 
-            // Starts constructing the bwrap args, using the server directory
-            // some basic system directories which I assume lots of processes need access too
-            // I added nix as i use nix, but this should not be an issue on non-nix systems
-            // I set the current directory, enabled tmpfs, and used unshare just to actually limit the permissions
             let mut bwrap_args: Vec<String> = vec![
                 "--bind".into(), resolved_str.clone(), "/server".into(),
                 "--ro-bind-try".into(), "/nix".into(), "/nix".into(),
-                "--ro-bind-try".into(), "/run/current-system".into(), "/run/current-system".into(),
+                "--ro-bind-try".into(), "/run".into(), "/run".into(),
                 "--ro-bind-try".into(), "/lib".into(), "/lib".into(),
                 "--ro-bind-try".into(), "/lib64".into(), "/lib64".into(),
                 "--ro-bind-try".into(), "/usr/lib".into(), "/usr/lib".into(),
                 "--ro-bind-try".into(), "/usr/lib64".into(), "/usr/lib64".into(),
-                "--ro-bind-try".into(), "/etc/passwd".into(), "/etc/passwd".into(),
-                "--ro-bind-try".into(), "/etc/group".into(), "/etc/group".into(),
-                "--ro-bind-try".into(), "/etc/resolv.conf".into(), "/etc/resolv.conf".into(),
-                "--ro-bind-try".into(), "/etc/ssl".into(), "/etc/ssl".into(),
+                "--ro-bind-try".into(), "/etc".into(), "/etc".into(),
                 "--proc".into(), "/proc".into(),
                 "--dev".into(), "/dev".into(),
                 "--tmpfs".into(), "/tmp".into(),
                 "--chdir".into(), "/server".into(),
                 "--share-net".into(),
-                "--unshare-user".into(),
                 "--unshare-ipc".into(),
                 "--unshare-pid".into(),
                 "--unshare-uts".into(),
+                "--setenv".into(), "PATH".into(),
+                "/run/current-system/sw/bin:/usr/local/bin:/usr/bin:/bin".into(),
             ];
-            if let Some((uid, gid)) = get_uid_gid(&state.jailed_user) {
-                println!("Found UID and GID");
-                bwrap_args.push("--uid".to_string());
-                bwrap_args.push(uid.to_string());
-                bwrap_args.push("--gid".to_string());
-                bwrap_args.push(gid.to_string());
-                // "--uid".into(), "0".into()
-                // "--gid".into(), "0".into()
+
+            // Override resolv.conf with a copy owned by the jailed user
+            let resolv_tmp = format!("/tmp/gameserver-resolv-{}.conf", std::process::id());
+            if let Ok(contents) = std::fs::read_to_string("/etc/resolv.conf") {
+                let _ = std::fs::write(&resolv_tmp, contents);
+                let _ = set_file_permissions(&resolv_tmp, 0o644);
+                if let Some((uid, gid)) = get_uid_gid(&state.jailed_user) {
+                    let _ = set_file_owner(&resolv_tmp, uid, gid);
+                }
+                bwrap_args.push("--ro-bind".into());
+                bwrap_args.push(resolv_tmp);
+                bwrap_args.push("/etc/resolv.conf".into());
             }
-            for command in provider.needed_commands {
+                        
+            let mut all_needed_commands = provider.needed_commands;
+            all_needed_commands.push("setpriv".to_string());
+            all_needed_commands.push("sh".to_string());
+            for command in all_needed_commands {
                 let command_path = Command::new("which")
                     .arg(&command)
                     .output()
@@ -497,6 +474,22 @@ fn process_hook(state: &AppState, provider: ProviderConfig, sandbox: bool, locat
             for arg in &bwrap_args {
                 cmd.arg(arg);
             }
+
+            // Use setpriv to drop to jailed user inside the sandbox
+            // bwrap runs as root so bind mounts work, but the actual process
+            // runs as the jailed user so it can only write to its own files
+            if let Some((uid, gid)) = get_uid_gid(&state.jailed_user) {
+                println!("Found UID and GID, dropping to {} via setpriv", state.jailed_user);
+                cmd.arg("setpriv");
+                cmd.arg("--reuid");
+                cmd.arg(uid.to_string());
+                cmd.arg("--regid");
+                cmd.arg(gid.to_string());
+                cmd.arg("--groups");
+                cmd.arg(gid.to_string());
+                cmd.arg("--");
+            }
+
             cmd.arg(current_program);
             for arg in current_args {
                 cmd.arg(arg);
@@ -513,6 +506,7 @@ fn process_hook(state: &AppState, provider: ProviderConfig, sandbox: bool, locat
         }
     }
 }
+
 // runs a command and forwards the output of the command to the given channel, which in this case would be back to
 // the main server
 // TODO: consider rem
@@ -1116,6 +1110,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                 &hostname_ref,
                                             )
                                             .await;
+                                            if newline_pos + 1 <= read_buf.len() {
+                                                read_buf.drain(..newline_pos + 1);
+                                                found_message = true;
+                                            } else {
+                                                read_buf.clear();
+                                            }
+                                            continue;
                                         } else if let Ok(payload) =
                                             serde_json::from_value::<SrcAndDest>(json_value.clone())
                                         {
@@ -2128,71 +2129,42 @@ async fn create_server(
 
                 let _ = prov.set_location(filtered_location);
 
-                if let Some(cmd) = prov.pre_hook() {
-                    run_command_live_output(
-                        &state,
-                        cmd,
-                        get_providers_sandbox(&state, current_server.clone(), None).await.unwrap_or(true),
-                        get_definite_path_from_name(&state, current_server.clone()).await.unwrap_or(String::new()),
-                        // I already throw an error if there is no provider associated with the server, so i can directly unwrap here
-                        // Same goes for the chain of run_command_live_output calls
-                        provider_config.clone().unwrap(),
-                        "Pre-hook".into(),
-                        Some(cmd_tx.clone()),
-                        None,
-                    )
-                    .await
-                    .ok();
-                }
-                if let Some(cmd) = prov.install() {
-                    run_command_live_output(
-                        &state,
-                        cmd,
-                        get_providers_sandbox(&state, current_server.clone(), None).await.unwrap_or(true),
-                        get_definite_path_from_name(&state, current_server.clone()).await.unwrap_or(String::new()),
-                        provider_config.clone().unwrap(),
-                        "Install".into(),
-                        Some(cmd_tx.clone()),
-                        None,
-                    )
-                    .await
-                    .ok();
-                }
-                if let Some(cmd) = prov.post_hook() {
-                    run_command_live_output(
-                        &state,
-                        cmd,
-                        get_providers_sandbox(&state, current_server.clone(), None).await.unwrap_or(true),
-                        get_definite_path_from_name(&state, current_server.clone()).await.unwrap_or(String::new()),
-                        provider_config.clone().unwrap(),
-                        "Post-hook".into(),
-                        Some(cmd_tx.clone()),
-                        None,
-                    )
-                    .await
-                    .ok();
-                }
-                if let Some(cmd) = prov.start() {
-                    let tx = cmd_tx.clone();
-                    let stdin_clone = stdin_ref.clone();
-                    let state_clone = Arc::clone(&state);
-                    let current_server_clone = current_server.clone();
-                    tokio::spawn(async move {
-                        run_command_live_output(
-                            &state_clone,
-                            cmd,
-                            get_providers_sandbox(&state_clone, current_server_clone, None).await.unwrap_or(true),
-                            get_definite_path_from_name(&state, current_server.clone()).await.unwrap_or(String::new()),
-                            provider_config.clone().unwrap(),
-                            "Server".into(),
-                            Some(tx),
-                            Some(stdin_clone),
-                        )
-                        .await
-                        .ok();
-                    });
-                    let _ = cmd_tx.send("Server started".into()).await;
-                }
+if let Some(cmd) = prov.pre_hook() {
+    run_command_live_output(
+        &state,
+        cmd,
+        get_providers_sandbox(&state, Some(servername.to_string()), None).await.unwrap_or(true),
+        get_definite_path_from_name(&state, Some(servername.to_string())).await.unwrap_or(String::new()),
+        provider_config.clone().unwrap(),
+        "Pre-hook".into(),
+        Some(cmd_tx.clone()),
+        None,
+    ).await.ok();
+}
+if let Some(cmd) = prov.install() {
+    run_command_live_output(
+        &state,
+        cmd,
+        get_providers_sandbox(&state, Some(servername.to_string()), None).await.unwrap_or(true),
+        get_definite_path_from_name(&state, Some(servername.to_string())).await.unwrap_or(String::new()),
+        provider_config.clone().unwrap(),
+        "Install".into(),
+        Some(cmd_tx.clone()),
+        None,
+    ).await.ok();
+}
+if let Some(cmd) = prov.post_hook() {
+    run_command_live_output(
+        &state,
+        cmd,
+        get_providers_sandbox(&state, Some(servername.to_string()), None).await.unwrap_or(true),
+        get_definite_path_from_name(&state, Some(servername.to_string())).await.unwrap_or(String::new()),
+        provider_config.clone().unwrap(),
+        "Post-hook".into(),
+        Some(cmd_tx.clone()),
+        None,
+    ).await.ok();
+}
             }
             Ok(())
         } else {
