@@ -246,125 +246,7 @@ fn filter(line: String) -> bool {
     }
 }
 
-// For linux systems this will set the file ownership of some path
-// using a uid and gid, used for the sandbox
-fn set_file_owner(path: &str, uid: u32, gid: u32) -> std::io::Result<()> {
-    #[cfg(target_os = "linux")]
-    {
-        let c_path = CString::new(path).unwrap();
-        let ret = unsafe { chown(c_path.as_ptr(), uid, gid) };
-        if ret != 0 {
-            let err = std::io::Error::last_os_error();
-            eprintln!("Failed to chown '{}': {}", path, err);
-            return Err(err);
-        }
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        println!("Not going chown since this is running on non-linux (path='{}', uid={}, gid={})", path, uid, gid);
-    }
-    Ok(())
-}
 
-// This will set file permissions with a specific mode, coorosponding with the linux chmod
-// command, used for the sandbox
-fn set_file_permissions(path: &str, mode: u32) -> std::io::Result<()> {
-    #[cfg(target_os = "linux")]
-    {
-        let c_path = CString::new(path).unwrap();
-        let ret = unsafe { chmod(c_path.as_ptr(), mode) };
-        if ret != 0 {
-            let err = std::io::Error::last_os_error();
-            eprintln!("Failed to chmod '{}': {}", path, err);
-            return Err(err);
-        }
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        println!("Skipping chmod on non-linux (path='{}', mode={:o})", path, mode);
-    }
-    Ok(())
-}
-
-// This gets the uid and gui of a user, given their username, and returns them both, useful for stuff
-// like file permission ownership, this is used for the sandbox
-fn get_uid_gid(username: &str) -> Option<(u32, u32)> {
-    #[cfg(target_os = "linux")]
-    {
-        let c_name = CString::new(username).ok()?;
-        let pw = unsafe { libc::getpwnam(c_name.as_ptr()) };
-        if pw.is_null() {
-            return None;
-        }
-        let pw = unsafe { &*pw };
-        Some((pw.pw_uid, pw.pw_gid))
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        None
-    }
-}
-
-// This ensures that a user with the name of 'server' exists
-// currently I use one user, and i dynamically shift what directories it has access too
-// from what I learnt about bwrap, i think i might have needed a user with host perms sorted
-// out to an extent to complete the sandbox (TODO: maybe confirm this?)
-// invoked in the main function, but used only with the sandbox
-fn ensure_server_user(username: &str) -> std::io::Result<(u32, u32)> {
-    #[cfg(target_os = "linux")]
-    {
-        if let Some(ids) = get_uid_gid(username) {
-            println!("User '{}' already exists uid={} gid={}", username, ids.0, ids.1);
-            return Ok(ids);
-        }
-
-        println!("Creating system user '{}'", username);
-        let status = Command::new("useradd")
-            .args([
-                "--system",
-                "--no-create-home",
-                "--shell", "/usr/sbin/nologin",
-                "--user-group",
-                username,
-            ])
-            .status()?;
-
-        if !status.success() {
-            let err = format!("useradd failed for {username}");
-            eprintln!("{}", err);
-            return Err(std::io::Error::other(err));
-        }
-
-        println!("User '{}' has been created successfully", username);
-        get_uid_gid(username)
-            .map(Ok)
-            .unwrap_or_else(|| Err(std::io::Error::other("user created but uid/gid lookup failed")))
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        println!("Skipping user creation on a non-linux system username='{}'", username);
-        Err(std::io::Error::other("user management not supported on this platform"))
-    }
-}
-
-// This recursively goes down a directory and makes sure the file owner and permissions are the same
-// I think this is needed as I dont think i noticed that just chmoding and chowning the server directory 
-// + the subdir of the server stuff worked for this
-fn set_permissions_recursive(path: &str, uid: u32, gid: u32) -> std::io::Result<()> {
-    let metadata = std::fs::metadata(path)?;
-    set_file_owner(path, uid, gid)?;
-    if metadata.is_dir() {
-        set_file_permissions(path, 0o755)?;
-        for entry in std::fs::read_dir(path)? {
-            let entry = entry?;
-            let entry_str = entry.path().to_string_lossy().to_string();
-            set_permissions_recursive(&entry_str, uid, gid)?;
-        }
-    } else {
-        set_file_permissions(path, 0o644)?;
-    }
-    Ok(())
-}
 // For any time a server related process will run, this process hook needs to run before that
 // if the user enabled the sandbox for a server, or they were forced too by lack of permissions 
 // (e.g a admin set sandbox to always enable), then this will use bwrap to wrap the command
@@ -373,7 +255,8 @@ fn set_permissions_recursive(path: &str, uid: u32, gid: u32) -> std::io::Result<
 // in the sandbox too. 
 // Bwrap adds a system dep, but is more tested and simpler to use
 fn process_hook(state: &AppState, provider: ProviderConfig, sandbox: bool, location_option: Option<String>, cmd: &mut TokioCommand) {
-    if sandbox {
+    let uid = unsafe { libc::getuid() };
+    if sandbox && uid == 0 {
         #[cfg(target_os = "linux")]
         {
             let cwd = std::env::current_dir().unwrap_or_default();
@@ -382,10 +265,7 @@ fn process_hook(state: &AppState, provider: ProviderConfig, sandbox: bool, locat
             let resolved = cwd.join("server").join(location_stripped);
             let resolved_str = resolved.to_string_lossy().trim_end_matches('/').to_string();
 
-            if let Some((uid, gid)) = get_uid_gid(&state.jailed_user) {
-                let _ = std::fs::create_dir_all(&resolved_str);
-                let _ = set_permissions_recursive(&resolved_str, uid, gid);
-            }
+            let _ = std::fs::create_dir_all(&resolved_str);
 
             let bwrap_path = Command::new("which")
                 .arg("bwrap")
@@ -416,21 +296,7 @@ fn process_hook(state: &AppState, provider: ProviderConfig, sandbox: bool, locat
                 "/run/current-system/sw/bin:/usr/local/bin:/usr/bin:/bin".into(),
             ];
 
-            // Override resolv.conf with a copy owned by the jailed user
-            let resolv_tmp = format!("/tmp/gameserver-resolv-{}.conf", std::process::id());
-            if let Ok(contents) = std::fs::read_to_string("/etc/resolv.conf") {
-                let _ = std::fs::write(&resolv_tmp, contents);
-                let _ = set_file_permissions(&resolv_tmp, 0o644);
-                if let Some((uid, gid)) = get_uid_gid(&state.jailed_user) {
-                    let _ = set_file_owner(&resolv_tmp, uid, gid);
-                }
-                bwrap_args.push("--ro-bind".into());
-                bwrap_args.push(resolv_tmp);
-                bwrap_args.push("/etc/resolv.conf".into());
-            }
-                        
             let mut all_needed_commands = provider.needed_commands;
-            all_needed_commands.push("setpriv".to_string());
             all_needed_commands.push("sh".to_string());
             for command in all_needed_commands {
                 let command_path = Command::new("which")
@@ -474,22 +340,6 @@ fn process_hook(state: &AppState, provider: ProviderConfig, sandbox: bool, locat
             for arg in &bwrap_args {
                 cmd.arg(arg);
             }
-
-            // Use setpriv to drop to jailed user inside the sandbox
-            // bwrap runs as root so bind mounts work, but the actual process
-            // runs as the jailed user so it can only write to its own files
-            if let Some((uid, gid)) = get_uid_gid(&state.jailed_user) {
-                println!("Found UID and GID, dropping to {} via setpriv", state.jailed_user);
-                cmd.arg("setpriv");
-                cmd.arg("--reuid");
-                cmd.arg(uid.to_string());
-                cmd.arg("--regid");
-                cmd.arg(gid.to_string());
-                cmd.arg("--groups");
-                cmd.arg(gid.to_string());
-                cmd.arg("--");
-            }
-
             cmd.arg(current_program);
             for arg in current_args {
                 cmd.arg(arg);
@@ -506,7 +356,6 @@ fn process_hook(state: &AppState, provider: ProviderConfig, sandbox: bool, locat
         }
     }
 }
-
 // runs a command and forwards the output of the command to the given channel, which in this case would be back to
 // the main server
 // TODO: consider rem
@@ -774,6 +623,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Err(e) => Err(e.to_string()),
     });
 
+    let uid = unsafe { libc::getuid() };
+    if uid != 0 {
+        println!("Not running as root (uid={}). The sandbox WILL NOT work/run", uid);
+        
+    }
+
     let arc_db = Arc::new(Mutex::new(load_db()));
 
     // TODO: remove this in favor of it being both written to a persistent db and insertions happening by the server
@@ -803,8 +658,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         drop(db_current_server);
         None
     };
-
-    let _ = ensure_server_user("server");
 
     let arc_state = Arc::new(state.clone());
 
