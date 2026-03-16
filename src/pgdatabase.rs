@@ -295,7 +295,7 @@ impl ServerDatabase for Database {
     
     async fn create_server_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         if let Element::Server(server) = element.element {
-            if servername.is_empty(){
+            if &server.servername.clone().is_empty(){
                 return Err("Need to have specified a server name".into());
             }
             let existing = self.get_from_servers_database(&server.servername).await?;
