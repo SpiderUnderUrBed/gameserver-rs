@@ -3425,7 +3425,7 @@ mod tests {
     use super::*;
 
     /*
-    Shared tests (work on both bare-metal and k8s)
+    shared tests (work on both bare-metal and k8s)
     */
     mod shared {
         use super::*;
@@ -3587,13 +3587,13 @@ mod tests {
     }
 
     /*
-    Bare-metal specific tests
+    bare-metal specific tests
     */
     #[cfg(not(any(feature = "full-stack", feature = "docker", feature = "database")))]
     mod internal {}
 
     /*
-    Kubernetes / SQLx specific tests
+    k8s and sqlx tasks
     */
     #[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
     mod k8s {
