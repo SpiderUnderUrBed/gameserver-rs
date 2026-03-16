@@ -295,18 +295,22 @@ impl ServerDatabase for Database {
     
     async fn create_server_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         if let Element::Server(server) = element.element {
+            if servername.is_empty(){
+                return Err("Need to have specified a server name".into());
+            }
             let existing = self.get_from_servers_database(&server.servername).await?;
             if existing.is_some() {
                 return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
             }
 
             let _result = sqlx::query_as::<_, Server>(
-                "INSERT INTO servers (servername, provider, providertype, location) VALUES ($1, $2, $3, $4) RETURNING *"
+                "INSERT INTO servers (servername, provider, providertype, location, sandbox) VALUES ($1, $2, $3, $4, $5) RETURNING *"
             )
             .bind(&server.servername)
             .bind(&server.provider)
             .bind(&server.providertype)
             .bind(&server.location)
+            .bind(&server.sandbox)
             .fetch_one(&self.connection)
             .await?;
 

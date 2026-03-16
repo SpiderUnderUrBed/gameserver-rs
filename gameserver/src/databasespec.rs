@@ -12,10 +12,12 @@ pub struct Database {
 pub struct ServerIndex {
     pub(crate) location: String,
     pub(crate) provider: String,
+    pub(crate) providertype: String,
+    pub(crate) sandbox: bool,
 }
 
 impl ServerIndex {
-    pub fn new(location: String, provider: String) -> ServerIndex {
-        ServerIndex { location, provider }
+    pub fn new(location: String, provider: String, providertype: String, sandbox: bool) -> ServerIndex {
+        ServerIndex { location, provider, providertype, sandbox }
     }
 }

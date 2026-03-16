@@ -14,6 +14,7 @@
       cargo
       rustc
       rustfmt
+      bubblewrap
       clippy
       rust-analyzer
     ];

@@ -8,6 +8,7 @@ use std::fmt::Debug;
 use std::io::ErrorKind;
 use std::{net::SocketAddr, path::Path, sync::Arc};
 
+use crate::database::Database;
 // Axum is the routing framework, and the backbone to this project helping intergrate the backend with the frontend
 // and the general api, redirections, it will take form data and queries and make it easily accessible
 // I also use axum_login to take off alot of effort that would be required for authentication
@@ -308,6 +309,7 @@ struct MessagePayloadWithMetadata {
     authcode: String,
 }
 
+// TODO: Is this truely nessesary for the RCON response?
 #[derive(Debug, Serialize, Deserialize)]
 struct UnauthenticatedMessagePayload {
     r#type: String,
@@ -361,6 +363,7 @@ enum MetadataTypes {
         provider: String,
         providertype: String,
         location: String,
+        sandbox: bool
     },
     String(String),
 }
@@ -517,7 +520,7 @@ enum Status {
 // which includes the sender and reciver to the tcp connection for gameserver, the websocket sender (receiver only needs to be managed by its own handler)
 // the base path like if all the routes are prefixed with something like /gameserver-rs which is the default for my testing deployment, and database as its needed frequently
 // for user information and etc
-// #[derive(Clone)]
+// #[derive(Default)]
 struct AppState {
     tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
     tcp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
@@ -534,6 +537,30 @@ struct AppState {
     rcon_connection: Option<Arc<Mutex<Connection<TcpStream>>>>,
     current_server: Option<Server>,
 }
+impl Default for AppState {
+    fn default() -> Self {
+        let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
+        let (tcp_tx, tcp_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+        let tcp_url = get_env_var_or_arg("TCPURL", Some(StaticTcpUrl.to_string())).unwrap();
+        Self { 
+            tcp_tx, 
+            tcp_rx, 
+            tcp_conn_status: Default::default(), 
+            internal_rx: Default::default(), 
+            internal_tx: Default::default(), 
+            additonal_node_tcp: Default::default(), 
+            current_node: Default::default(), 
+            ws_tx, 
+            base_path: Default::default(), 
+            client: Clients::None, 
+            database: Database::new(None), 
+            cached_status_type: Default::default(), 
+            rcon_connection: Default::default(), 
+            current_server: Default::default() 
+        }
+    }
+}
+
 impl Clone for AppState {
     fn clone(&self) -> Self {
         AppState {
@@ -2251,6 +2278,9 @@ async fn set_server(
                     k8s_type: state.current_node.k8s_type.clone(),
                 }
                 .into(),
+                // TODO: Have it so if the user has a specific perm, they can create unsandboxed servers
+                sandbox: retrieved_server.sandbox.clone(),
+                //sandbox: true
             }
             .into(),
         );
@@ -2263,6 +2293,7 @@ async fn set_server(
                 provider: retrieved_server.provider,
                 providertype: retrieved_server.providertype,
                 location: retrieved_server.location,
+                sandbox: retrieved_server.sandbox
             },
             authcode: "0".to_string(),
         };
@@ -2420,6 +2451,7 @@ async fn process_general_with_metadata(
                 provider,
                 providertype,
                 location,
+                sandbox
             } = payload.metadata.clone()
             {
                 // Sets the server on the local server when creating a new game server
@@ -2429,6 +2461,7 @@ async fn process_general_with_metadata(
                     provider,
                     providertype,
                     location,
+                    sandbox,
                     node: Node {
                         nodename: state.current_node.name.clone(),
                         ip: state.current_node.ip.clone(),
@@ -2454,6 +2487,7 @@ async fn process_general_with_metadata(
                         location,
                         provider,
                         servername,
+                        sandbox
                     } = payload.metadata.clone()
                     {
                         let _ = database
@@ -2463,6 +2497,7 @@ async fn process_general_with_metadata(
                                     provider,
                                     providertype,
                                     location,
+                                    sandbox,
                                     node: Node {
                                         nodename: state.current_node.name.clone(),
                                         ip: state.current_node.ip.clone(),
@@ -2490,6 +2525,7 @@ async fn process_general_with_metadata(
                                 provider: retrieved_server.provider,
                                 providertype: retrieved_server.providertype,
                                 location: retrieved_server.location,
+                                sandbox: retrieved_server.sandbox
                             },
                             authcode: "0".to_string(),
                         };
@@ -3640,6 +3676,7 @@ mod tests {
                     assert!(true);
                 }
             }
+
             #[tokio::test]
             #[serial]
             async fn duplicate_node() {
@@ -3671,6 +3708,141 @@ mod tests {
                 let resultB = database.create_user_in_db(nodeB).await;
 
                 if resultB.is_err() {
+                    assert!(true)
+                } else {
+                    assert!(false)
+                }
+            }
+        }
+        mod server {
+            use super::*;
+
+            #[tokio::test]
+            #[serial]
+            async fn create_server(){
+                let database = create_db_for_tests().await.unwrap();
+                database.clear_db().await.expect("Failed to clear DB");
+                let server = ModifyElementData {
+                    element: database::databasespec::Element::Server(Server {
+                        servername: "test".to_string(),
+                        provider: "".to_string(),
+                        providertype: "".to_string(),
+                        location: "test".to_string(),
+                        sandbox: false,
+                        node: Node { 
+                            nodename: "test".to_string(), 
+                            ip: "127.0.0.1:8080".to_string(), 
+                            nodestatus: NodeStatus::Unknown, 
+                            nodetype: NodeType::Custom, 
+                            k8s_type: K8sType::Unknown
+                        }
+                    }), 
+                    jwt: "".to_string(), 
+                    require_auth: false 
+                };
+                let result = database.create_server_in_db(server).await;
+                if result.is_ok() {
+                    assert!(true)
+                } else {
+                    assert!(false)
+                }
+            }
+            #[tokio::test]
+            #[serial]
+            async fn create_server_without_name(){
+                let database = create_db_for_tests().await.unwrap();
+                database.clear_db().await.expect("Failed to clear DB");
+                let server = ModifyElementData {
+                    element: database::databasespec::Element::Server(Server {
+                        servername: "".to_string(),
+                        provider: "".to_string(),
+                        providertype: "".to_string(),
+                        location: "test".to_string(),
+                        node: Node { 
+                            nodename: "test".to_string(), 
+                            ip: "127.0.0.1:8080".to_string(), 
+                            nodestatus: NodeStatus::Unknown, 
+                            nodetype: NodeType::Custom, 
+                            k8s_type: K8sType::Unknown
+                        },
+                        sandbox: false
+                    }), 
+                    jwt: "".to_string(), 
+                    require_auth: false 
+                };
+                let result = database.create_server_in_db(server).await;
+                if result.is_ok() {
+                    assert!(false)
+                } else {
+                    assert!(true)
+                }
+            }
+            async fn duplicate_server(){
+                let database = create_db_for_tests().await.unwrap();
+                database.clear_db().await.expect("Failed to clear DB");
+                let serverA = ModifyElementData {
+                    element: database::databasespec::Element::Server(Server {
+                        servername: "test".to_string(),
+                        provider: "".to_string(),
+                        providertype: "".to_string(),
+                        location: "test".to_string(),
+                        node: Node { 
+                            nodename: "test".to_string(), 
+                            ip: "127.0.0.1:8080".to_string(), 
+                            nodestatus: NodeStatus::Unknown, 
+                            nodetype: NodeType::Custom, 
+                            k8s_type: K8sType::Unknown
+                        },
+                        sandbox: false,
+                    }), 
+                    jwt: "".to_string(), 
+                    require_auth: false 
+                };
+                let serverB = ModifyElementData {
+                    element: database::databasespec::Element::Server(Server {
+                        servername: "test".to_string(),
+                        provider: "".to_string(),
+                        providertype: "".to_string(),
+                        location: "test".to_string(),
+                        node: Node { 
+                            nodename: "test".to_string(), 
+                            ip: "127.0.0.1:8080".to_string(), 
+                            nodestatus: NodeStatus::Unknown, 
+                            nodetype: NodeType::Custom, 
+                            k8s_type: K8sType::Unknown
+                        },
+                        sandbox: false
+                    }), 
+                    jwt: "".to_string(), 
+                    require_auth: false 
+                };
+                let resultA = database.create_server_in_db(serverA).await;
+                let resultB = database.create_server_in_db(serverB).await;
+                if resultB.is_ok() {
+                    assert!(false)
+                } else {
+                    assert!(true)
+                }
+            }
+        }
+        mod node_connection {
+            use super::*;
+
+            #[tokio::test]
+            #[serial]
+            async fn try_initial_connection_test() {
+                let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
+                let (tcp_tx, tcp_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+                let tcp_url = get_env_var_or_arg("TCPURL", Some(StaticTcpUrl.to_string())).unwrap();
+                let initial_connection_attempts: u64 =
+                    get_env_var_or_arg("INITIAL_CONNECTION_ATTEMPTS", Some(5)).unwrap();
+                let initial_connection_timeout: u64 =
+                    get_env_var_or_arg("INITIAL_CONNECTION_TIMEOUT", Some(2)).unwrap();
+
+                let mut state = Arc::new(RwLock::new(AppState::default()));
+
+                let result = try_initial_connection(initial_connection_attempts, initial_connection_timeout, false, &state, tcp_url, &ws_tx, tcp_tx).await;
+                if result.is_ok() {
                     assert!(true)
                 } else {
                     assert!(false)

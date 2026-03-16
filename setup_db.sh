@@ -80,6 +80,7 @@ create table if not exists servers (
     provider varchar not null,
     providertype varchar not null,
     location varchar not null,
+    sandbox boolean not null default true,
     created_at timestamptz default now(),
     updated_at timestamptz default now()
 );

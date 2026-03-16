@@ -20,14 +20,16 @@ pub trait Provider {
 impl From<ProviderGame> for Custom {
     fn from(provider: ProviderGame) -> Self {
         Self {
-            pre_hook_cmd: provider.get_config("pre_hook").cloned(),
-            install_cmd: provider.get_config("install").cloned(),
-            post_hook_cmd: provider.get_config("post_hook").cloned(),
-            start_cmd: provider.get_config("start").cloned(),
+            pre_hook_cmd: provider.get_config_commands("pre_hook").cloned(),
+            install_cmd: provider.get_config_commands("install").cloned(),
+            post_hook_cmd: provider.get_config_commands("post_hook").cloned(),
+            start_cmd: provider.get_config_commands("start").cloned(),
             location: provider
-                .get_config("location")
+                .get_config_commands("location")
                 .cloned()
                 .unwrap_or(String::new()),
+            needed_paths: provider.get_config_sandboxed_paths(),
+            needed_commands: provider.get_config_sandboxed_commands(),
         }
     }
 }
@@ -37,16 +39,16 @@ impl From<Custom> for ProviderGame {
         let mut provider = ProviderGame::new("custom", custom.location);
 
         if let Some(cmd) = custom.pre_hook_cmd {
-            provider = provider.with_config("pre_hook", cmd);
+            provider = provider.with_config("pre_hook", Value::String(cmd));
         }
         if let Some(cmd) = custom.install_cmd {
-            provider = provider.with_config("install", cmd);
+            provider = provider.with_config("install", Value::String(cmd));
         }
         if let Some(cmd) = custom.post_hook_cmd {
-            provider = provider.with_config("post_hook", cmd);
+            provider = provider.with_config("post_hook", Value::String(cmd));
         }
         if let Some(cmd) = custom.start_cmd {
-            provider = provider.with_config("start", cmd);
+            provider = provider.with_config("start", Value::String(cmd));
         }
 
         provider
@@ -60,6 +62,8 @@ pub struct Custom {
     pub post_hook_cmd: Option<String>,
     pub start_cmd: Option<String>,
     pub location: String,
+    pub needed_paths: Vec<String>,
+    pub needed_commands: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +71,8 @@ pub struct ProviderGame {
     pub location: String,
     pub name: String,
     pub config: std::collections::HashMap<String, Option<String>>,
+    pub needed_paths: Vec<String>,
+    pub needed_commands: Vec<String>,
 }
 
 impl ProviderGame {
@@ -75,15 +81,31 @@ impl ProviderGame {
             name: name.into(),
             location,
             config: std::collections::HashMap::new(),
+            needed_paths: vec![],
+            needed_commands: vec![]
         }
     }
 
-    pub fn with_config(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.config.insert(key.into(), Some(value.into()));
+    pub fn with_config(mut self, key: impl Into<String>, value: Value) -> Self {
+        if let Value::String(string) = value {
+            self.config.insert(key.into(), Some(string));
+        } else if let Value::Array(array) = value {
+            for binary_value in array {
+                if let Value::String(binary_path) = binary_value {
+                    self.needed_paths.push(binary_path);
+                }
+            }
+        }
         self
     }
+    
+    // pub fn with_config(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+    //     self.config.insert(key.into(), Some(value.into()));
+    //     self
+    // }
 
-    pub fn get_config(&self, key: &str) -> Option<&String> {
+    // // TODO: is this just boilerplate? or a clean method
+    pub fn get_config_commands(&self, key: &str) -> Option<&String> {
         //println!("{:#?}", self.config);
         if let Some(unwrapped_key) = self.config.get(key) {
             unwrapped_key.as_ref()
@@ -91,6 +113,12 @@ impl ProviderGame {
             println!("Failed to get key");
             None
         }
+    }
+    pub fn get_config_sandboxed_paths(&self) -> Vec<String> {
+        self.needed_paths.clone()
+    }
+    pub fn get_config_sandboxed_commands(&self) -> Vec<String> {
+        self.needed_commands.clone()
     }
 }
 
@@ -102,6 +130,8 @@ impl Custom {
             post_hook_cmd: None,
             start_cmd: None,
             location: String::new(),
+            needed_paths: vec![],
+            needed_commands: vec![]
         }
     }
 
@@ -130,7 +160,7 @@ impl Provider for ProviderGame {
     fn pre_hook(&self) -> Option<Command> {
         match self.name.as_str() {
             "custom" => Custom::from(self.clone()).pre_hook(),
-            _ => self.get_config("pre_hook").map(|cmd| {
+            _ => self.get_config_commands("pre_hook").map(|cmd| {
                 let command = if cfg!(target_os = "windows") {
                     let mut c = Command::new("powershell");
                     c.arg("-Command").arg(cmd);
@@ -148,7 +178,7 @@ impl Provider for ProviderGame {
     fn install(&self) -> Option<Command> {
         match self.name.as_str() {
             "custom" => Custom::from(self.clone()).install(),
-            _ => self.get_config("install").map(|cmd| {
+            _ => self.get_config_commands("install").map(|cmd| {
                 let command = if cfg!(target_os = "windows") {
                     let mut c = Command::new("powershell");
                     c.arg("-Command").arg(cmd);
@@ -166,7 +196,7 @@ impl Provider for ProviderGame {
     fn post_hook(&self) -> Option<Command> {
         match self.name.as_str() {
             "custom" => Custom::from(self.clone()).post_hook(),
-            _ => self.get_config("post_hook").map(|cmd| {
+            _ => self.get_config_commands("post_hook").map(|cmd| {
                 let command = if cfg!(target_os = "windows") {
                     let mut c = Command::new("powershell");
                     c.arg("-Command").arg(cmd);
@@ -188,7 +218,7 @@ impl Provider for ProviderGame {
         }
         match self.name.as_str() {
             "custom" => Custom::from(self.clone()).start(),
-            _ => self.get_config("start").map(|cmd| {
+            _ => self.get_config_commands("start").map(|cmd| {
                 let command = if cfg!(target_os = "windows") {
                     let mut c = Command::new("powershell");
                     c.arg("-Command").arg(cmd);
@@ -211,9 +241,13 @@ impl Provider for ProviderGame {
             fs::create_dir(&location)?;
         }
 
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let location_stripped = location.trim_start_matches("server/");
+        let resolved = cwd.join("server").join(location_stripped);
+
         for value in self.config.values_mut() {
             if let Some(cmd) = value {
-                *cmd = cmd.replace("{{SERVERLOCATION}}", &location);
+                *cmd = cmd.replace("{{SERVERLOCATION}}", &resolved.to_string_lossy());
             }
         }
 
@@ -306,31 +340,33 @@ impl Provider for Custom {
     }
 }
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, Default)]
 pub struct ProviderConfig {
     pub pre_hook: Option<String>,
     pub install: Option<String>,
     pub post_hook: Option<String>,
     pub start: Option<String>,
     pub location: String,
+    pub needed_paths: Vec<String>,
+    pub needed_commands: Vec<String>
 }
 
 impl From<ProviderConfig> for ProviderGame {
     fn from(config: ProviderConfig) -> Self {
         let mut provider = ProviderGame::new("custom", config.location.clone());
         if let Some(cmd) = config.pre_hook {
-            provider = provider.with_config("pre_hook", cmd);
+            provider = provider.with_config("pre_hook", Value::String(cmd));
         }
         if let Some(cmd) = config.install {
-            provider = provider.with_config("install", cmd);
+            provider = provider.with_config("install", Value::String(cmd));
         }
         if let Some(cmd) = config.post_hook {
-            provider = provider.with_config("post_hook", cmd);
+            provider = provider.with_config("post_hook", Value::String(cmd));
         }
         if let Some(cmd) = config.start {
-            provider = provider.with_config("start", cmd);
+            provider = provider.with_config("start", Value::String(cmd));
         }
-        provider = provider.with_config("location", config.location);
+        provider = provider.with_config("location", Value::String(config.location));
         provider
     }
 }
@@ -338,19 +374,21 @@ impl From<ProviderConfig> for ProviderGame {
 impl From<ProviderGame> for ProviderConfig {
     fn from(game: ProviderGame) -> Self {
         Self {
-            pre_hook: game.get_config("pre_hook").cloned(),
-            install: game.get_config("install").cloned(),
-            post_hook: game.get_config("post_hook").cloned(),
-            start: game.get_config("start").cloned(),
+            pre_hook: game.get_config_commands("pre_hook").cloned(),
+            install: game.get_config_commands("install").cloned(),
+            post_hook: game.get_config_commands("post_hook").cloned(),
+            start: game.get_config_commands("start").cloned(),
             location: game
-                .get_config("location")
+                .get_config_commands("location")
                 .cloned()
                 .unwrap_or(String::new()),
+            needed_paths: game.get_config_sandboxed_paths(),
+            needed_commands: game.get_config_sandboxed_commands(),
         }
     }
 }
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, Default)]
 pub struct Platforms {
     pub(crate) linux: Option<ProviderConfig>,
     pub(crate) windows: Option<ProviderConfig>,
@@ -372,6 +410,8 @@ impl From<Custom> for Platforms {
             post_hook: custom.post_hook_cmd,
             start: custom.start_cmd,
             location: custom.location,
+            needed_paths: custom.needed_paths,
+            needed_commands: custom.needed_commands,
         };
         Platforms::custom(config)
     }

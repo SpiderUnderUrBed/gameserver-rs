@@ -412,7 +412,9 @@ pub struct Server {
     #[serde(default)]
     pub location: String,
     #[serde(default)]
-    pub node: Json<Node>
+    pub node: Json<Node>,
+    #[serde(default)]
+    pub sandbox: bool
 }
 
 // I made the mistake of NOT documenting my original plans for provider and providertype, 
@@ -426,7 +428,8 @@ pub struct Server {
     pub provider: String,
     pub providertype: String,
     pub location: String,
-    pub node: Node
+    pub node: Node, 
+    pub sandbox: bool
 } 
 
 pub trait IntoServer {
