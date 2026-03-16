@@ -3420,23 +3420,31 @@ fn normalize_and_secure_path(path: &str) -> Result<String, StatusCode> {
 }
 
 // Unit tests
-// Unit tests
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[cfg(not(any(feature = "full-stack", feature = "docker", feature = "database")))]
-    mod internal {
+    /*
+    Shared tests (work on both bare-metal and k8s)
+    */
+    mod shared {
         use super::*;
-        use crate::database::Database;
+        use crate::database::{Database, Element};
 
+        #[cfg(not(any(feature = "full-stack", feature = "docker", feature = "database")))]
         async fn create_db_for_tests() -> Result<Database, String> {
             Ok(Database::new(None))
         }
 
+        #[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
+        async fn create_db_for_tests() -> Result<Database, sqlx::Error> {
+            let conn = first_connection().await?;
+            let database = database::Database::new(Some(conn));
+            Ok(database)
+        }
+
         mod users {
             use super::*;
-            use crate::database::Element;
 
             #[tokio::test]
             #[serial]
@@ -3578,6 +3586,15 @@ mod tests {
         }
     }
 
+    /*
+    Bare-metal specific tests
+    */
+    #[cfg(not(any(feature = "full-stack", feature = "docker", feature = "database")))]
+    mod internal {}
+
+    /*
+    Kubernetes / SQLx specific tests
+    */
     #[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
     mod k8s {
         use super::*;

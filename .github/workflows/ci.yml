@@ -37,7 +37,75 @@ jobs:
         run: cargo test --no-default-features
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Job 2: k3d — inner gameserver deployment (child node / workspace member)
+  # Job 2: Bare metal — spin up gameserver as separate process before main tests
+  # ─────────────────────────────────────────────────────────────────────────────
+  test-bare-metal:
+    name: Tests (bare metal with gameserver process)
+    runs-on: ubuntu-latest
+    
+    env:
+      SECRET: test
+      SITE_URL: /
+      TESTING: "true"
+      GAMESERVER_PORT: 8081
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-bare-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Create credentials.json
+        run: echo '{}' > credentials.json
+
+      - name: Build gameserver
+        run: cargo build --manifest-path gameserver/Cargo.toml
+
+      - name: Start gameserver in background
+        run: |
+          # Start gameserver in background
+          cargo run --manifest-path gameserver/Cargo.toml &
+          GAMESERVER_PID=$!
+          echo "GAMESERVER_PID=$GAMESERVER_PID" >> $GITHUB_ENV
+          
+          # Wait for gameserver to be ready
+          echo "Waiting for gameserver to start on port $GAMESERVER_PORT..."
+          for i in $(seq 1 30); do
+            if curl -s http://localhost:$GAMESERVER_PORT/health > /dev/null; then
+              echo "✅ Gameserver is ready!"
+              break
+            fi
+            echo "Attempt $i/30: Gameserver not ready yet..."
+            sleep 2
+            
+            if [ $i -eq 30 ]; then
+              echo "❌ Gameserver failed to start within timeout"
+              exit 1
+            fi
+          done
+
+      - name: Run main server tests
+        run: cargo test
+
+      - name: Ensure gameserver is stopped
+        if: always()
+        run: |
+          if [ -n "$GAMESERVER_PID" ]; then
+            kill $GAMESERVER_PID 2>/dev/null || true
+            wait $GAMESERVER_PID 2>/dev/null || true
+          fi
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Job 3: k3d — inner gameserver deployment (child node / workspace member)
   # Uses registry on port 5002
   # ─────────────────────────────────────────────────────────────────────────────
   test-k3d-gameserver:
@@ -131,7 +199,11 @@ jobs:
             echo "Waiting for PostgreSQL... ($i/30)"
             sleep 2
           done
-          bash setup_db.sh
+          if [ -f "setup_db.sh" ]; then
+            bash setup_db.sh
+          else
+            echo "No setup_db.sh found, skipping database setup"
+          fi
         env:
           PGPASSWORD: gameserverpass
           PGHOST: localhost
@@ -227,6 +299,9 @@ jobs:
                     ports:
                       - containerPort: 8080
                       - containerPort: 25565
+                    env:
+                      - name: GAMESERVER_PORT
+                        value: "8080"
                     volumeMounts:
                       - name: gameserver-storage
                         mountPath: /usr/src/app
