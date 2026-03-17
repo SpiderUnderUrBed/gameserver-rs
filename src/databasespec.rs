@@ -107,7 +107,7 @@ pub struct Settings {
 
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, sqlx::Type, Default)]
+#[derive(Debug, Serialize, Clone, PartialEq, sqlx::Type, Default)]
 #[sqlx(type_name = "text")]
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
 pub enum NodeStatus {
@@ -119,6 +119,29 @@ pub enum NodeStatus {
     ImmutablyDisabled,
 }
 
+impl<'de> serde::Deserialize<'de> for NodeStatus {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let v = serde_json::Value::deserialize(d)?;
+        let s = match &v {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Object(map) => {
+                map.get("kind")
+                    .and_then(|k| k.as_str())
+                    .unwrap_or("unknown")
+                    .to_string()
+            }
+            _ => "unknown".to_string(),
+        };
+        Ok(match s.to_lowercase().as_str() {
+            "enabled" => NodeStatus::Enabled,
+            "disabled" => NodeStatus::Disabled,
+            "immutablyenabled" | "immutably_enabled" => NodeStatus::ImmutablyEnabled,
+            "immutablydisabled" | "immutably_disabled" => NodeStatus::ImmutablyDisabled,
+            _ => NodeStatus::Unknown,
+        })
+    }
+}
+
 use serde_json::Value;
 
 #[cfg(all(
@@ -126,9 +149,8 @@ use serde_json::Value;
     not(feature = "docker"),
     not(feature = "database")
 ))]
-#[derive(Debug, Serialize, Clone, Deserialize, PartialEq, Default)]
+#[derive(Debug, Serialize, Clone, PartialEq, Default)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
-
 pub enum NodeStatus {
     #[default]
     Unknown,
@@ -175,22 +197,24 @@ pub enum K8sType {
     Unknown
 }
 
-// impl<'de> serde::Deserialize<'de> for NodeType {
-//     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-//         let v = serde_json::Value::deserialize(d)?;
-//         match &v {
-//             serde_json::Value::String(s) => Ok(NodeType::from(s.clone())),
-//             serde_json::Value::Object(map) => {
-//                 if let Some(serde_json::Value::String(kind)) = map.get("kind") {
-//                     Ok(NodeType::from(kind.clone()))
-//                 } else {
-//                     Ok(NodeType::Unknown)
-//                 }
-//             }
-//             _ => Ok(NodeType::Unknown),
-//         }
-//     }
-// }
+impl<'de> serde::Deserialize<'de> for NodeType {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let v = serde_json::Value::deserialize(d)?;
+        match &v {
+            serde_json::Value::String(s) => {
+                Ok(NodeType::from(s.to_lowercase()))
+            }
+            serde_json::Value::Object(map) => {
+                if let Some(serde_json::Value::String(kind)) = map.get("kind") {
+                    Ok(NodeType::from(kind.to_lowercase()))
+                } else {
+                    Ok(NodeType::Unknown)
+                }
+            }
+            _ => Ok(NodeType::Unknown),
+        }
+    }
+}
 
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
 #[derive(Debug, Serialize, Clone, PartialEq, Default)]
@@ -212,12 +236,12 @@ pub enum NodeType {
     Inbuilt,
     Main
 }
-impl<'de> serde::Deserialize<'de> for NodeType {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(d)?;
-        Ok(NodeType::from(s.to_lowercase()))
-    }
-}
+//impl<'de> serde::Deserialize<'de> for NodeType {
+//    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+//        let s = String::deserialize(d)?;
+//        Ok(NodeType::from(s.to_lowercase()))
+//    }
+//}
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
 #[derive(Debug, Default, Serialize, Clone, PartialEq)]
@@ -436,8 +460,10 @@ pub struct Server {
     pub providertype: String,
     #[serde(default)]
     pub location: String,
+    #[sqlx(json)]
     #[serde(default)]
     pub node: Json<Node>,
+    //pub node: Node,
     #[serde(default)]
     pub sandbox: bool
 }

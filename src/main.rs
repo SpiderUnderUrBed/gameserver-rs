@@ -2036,7 +2036,10 @@ async fn add_server(
         .database
         .create_server_in_db(request)
         .await
-        .map_err(|e| StatusCode::INTERNAL_SERVER_ERROR);
+        .map_err(|e| {
+            println!("{:#?}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        });
     result
 }
 
@@ -3615,7 +3618,7 @@ mod tests {
             async fn create_server() {
                 let database = create_db_for_tests().await.unwrap();
                 database.clear_db().await.expect("Failed to clear DB");
-
+ 
                 let server = ModifyElementData {
                     element: database::databasespec::Element::Server(Server {
                         servername: "test".to_string(),
@@ -3634,9 +3637,15 @@ mod tests {
                     jwt: "".to_string(),
                     require_auth: false,
                 };
-
+ 
                 let result = database.create_server_in_db(server).await;
-                assert!(result.is_ok());
+                //assert!(result.is_ok());
+                if result.is_err(){
+                  assert!(false);
+                  //panic!("{:#?}", result);
+                } else {
+                  assert!(true);
+                }
             }
 
             #[tokio::test]

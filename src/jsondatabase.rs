@@ -551,3 +551,4 @@ async fn create_db_for_tests() -> Result<Database, String> {
     }
     Ok(Database::new(None))
 }
+

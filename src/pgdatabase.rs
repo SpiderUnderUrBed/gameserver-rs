@@ -304,13 +304,15 @@ impl ServerDatabase for Database {
             }
 
             let _result = sqlx::query_as::<_, Server>(
-                "INSERT INTO servers (servername, provider, providertype, location, sandbox) VALUES ($1, $2, $3, $4, $5) RETURNING *"
+                "INSERT INTO servers (servername, provider, providertype, location, sandbox, node) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *"
             )
             .bind(&server.servername)
             .bind(&server.provider)
             .bind(&server.providertype)
             .bind(&server.location)
             .bind(&server.sandbox)
+            //.bind(&server.node.nodename)
+            .bind(&server.node)
             .fetch_one(&self.connection)
             .await?;
 
