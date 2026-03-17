@@ -1,34 +1,34 @@
-# Use an official Rust image as a base
+FROM node:20 AS frontend-build
+
+WORKDIR /app/frontend
+
+COPY src/frontend/package*.json ./
+COPY src/frontend/tsconfig.json ./
+COPY src/frontend/svelte.config.js ./
+COPY src/frontend/vite.config.ts ./
+COPY src/frontend/src ./src
+COPY src/frontend/static ./static
+COPY src/frontend/extra-assets ./extra-assets 
+
+RUN mkdir -p build
+
+RUN npm install && npm run build
+
 FROM rust:latest
 
-# Install Node.js and npm
-RUN curl -fsSL https://deb.nodesource.com/setup_current.x | bash - && \
-    apt-get install -y nodejs
+RUN apt-get update && apt-get install -y bubblewrap && rm -rf /var/lib/apt/lists/*
 
-# Set the working directory
 WORKDIR /usr/src/app
 
-# Install cargo-watch for live reloading
 RUN cargo install cargo-watch
 
-# Copy the Rust project into the container
-COPY . .
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+COPY gameserver ./gameserver
 
-# Build Svelte assets
-WORKDIR /usr/src/app/src/frontend
-#RUN mkdir -p build && npm install && npm run build
-RUN mkdir -p build && npm install && npm run build
+COPY --from=frontend-build /app/frontend/build ./src/frontend/build
 
-# Return to main working directory
-WORKDIR /usr/src/app
-
-# Expose the port the app runs on
+VOLUME ["/usr/src/app/server"]
 EXPOSE 8080
 
-# Start with cargo-watch for hot-reloading
 CMD ["cargo", "watch", "--ignore", "src/vanilla/*", "--ignore", "src/svelte/*", "--ignore", "gameserver/*", "-x", "run --features full-stack"]
-#CMD ["cargo", "watch", "--ignore", "src/html/*", "--ignore", "src/css/*", "--ignore", "src/scripts/*", "--ignore", "src/gameserver/*", "-x", "run --features full-stack"]
-#CMD ["cargo", "watch", "--ignore", "src/vanilla/*", "--ignore", "src/svelte/*", "--ignore", "src/gameserver/*", "-x", "run --features full-stack"]
-# -x watch
-# cargo run .
-# cargo watch -x run
