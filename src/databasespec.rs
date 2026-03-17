@@ -128,6 +128,7 @@ use serde_json::Value;
 ))]
 #[derive(Debug, Serialize, Clone, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
+
 pub enum NodeStatus {
     #[default]
     Unknown,
@@ -138,24 +139,39 @@ pub enum NodeStatus {
 }
 //
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+#[derive(Debug, Serialize, Clone, PartialEq, Default)]
 pub enum K8sType {
     Node,
     Pod,
     #[default]
     None,
+    Inbuilt,
     Unknown
+}
+impl<'de> serde::Deserialize<'de> for K8sType {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Ok(match s.to_lowercase().as_str() {
+            "node" => K8sType::Node,
+            "pod" => K8sType::Pod,
+            "inbuilt" => K8sType::Inbuilt,
+            "unknown" => K8sType::Unknown,
+            _ => K8sType::None,
+        })
+    }
 }
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
-#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, sqlx::Type)]
+#[derive(Debug, Serialize, Clone, Default, PartialEq, sqlx::Type)]
 #[sqlx(type_name = "text")]
-#[serde(rename_all = "snake_case", tag = "kind", content = "data")]
+//#[serde(rename_all = "snake_case", tag = "kind", content = "data")]
+#[serde(rename_all = "lowercase")] 
 pub enum K8sType {
     Node,
     Pod,
     #[default]
     None,
+    Inbuilt,
     Unknown
 }
 
@@ -177,7 +193,7 @@ pub enum K8sType {
 // }
 
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
-#[derive(Debug, Serialize, Clone, PartialEq, Default, Deserialize)]
+#[derive(Debug, Serialize, Clone, PartialEq, Default)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
 pub enum NodeType {
     #[default]
@@ -196,9 +212,15 @@ pub enum NodeType {
     Inbuilt,
     Main
 }
+impl<'de> serde::Deserialize<'de> for NodeType {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Ok(NodeType::from(s.to_lowercase()))
+    }
+}
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
-#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Default, Serialize, Clone, PartialEq)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
 pub enum NodeType {
     #[default]
@@ -261,7 +283,7 @@ impl ToString for NodeType {
             NodeType::Main => "main".to_string(),
             NodeType::CustomWithString(s) => s.clone(),
             NodeType::InbuiltWithString(s) => s.clone(),
-	   _ => String::new()
+           _ => String::new()
         }
     }
 }
@@ -343,11 +365,14 @@ pub struct User {
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
 #[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize, PartialEq, Default)]
+#[sqlx(type_name = "text", rename_all = "lowercase")]
 pub struct Node {
     pub nodename: String,
     pub ip: String,
     pub nodestatus: NodeStatus,
     pub nodetype: NodeType,
+    //#[sqlx(rename = "nodetype")]
+    #[sqlx(skip)]
     pub k8s_type: K8sType
 }
 

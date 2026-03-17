@@ -799,7 +799,7 @@ async changeNode(node) {
               data: {
                   nodename, 
                   ip: nodeip, 
-                  nodetype: { kind: nodetype.toLowerCase(), data: null },
+                  nodetype: nodetype,
                   nodestatus: { kind: "enabled", data: null },
                   k8s_type: "Unknown",
                   //nodetype.charAt(0).toUpperCase() + nodetype.slice(1),
