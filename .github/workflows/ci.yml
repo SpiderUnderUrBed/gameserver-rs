@@ -9,12 +9,18 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────────
-  # Job 1: Plain tests — no features, uses credentials.json (Database::new(None))
-  # cfg(not(feature="full-stack"), not(feature="docker"), not(feature="database"))
+  # Job 1: Bare metal — spin up gameserver as separate process before main tests
   # ─────────────────────────────────────────────────────────────────────────────
-  test-plain:
-    name: Tests (no features / credentials.json)
+  test-bare-metal:
+    name: Tests (bare metal with gameserver process)
     runs-on: ubuntu-latest
+
+    env:
+      SECRET: test
+      SITE_URL: /
+      TESTING: "true"
+      GAMESERVER_PORT: 8082
+
     steps:
       - uses: actions/checkout@v4
 
@@ -28,13 +34,46 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-plain-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-bare-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Create credentials.json
         run: echo '{}' > credentials.json
 
-      - name: Run tests (no features)
-        run: cargo test --no-default-features
+      - name: Build gameserver
+        run: cargo build --manifest-path gameserver/Cargo.toml
+
+      - name: Start gameserver in background
+        run: |
+          cargo run --manifest-path gameserver/Cargo.toml &
+          GAMESERVER_PID=$!
+          echo "GAMESERVER_PID=$GAMESERVER_PID" >> $GITHUB_ENV
+
+          echo "Waiting for gameserver to start on port $GAMESERVER_PORT..."
+          for i in $(seq 1 30); do
+            if nc -z localhost $GAMESERVER_PORT 2>/dev/null; then
+              echo "✅ Gameserver TCP port is open!"
+              break
+            fi
+            echo "Attempt $i/30: port not ready yet..."
+            sleep 2
+
+            if [ $i -eq 30 ]; then
+              echo "❌ Gameserver failed to start within timeout"
+              kill $GAMESERVER_PID 2>/dev/null || true
+              exit 1
+            fi
+          done
+
+      - name: Run main server tests
+        run: cargo test
+
+      - name: Ensure gameserver is stopped
+        if: always()
+        run: |
+          if [ -n "$GAMESERVER_PID" ]; then
+            kill $GAMESERVER_PID 2>/dev/null || true
+            wait $GAMESERVER_PID 2>/dev/null || true
+          fi
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Job 2: k3d — inner gameserver deployment (child node / workspace member)
@@ -104,11 +143,9 @@ jobs:
               echo "Removed $count broken layers"
             '
 
-          # Restart Docker daemon to clear any corrupted state
           sudo systemctl restart docker
           sleep 5
 
-          # Pre-pull with retries so overlay2 corruption doesn't fail us
           for img in registry:2 alpine:latest postgres:15; do
             for j in 1 2 3 4 5; do
               docker pull $img && break
@@ -131,7 +168,11 @@ jobs:
             echo "Waiting for PostgreSQL... ($i/30)"
             sleep 2
           done
-          bash setup_db.sh
+          if [ -f "setup_db.sh" ]; then
+            bash setup_db.sh
+          else
+            echo "No setup_db.sh found, skipping database setup"
+          fi
         env:
           PGPASSWORD: gameserverpass
           PGHOST: localhost
@@ -227,6 +268,9 @@ jobs:
                     ports:
                       - containerPort: 8080
                       - containerPort: 25565
+                    env:
+                      - name: GAMESERVER_PORT
+                        value: "8080"
                     volumeMounts:
                       - name: gameserver-storage
                         mountPath: /usr/src/app

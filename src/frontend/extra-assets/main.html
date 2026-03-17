@@ -97,6 +97,10 @@
 				</select>
 				<input id="server-name-entry" placeholder="Server name"></input>
 				<input id="server-location-entry" placeholder="Server location"></input>
+				<select id="server-sandbox-selector" name="Enable sandbox?">
+						<option value="enabled" selected="selected">Enable</option>
+						<option value="disabled">Disable</option>
+				</select>
 				<div class="dialog-buttons">
 					<button type="button" onclick="createDefaultServer()">Standard Create Server</button>
 					<button type="button" onclick="this.closest('dialog').close()">Cancel</button>

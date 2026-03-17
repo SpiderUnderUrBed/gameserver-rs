@@ -80,6 +80,8 @@ create table if not exists servers (
     provider varchar not null,
     providertype varchar not null,
     location varchar not null,
+    sandbox boolean not null default true,
+    node jsonb not null default '{}'::jsonb,
     created_at timestamptz default now(),
     updated_at timestamptz default now()
 );

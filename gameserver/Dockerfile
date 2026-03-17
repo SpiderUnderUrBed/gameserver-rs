@@ -18,6 +18,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
+    bubblewrap \
     && rm -rf /var/lib/apt/lists/*
 # Copy the binary from the rust-builder
 COPY --from=rust-builder /app/target/release/gameserver-rs-node ./gameserver-node

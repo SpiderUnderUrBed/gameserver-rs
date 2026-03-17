@@ -1,3 +1,4 @@
+use libc::stat;
 use serde_json::{json, Value};
 use std::convert::TryFrom;
 use std::ffi::OsString;
@@ -28,6 +29,8 @@ use crate::filesystem::FileOperations;
 use crate::providers::{Custom, Platforms, Provider, ProviderConfig, ProviderDbList, ProviderGame};
 use tokio::net::TcpStream;
 
+use libc::{chown, chmod};
+use std::ffi::CString;
 use std::net::SocketAddr;
 use tokio::sync::broadcast;
 
@@ -87,6 +90,7 @@ enum MetadataTypes {
         provider: String,
         providertype: String,
         location: String,
+        sandbox: bool
     },
     String(String),
 }
@@ -217,6 +221,10 @@ struct GetState {
     stop_keyword: String,
 }
 
+// At the moment of writing this, some form of filter is required, because if too many logs
+// are sent, then the data pipeline halts
+// TODO: first have the filter be customizable
+// secondly, remove the need for a filter entirely by keeping a message queue with throttling
 fn filter(line: String) -> bool {
     if line.contains('%') {
         if let Some(pct_str) = line
@@ -238,12 +246,126 @@ fn filter(line: String) -> bool {
     }
 }
 
+
+// For any time a server related process will run, this process hook needs to run before that
+// if the user enabled the sandbox for a server, or they were forced too by lack of permissions 
+// (e.g a admin set sandbox to always enable), then this will use bwrap to wrap the command
+// and only expose needed binaries, note for this reason, if an admin did not give a user
+// permission to disable the sandbox, they should also have no control over the paths and commands to be
+// in the sandbox too. 
+// Bwrap adds a system dep, but is more tested and simpler to use
+fn process_hook(state: &AppState, provider: ProviderConfig, sandbox: bool, location_option: Option<String>, cmd: &mut TokioCommand) {
+    let uid = unsafe { libc::getuid() };
+    if sandbox && uid == 0 {
+        #[cfg(target_os = "linux")]
+        {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let location = location_option.unwrap_or_default();
+            let location_stripped = location.trim_start_matches("server/");
+            let resolved = cwd.join("server").join(location_stripped);
+            let resolved_str = resolved.to_string_lossy().trim_end_matches('/').to_string();
+
+            let _ = std::fs::create_dir_all(&resolved_str);
+
+            let bwrap_path = Command::new("which")
+                .arg("bwrap")
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_else(|| "bwrap".to_string());
+
+            let mut bwrap_args: Vec<String> = vec![
+                "--bind".into(), resolved_str.clone(), "/server".into(),
+                "--ro-bind-try".into(), "/nix".into(), "/nix".into(),
+                "--ro-bind-try".into(), "/run".into(), "/run".into(),
+                "--ro-bind-try".into(), "/lib".into(), "/lib".into(),
+                "--ro-bind-try".into(), "/lib64".into(), "/lib64".into(),
+                "--ro-bind-try".into(), "/usr/lib".into(), "/usr/lib".into(),
+                "--ro-bind-try".into(), "/usr/lib64".into(), "/usr/lib64".into(),
+                "--ro-bind-try".into(), "/etc".into(), "/etc".into(),
+                "--proc".into(), "/proc".into(),
+                "--dev".into(), "/dev".into(),
+                "--tmpfs".into(), "/tmp".into(),
+                "--chdir".into(), "/server".into(),
+                "--share-net".into(),
+                "--unshare-ipc".into(),
+                "--unshare-pid".into(),
+                "--unshare-uts".into(),
+                "--setenv".into(), "PATH".into(),
+                "/run/current-system/sw/bin:/usr/local/bin:/usr/bin:/bin".into(),
+            ];
+
+            let mut all_needed_commands = provider.needed_commands;
+            all_needed_commands.push("sh".to_string());
+            for command in all_needed_commands {
+                let command_path = Command::new("which")
+                    .arg(&command)
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_else(|| format!("/run/current-system/sw/bin/{}", command));
+
+                let command_real = std::fs::canonicalize(&command_path)
+                    .unwrap_or_else(|_| std::path::PathBuf::from(&command_path));
+                let command_real_str = command_real.to_string_lossy().to_string();
+                bwrap_args.push("--ro-bind-try".into());
+                bwrap_args.push(command_real_str.clone());
+                bwrap_args.push(command_real_str);
+            }
+            for path in provider.needed_paths {
+                bwrap_args.push("--ro-bind-try".into());
+                bwrap_args.push(path.clone());
+                bwrap_args.push(path);
+            }
+
+            let current_program = cmd.as_std().get_program().to_string_lossy().to_string();
+            let current_args: Vec<String> = cmd.as_std()
+                .get_args()
+                .map(|a| a.to_string_lossy().to_string())
+                .map(|a| {
+                    if a.starts_with("cd ") {
+                        if let Some(rest) = a.splitn(2, " && ").nth(1) {
+                            return rest.to_string();
+                        }
+                    }
+                    a
+                })
+                .collect();
+
+            println!("sandbox: wrapping command: {} {:?}", current_program, current_args);
+
+            *cmd = TokioCommand::new(&bwrap_path);
+            for arg in &bwrap_args {
+                cmd.arg(arg);
+            }
+            cmd.arg(current_program);
+            for arg in current_args {
+                cmd.arg(arg);
+            }
+            cmd.stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+
+            println!("sandbox: bwrap command set up");
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            println!("Skipping process jailing on non-linux");
+        }
+    }
+}
 // runs a command and forwards the output of the command to the given channel, which in this case would be back to
 // the main server
 // TODO: consider rem
+
 async fn run_command_live_output(
     state: &AppState,
     cmd: Command,
+    sandbox: bool,
+    location: String,
+    provider: ProviderConfig,
     label: String,
     sender: Option<mpsc::Sender<String>>,
     stdin_arc: Option<Arc<Mutex<Option<ChildStdin>>>>,
@@ -253,6 +375,9 @@ async fn run_command_live_output(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .stdin(Stdio::piped());
+    println!("After process hook");
+    process_hook(state, provider, sandbox, Some(location), &mut tokio_cmd);
+    println!("After process hook");
     let mut child = tokio_cmd.spawn()?;
 
     if let Some(stdin_slot) = stdin_arc {
@@ -388,6 +513,7 @@ struct AppState {
     // current_server has to be an arc mutex because you cant assign data to an arc
     current_server: Arc<Mutex<Option<String>>>,
     //server_index: HashMap<String, ServerIndex>,
+    jailed_user: String,
     server_running: Arc<Mutex<bool>>,
     server_output_tx: Arc<Mutex<Option<broadcast::Sender<String>>>>,
     server_process: Arc<Mutex<Option<Child>>>,
@@ -497,6 +623,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Err(e) => Err(e.to_string()),
     });
 
+    let uid = unsafe { libc::getuid() };
+    if uid != 0 {
+        println!("Not running as root (uid={}). The sandbox WILL NOT work/run", uid);
+        
+    }
+
     let arc_db = Arc::new(Mutex::new(load_db()));
 
     // TODO: remove this in favor of it being both written to a persistent db and insertions happening by the server
@@ -504,7 +636,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if !db.server_index.iter().any(|(name, _)| name == "minecraft") {
         db.server_index.insert(
             "minecraft".to_string(),
-            ServerIndex::new(SERVER_DIR.to_string(), "minecraft".to_string()),
+            ServerIndex::new(SERVER_DIR.to_string(), "minecraft".to_string(), "".to_string(), true),
         );
         save_db(&db);
     }
@@ -512,6 +644,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let state = AppState {
         current_server: Arc::new(Mutex::new(None)),
+        jailed_user: "server".to_string(),
         server_running: Arc::new(Mutex::new(false)),
         server_output_tx: Arc::new(Mutex::new(None)),
         server_process: Arc::new(Mutex::new(None)),
@@ -526,7 +659,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         None
     };
 
-    let arc_state = Arc::new(state);
+    let arc_state = Arc::new(state.clone());
 
     let health_monitor_state = arc_state.clone();
 
@@ -830,6 +963,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                 &hostname_ref,
                                             )
                                             .await;
+                                            if newline_pos + 1 <= read_buf.len() {
+                                                read_buf.drain(..newline_pos + 1);
+                                                found_message = true;
+                                            } else {
+                                                read_buf.clear();
+                                            }
+                                            continue;
                                         } else if let Ok(payload) =
                                             serde_json::from_value::<SrcAndDest>(json_value.clone())
                                         {
@@ -951,11 +1091,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                 }
                                                 "command" => {
                                                     println!("{} {}", addr, msg_payload.message);
+                                                    let current_server_lock = arc_state_clone.current_server.lock().await.clone();
                                                     if msg_payload.message == "start_server" {
                                                         if let Err(e) = start_server_with_broadcast(
                                                             &arc_state_clone,
                                                             &stdin_ref,
                                                             &cmd_tx,
+                                                            get_providers_sandbox(&arc_state_clone, current_server_lock.clone(), None).await.unwrap_or(true),
+                                                            get_definite_path_from_name(&arc_state_clone, current_server_lock).await.unwrap_or(String::new())
                                                         )
                                                         .await
                                                         {
@@ -1326,10 +1469,18 @@ async fn handle_typical_command_or_console(
                         let tx = cmd_tx.clone();
                         let stdin_clone = stdin_ref.clone();
 
+                        let sandbox = get_providers_sandbox(&state, Some(current_server.clone()), None).await.unwrap_or(true);
+                        let location = get_definite_path_from_name(&state, Some(current_server.clone())).await.unwrap_or(String::new());
+                        let platform = get_provider_object(Some(&current_server), None).await.unwrap_or(("".to_string(), Platforms::default())).1;
+                        let provider = pick_platform(platform).unwrap_or(ProviderConfig::default());
+
                         tokio::spawn(async move {
                             let result = run_command_live_output(
                                 &state,
                                 cmd,
+                                sandbox,
+                                location,
+                                provider,
                                 "Server".into(),
                                 Some(tx.clone()),
                                 Some(stdin_clone.clone()),
@@ -1433,6 +1584,8 @@ async fn start_server_with_broadcast(
     shared_stdin: &Arc<Mutex<Option<ChildStdin>>>,
     // TODO: consider removing _cmd_tx, as its unused
     _cmd_tx: &mpsc::Sender<String>,
+    sandbox: bool,
+    location: String, 
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     {
         let server_running = state.server_running.lock().await;
@@ -1468,7 +1621,8 @@ async fn start_server_with_broadcast(
 
     if let Some(provider_type) = get_provider_object(provider.as_deref(), location.as_deref()).await
     {
-        let mut provider_game_commands: ProviderGame = match pick_platform(provider_type.1) {
+        let provider_config = pick_platform(provider_type.1);
+        let mut provider_game_commands: ProviderGame = match provider_config.clone() {
             Some(prov) => prov.into(),
             None => return Err("no platform".into()),
         };
@@ -1479,15 +1633,24 @@ async fn start_server_with_broadcast(
             .start()
             .ok_or("Provider does not support starting servers")?;
 
-        let mut child = tokio::process::Command::from(start_command)
+        let mut child_cmd = tokio::process::Command::from(start_command);
+        child_cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        let stdin = child.stdin.take().expect("Failed to open stdin");
-        let stdout = child.stdout.take().expect("Failed to open stdout");
-        let stderr = child.stderr.take().expect("Failed to open stderr");
-
+            .stderr(Stdio::piped());
+        // At this point I already throw an error if there is no associated provider config
+        // So i might aswell directly unwrap at this point
+        process_hook(state, provider_config.unwrap(), sandbox, location, &mut child_cmd); 
+        let mut child = child_cmd.spawn()?;
+        let Some(stdin) = child.stdin.take() else {
+            return Err("Failed to open stdin".into());
+        };
+        let Some(stdout) = child.stdout.take() else {
+            return Err("Failed to open stdout".into());
+        };
+        let Some(stderr) = child.stderr.take() else {
+            return Err("Failed to open stderr".into());
+        };
         {
             let mut shared_stdin_lock = shared_stdin.lock().await;
             *shared_stdin_lock = Some(stdin);
@@ -1735,7 +1898,8 @@ async fn handle_commands_with_metadata(
                     servername,
                     provider: _,
                     location: _,
-                    providertype: _,
+                    providertype: _, 
+                    sandbox 
                 } = &payload.metadata
                 {
                     let mut db = state.db.lock().await;
@@ -1767,7 +1931,8 @@ async fn create_server(
             servername,
             provider: _,
             location,
-            providertype: _,
+            providertype: _, 
+            sandbox 
         } = &payload.metadata.clone()
         {
             let filtered_location = if location.starts_with("server/") {
@@ -1775,7 +1940,6 @@ async fn create_server(
             } else {
                 format!("server/{}", location)
             };
-
             {
                 let mut db = state.db.lock().await;
                 db.server_index.insert(
@@ -1789,6 +1953,14 @@ async fn create_server(
                                 return Ok(());
                             }
                         },
+                        providertype: "".to_string(),
+                        sandbox: {
+                            if let MetadataTypes::Server { sandbox, .. } = &payload.metadata {
+                                sandbox.clone()
+                            } else {
+                                true
+                            }   
+                        },
                     },
                 );
                 save_db(&db);
@@ -1801,7 +1973,8 @@ async fn create_server(
             if let Some((name, provider_platforms)) =
                 get_provider_object(provider.as_deref(), path.as_deref()).await
             {
-                let mut prov: ProviderGame = match pick_platform(provider_platforms) {
+                let provider_config = pick_platform(provider_platforms);
+                let mut prov: ProviderGame = match provider_config.clone() {
                     Some(prov) => prov,
                     None => return Err("No platform".into()),
                 }
@@ -1809,56 +1982,42 @@ async fn create_server(
 
                 let _ = prov.set_location(filtered_location);
 
-                if let Some(cmd) = prov.pre_hook() {
-                    run_command_live_output(
-                        &state,
-                        cmd,
-                        "Pre-hook".into(),
-                        Some(cmd_tx.clone()),
-                        None,
-                    )
-                    .await
-                    .ok();
-                }
-                if let Some(cmd) = prov.install() {
-                    run_command_live_output(
-                        &state,
-                        cmd,
-                        "Install".into(),
-                        Some(cmd_tx.clone()),
-                        None,
-                    )
-                    .await
-                    .ok();
-                }
-                if let Some(cmd) = prov.post_hook() {
-                    run_command_live_output(
-                        &state,
-                        cmd,
-                        "Post-hook".into(),
-                        Some(cmd_tx.clone()),
-                        None,
-                    )
-                    .await
-                    .ok();
-                }
-                if let Some(cmd) = prov.start() {
-                    let tx = cmd_tx.clone();
-                    let stdin_clone = stdin_ref.clone();
-                    let state_clone = Arc::clone(&state);
-                    tokio::spawn(async move {
-                        run_command_live_output(
-                            &state_clone,
-                            cmd,
-                            "Server".into(),
-                            Some(tx),
-                            Some(stdin_clone),
-                        )
-                        .await
-                        .ok();
-                    });
-                    let _ = cmd_tx.send("Server started".into()).await;
-                }
+if let Some(cmd) = prov.pre_hook() {
+    run_command_live_output(
+        &state,
+        cmd,
+        get_providers_sandbox(&state, Some(servername.to_string()), None).await.unwrap_or(true),
+        get_definite_path_from_name(&state, Some(servername.to_string())).await.unwrap_or(String::new()),
+        provider_config.clone().unwrap(),
+        "Pre-hook".into(),
+        Some(cmd_tx.clone()),
+        None,
+    ).await.ok();
+}
+if let Some(cmd) = prov.install() {
+    run_command_live_output(
+        &state,
+        cmd,
+        get_providers_sandbox(&state, Some(servername.to_string()), None).await.unwrap_or(true),
+        get_definite_path_from_name(&state, Some(servername.to_string())).await.unwrap_or(String::new()),
+        provider_config.clone().unwrap(),
+        "Install".into(),
+        Some(cmd_tx.clone()),
+        None,
+    ).await.ok();
+}
+if let Some(cmd) = prov.post_hook() {
+    run_command_live_output(
+        &state,
+        cmd,
+        get_providers_sandbox(&state, Some(servername.to_string()), None).await.unwrap_or(true),
+        get_definite_path_from_name(&state, Some(servername.to_string())).await.unwrap_or(String::new()),
+        provider_config.clone().unwrap(),
+        "Post-hook".into(),
+        Some(cmd_tx.clone()),
+        None,
+    ).await.ok();
+}
             }
             Ok(())
         } else {
@@ -1950,14 +2109,14 @@ async fn get_provider_object(
                         return Some((name.to_string(), custom.into()));
                     }
                     Err(e) => {
-                        println!("[ERROR] Failed to parse provider.json: {}", e);
+                        println!("ERROR: Failed to parse provider.json: {}", e);
                         return Some((name.to_owned(), Custom::new().into()));
                     }
                 }
             }
             Err(e) => {
                 println!(
-                    "[WARN] Could not read provider.json at {}: {}",
+                    "WARN: Could not read provider.json at {}: {}",
                     provider_json_path, e
                 );
                 return None;
@@ -1996,11 +2155,28 @@ async fn get_provider_object(
             return None;
         }
     };
-    // }
-    // _ => {
-    //     println!("[WARN] Unknown provider: {}", name);
-    //     None
-    // }
+
+}
+
+// This function soley exists to get whether or not the sandbox is enabled for a specific server
+// given either the path or name of the server
+async fn get_providers_sandbox(state: &AppState, option_name: Option<String>, option_path: Option<String>) -> Option<bool> {
+    let db = state.db.lock().await;
+    if let Some(name) = option_name {
+        if let Some(db_server) = db.server_index.iter().find(|server| *server.0 == name){
+            Some(db_server.1.sandbox)
+        } else {
+            None
+        }
+    } else if let Some(path) = option_path {
+        if let Some(db_server) = db.server_index.iter().find(|server| server.1.location == path){
+            Some(db_server.1.sandbox)
+        } else {
+            None
+        }
+    } else {
+        None
+    }
 }
 
 // Needs to be implimented, provider and servername should not forever remain the same thing and

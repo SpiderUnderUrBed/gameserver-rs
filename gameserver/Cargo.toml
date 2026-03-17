@@ -20,6 +20,8 @@ anyhow = "1.0.99"
 futures = "0.3.31"
 env = "1.0.1"
 zip = "6.0.0"
+nix = { version = "0.31.2", features = ["user"] }
+libc = "0.2.183"
 
 [[bin]]
 name = "gameserver-rs-node"
