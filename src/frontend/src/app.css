@@ -1,0 +1,11 @@
+@import 'tailwindcss';
+
+@plugin 'daisyui' {
+	themes:
+		corporate --default,
+		business --prefersdark;
+}
+
+#app {
+	@apply flex flex-col min-h-screen bg-base-200;
+}
