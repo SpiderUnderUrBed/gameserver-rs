@@ -213,7 +213,7 @@ mod kubernetes {
 static StaticTcpUrl: &str = "127.0.0.1:8082";
 
 #[cfg(not(feature = "full-stack"))]
-static StaticLocalUrl: &str = "127.0.0.1:8081";
+static StaticLocalUrl: &str = "127.0.0.1:8083";
 
 #[cfg(not(feature = "full-stack"))]
 static K8S_WORKS: bool = false;
@@ -2926,32 +2926,19 @@ pub async fn sign_in(
 
     let mut username: Option<String> = None;
 
-    let admin_enabled: bool = get_env_var_or_arg("ENABLE_ADMIN_USER", Some(false)).unwrap();
-    if (admin_enabled) {
-        let admin_user: String = get_env_var_or_arg("ADMIN_USER", Some(String::new())).unwrap();
-        let admin_password: String =
-            get_env_var_or_arg("ADMIN_PASSWORD", Some(String::new())).unwrap();
+    let user = state
+        .database
+        .retrieve_user(request.user.clone())
+        .await
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let password_valid = verify_password(request.password, user.password_hash.unwrap())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-        if request.user != admin_user || request.password != admin_password {
-            return Err(StatusCode::UNAUTHORIZED);
-        }
-
-        username = Some(admin_user);
-    } else {
-        let user = state
-            .database
-            .retrieve_user(request.user.clone())
-            .await
-            .ok_or(StatusCode::UNAUTHORIZED)?;
-        let password_valid = verify_password(request.password, user.password_hash.unwrap())
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-        if !password_valid {
-            return Err(StatusCode::UNAUTHORIZED);
-        }
-
-        username = Some(user.username);
+    if !password_valid {
+        return Err(StatusCode::UNAUTHORIZED);
     }
+
+    username = Some(user.username);
 
     if username.is_none() {
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
