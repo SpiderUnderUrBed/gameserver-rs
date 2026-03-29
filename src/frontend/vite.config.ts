@@ -4,5 +4,12 @@ import tailwindcss from '@tailwindcss/vite';
 
 // https://vite.dev/config/
 export default defineConfig({
-	plugins: [svelte(), tailwindcss()]
+	plugins: [svelte(), tailwindcss()],
+	server: {
+		proxy: {
+			'^/api/.*': {
+				target: 'http://localhost:8081'
+			}
+		}
+	}
 });

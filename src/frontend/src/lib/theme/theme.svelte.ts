@@ -3,9 +3,13 @@ import { createContext } from 'svelte';
 type Theme = 'light' | 'dark' | 'system';
 
 class ThemeState {
-	public current = $state<Theme>('system');
-
+	private _current = $state<Theme>('system');
 	private systemIsDark = $state(false);
+
+	// Derived state: What is the actual theme being shown?
+	public readonly current = $derived<Theme>(
+		this._current === 'system' ? (this.systemIsDark ? 'dark' : 'light') : this._current
+	);
 
 	constructor() {
 		const query = window.matchMedia('(prefers-color-scheme: dark)');
@@ -17,33 +21,25 @@ class ThemeState {
 
 		// Load saved theme from localStorage
 		const saved = localStorage.getItem('theme') as Theme;
-		if (saved) this.current = saved;
+		if (saved) this._current = saved;
 
 		// Sync choice to localStorage and DOM
 		$effect(() => {
-			localStorage.setItem('theme', this.current);
+			localStorage.setItem('theme', this._current);
 			const root = document.documentElement;
 
 			// Apply the actual theme to the HTML tag
-			root.setAttribute('data-theme', this.resolved === 'dark' ? 'business' : 'corporate');
+			root.setAttribute('data-theme', this.current === 'dark' ? 'business' : 'corporate');
 		});
 	}
 
-	// Derived state: What is the actual theme being shown?
-	private get resolved(): Theme {
-		if (this.current === 'system') {
-			return this.systemIsDark ? 'dark' : 'light';
-		}
-		return this.current;
-	}
-
 	public setTheme(newTheme: Theme) {
-		this.current = newTheme;
+		this._current = newTheme;
 	}
 
 	public toggleTheme() {
-		const current = this.resolved;
-		this.current = current === 'dark' ? 'light' : 'dark';
+		const current = this.current;
+		this._current = current === 'dark' ? 'light' : 'dark';
 	}
 }
 

@@ -26,6 +26,7 @@ use axum::extract::ws::Message as WsMessage;
 use axum::http::Uri;
 use axum::middleware::{self, Next};
 use axum::response::Redirect;
+use axum::response::Response;
 use axum::{
     Router,
     body::Body,
@@ -33,7 +34,7 @@ use axum::{
         Request, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::{self, Method, Response, StatusCode},
+    http::{self, Method, StatusCode},
     response::{
         Html, IntoResponse, Json,
         sse::{Event, Sse},
@@ -363,7 +364,7 @@ enum MetadataTypes {
         provider: String,
         providertype: String,
         location: String,
-        sandbox: bool
+        sandbox: bool,
     },
     String(String),
 }
@@ -395,6 +396,11 @@ struct InnerData {
 #[derive(Debug, Serialize)]
 struct ResponseMessage {
     response: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SignInResponse {
+    username: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -542,21 +548,21 @@ impl Default for AppState {
         let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
         let (tcp_tx, tcp_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
         let tcp_url = get_env_var_or_arg("TCPURL", Some(StaticTcpUrl.to_string())).unwrap();
-        Self { 
-            tcp_tx, 
-            tcp_rx, 
-            tcp_conn_status: Default::default(), 
-            internal_rx: Default::default(), 
-            internal_tx: Default::default(), 
-            additonal_node_tcp: Default::default(), 
-            current_node: Default::default(), 
-            ws_tx, 
-            base_path: Default::default(), 
-            client: Clients::None, 
-            database: Database::new(None), 
-            cached_status_type: Default::default(), 
-            rcon_connection: Default::default(), 
-            current_server: Default::default() 
+        Self {
+            tcp_tx,
+            tcp_rx,
+            tcp_conn_status: Default::default(),
+            internal_rx: Default::default(),
+            internal_tx: Default::default(),
+            additonal_node_tcp: Default::default(),
+            current_node: Default::default(),
+            ws_tx,
+            base_path: Default::default(),
+            client: Clients::None,
+            database: Database::new(None),
+            cached_status_type: Default::default(),
+            rcon_connection: Default::default(),
+            current_server: Default::default(),
         }
     }
 }
@@ -1105,7 +1111,7 @@ async fn try_initial_connection(
                 println!("Initial connection succeeded!");
                 // note, possibly I wont ever need to create a handler from the test of the intial connection
                 // TODO: think about removing create_handler and just never create a handler here
-                // I was considering to return the handler from here, but it wouldnt make sense to add that complexity 
+                // I was considering to return the handler from here, but it wouldnt make sense to add that complexity
                 // when I only create the initial tcp stream within the main function, it would involve either a thread here, or in the main function
                 // and i rather keep this function focused on testing the connection (there might be a very NICHE case for making a handler here, but if there isnt ill remove it)
                 if create_handler {
@@ -1329,7 +1335,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let tcp_tx_clone = inner_state.write().await.tcp_tx.clone();
         let tcp_url_clone = tcp_url.to_string();
 
-        // TODO: Since I never create a handler with initial connections, should i take it out of the thread?, or rather, 
+        // TODO: Since I never create a handler with initial connections, should i take it out of the thread?, or rather,
         // leave it to set a TcpStream for the appstate for when it sorts itself out
         let handle = tokio::spawn(async move {
             let initial_connection_result = try_initial_connection(
@@ -1384,7 +1390,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let bridge_tx = inner_state.read().await.ws_tx.clone();
                 let internal_stream = Some(internal_rx);
                 //println!("Near to making a new connection");
-                let connect_to_server_result = connect_to_server(inner_state, tcp_url, bridge_rx, bridge_tx, internal_stream, true, false).await;
+                let connect_to_server_result = connect_to_server(
+                    inner_state,
+                    tcp_url,
+                    bridge_rx,
+                    bridge_tx,
+                    internal_stream,
+                    true,
+                    false,
+                )
+                .await;
                 if let Err(err) = connect_to_server_result {
                     println!("{:#?}", err);
                 }
@@ -1421,6 +1436,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // fallback_router will serve all the basic files
     let fallback_router = routes_static(multifaceted_state.clone());
+
+    let session_store = MemoryStore::default();
+    // TODO:
+    // In the future, once cookies work, improve overrall https support
+    // there was an issue where users could not log in because cookies have the Secure flag
+    // but the site is http, which causes the cookie to be blocked
+    // meaning every request to protected routes had no session and redirected back to login
+    let session_layer = SessionManagerLayer::new(session_store)
+        .with_secure(false)
+        .with_same_site(tower_sessions::cookie::SameSite::Lax)
+        .with_http_only(true);
+    let backend = Backend::default();
+    let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
 
     // the main route, this serves all the api stuff that wont be behind a login, but I handle the main routes in routes_static for better control
     // over the authentication flow, if the api could be publically accessible in the future, you would need a diffrent way to authenticate with a api
@@ -1469,8 +1497,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // the above route is supposed to be the newer version to /api/general, adding a additonal metadata feild, changing all incomingmessages to incomingmessageswithmetadata
         // will take awhile, so temporarially ill have this route
         .route("/api/signin", post(sign_in))
+        .route("/api/user/me", get(user_me))
         .route("/api/createuser", post(create_user))
         .route("/api/deleteuser", post(delete_user))
+        .layer(auth_layer)
         .merge(fallback_router)
         .with_state(multifaceted_state.clone());
 
@@ -1794,19 +1824,6 @@ async fn ws_handler(
 
 // routes_static provides middlewares for authentication as well as serving all the user-orintated content
 fn routes_static(state: Arc<RwLock<AppState>>) -> Router<Arc<RwLock<AppState>>> {
-    let session_store = MemoryStore::default();
-    // TODO:
-    // In the future, once cookies work, improve overrall https support
-    // there was an issue where users could not log in because cookies have the Secure flag
-    // but the site is http, which causes the cookie to be blocked
-    // meaning every request to protected routes had no session and redirected back to login
-    let session_layer = SessionManagerLayer::new(session_store)
-    .with_secure(false)
-    .with_same_site(tower_sessions::cookie::SameSite::Lax)
-    .with_http_only(true);
-    let backend = Backend::default();
-    let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
-
     let base_path = std::env::var("SITE_URL")
         .map(|mut s| {
             s = s.trim().to_string();
@@ -1822,7 +1839,7 @@ fn routes_static(state: Arc<RwLock<AppState>>) -> Router<Arc<RwLock<AppState>>> 
         })
         .unwrap_or_default();
 
-    let login_url_base = Arc::new(format!("{}/index.html", base_path));
+    let login_url_base = Arc::new(format!("{}/", base_path));
 
     let login_required_middleware = from_fn(
         move |auth_session: AuthSession, req: Request<Body>, next: Next| {
@@ -1856,10 +1873,7 @@ fn routes_static(state: Arc<RwLock<AppState>>) -> Router<Arc<RwLock<AppState>>> 
         .layer(login_required_middleware);
 
     // Apply auth_layer only once at the root
-    Router::new()
-        .merge(public)
-        .merge(protected)
-        .layer(auth_layer)
+    Router::new().merge(public).merge(protected)
 }
 
 async fn load_settings(
@@ -2296,7 +2310,7 @@ async fn set_server(
                 provider: retrieved_server.provider,
                 providertype: retrieved_server.providertype,
                 location: retrieved_server.location,
-                sandbox: retrieved_server.sandbox
+                sandbox: retrieved_server.sandbox,
             },
             authcode: "0".to_string(),
         };
@@ -2454,7 +2468,7 @@ async fn process_general_with_metadata(
                 provider,
                 providertype,
                 location,
-                sandbox
+                sandbox,
             } = payload.metadata.clone()
             {
                 // Sets the server on the local server when creating a new game server
@@ -2490,7 +2504,7 @@ async fn process_general_with_metadata(
                         location,
                         provider,
                         servername,
-                        sandbox
+                        sandbox,
                     } = payload.metadata.clone()
                     {
                         let _ = database
@@ -2528,7 +2542,7 @@ async fn process_general_with_metadata(
                                 provider: retrieved_server.provider,
                                 providertype: retrieved_server.providertype,
                                 location: retrieved_server.location,
-                                sandbox: retrieved_server.sandbox
+                                sandbox: retrieved_server.sandbox,
                             },
                             authcode: "0".to_string(),
                         };
@@ -2918,16 +2932,15 @@ impl AuthUser for User {
 // rely on the database to try and find the user entry, if it fails, its immediately unauthorized, or it will try and match the password next
 // if it fails, its unauthorized
 #[axum::debug_handler]
-pub async fn sign_in(
+async fn sign_in(
+    mut auth_session: AuthSession,
     State(arc_state): State<Arc<RwLock<AppState>>>,
     Form(request): Form<LoginData>,
-) -> Result<Json<ResponseMessage>, StatusCode> {
-    let state = arc_state.write().await;
-
-    let mut username: Option<String> = None;
+) -> Result<Response, StatusCode> {
+    let username: String;
 
     let admin_enabled: bool = get_env_var_or_arg("ENABLE_ADMIN_USER", Some(false)).unwrap();
-    if (admin_enabled) {
+    if admin_enabled {
         let admin_user: String = get_env_var_or_arg("ADMIN_USER", Some(String::new())).unwrap();
         let admin_password: String =
             get_env_var_or_arg("ADMIN_PASSWORD", Some(String::new())).unwrap();
@@ -2936,8 +2949,9 @@ pub async fn sign_in(
             return Err(StatusCode::UNAUTHORIZED);
         }
 
-        username = Some(admin_user);
+        username = admin_user;
     } else {
+        let state = arc_state.write().await;
         let user = state
             .database
             .retrieve_user(request.user.clone())
@@ -2950,14 +2964,44 @@ pub async fn sign_in(
             return Err(StatusCode::UNAUTHORIZED);
         }
 
-        username = Some(user.username);
+        username = user.username;
     }
 
-    if username.is_none() {
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    let user = User {
+        username,
+        password_hash: None,
+        user_perms: vec![],
+    };
+
+    if let Err(e) = auth_session.login(&user).await {
+        eprintln!("Failed to log in user {e:?}");
+        return Ok((StatusCode::INTERNAL_SERVER_ERROR, "Failed to log in").into_response());
     }
-    let token = encode_token(username.unwrap())?;
-    Ok(Json(ResponseMessage { response: token }))
+
+    Ok((
+        StatusCode::OK,
+        Json(SignInResponse {
+            username: user.username,
+        }),
+    )
+        .into_response())
+}
+
+#[derive(serde::Serialize)]
+struct UserResponse {
+    username: String,
+}
+
+#[axum::debug_handler]
+async fn user_me(auth_session: AuthSession) -> impl IntoResponse {
+    eprintln!("User: {:?}", auth_session.user);
+    match auth_session.user {
+        Some(user) => Json(UserResponse {
+            username: user.username,
+        })
+        .into_response(),
+        None => StatusCode::UNAUTHORIZED.into_response(),
+    }
 }
 
 // Simple way to check if the passwords correct with bycrypt, considering the hash and normal password
@@ -3618,7 +3662,7 @@ mod tests {
             async fn create_server() {
                 let database = create_db_for_tests().await.unwrap();
                 database.clear_db().await.expect("Failed to clear DB");
- 
+
                 let server = ModifyElementData {
                     element: database::databasespec::Element::Server(Server {
                         servername: "test".to_string(),
@@ -3637,14 +3681,14 @@ mod tests {
                     jwt: "".to_string(),
                     require_auth: false,
                 };
- 
+
                 let result = database.create_server_in_db(server).await;
                 //assert!(result.is_ok());
-                if result.is_err(){
-                  assert!(false);
-                  //panic!("{:#?}", result);
+                if result.is_err() {
+                    assert!(false);
+                    //panic!("{:#?}", result);
                 } else {
-                  assert!(true);
+                    assert!(true);
                 }
             }
 
@@ -3687,8 +3731,7 @@ mod tests {
                 let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
                 let (tcp_tx, _) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
 
-                let tcp_url =
-                    get_env_var_or_arg("TCPURL", Some(StaticTcpUrl.to_string())).unwrap();
+                let tcp_url = get_env_var_or_arg("TCPURL", Some(StaticTcpUrl.to_string())).unwrap();
 
                 let initial_connection_attempts: u64 =
                     get_env_var_or_arg("INITIAL_CONNECTION_ATTEMPTS", Some(5)).unwrap();

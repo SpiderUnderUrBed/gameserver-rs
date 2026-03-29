@@ -17,7 +17,7 @@
 	import { Form, Link, redirect, useActionData, type ActionArgs } from 'cross-router-svelte';
 	import { useTheme } from '../lib/theme/theme.svelte';
 	import { auth } from '../lib/auth/auth.svelte';
-	import { MoonIcon, SunIcon } from '@lucide/svelte';
+	import { CircleXIcon, MoonIcon, SunIcon } from '@lucide/svelte';
 
 	const theme = useTheme();
 
@@ -33,6 +33,13 @@
 			<h2 class="card-title">Login</h2>
 
 			<Form class="flex flex-col gap-2" action="/auth/login">
+				{#if error}
+					<div class="alert alert-error">
+						<CircleXIcon class="size-6 shrink-0" />
+						<span>{error}</span>
+					</div>
+				{/if}
+
 				<label class="label" for="username">Username</label>
 				<input
 					class="input w-full"
