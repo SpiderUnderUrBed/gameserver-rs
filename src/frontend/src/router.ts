@@ -4,6 +4,7 @@ import Login, { action as loginAction } from './pages/Login.svelte';
 import { enableDebug } from 'cross-router-svelte';
 import { silentAuthMiddleware } from './lib/middlewares/silentAuthGuard';
 import { authMiddleware } from './lib/middlewares/authGuard';
+import Home from './pages/dashboard/Home.svelte';
 
 enableDebug();
 
@@ -28,7 +29,8 @@ const routes: RouteDefinition[] = [
 		children: [
 			{
 				id: 'home',
-				path: '/'
+				path: '/',
+				component: Home
 			}
 		]
 	}

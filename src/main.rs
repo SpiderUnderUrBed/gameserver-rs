@@ -27,6 +27,7 @@ use axum::http::Uri;
 use axum::middleware::{self, Next};
 use axum::response::Redirect;
 use axum::response::Response;
+use axum::routing::delete;
 use axum::{
     Router,
     body::Body,
@@ -1497,6 +1498,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // the above route is supposed to be the newer version to /api/general, adding a additonal metadata feild, changing all incomingmessages to incomingmessageswithmetadata
         // will take awhile, so temporarially ill have this route
         .route("/api/signin", post(sign_in))
+        .route("/api/signout", delete(sign_out))
         .route("/api/user/me", get(user_me))
         .route("/api/createuser", post(create_user))
         .route("/api/deleteuser", post(delete_user))
@@ -2931,6 +2933,16 @@ impl AuthUser for User {
 // The sign in function which is the main part of authentication
 // rely on the database to try and find the user entry, if it fails, its immediately unauthorized, or it will try and match the password next
 // if it fails, its unauthorized
+#[axum::debug_handler]
+async fn sign_out(mut auth_session: AuthSession) -> Result<Response, StatusCode> {
+    if let Err(e) = auth_session.logout().await {
+        eprintln!("Failed to log in user {e:?}");
+        return Ok((StatusCode::INTERNAL_SERVER_ERROR, "Failed to log in").into_response());
+    }
+
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 #[axum::debug_handler]
 async fn sign_in(
     mut auth_session: AuthSession,

@@ -15,11 +15,9 @@
 
 <script lang="ts">
 	import { Form, Link, redirect, useActionData, type ActionArgs } from 'cross-router-svelte';
-	import { useTheme } from '../lib/theme/theme.svelte';
 	import { auth } from '../lib/auth/auth.svelte';
-	import { CircleXIcon, MoonIcon, SunIcon } from '@lucide/svelte';
-
-	const theme = useTheme();
+	import { CircleXIcon } from '@lucide/svelte';
+	import ThemeToggle from '../components/ThemeToggle.svelte';
 
 	const actionData = useActionData<typeof action>();
 
@@ -68,16 +66,4 @@
 	</div>
 </div>
 
-<button
-	class="btn btn-ghost btn-square fixed top-4 right-4"
-	onclick={() => theme.toggleTheme()}
-	data-tip="Toggle Theme"
->
-	{#if theme.current === 'dark'}
-		<MoonIcon class="size-4" />
-		<span class="sr-only">Toggle mode - dark</span>
-	{:else}
-		<SunIcon class="size-4" />
-		<span class="sr-only">Toggle mode - light</span>
-	{/if}
-</button>
+<ThemeToggle class="fixed top-4 right-4" />

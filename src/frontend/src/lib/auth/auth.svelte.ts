@@ -30,6 +30,11 @@ export class AuthManager {
 
 		this.user = resp;
 	}
+
+	public async logout(): Promise<void> {
+		this.user = null;
+		await httpClient.delete<{ username: string }>('/api/signout').json();
+	}
 }
 
 export const auth = new AuthManager();
