@@ -238,23 +238,4 @@
 		flex-direction: column;
 		gap: 0.8rem;
 	}
-	.user-dialog {
-		padding: 1rem;
-		border: 1px solid #444;
-		background: #111;
-		color: #fff;
-		margin: auto;
-
-		&[open] {
-			display: grid;
-			place-items: center;
-			position: fixed;
-			inset: 0;
-
-			&::backdrop {
-				background-color: rgba(0, 0, 0, 0.5);
-				backdrop-filter: blur(2px);
-			}
-		}
-	}
 </style>
