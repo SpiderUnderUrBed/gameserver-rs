@@ -114,19 +114,13 @@ mod database {
 // TODO: consider if i want to have a varible that represents the database type enabled
 // static DATABASE_TYPE = "postgres";
 
-#[cfg(all(
-    not(feature = "full-stack"),
-    not(feature = "database")
-))]
+#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
 mod database {
     include!("jsondatabase.rs");
 }
 
 // JsonDatabase is only something that would be unique to Json and not any other database managed by sqlx
-#[cfg(all(
-    not(feature = "full-stack"),
-    not(feature = "database")
-))]
+#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
 use database::JsonBackend;
 
 // Both database files and any more should have these structs
@@ -213,7 +207,7 @@ mod kubernetes {
 static StaticTcpUrl: &str = "127.0.0.1:8082";
 
 #[cfg(not(feature = "full-stack"))]
-static StaticLocalUrl: &str = "127.0.0.1:8081";
+static StaticLocalUrl: &str = "127.0.0.1:8083";
 
 #[cfg(not(feature = "full-stack"))]
 static K8S_WORKS: bool = false;
@@ -272,10 +266,7 @@ async fn first_connection() -> Result<sqlx::Pool<sqlx::Postgres>, sqlx::Error> {
 // due to reduced complexity, and currently at the time of writing this
 // dependency issues, so unless you are testing the postgres db itself with this project
 // the json backend MIGHT be sufficent, but at the time of writing this I have not made the json backend work
-#[cfg(all(
-    not(feature = "full-stack"),
-    not(feature = "database")
-))]
+#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
 async fn first_connection() -> Result<JsonBackend, String> {
     Ok(JsonBackend::new(None))
 }
@@ -1523,36 +1514,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
-        // let msg = MessagePayloadWithMetadata {
-        //     r#type: "command".to_string(),
-        //     message: message.to_string(),
-        //     metadata: MetadataTypes::Server {
-        //         servername: server.servername.clone(),
-        //         provider: server.provider.clone(),
-        //         providertype: server.providertype.clone(),
-        //         location: server.location.clone(),
-        //         sandbox: server.sandbox,
-        //     },
-        //     authcode: "0".to_string(),
-        // };
+// let msg = MessagePayloadWithMetadata {
+//     r#type: "command".to_string(),
+//     message: message.to_string(),
+//     metadata: MetadataTypes::Server {
+//         servername: server.servername.clone(),
+//         provider: server.provider.clone(),
+//         providertype: server.providertype.clone(),
+//         location: server.location.clone(),
+//         sandbox: server.sandbox,
+//     },
+//     authcode: "0".to_string(),
+// };
 
-        // let mut bytes = match serde_json::to_vec(&msg) {
-        //     Ok(b) => b,
-        //     Err(e) => {
-        //         eprintln!("Serialization error: {}", e);
-        //         return StatusCode::INTERNAL_SERVER_ERROR;
-        //     }
-        // };
-        // bytes.push(b'\n');
+// let mut bytes = match serde_json::to_vec(&msg) {
+//     Ok(b) => b,
+//     Err(e) => {
+//         eprintln!("Serialization error: {}", e);
+//         return StatusCode::INTERNAL_SERVER_ERROR;
+//     }
+// };
+// bytes.push(b'\n');
 
-        // if let Err(e) = state.tcp_tx.send(bytes) {
-        //     eprintln!("Failed to send {} to TCP: {}", message, e);
-        //     return StatusCode::INTERNAL_SERVER_ERROR;
-        // }
+// if let Err(e) = state.tcp_tx.send(bytes) {
+//     eprintln!("Failed to send {} to TCP: {}", message, e);
+//     return StatusCode::INTERNAL_SERVER_ERROR;
+// }
 
-pub async fn start_server(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
-) -> impl IntoResponse {
+pub async fn start_server(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl IntoResponse {
     println!("Called start server");
     let state = arc_state.write().await;
     let msg = serde_json::to_vec(&MessagePayload {
@@ -1567,15 +1556,14 @@ pub async fn start_server(
     StatusCode::CREATED.into_response()
 }
 
-pub async fn stop_server(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
-) -> impl IntoResponse {
+pub async fn stop_server(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl IntoResponse {
     let state = arc_state.write().await;
     let msg = serde_json::to_vec(&MessagePayload {
         r#type: "command".to_string(),
         message: "stop_server".to_string(),
         authcode: "".to_string(),
-    }).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    })
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
     if let Err(e) = msg {
         return e;
     };
@@ -1688,7 +1676,10 @@ async fn fetch_current_node(
 ) -> Result<Json<Node>, StatusCode> {
     let mut state = arc_state.write().await;
     println!("current node: {}", state.current_node.name.clone());
-    let option_node = state.database.retrieve_nodes(state.current_node.name.clone()).await;
+    let option_node = state
+        .database
+        .retrieve_nodes(state.current_node.name.clone())
+        .await;
     if let Some(node) = option_node {
         Ok(Json(node))
     } else {
@@ -2120,7 +2111,11 @@ async fn add_server(
 
     state.current_server = Some(server.clone());
 
-    let exists = match state.database.get_from_servers_database(&server.servername).await {
+    let exists = match state
+        .database
+        .get_from_servers_database(&server.servername)
+        .await
+    {
         Ok(result) => result.is_some(),
         Err(e) => {
             println!("{:#?}", e);
@@ -2733,7 +2728,7 @@ async fn users(
 #[derive(serde::Deserialize)]
 struct ChangeNodeRequest {
     node_id: String,
-    server_id: String
+    server_id: String,
 }
 
 async fn change_node(
@@ -3061,38 +3056,22 @@ async fn sign_in(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     Form(request): Form<LoginData>,
 ) -> Result<Response, StatusCode> {
-    let username: String;
+    let state = arc_state.write().await;
 
-    let admin_enabled: bool = get_env_var_or_arg("ENABLE_ADMIN_USER", Some(false)).unwrap();
-    if admin_enabled {
-        let admin_user: String = get_env_var_or_arg("ADMIN_USER", Some(String::new())).unwrap();
-        let admin_password: String =
-            get_env_var_or_arg("ADMIN_PASSWORD", Some(String::new())).unwrap();
+    let user = state
+        .database
+        .retrieve_user(request.user.clone())
+        .await
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let password_valid = verify_password(request.password, user.password_hash.unwrap())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-        if request.user != admin_user || request.password != admin_password {
-            return Err(StatusCode::UNAUTHORIZED);
-        }
-
-        username = admin_user;
-    } else {
-        let state = arc_state.write().await;
-        let user = state
-            .database
-            .retrieve_user(request.user.clone())
-            .await
-            .ok_or(StatusCode::UNAUTHORIZED)?;
-        let password_valid = verify_password(request.password, user.password_hash.unwrap())
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-        if !password_valid {
-            return Err(StatusCode::UNAUTHORIZED);
-        }
-
-        username = user.username;
+    if !password_valid {
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let user = User {
-        username,
+        username: user.username,
         password_hash: None,
         user_perms: vec![],
     };
