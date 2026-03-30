@@ -1,4 +1,4 @@
-import { httpClient } from './utils/http';
+import { httpClient } from '../utils/http';
 
 export type ServerStatusMode = 'node' | 'server-keyword' | 'server-process';
 
@@ -23,7 +23,6 @@ export class ServerConsoleState {
 	public pendingStatus = $state<ServerStatusMode>('node');
 	public finalStatus = $state<ServerStatusMode>('node');
 	public nodePanelVisible = $state(false);
-	public toggablePagesVisible = $state(false);
 	public managementButtonsVisible = $state(false);
 	public isConnected = $state(false);
 
@@ -207,10 +206,6 @@ export class ServerConsoleState {
 
 	public toggleNodes() {
 		this.nodePanelVisible = !this.nodePanelVisible;
-	}
-
-	public toggleDeveloperOptions() {
-		this.toggablePagesVisible = !this.toggablePagesVisible;
 	}
 
 	public toggleManagementButtons() {

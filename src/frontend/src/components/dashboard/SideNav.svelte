@@ -1,13 +1,12 @@
 <script lang="ts">
 	import { Link } from 'cross-router-svelte';
-	import { serverConsole } from '../../lib/serverConsoleStore.svelte';
 </script>
 
 <aside class=" w-64">
 	<nav>
 		<ul class="menu w-full">
 			<li>
-				<Link href="/" activeClass="menu-active">Home Page</Link>
+				<Link href="/" exactActiveClass="menu-active">Home Page</Link>
 			</li>
 			<li>
 				<Link href="/users" activeClass="menu-active">Users</Link>

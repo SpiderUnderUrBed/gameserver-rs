@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Link } from 'cross-router-svelte';
-	import { serverConsole } from '../../lib/serverConsoleStore.svelte';
+	import { serverConsole } from '../../lib/stores/serverConsoleStore.svelte';
 </script>
 
 <ul class="menu menu-horizontal rounded bg-base-100 w-full">

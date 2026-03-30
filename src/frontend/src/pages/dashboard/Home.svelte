@@ -1,14 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import SideNav from '../../components/dashboard/SideNav.svelte';
 	import TopmostBar from '../../components/dashboard/TopmostBar.svelte';
 	import TopBar from '../../components/dashboard/TopBar.svelte';
 	import ConsolePanel from '../../components/dashboard/ConsolePanel.svelte';
-	import { serverConsole } from '../../lib/serverConsoleStore.svelte';
-	import ThemeToggle from '../../components/ThemeToggle.svelte';
-	import { LogOutIcon } from '@lucide/svelte';
-	import { auth } from '../../lib/auth/auth.svelte';
-	import { useNavigate } from 'cross-router-svelte';
+	import { serverConsole } from '../../lib/stores/serverConsoleStore.svelte';
 
 	let serverName = $state('');
 	let serverLocation = $state('');
@@ -17,8 +12,6 @@
 	let nodeName = $state('');
 	let nodeIp = $state('');
 	let nodeType = $state('Custom');
-
-	const navigate = useNavigate();
 
 	onMount(() => {
 		const metaTag = document.querySelector('meta[name="site-url"]');
@@ -43,59 +36,33 @@
 		nodeIp = '';
 		nodeType = 'Custom';
 	};
-
-	async function logout(event: Event) {
-		event.preventDefault();
-		try {
-			await auth.logout();
-		} catch {}
-
-		navigate('/auth/login');
-	}
 </script>
 
-<div class="app-grid">
-	<header class="navbar bg-primary flex flex-row gap-2">
-		<span class="flex-1 text-xl font-semibold">Server Panel</span>
+<div class="content-grid">
+	<TopmostBar />
+	<TopBar />
 
-		<ThemeToggle class="hover:btn-primary" />
-		<button
-			class="btn btn-square btn-ghost hover:btn-primary tooltip tooltip-bottom"
-			data-tip="Logout"
-			aria-label="Logout"
-			onclick={logout}
-		>
-			<LogOutIcon class="w-4" />
-		</button>
-	</header>
-	<SideNav />
+	{#if serverConsole.nodePanelVisible}
+		<section class="alert alert-info flex flex-col gap-1 items-start">
+			<h4 class="font-semibold">Nodes</h4>
+			<ul class="list list-disc">
+				{#each serverConsole.nodes as node}
+					<li>
+						<button
+							class="btn btn-link"
+							onclick={() => (serverConsole.selectedNode = node.nodename)}
+						>
+							{node.nodename}
+						</button>
+					</li>
+				{:else}
+					<p class="italic px-2">No nodes</p>
+				{/each}
+			</ul>
+		</section>
+	{/if}
 
-	<div class="content-grid">
-		<TopmostBar />
-		<TopBar />
-
-		{#if serverConsole.nodePanelVisible}
-			<section class="alert alert-info flex flex-col gap-1 items-start">
-				<h4 class="font-semibold">Nodes</h4>
-				<ul class="list list-disc">
-					{#each serverConsole.nodes as node}
-						<li>
-							<button
-								class="btn btn-link"
-								onclick={() => (serverConsole.selectedNode = node.nodename)}
-							>
-								{node.nodename}
-							</button>
-						</li>
-					{:else}
-						<p class="italic px-2">No nodes</p>
-					{/each}
-				</ul>
-			</section>
-		{/if}
-
-		<ConsolePanel />
-	</div>
+	<ConsolePanel />
 </div>
 
 <dialog id="create-server-dialog" class="modal">
@@ -223,15 +190,6 @@
 </dialog>
 
 <style>
-	.app-grid {
-		display: grid;
-		grid-template-columns: 250px 1fr;
-		grid-template-rows: auto 1fr;
-		min-height: 100vh;
-	}
-	.app-grid > header {
-		grid-column: 1 / -1;
-	}
 	.content-grid {
 		padding: 0.8rem;
 		display: flex;

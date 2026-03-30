@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { serverConsole } from '../../lib/serverConsoleStore.svelte';
+	import { serverConsole } from '../../lib/stores/serverConsoleStore.svelte';
 	import Status from './Status.svelte';
 	import { SlashIcon } from '@lucide/svelte';
 

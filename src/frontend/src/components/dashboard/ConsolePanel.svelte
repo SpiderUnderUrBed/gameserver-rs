@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { serverConsole } from '../../lib/serverConsoleStore.svelte';
+	import { serverConsole } from '../../lib/stores/serverConsoleStore.svelte';
 </script>
 
 <main class="console-main w-full h-full flex flex-col">
