@@ -23,7 +23,6 @@ export class ServerConsoleState {
 	public pendingStatus = $state<ServerStatusMode>('node');
 	public finalStatus = $state<ServerStatusMode>('node');
 	public nodePanelVisible = $state(false);
-	public managementButtonsVisible = $state(false);
 	public isConnected = $state(false);
 
 	private ws: WebSocket | null = null;
@@ -206,10 +205,6 @@ export class ServerConsoleState {
 
 	public toggleNodes() {
 		this.nodePanelVisible = !this.nodePanelVisible;
-	}
-
-	public toggleManagementButtons() {
-		this.managementButtonsVisible = !this.managementButtonsVisible;
 	}
 
 	public changeStatusType(newStatus: ServerStatusMode) {

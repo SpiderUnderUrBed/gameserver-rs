@@ -9,6 +9,8 @@ import Users from './pages/dashboard/Users.svelte';
 import Manual from './pages/dashboard/Manual.svelte';
 import DashboardRoot from './pages/dashboard/DashboardRoot.svelte';
 import Workflows from './pages/dashboard/Workflows.svelte';
+import HomeIndex from './pages/dashboard/home/HomeIndex.svelte';
+import Backups from './pages/dashboard/Backups.svelte';
 
 enableDebug();
 
@@ -35,7 +37,24 @@ const routes: RouteDefinition[] = [
 			{
 				id: 'home',
 				path: '/',
-				component: Home
+				component: Home,
+				children: [
+					{
+						id: 'index',
+						path: '/',
+						component: HomeIndex
+					},
+					{
+						id: 'workflows',
+						path: '/workflows',
+						component: Workflows
+					},
+					{
+						id: 'backups',
+						path: '/backups',
+						component: Backups
+					}
+				]
 			},
 			{
 				id: 'users',
@@ -46,11 +65,6 @@ const routes: RouteDefinition[] = [
 				id: 'manual',
 				path: '/manual',
 				component: Manual
-			},
-			{
-				id: 'workflows',
-				path: '/workflows',
-				component: Workflows
 			}
 		]
 	}
