@@ -65,7 +65,7 @@
 </script>
 
 <div class="flex-1 p-4">
-	<h1 class="text-2xl font-bold mb-4">Users</h1>
+	<h2 class="text-2xl font-bold mb-4">Users</h2>
 	<button class="btn btn-primary mb-4" command="show-modal" commandfor="add-user-dialog">
 		Add User
 	</button>
