@@ -8,6 +8,7 @@ import Home from './pages/dashboard/Home.svelte';
 import Users from './pages/dashboard/Users.svelte';
 import Manual from './pages/dashboard/Manual.svelte';
 import DashboardRoot from './pages/dashboard/DashboardRoot.svelte';
+import Workflows from './pages/dashboard/Workflows.svelte';
 
 enableDebug();
 
@@ -45,6 +46,11 @@ const routes: RouteDefinition[] = [
 				id: 'manual',
 				path: '/manual',
 				component: Manual
+			},
+			{
+				id: 'workflows',
+				path: '/workflows',
+				component: Workflows
 			}
 		]
 	}
