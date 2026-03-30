@@ -28,9 +28,6 @@
 					<li>
 						<Link href="/create-server" activeClass="menu-active">Create servers</Link>
 					</li>
-					<li>
-						<Link href="/svelte-main" activeClass="menu-active">Svelte main</Link>
-					</li>
 				</details>
 			</li>
 		</ul>

@@ -8,9 +8,11 @@ import Home from './pages/dashboard/Home.svelte';
 import Users from './pages/dashboard/Users.svelte';
 import Manual from './pages/dashboard/Manual.svelte';
 import DashboardRoot from './pages/dashboard/DashboardRoot.svelte';
-import Workflows from './pages/dashboard/Workflows.svelte';
+import Workflows from './pages/dashboard/home/Workflows.svelte';
 import HomeIndex from './pages/dashboard/home/HomeIndex.svelte';
-import Backups from './pages/dashboard/Backups.svelte';
+import Backups from './pages/dashboard/home/Backups.svelte';
+import CreateServer from './pages/dashboard/CreateServer.svelte';
+import Settings from './pages/dashboard/home/Settings.svelte';
 
 enableDebug();
 
@@ -53,6 +55,11 @@ const routes: RouteDefinition[] = [
 						id: 'backups',
 						path: '/backups',
 						component: Backups
+					},
+					{
+						id: 'settings',
+						path: '/settings',
+						component: Settings
 					}
 				]
 			},
@@ -65,6 +72,11 @@ const routes: RouteDefinition[] = [
 				id: 'manual',
 				path: '/manual',
 				component: Manual
+			},
+			{
+				id: 'create-server',
+				path: '/create-server',
+				component: CreateServer
 			}
 		]
 	}
