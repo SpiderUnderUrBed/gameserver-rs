@@ -20,7 +20,7 @@
 				serverSandbox
 			);
 		}
-		(<HTMLFormElement>event.currentTarget).reset();
+		(<HTMLFormElement>event.target).reset();
 	};
 
 	const submitAddNode = async (event: SubmitEvent) => {
