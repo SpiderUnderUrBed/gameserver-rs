@@ -1,9 +1,13 @@
 <script lang="ts">
-	import { createEventDispatcher } from 'svelte';
-	import { CloudUploadIcon, UploadCloud, UploadCloudIcon } from '@lucide/svelte';
+	import { CloudUploadIcon } from '@lucide/svelte';
 
-	const dispatch = createEventDispatcher();
 	let highlight = $state(false);
+
+	interface FileDropzoneProps {
+		onupload: (data: { files: FileList }) => void;
+	}
+
+	const { onupload }: FileDropzoneProps = $props();
 
 	function onDragOver(event: DragEvent) {
 		event.preventDefault();
@@ -20,14 +24,14 @@
 
 		const files = event.dataTransfer?.files;
 		if (files && files.length > 0) {
-			dispatch('upload', { files });
+			onupload({ files });
 		}
 	}
 
 	function onFileSelect(event: Event) {
 		const input = event.target as HTMLInputElement;
 		if (!input.files) return;
-		dispatch('upload', { files: input.files });
+		onupload({ files: input.files });
 		input.value = '';
 	}
 </script>
