@@ -8,7 +8,7 @@
 	<li><Link href="/filebrowser" activeClass="menu-active">Filebrowser</Link></li>
 	<li><Link href="/statistics" activeClass="menu-active">Statistics</Link></li>
 	<li><Link href="/workflows" activeClass="menu-active">Workflows</Link></li>
-	<li><Link href="/intergrations" activeClass="menu-active">Integrations</Link></li>
+	<li><Link href="/integrations" activeClass="menu-active">Integrations</Link></li>
 	<li><Link href="/backups" activeClass="menu-active">Backups</Link></li>
 	<li><Link href="/settings" activeClass="menu-active">Settings</Link></li>
 
