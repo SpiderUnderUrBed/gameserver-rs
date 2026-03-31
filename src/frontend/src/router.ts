@@ -11,6 +11,7 @@ import Nodes from './pages/dashboard/Nodes.svelte';
 import Servers from './pages/dashboard/Servers.svelte';
 import Statistics from './pages/dashboard/home/Statistics.svelte';
 import Integrations from './pages/dashboard/home/Integrations.svelte';
+import FileBrowser from './pages/dashboard/home/FileBrowser.svelte';
 import DashboardRoot from './pages/dashboard/DashboardRoot.svelte';
 import Workflows from './pages/dashboard/home/Workflows.svelte';
 import HomeIndex from './pages/dashboard/home/HomeIndex.svelte';
@@ -74,6 +75,11 @@ const routes: RouteDefinition[] = [
 						id: 'integrations',
 						path: 'integrations',
 						component: Integrations
+					},
+					{
+						id: 'filebrowser',
+						path: 'filebrowser',
+						component: FileBrowser
 					}
 				]
 			},

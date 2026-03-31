@@ -2,7 +2,7 @@
 	import { Link } from 'cross-router-svelte';
 </script>
 
-<aside class=" w-64">
+<aside class="w-64">
 	<nav>
 		<ul class="menu w-full">
 			<li>
