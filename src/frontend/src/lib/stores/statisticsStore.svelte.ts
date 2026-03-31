@@ -21,7 +21,6 @@ export class StatisticsStore {
 	public isConnected = $state(false);
 	public error = $state<string | null>(null);
 	public maxPoints = $state(50);
-	private reconnectTimeout: number | null = null;
 
 	private abortController: AbortController | null = null;
 
@@ -83,10 +82,6 @@ export class StatisticsStore {
 		} finally {
 			this.isConnected = false;
 			this.abortController = null;
-
-			this.reconnectTimeout = window.setTimeout(() => {
-				this.connect();
-			}, 3000);
 		}
 	}
 
@@ -128,5 +123,3 @@ export class StatisticsStore {
 		}
 	}
 }
-
-export const statisticsStore = new StatisticsStore();

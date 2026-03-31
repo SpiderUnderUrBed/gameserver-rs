@@ -24,9 +24,9 @@
 	<header class="navbar bg-primary flex flex-row gap-2">
 		<span class="flex-1 text-xl font-semibold">Server Panel</span>
 
-		<ThemeToggle class="hover:btn-primary" />
+		<ThemeToggle class="hover:btn-primary tooltip tooltip-left" data-tip="Toggle Theme" />
 		<button
-			class="btn btn-square btn-ghost hover:btn-primary tooltip tooltip-bottom"
+			class="btn btn-square btn-ghost hover:btn-primary tooltip tooltip-left"
 			data-tip="Logout"
 			aria-label="Logout"
 			onclick={logout}

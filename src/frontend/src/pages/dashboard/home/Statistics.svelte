@@ -2,7 +2,9 @@
 	import { onMount, onDestroy } from 'svelte';
 	import ChartWrapper from '../../../components/dashboard/ChartWrapper.svelte';
 	import type { Chart, ChartConfiguration } from 'chart.js';
-	import { statisticsStore } from '../../../lib/stores/statisticsStore.svelte';
+	import { StatisticsStore } from '../../../lib/stores/statisticsStore.svelte';
+
+	const statisticsStore = new StatisticsStore();
 
 	let ramChart = $state<Chart | null>(null);
 	let coreChart = $state<Chart | null>(null);

@@ -7,6 +7,7 @@ import { authMiddleware } from './lib/middlewares/authGuard';
 import Home from './pages/dashboard/Home.svelte';
 import Users from './pages/dashboard/Users.svelte';
 import Manual from './pages/dashboard/Manual.svelte';
+import Nodes from './pages/dashboard/Nodes.svelte';
 import Statistics from './pages/dashboard/home/Statistics.svelte';
 import DashboardRoot from './pages/dashboard/DashboardRoot.svelte';
 import Workflows from './pages/dashboard/home/Workflows.svelte';
@@ -73,6 +74,11 @@ const routes: RouteDefinition[] = [
 				id: 'users',
 				path: '/users',
 				component: Users
+			},
+			{
+				id: 'nodes',
+				path: '/nodes',
+				component: Nodes
 			},
 			{
 				id: 'manual',
