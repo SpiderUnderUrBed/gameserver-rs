@@ -8,6 +8,7 @@ import Home from './pages/dashboard/Home.svelte';
 import Users from './pages/dashboard/Users.svelte';
 import Manual from './pages/dashboard/Manual.svelte';
 import Nodes from './pages/dashboard/Nodes.svelte';
+import Servers from './pages/dashboard/Servers.svelte';
 import Statistics from './pages/dashboard/home/Statistics.svelte';
 import Integrations from './pages/dashboard/home/Integrations.svelte';
 import DashboardRoot from './pages/dashboard/DashboardRoot.svelte';
@@ -78,22 +79,27 @@ const routes: RouteDefinition[] = [
 			},
 			{
 				id: 'users',
-				path: '/users',
+				path: 'users',
 				component: Users
 			},
 			{
 				id: 'nodes',
-				path: '/nodes',
+				path: 'nodes',
 				component: Nodes
 			},
 			{
+				id: 'servers',
+				path: 'servers',
+				component: Servers
+			},
+			{
 				id: 'manual',
-				path: '/manual',
+				path: 'manual',
 				component: Manual
 			},
 			{
 				id: 'create-server',
-				path: '/create-server',
+				path: 'create-server',
 				component: CreateServer
 			}
 		]
