@@ -406,9 +406,9 @@ struct SignInResponse {
 
 #[derive(Debug, Deserialize, Serialize)]
 struct Statistics {
-    used_memory: String,
-    total_memory: String,
-    core_data: Vec<String>,
+    used_memory: u64,
+    total_memory: u64,
+    core_data: Vec<f32>,
     metadata: String,
 }
 // a list for things like nodes, capabilities, etc
@@ -1949,14 +1949,10 @@ async fn statistics(
             interval.tick().await;
             system.refresh_all();
 
-            let core_data: Vec<String> = system
-                .cpus()
-                .into_iter()
-                .map(|core| core.cpu_usage().to_string())
-                .collect();
+            let core_data = system.cpus().iter().map(|core| core.cpu_usage()).collect();
             let statistics = Statistics {
-                total_memory: system.total_memory().to_string(),
-                used_memory: system.used_memory().to_string(),
+                total_memory: system.total_memory(),
+                used_memory: system.used_memory(),
                 core_data,
                 metadata: "".to_string(),
             };

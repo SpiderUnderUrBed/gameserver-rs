@@ -11,5 +11,24 @@ export default defineConfig({
 				target: 'http://localhost:8081'
 			}
 		}
+	},
+	build: {
+		rolldownOptions: {
+			output: {
+				codeSplitting: {
+					groups: [
+						{
+							// Extract chartjs into its own bundle to avoid embedding it everywhere
+							name(moduleId) {
+								if (moduleId.includes('chart.js')) {
+									return 'chartjs';
+								}
+								return null;
+							}
+						}
+					]
+				}
+			}
+		}
 	}
 });

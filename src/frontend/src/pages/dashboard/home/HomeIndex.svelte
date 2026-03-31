@@ -12,13 +12,15 @@
 	let nodeType = $state('Custom');
 
 	const submitCreateServer = async (event: SubmitEvent) => {
-		if ((<HTMLButtonElement | null>event.submitter)?.value === 'cancel') return;
-		await serverConsole.createDefaultServer(
-			serverName,
-			serverProvider,
-			serverLocation,
-			serverSandbox
-		);
+		if ((<HTMLButtonElement | null>event.submitter)?.value !== 'cancel') {
+			await serverConsole.createDefaultServer(
+				serverName,
+				serverProvider,
+				serverLocation,
+				serverSandbox
+			);
+		}
+		(<HTMLFormElement>event.currentTarget).reset();
 	};
 
 	const submitAddNode = async (event: SubmitEvent) => {
