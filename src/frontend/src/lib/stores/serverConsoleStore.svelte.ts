@@ -22,7 +22,6 @@ export class ServerConsoleState {
 	public rawOutputEnabled = $state(false);
 	public pendingStatus = $state<ServerStatusMode>('node');
 	public finalStatus = $state<ServerStatusMode>('node');
-	public nodePanelVisible = $state(false);
 	public isConnected = $state(false);
 
 	private ws: WebSocket | null = null;
@@ -156,23 +155,57 @@ export class ServerConsoleState {
 
 	public async startServer() {
 		await this.updateStatus('up', true);
+		try {
+			await httpClient.post(`/api/startserver`, {
+				json: {
+				}
+			});
+		} catch (e) {
+			console.error(e);
+		}
 		this.addConsoleEntry({ type: 'output', text: 'Start server called' });
 	}
 
 	public async stopServer() {
 		await this.updateStatus('down', true);
+		try {
+			await httpClient.post(`/api/stopserver`, {
+				json: {
+				}
+			});
+		} catch (e) {
+			console.error(e);
+		}
 		this.addConsoleEntry({ type: 'output', text: 'Stop server called' });
 	}
 
 	public async createDefaultServer(
 		servername: string,
 		provider: string,
+		providertype: string,
 		location: string,
-		sandbox: boolean
+		sandbox: boolean,
+		authcode: string = '0'
 	) {
 		try {
-			const payload = { servername, provider, location, sandbox };
-			await httpClient.post(`${this.basePath}/api/createserver`, { json: payload }).json();
+			let node = await httpClient.get(`${this.basePath}/api/getcurrentnode`, {});
+			await httpClient.post(`${this.basePath}/api/addserver`, {
+				json: {
+					element: {
+						kind: "Server",
+						data: {
+							servername,
+							provider,
+							providertype,
+							location,
+							node,
+							sandbox
+						}
+					},
+					jwt: authcode,
+					require_auth: false,
+				}
+			}).json();
 			this.addConsoleEntry({ type: 'output', text: `Created server ${servername}` });
 		} catch (err) {
 			this.addConsoleEntry({ type: 'output', text: `Create server error: ${err}` });
@@ -203,13 +236,20 @@ export class ServerConsoleState {
 		}
 	}
 
-	public toggleNodes() {
-		this.nodePanelVisible = !this.nodePanelVisible;
-	}
-
 	public changeStatusType(newStatus: ServerStatusMode) {
 		this.pendingStatus = newStatus;
 		this.finalStatus = newStatus;
+	}
+
+	public async changeNode(server_id: string, node_id: string) {
+		try {
+			await httpClient.put('/api/changenode', {
+				json: { server_id, node_id }
+			})
+		} catch (err) {
+			throw new Error('Failed to change server node');
+			console.error(err);
+		}
 	}
 
 	public async loadTopmostButtons() {

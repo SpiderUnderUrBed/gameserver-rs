@@ -40,7 +40,7 @@ use axum::{
         Html, IntoResponse, Json,
         sse::{Event, Sse},
     },
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use axum_login::AuthUser;
 use axum_login::tower_sessions::{MemoryStore, SessionManagerLayer};
@@ -107,7 +107,7 @@ static LOG_NONFATAL_FORWARD_REQUESTS: bool = false;
 // For now I only restrict the json backend for running this without kubernetes
 // the json backend is only for testing in most cases, simple deployments would use full-stack feature flag
 // and you can use postgres manually with the database feature flag
-#[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
+#[cfg(any(feature = "full-stack", feature = "database"))]
 mod database {
     include!("pgdatabase.rs");
 }
@@ -116,7 +116,6 @@ mod database {
 
 #[cfg(all(
     not(feature = "full-stack"),
-    not(feature = "docker"),
     not(feature = "database")
 ))]
 mod database {
@@ -126,7 +125,6 @@ mod database {
 // JsonDatabase is only something that would be unique to Json and not any other database managed by sqlx
 #[cfg(all(
     not(feature = "full-stack"),
-    not(feature = "docker"),
     not(feature = "database")
 ))]
 use database::JsonBackend;
@@ -252,7 +250,7 @@ impl Client {
 
 // The database connection would be avalible in the full-stack or explicit database testing
 // which in this case means postgres
-#[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
+#[cfg(any(feature = "full-stack", feature = "database"))]
 async fn first_connection() -> Result<sqlx::Pool<sqlx::Postgres>, sqlx::Error> {
     // The user should be able to customize alot about where the database is, how to authenticate with it,
     // whether it is being ran with the full stack or not, hence the env varibles with sensible defaults
@@ -276,7 +274,6 @@ async fn first_connection() -> Result<sqlx::Pool<sqlx::Postgres>, sqlx::Error> {
 // the json backend MIGHT be sufficent, but at the time of writing this I have not made the json backend work
 #[cfg(all(
     not(feature = "full-stack"),
-    not(feature = "docker"),
     not(feature = "database")
 ))]
 async fn first_connection() -> Result<JsonBackend, String> {
@@ -512,7 +509,6 @@ impl fmt::Display for ApiCalls {
 //     require_auth: String,
 //     api_call: ApiCalls
 // }
-use serde::Deserializer;
 #[derive(Clone, Default, Serialize, Deserialize, Debug)]
 enum Status {
     Unknown,
@@ -1467,6 +1463,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/getsettings", get(get_settings))
         .route("/api/awaitserverstatus", get(ongoing_server_status))
         .route("/api/intergrations", get(get_integrations))
+        .route("/api/getcurrentnode", get(fetch_current_node))
         .route("/api/createintergrations", post(create_intergration))
         .route("/api/modifyintergrations", post(modify_intergration))
         .route("/api/deleteintergrations", post(delete_intergration))
@@ -1475,8 +1472,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // End of actual intergrations
         .route("/api/refreshstatus", post(refresh_status))
         .route("/api/setsettings", post(set_settings))
-        .route("/api/changenode", post(change_node))
-        .route("/api/fetchnode", post(fetch_node))
+        .route("/api/changenode", put(change_node))
         .route("/api/migrate", post(migrate))
         .route("/api/getstatus", post(get_status))
         .route("/api/getfiles", post(get_files))
@@ -1485,6 +1481,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/editbuttons", post(edit_buttons))
         .route("/api/addnode", post(add_node))
         .route("/api/addserver", post(add_server))
+        .route("/api/startserver", post(start_server))
+        .route("/api/stopserver", post(stop_server))
         .route("/api/edituser", post(edit_user))
         .route("/api/getuser", post(get_user))
         .route("/api/setserver", post(set_server))
@@ -1523,6 +1521,66 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     axum::serve(listener, app.into_make_service()).await?;
 
     Ok(())
+}
+
+        // let msg = MessagePayloadWithMetadata {
+        //     r#type: "command".to_string(),
+        //     message: message.to_string(),
+        //     metadata: MetadataTypes::Server {
+        //         servername: server.servername.clone(),
+        //         provider: server.provider.clone(),
+        //         providertype: server.providertype.clone(),
+        //         location: server.location.clone(),
+        //         sandbox: server.sandbox,
+        //     },
+        //     authcode: "0".to_string(),
+        // };
+
+        // let mut bytes = match serde_json::to_vec(&msg) {
+        //     Ok(b) => b,
+        //     Err(e) => {
+        //         eprintln!("Serialization error: {}", e);
+        //         return StatusCode::INTERNAL_SERVER_ERROR;
+        //     }
+        // };
+        // bytes.push(b'\n');
+
+        // if let Err(e) = state.tcp_tx.send(bytes) {
+        //     eprintln!("Failed to send {} to TCP: {}", message, e);
+        //     return StatusCode::INTERNAL_SERVER_ERROR;
+        // }
+
+pub async fn start_server(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+) -> impl IntoResponse {
+    println!("Called start server");
+    let state = arc_state.write().await;
+    let msg = serde_json::to_vec(&MessagePayload {
+        r#type: "command".to_string(),
+        message: "start_server".to_string(),
+        authcode: "".to_string(),
+    });
+    if let Err(e) = msg {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let result = state.tcp_tx.send(msg.unwrap());
+    StatusCode::CREATED.into_response()
+}
+
+pub async fn stop_server(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+) -> impl IntoResponse {
+    let state = arc_state.write().await;
+    let msg = serde_json::to_vec(&MessagePayload {
+        r#type: "command".to_string(),
+        message: "stop_server".to_string(),
+        authcode: "".to_string(),
+    }).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    if let Err(e) = msg {
+        return e;
+    };
+    let _ = state.tcp_tx.send(msg.unwrap());
+    StatusCode::CREATED.into_response()
 }
 
 pub async fn rcon_command(
@@ -1623,6 +1681,19 @@ async fn refresh_status(State(arc_state): State<Arc<RwLock<AppState>>>) {
             Status::Down
         }
     };
+}
+
+async fn fetch_current_node(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+) -> Result<Json<Node>, StatusCode> {
+    let mut state = arc_state.write().await;
+    println!("current node: {}", state.current_node.name.clone());
+    let option_node = state.database.retrieve_nodes(state.current_node.name.clone()).await;
+    if let Some(node) = option_node {
+        Ok(Json(node))
+    } else {
+        Err(StatusCode::INTERNAL_SERVER_ERROR)
+    }
 }
 
 // TODO: maybe split this function and route into several routes with statuses for diffrent states/nodes/settings?
@@ -2036,23 +2107,66 @@ async fn add_node(
         .map_err(|e| StatusCode::INTERNAL_SERVER_ERROR);
     result
 }
-
-// Not currently in use
-// TODO: consider removing this
 async fn add_server(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
-    let state = arc_state.write().await;
-    let result = state
-        .database
-        .create_server_in_db(request)
-        .await
-        .map_err(|e| {
+    let mut state = arc_state.write().await;
+
+    let server = match &request.element {
+        Element::Server(s) => s.clone(),
+        _ => return StatusCode::BAD_REQUEST,
+    };
+
+    state.current_server = Some(server.clone());
+
+    let exists = match state.database.get_from_servers_database(&server.servername).await {
+        Ok(result) => result.is_some(),
+        Err(e) => {
             println!("{:#?}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        });
-    result
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
+    };
+
+    if exists {
+        return StatusCode::CONFLICT;
+    }
+
+    if let Err(e) = state.database.create_server_in_db(request).await {
+        println!("{:#?}", e);
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    }
+
+    for message in ["set_server", "create_server"] {
+        let msg = MessagePayloadWithMetadata {
+            r#type: "command".to_string(),
+            message: message.to_string(),
+            metadata: MetadataTypes::Server {
+                servername: server.servername.clone(),
+                provider: server.provider.clone(),
+                providertype: server.providertype.clone(),
+                location: server.location.clone(),
+                sandbox: server.sandbox,
+            },
+            authcode: "0".to_string(),
+        };
+
+        let mut bytes = match serde_json::to_vec(&msg) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("Serialization error: {}", e);
+                return StatusCode::INTERNAL_SERVER_ERROR;
+            }
+        };
+        bytes.push(b'\n');
+
+        if let Err(e) = state.tcp_tx.send(bytes) {
+            eprintln!("Failed to send {} to TCP: {}", message, e);
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
+    }
+
+    StatusCode::OK
 }
 
 async fn get_integrations(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl IntoResponse {
@@ -2615,13 +2729,26 @@ async fn users(
         list: ApiCalls::UserDataList(users),
     }))
 }
+
+#[derive(serde::Deserialize)]
+struct ChangeNodeRequest {
+    node_id: String,
+    server_id: String
+}
+
 async fn change_node(
     State(arc_state): State<Arc<RwLock<AppState>>>,
-    Json(request): Json<IncomingMessage>,
+    Json(request): Json<ChangeNodeRequest>,
 ) -> Result<StatusCode, StatusCode> {
+    println!("Changing node");
+    // {
+    //     let state = arc_state.read().await;
+    //     println!("all nodes: {:#?}", state.database.fetch_all_nodes().await);
+    //     println!("changed node: {}", request.node_id)
+    // }
     let option_node = {
         let state = arc_state.read().await;
-        state.database.retrieve_nodes(request.message).await
+        state.database.retrieve_nodes(request.node_id).await
     };
 
     if let Some(node) = option_node {
@@ -2692,18 +2819,7 @@ async fn change_node(
         Err(StatusCode::INTERNAL_SERVER_ERROR)
     }
 }
-async fn fetch_node(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
-    Json(request): Json<IncomingMessage>,
-) -> Result<Json<Node>, StatusCode> {
-    let mut state = arc_state.write().await;
-    let option_node = state.database.retrieve_nodes(request.message).await;
-    if let Some(node) = option_node {
-        Ok(Json(node))
-    } else {
-        Err(StatusCode::INTERNAL_SERVER_ERROR)
-    }
-}
+
 // A list of nodes in a k8s cluster is returned, nothing is returned if there is not a client (k8s support is off)
 async fn get_nodes(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl IntoResponse {
     let mut state = arc_state.write().await;

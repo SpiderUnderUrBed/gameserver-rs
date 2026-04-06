@@ -1134,6 +1134,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                         .await
                                                         .clone();
                                                     if msg_payload.message == "start_server" {
+                                                        println!("Called start server");
                                                         if let Err(e) = start_server_with_broadcast(
                                                             &arc_state_clone,
                                                             &stdin_ref,

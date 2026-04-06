@@ -10,12 +10,11 @@ use crate::StatusCode;
 use serde::Deserializer;
 
 use serde::ser::StdError;
+use serde_json::Value;
+
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
-use sqlx::types::Json;
-
-#[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
-use sqlx::{postgres::{PgValueRef, PgArgumentBuffer}, Postgres, Type, Decode, Encode};
+use sqlx::{types::Json, postgres::{PgValueRef, PgArgumentBuffer}, Postgres, Type, Decode, Encode};
 
 
 use std::str::FromStr;
@@ -106,9 +105,9 @@ pub struct Settings {
 }
 
 
-#[cfg(any(feature = "full-stack", feature = "database"))]
-#[derive(Debug, Serialize, Clone, PartialEq, sqlx::Type, Default)]
-#[sqlx(type_name = "text")]
+#[derive(Debug, Serialize, Clone, PartialEq, Default)]
+#[cfg_attr(any(feature = "full-stack", feature = "database"), derive(sqlx::Type))]
+#[cfg_attr(any(feature = "full-stack", feature = "database"), sqlx(type_name = "text"))]
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
 pub enum NodeStatus {
     #[default]
@@ -142,34 +141,7 @@ impl<'de> serde::Deserialize<'de> for NodeStatus {
     }
 }
 
-use serde_json::Value;
 
-#[cfg(all(
-    not(feature = "full-stack"),
-    not(feature = "docker"),
-    not(feature = "database")
-))]
-#[derive(Debug, Serialize, Clone, PartialEq, Default)]
-#[serde(rename_all = "snake_case", tag = "kind", content = "data")]
-pub enum NodeStatus {
-    #[default]
-    Unknown,
-    Enabled, 
-    Disabled, 
-    ImmutablyEnabled,
-    ImmutablyDisabled,
-}
-//
-#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
-#[derive(Debug, Serialize, Clone, PartialEq, Default)]
-pub enum K8sType {
-    Node,
-    Pod,
-    #[default]
-    None,
-    Inbuilt,
-    Unknown
-}
 impl<'de> serde::Deserialize<'de> for K8sType {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = String::deserialize(d)?;
@@ -183,9 +155,9 @@ impl<'de> serde::Deserialize<'de> for K8sType {
     }
 }
 
-#[cfg(any(feature = "full-stack", feature = "database"))]
-#[derive(Debug, Serialize, Clone, Default, PartialEq, sqlx::Type)]
-#[sqlx(type_name = "text")]
+#[derive(Debug, Serialize, Clone, Default, PartialEq)]
+#[cfg_attr(any(feature = "full-stack", feature = "database"), derive(sqlx::Type))]
+#[cfg_attr(any(feature = "full-stack", feature = "database"), sqlx(type_name = "text"))]
 //#[serde(rename_all = "snake_case", tag = "kind", content = "data")]
 #[serde(rename_all = "lowercase")] 
 pub enum K8sType {
@@ -216,34 +188,15 @@ impl<'de> serde::Deserialize<'de> for NodeType {
     }
 }
 
-#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
-#[derive(Debug, Serialize, Clone, PartialEq, Default)]
-#[serde(rename_all = "snake_case", tag = "kind", content = "data")]
-pub enum NodeType {
-    #[default]
-    Unknown,
-    Custom,
-    // CustomNode,
-    // CustomPod,
-    CustomWithString(String),
-    // CustomPodWithString(String),
-    // CustomNodeWithString(String),
-    // InbuiltNodeWithString(String),
-    // InbuiltPodWithString(String),
-    InbuiltWithString(String),
-    // InbuiltNode,
-    // InbuiltPod,
-    Inbuilt,
-    Main
-}
-//impl<'de> serde::Deserialize<'de> for NodeType {
-//    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-//        let s = String::deserialize(d)?;
-//        Ok(NodeType::from(s.to_lowercase()))
-//    }
-//}
-
 #[cfg(any(feature = "full-stack", feature = "database"))]
+impl From<Node> for sqlx::types::Json<Node> {
+    fn from(n: Node) -> Self {
+        sqlx::types::Json(n)
+    }
+}
+
+
+
 #[derive(Debug, Default, Serialize, Clone, PartialEq)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
 pub enum NodeType {
@@ -263,7 +216,7 @@ pub enum NodeType {
     Inbuilt,
     Main
 }
-#[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
+#[cfg(any(feature = "full-stack", feature = "database"))]
 impl<'r> Decode<'r, Postgres> for NodeType {
     fn decode(value: PgValueRef<'r>) -> Result<Self, BoxDynError> {
         let s = <String as Decode<Postgres>>::decode(value)?;
@@ -272,7 +225,7 @@ impl<'r> Decode<'r, Postgres> for NodeType {
 }
 
 
-#[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
+#[cfg(any(feature = "full-stack", feature = "database"))]
 impl<'q> Encode<'q, Postgres> for NodeType {
     fn encode_by_ref(
         &self,
@@ -313,11 +266,19 @@ impl ToString for NodeType {
 }
 
 
-
-#[cfg(any(feature = "full-stack", feature = "database"))]
-#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, sqlx::Type)]
+// Ideally I dont hardcode any intergrations like minecraft or any specific provider, but it would be meaningless to move it to its own file when
+// its much more readable in this spec, and until i have a better solution down the line or decide to keep this
+// #[cfg(any(feature = "full-stack", feature = "database"))]
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 // #[sqlx(type_name = "node_status", rename_all = "snake_case")]
-#[sqlx(type_name = "text")]
+#[cfg_attr(
+    any(feature = "full-stack", feature = "database"),
+    sqlx(type_name = "text")
+)]
+#[cfg_attr(
+    any(feature = "full-stack", feature = "database"),
+    derive(sqlx::Type)
+)]
 #[serde(rename_all = "lowercase", tag = "kind", content = "data")]
 pub enum Intergrations {
     Minecraft,
@@ -326,17 +287,6 @@ pub enum Intergrations {
     Unknown
 }
 
-// Ideally I dont hardcode any intergrations like minecraft or any specific provider, but it would be meaningless to move it to its own file when
-// its much more readable in this spec, and until i have a better solution down the line or decide to keep this
-#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum Intergrations {
-    Minecraft,
-    Other,
-    #[default]
-    Unknown
-}
 
 #[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
 impl Type<Postgres> for NodeType {
@@ -370,49 +320,47 @@ impl ToString for Intergrations {
 }
 
 
-#[cfg(any(feature = "full-stack", feature = "database"))]
-#[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize)]
-pub struct User {
-    pub username: String,
-    pub password_hash: Option<String>,
-    pub user_perms: Vec<String>
-}
-
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(
+    any(feature = "full-stack", feature = "database"),
+    derive(sqlx::FromRow)
+)]
 pub struct User {
     pub username: String,
     pub password_hash: Option<String>,
     pub user_perms: Vec<String>
 }
 
+#[cfg(not(any(feature = "full-stack", feature = "database")))]
+impl From<Node> for Json<Node> {
+    fn from(n: Node) -> Self {
+        Json(n)
+    }
+}
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
-#[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize, PartialEq, Default)]
-#[sqlx(type_name = "text", rename_all = "lowercase")]
+impl From<Node> for sqlx::types::Json<Node> {
+    fn from(n: Node) -> Self {
+        sqlx::types::Json(n)
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[cfg_attr(any(feature = "full-stack", feature = "database"), sqlx(type_name = "text", rename_all = "lowercase"))]
+#[cfg_attr(any(feature = "full-stack", feature = "database"), derive(sqlx::FromRow))]
 pub struct Node {
     pub nodename: String,
     pub ip: String,
     pub nodestatus: NodeStatus,
     pub nodetype: NodeType,
     //#[sqlx(rename = "nodetype")]
-    #[sqlx(skip)]
+    #[cfg_attr(any(feature = "full-stack", feature = "database"), sqlx(skip))]
     pub k8s_type: K8sType
 }
 
 
-#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
-#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
-pub struct Node {
-    pub nodename: String,
-    pub ip: String,
-    pub nodestatus: NodeStatus,
-    pub nodetype: NodeType,
-    pub k8s_type: K8sType
-}
-
-#[cfg(any(feature = "full-stack", feature = "database"))]
-#[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(any(feature = "full-stack", feature = "database"), derive(sqlx::FromRow))]
 pub struct Button {
     pub name: String,
     pub link: String,
@@ -420,17 +368,8 @@ pub struct Button {
     //CustomType
 }
 
-#[cfg(any(feature = "full-stack", feature = "database"))]
-#[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize, PartialEq)]
-pub struct Intergration {
-   // name: String,
-    pub status: String,
-    pub r#type: Intergrations,
-    pub settings: Value
-}
-
-#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(any(feature = "full-stack", feature = "database"), derive(sqlx::FromRow))]
 pub struct Intergration {
    // name: String,
     pub status: String,
@@ -439,17 +378,28 @@ pub struct Intergration {
 }
 
 
-#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Button {
-    pub name: String,
-    pub link: String,
-    pub r#type: String
+#[cfg(not(any(feature = "full-stack", feature = "database")))]
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
+#[serde(transparent)]
+pub struct Json<T>(pub T);
+
+#[cfg(not(any(feature = "full-stack", feature = "database")))]
+impl<T> std::ops::Deref for Json<T> {
+    type Target = T;
+    fn deref(&self) -> &T { &self.0 }
 }
 
+#[cfg(not(any(feature = "full-stack", feature = "database")))]
+impl<T> std::ops::DerefMut for Json<T> {
+    fn deref_mut(&mut self) -> &mut T { &mut self.0 }
+}
 
-#[cfg(any(feature = "full-stack", feature = "database"))]
-#[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize, Default, PartialEq)]
+// I made the mistake of NOT documenting my original plans for provider and providertype, 
+// I'll assume provide would have been something like the game, I have no idea for provider type but 
+// ill make it represent things within the game, like some game server types maintained by the community
+// some using diffrent languages, etc
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
+#[cfg_attr(any(feature = "full-stack", feature = "database"), derive(sqlx::FromRow))]
 //#[sqlx(flatten)]
 pub struct Server {
     #[serde(default)]
@@ -460,28 +410,13 @@ pub struct Server {
     pub providertype: String,
     #[serde(default)]
     pub location: String,
-    #[sqlx(json)]
+    #[cfg_attr(any(feature = "full-stack", feature = "database"), sqlx(json))]
     #[serde(default)]
     pub node: Json<Node>,
     //pub node: Node,
     #[serde(default)]
     pub sandbox: bool
 }
-
-// I made the mistake of NOT documenting my original plans for provider and providertype, 
-// I'll assume provide would have been something like the game, I have no idea for provider type but 
-// ill make it represent things within the game, like some game server types maintained by the community
-// some using diffrent languages, etc
-#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
-#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
-pub struct Server {
-    pub servername: String,
-    pub provider: String,
-    pub providertype: String,
-    pub location: String,
-    pub node: Node, 
-    pub sandbox: bool
-} 
 
 pub trait IntoServer {
     fn into_server(self) -> Server;
@@ -499,42 +434,6 @@ impl IntoServer for sqlx::types::Json<Server> {
         self.0
     }
 }
-
-// impl From<Json<Server>> for Server {
-//     fn from(json_server: Json<Server>) -> Self {
-//         json_server.0
-//     }
-// }
-
-// impl From<Json<Node>> for Node {
-//     fn from(json_node: Json<Node>) -> Self {
-//         json_node.0
-//     }
-// }
-
-// impl From<Json<Server>> for Server {
-//     fn from(json_server: Json<Server>) -> Self {
-//         json_server.0
-//     }
-// }
-
-// impl From<Server> for Json<Server> {
-//     fn from(server: Server) -> Self {
-//         Json(server)
-//     }
-// }
-
-// impl From<Json<Node>> for Node {
-//     fn from(json_node: Json<Node>) -> Self {
-//         json_node.0
-//     }
-// }
-
-// impl From<Node> for Json<Node> {
-//     fn from(node: Node) -> Self {
-//         Json(node)
-//     }
-// }
 
 // #[async_trait]
 pub trait UserDatabase {

@@ -10,12 +10,14 @@
 	let nodeName = $state('');
 	let nodeIp = $state('');
 	let nodeType = $state('Custom');
+	let switchNodeId = $state('');
 
 	const submitCreateServer = async (event: SubmitEvent) => {
 		if ((<HTMLButtonElement | null>event.submitter)?.value !== 'cancel') {
 			await serverConsole.createDefaultServer(
 				serverName,
 				serverProvider,
+				'', // server type: missing
 				serverLocation,
 				serverSandbox
 			);
@@ -33,22 +35,6 @@
 </script>
 
 <TopBar />
-{#if serverConsole.nodePanelVisible}
-	<section class="alert alert-info flex flex-col gap-1 items-start">
-		<h4 class="font-semibold">Nodes</h4>
-		<ul class="list list-disc">
-			{#each serverConsole.nodes as node}
-				<li>
-					<button class="btn btn-link" onclick={() => (serverConsole.selectedNode = node.nodename)}>
-						{node.nodename}
-					</button>
-				</li>
-			{:else}
-				<p class="italic px-2">No nodes</p>
-			{/each}
-		</ul>
-	</section>
-{/if}
 
 <ConsolePanel />
 
@@ -172,6 +158,41 @@
 				Cancel
 			</button>
 			<button class="btn btn-primary" type="submit">I am sure</button>
+		</div>
+	</form>
+</dialog>
+
+
+<dialog id="switch-node-dialog" class="modal">
+	<form 
+		onsubmit={(event) => {
+			if ((<HTMLButtonElement | null>event.submitter)?.value === 'cancel') return;
+			serverConsole.changeNode(serverName, switchNodeId)
+		}}
+		method="dialog"
+		class="modal-box"
+	>
+		<h3 class="font-semibold text-lg">Switch server's node</h3>
+
+		<div class="p-4 fieldset">
+			<label class="label" for="node_name">Node name</label>
+
+			{#if serverConsole.nodes}
+				<select bind:value={switchNodeId} class="select" id="node_name">
+					{#each serverConsole.nodes as node}
+						<option value={node.nodename} selected={serverConsole.selectedNode === node.nodename}>{node.nodename}</option>
+					{/each}
+				</select>
+			{:else}
+				<p class="italic px-2">No nodes</p>
+			{/if}
+		</div>
+
+		<div class="modal-action">
+			<button class="btn btn-ghost btn-error" type="submit" value="cancel" formnovalidate>
+				Cancel
+			</button>
+			<button class="btn btn-primary" type="submit">Submit</button>
 		</div>
 	</form>
 </dialog>

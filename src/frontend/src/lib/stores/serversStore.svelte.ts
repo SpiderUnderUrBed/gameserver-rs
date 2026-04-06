@@ -25,11 +25,33 @@ export class ServersStore {
 		}
 	}
 
-	public async addServer(servername: string, password: string, authcode: string = '0') {
+	public async addServer(
+		servername: string,
+		provider: string,
+		providertype: string,
+		location: string,
+		sandbox: boolean,
+		authcode: string = '0'
+	) {
 		this.error = null;
 		try {
-			await httpClient.post('/api/createserver', {
-				json: { server: servername, password, authcode }
+			let node = await httpClient.get(`/api/getcurrentnode`, {});
+			await httpClient.post('/api/addserver', {
+				json: {
+					element: {
+						kind: "Server",
+						data: {
+							servername,
+							provider,
+							providertype,
+							location,
+							node,
+							sandbox
+						}
+					},
+					jwt: authcode,
+					require_auth: false,
+				}
 			});
 			await this.fetchServers();
 		} catch (err) {

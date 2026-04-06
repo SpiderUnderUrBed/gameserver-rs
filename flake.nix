@@ -17,6 +17,7 @@
       bubblewrap
       clippy
       rust-analyzer
+      ripgrep
     ];
     
     commonNativeBuildInputs = with pkgs; [
