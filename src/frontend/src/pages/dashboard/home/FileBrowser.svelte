@@ -34,8 +34,8 @@
 		}
 	}
 
-	async function onUpload(event: CustomEvent<{ files: FileList }>) {
-		fileBrowserStore.uploadFiles(event.detail.files);
+	async function onUpload(data: { files: FileList }) {
+		fileBrowserStore.uploadFiles(data.files);
 	}
 </script>
 
@@ -44,21 +44,21 @@
 	<div class="flex gap-4 flex-wrap">
 		<button
 			class="btn btn-sm btn-secondary"
-			on:click={() => fileBrowserStore.fetchFiles(fileBrowserStore.path)}
+			onclick={() => fileBrowserStore.fetchFiles(fileBrowserStore.path)}
 		>
 			<RefreshCcw class="w-4 h-4 mr-2" /> Refresh
 		</button>
 		{#if fileBrowserStore.path}
 			<button
 				class="btn btn-sm btn-outline"
-				on:click={() => navigate({ kind: 'Folder', data: '..' })}
+				onclick={() => navigate({ kind: 'Folder', data: '..' })}
 			>
 				<ArrowUpRight class="w-4 h-4 mr-1" /> Up
 			</button>
 		{/if}
 	</div>
 
-	<FileDropzone on:upload={onUpload} />
+	<FileDropzone onupload={onUpload} />
 
 	{#if fileBrowserStore.loading}
 		<div class="flex items-center gap-2 text-base-content/80 justify-center p-8">
@@ -88,7 +88,7 @@
 							<tr>
 								<th>{idx + 1}</th>
 								<td>
-									<button class="btn btn-ghost btn-sm gap-2" on:click={() => navigate(item)}>
+									<button class="btn btn-ghost btn-sm gap-2" onclick={() => navigate(item)}>
 										{#if item.kind === 'Folder'}
 											<Folder class="w-4 h-4" />
 										{:else}
@@ -102,7 +102,7 @@
 									{#if item.kind !== 'Folder'}
 										<button
 											class="btn btn-xs btn-outline"
-											on:click={() => fileBrowserStore.fetchFileContent(item.data)}
+											onclick={() => fileBrowserStore.fetchFileContent(item.data)}
 										>
 											Open
 										</button>

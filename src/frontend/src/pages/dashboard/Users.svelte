@@ -40,7 +40,7 @@
 				await userStore.createUser(newUsername, newPassword, [...perms]);
 			}
 		} finally {
-			(<HTMLFormElement>event.currentTarget).reset();
+			(<HTMLFormElement>event.target).reset();
 			perms.clear();
 		}
 	}
@@ -51,7 +51,7 @@
 				await userStore.editUser(editUsername, editPassword || undefined, [...perms]);
 			}
 		} finally {
-			(<HTMLFormElement>event.currentTarget).reset();
+			(<HTMLFormElement>event.target).reset();
 			perms.clear();
 		}
 	}
