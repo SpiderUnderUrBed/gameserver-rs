@@ -11,6 +11,17 @@ type NodeData = {
 	nodestatus?: { kind: string; data: unknown };
 };
 
+interface GetCurrentNodeResponse {
+	nodename: string;
+	ip: string;
+	nodestatus: {
+		kind: string;
+	};
+	nodetype: {
+		kind: string;
+	};
+}
+
 export class ServerConsoleState {
 	public basePath = '';
 
@@ -51,9 +62,7 @@ export class ServerConsoleState {
 
 	public async fetchNodes() {
 		try {
-			const resp = await httpClient
-				.get(`${this.basePath}/api/nodes`)
-				.json<{ list?: { data: NodeData[] } }>();
+			const resp = await httpClient.get(`/api/nodes`).json<{ list?: { data: NodeData[] } }>();
 			this.nodes = resp.list?.data ?? [];
 		} catch (err) {
 			console.error('fetchNodes error', err);
@@ -63,9 +72,7 @@ export class ServerConsoleState {
 
 	public async fetchIntegrations() {
 		try {
-			const resp = await httpClient
-				.get(`${this.basePath}/api/intergrations`)
-				.json<{ list?: { data: any[] } }>();
+			const resp = await httpClient.get(`/api/intergrations`).json<{ list?: { data: any[] } }>();
 			this.integrations = resp.list?.data ?? [];
 		} catch (err) {
 			console.error('fetchIntegrations', err);
@@ -79,7 +86,7 @@ export class ServerConsoleState {
 		}
 
 		try {
-			this.ws = new WebSocket(`${this.basePath}/api/ws`);
+			this.ws = new WebSocket(`/api/ws`);
 			this.ws.addEventListener('open', () => {
 				this.isConnected = true;
 				this.addConsoleEntry({ type: 'output', text: '[WS] connected' });
@@ -140,7 +147,7 @@ export class ServerConsoleState {
 		}
 
 		try {
-			const source = new EventSource(`${this.basePath}/api/awaitserverstatus`);
+			const source = new EventSource(`/api/awaitserverstatus`);
 			source.onmessage = (event) => {
 				const data = event.data || '';
 				this.addConsoleEntry({ type: 'output', text: `[STATUS] ${data}` });
@@ -157,8 +164,7 @@ export class ServerConsoleState {
 		await this.updateStatus('up', true);
 		try {
 			await httpClient.post(`/api/startserver`, {
-				json: {
-				}
+				json: {}
 			});
 		} catch (e) {
 			console.error(e);
@@ -170,8 +176,7 @@ export class ServerConsoleState {
 		await this.updateStatus('down', true);
 		try {
 			await httpClient.post(`/api/stopserver`, {
-				json: {
-				}
+				json: {}
 			});
 		} catch (e) {
 			console.error(e);
@@ -188,24 +193,26 @@ export class ServerConsoleState {
 		authcode: string = '0'
 	) {
 		try {
-			let node = await httpClient.get(`${this.basePath}/api/getcurrentnode`, {});
-			await httpClient.post(`${this.basePath}/api/addserver`, {
-				json: {
-					element: {
-						kind: "Server",
-						data: {
-							servername,
-							provider,
-							providertype,
-							location,
-							node,
-							sandbox
-						}
-					},
-					jwt: authcode,
-					require_auth: false,
-				}
-			}).json();
+			const node = await httpClient.get<GetCurrentNodeResponse>(`/api/getcurrentnode`, {}).json();
+			await httpClient
+				.post(`/api/addserver`, {
+					json: {
+						element: {
+							kind: 'Server',
+							data: {
+								servername,
+								provider,
+								providertype,
+								location,
+								node,
+								sandbox
+							}
+						},
+						jwt: authcode,
+						require_auth: false
+					}
+				})
+				.json();
 			this.addConsoleEntry({ type: 'output', text: `Created server ${servername}` });
 		} catch (err) {
 			this.addConsoleEntry({ type: 'output', text: `Create server error: ${err}` });
@@ -228,7 +235,7 @@ export class ServerConsoleState {
 				jwt: '',
 				require_auth: true
 			};
-			await httpClient.post(`${this.basePath}/api/nodes`, { json: payload }).json();
+			await httpClient.post(`/api/addnode`, { json: payload }).json();
 			this.addConsoleEntry({ type: 'output', text: `Node added: ${nodename}` });
 			this.fetchNodes();
 		} catch (err) {
@@ -245,7 +252,7 @@ export class ServerConsoleState {
 		try {
 			await httpClient.put('/api/changenode', {
 				json: { server_id, node_id }
-			})
+			});
 		} catch (err) {
 			throw new Error('Failed to change server node');
 			console.error(err);
