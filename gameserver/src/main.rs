@@ -388,8 +388,6 @@ fn process_hook(
 }
 // runs a command and forwards the output of the command to the given channel, which in this case would be back to
 // the main server
-// TODO: consider rem
-
 async fn run_command_live_output(
     state: &AppState,
     cmd: Command,
@@ -401,7 +399,13 @@ async fn run_command_live_output(
     stdin_arc: Option<Arc<Mutex<Option<ChildStdin>>>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut tokio_cmd = TokioCommand::from(cmd);
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let location_stripped = location.trim_start_matches("server/");
+    let resolved = cwd.join("server").join(location_stripped);
+    let resolved_str = resolved.to_string_lossy().trim_end_matches('/').to_string();
+
     tokio_cmd
+        .current_dir(&resolved_str)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .stdin(Stdio::piped());
