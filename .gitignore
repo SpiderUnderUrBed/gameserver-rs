@@ -2,6 +2,7 @@
 .direnv/
 
 /target
+**/target/
 /gameserver/target
 # /src/gameserver/target
 
@@ -20,6 +21,7 @@ credentials.json
 
 **/.svelte-kit/
 **/build/
+**/dist/
 
 **/node_modules/*
 

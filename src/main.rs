@@ -19,6 +19,8 @@ use crate::filesystem::{FsType, send_multipart_over_broadcast};
 use crate::http::HeaderMap;
 use crate::kubernetes::verify_is_k8s_gameserver;
 use crate::middleware::from_fn;
+use axum::error_handling::HandleErrorLayer;
+use axum::routing::any;
 use axum::Form;
 use axum::extract::Multipart;
 use axum::extract::Query;
@@ -42,9 +44,24 @@ use axum::{
     },
     routing::{get, post, put},
 };
+use axum_login::AuthManagerLayer;
 use axum_login::AuthUser;
 use axum_login::tower_sessions::{MemoryStore, SessionManagerLayer};
 use axum_login::{AuthManagerLayerBuilder, AuthnBackend};
+use axum_oidc::builder::RedirectUrl;
+use axum_oidc::error::MiddlewareError;
+use axum_oidc::handle_oidc_redirect;
+use axum_oidc::openidconnect;
+use axum_oidc::openidconnect::ClientId;
+use axum_oidc::openidconnect::ClientSecret;
+use axum_oidc::openidconnect::IssuerUrl;
+use axum_oidc::openidconnect::Scope;
+use axum_oidc::EmptyAdditionalClaims;
+use axum_oidc::OidcAuthLayer;
+use axum_oidc::OidcClaims;
+use axum_oidc::OidcClient;
+use axum_oidc::OidcLoginLayer;
+use base64::{engine::general_purpose::STANDARD, Engine};
 use futures_util::FutureExt;
 use serde::de::{self, DeserializeOwned};
 use tokio::fs::File;
@@ -52,6 +69,7 @@ use tokio::net::unix::pipe::Receiver;
 use tokio::sync::{RwLock, mpsc};
 
 use rcon::Connection;
+use tower::ServiceBuilder;
 
 use crate::database::Node;
 use crate::database::databasespec::Intergration;
@@ -1195,7 +1213,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config_local_url =
         get_env_var_or_arg("LOCALURL", Some(StaticLocalUrl.to_string())).unwrap();
 
-    // Overrides for testing or specific cases where how it worksin a setup may be diffrent
     let enable_k8s_client: bool = get_env_var_or_arg("ENABLE_K8S_CLIENT", Some(true)).unwrap();
     let force_rebuild: bool = get_env_var_or_arg("FORCE_REBUILD", Some(false)).unwrap();
     let build_docker_image: bool = get_env_var_or_arg("BUILD_DOCKER_IMAGE", Some(true)).unwrap();
@@ -1203,9 +1220,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let dont_override_conn_with_k8s: bool =
         get_env_var_or_arg("DONT_OVERRIDE_CONN_WITH_K8S", Some(true)).unwrap();
 
-    // TODO:
-    // consider if I should not have enable_initial_connection and instead if initial_connection_attempts dont
-    // try to connect to the server
     let enable_initial_connection: bool =
         get_env_var_or_arg("ENABLE_INITIAL_CONNECTION", Some(true)).unwrap();
     let initial_connection_attempts: u64 =
@@ -1213,12 +1227,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let initial_connection_timeout: u64 =
         get_env_var_or_arg("INITIAL_CONNECTION_TIMEOUT", Some(2)).unwrap();
 
-    // creates a websocket broadcase and tcp channels
     let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
     let (tcp_tx, tcp_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
 
-    // sets the client to be none by default unless this is ran the stanard way which will be ran with the appropriate feature-flag
-    // which will set the k8s client
     let mut client: Clients = Clients::None;
     if enable_k8s_client && K8S_WORKS {
         client = Clients::K8s(Client::try_default().await?);
@@ -1261,22 +1272,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut rcon_connection: Option<Arc<Mutex<Connection<TcpStream>>>> = None;
     if let Ok(retrived_db) = database.get_settings().await {
-        if (retrived_db.enabled_rcon) {
+        if retrived_db.enabled_rcon {
             rcon_connection = match Connection::builder()
                 .enable_minecraft_quirks(true)
                 .connect(&retrived_db.rcon_url, &retrived_db.rcon_password)
                 .await
-                .map_err(|e| e)
-                // Temporary note, you could put e in a Error::new
-                // TODO: consider doing the above, and remove this and the above comment
-                {
-                    Ok(conn) => Some(Arc::new(Mutex::new(conn))),
-                    Err(e) => {
-                        eprintln!("Failed to connect to RCON: {}", e);
-                        None
-                        // Connection stays None
-                    }
+            {
+                Ok(conn) => Some(Arc::new(Mutex::new(conn))),
+                Err(e) => {
+                    eprintln!("Failed to connect to RCON: {}", e);
+                    None
                 }
+            }
         }
     }
 
@@ -1285,7 +1292,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         current_server = Some(database.get_settings().await?.current_server.into_server())
     }
 
-    // use everything so far to make the app state
     let mut state: AppState = AppState {
         tcp_tx: tcp_tx,
         tcp_rx: tcp_rx,
@@ -1313,8 +1319,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let multifaceted_state = Arc::new(RwLock::new(state));
     let _ = load_settings(multifaceted_state.clone()).await;
 
-    // if there is supposed to be a initial connection and if there is a client (as it wont be able to create the deployment without it, and it would be pointless to create a docker container
-    // without the abbility to deploy it)
     let inner_state = Arc::clone(&multifaceted_state);
     if enable_initial_connection {
         println!("Trying initial connection...");
@@ -1323,8 +1327,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let tcp_tx_clone = inner_state.write().await.tcp_tx.clone();
         let tcp_url_clone = tcp_url.to_string();
 
-        // TODO: Since I never create a handler with initial connections, should i take it out of the thread?, or rather,
-        // leave it to set a TcpStream for the appstate for when it sorts itself out
         let handle = tokio::spawn(async move {
             let initial_connection_result = try_initial_connection(
                 initial_connection_attempts,
@@ -1362,7 +1364,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
             if initial_connection_result.is_ok() {
                 println!("Creating a new connection");
-                //&inner_state.write().await.
                 let (new_tcp_tx, new_tcp_rx) = broadcast::channel::<Vec<u8>>(100);
                 let (internal_tx, internal_rx) = broadcast::channel::<Vec<u8>>(100);
 
@@ -1377,7 +1378,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let bridge_rx = new_tcp_tx.subscribe();
                 let bridge_tx = inner_state.read().await.ws_tx.clone();
                 let internal_stream = Some(internal_rx);
-                //println!("Near to making a new connection");
                 let connect_to_server_result = connect_to_server(
                     inner_state,
                     tcp_url,
@@ -1395,8 +1395,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
         });
 
-        // This will make sure that the results of the initial connections attempt to build a docker image, or create a k8s deployment succeeded
-        // and it will log the result, will if its an error. An error not logging here does not mean the initial connection went fine
         match handle.await {
             Ok(Ok(_)) => {}
             Ok(Err(e)) => {
@@ -1408,39 +1406,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    // takes the tcp connection out of the arc mutex and gets a connection to the
-    // websocket to send to connect_to_server to establish the date pipeline
-    let server_connection_state = multifaceted_state.clone();
-    let bridge_rx = multifaceted_state.read().await.tcp_rx.resubscribe();
-    let bridge_tx = multifaceted_state.read().await.ws_tx.clone();
-
-    let arc_state_clone = multifaceted_state.clone();
-
-    // Currently very permissive CORS for permissions
     let cors = CorsLayer::new()
         .allow_origin(CorsAny)
         .allow_methods([Method::GET, Method::POST])
         .allow_headers(CorsAny);
 
-    // fallback_router will serve all the basic files
-    let fallback_router = routes_static(multifaceted_state.clone());
-
     let session_store = MemoryStore::default();
-    // TODO:
-    // In the future, once cookies work, improve overrall https support
-    // there was an issue where users could not log in because cookies have the Secure flag
-    // but the site is http, which causes the cookie to be blocked
-    // meaning every request to protected routes had no session and redirected back to login
-    let session_layer = SessionManagerLayer::new(session_store)
+    let session_layer = SessionManagerLayer::new(session_store.clone())
         .with_secure(false)
         .with_same_site(tower_sessions::cookie::SameSite::Lax)
-        .with_http_only(true);
-    let backend = Backend::default();
-    let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
+        .with_http_only(false)
+        .with_path("/")
+        .with_name("gameserver_session");
 
-    // the main route, this serves all the api stuff that wont be behind a login, but I handle the main routes in routes_static for better control
-    // over the authentication flow, if the api could be publically accessible in the future, you would need a diffrent way to authenticate with a api
-    //let global_state = multifaceted_state.write().await.clone();
+    let backend = Backend::default();
+    let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer.clone()).build();
+
+    let (fallback_router, maybe_oidc_layer) = routes_static(
+        multifaceted_state.clone(),
+        auth_layer.clone(),
+    ).await;
+
     let inner = Router::new()
         .route("/api/message", get(get_message))
         .route("/api/nodes", get(get_nodes))
@@ -1458,9 +1444,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/createintergrations", post(create_intergration))
         .route("/api/modifyintergrations", post(modify_intergration))
         .route("/api/deleteintergrations", post(delete_intergration))
-        // Actual intergrations
         .route("/api/rconcommand", post(rcon_command))
-        // End of actual intergrations
         .route("/api/refreshstatus", post(refresh_status))
         .route("/api/setsettings", post(set_settings))
         .route("/api/changenode", put(change_node))
@@ -1480,31 +1464,69 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/getserver", post(get_server))
         .route("/api/send", post(receive_message))
         .route("/api/general", post(process_general))
-        .route(
-            "/api/generalwithmetadata",
-            post(process_general_with_metadata),
-        )
-        // the above route is supposed to be the newer version to /api/general, adding a additonal metadata feild, changing all incomingmessages to incomingmessageswithmetadata
-        // will take awhile, so temporarially ill have this route
+        .route("/api/generalwithmetadata", post(process_general_with_metadata))
         .route("/api/signin", post(sign_in))
         .route("/api/signout", delete(sign_out))
         .route("/api/user/me", get(user_me))
         .route("/api/createuser", post(create_user))
         .route("/api/deleteuser", post(delete_user))
-        .layer(auth_layer)
         .merge(fallback_router)
         .with_state(multifaceted_state.clone());
 
     let normal_routes = Router::new().merge(inner);
 
-    // Does nesting of routes behind a base path if configured, otherwise use defaults
     let app = if base_path.is_empty() || base_path == "/" {
-        normal_routes.layer(cors)
+        let routed = normal_routes
+            .layer(middleware::from_fn(|req: Request<Body>, next: Next| async move {
+                next.run(req).await
+            }))
+            .layer(cors)
+            .layer(auth_layer);
+
+        let routed = if let Some(oidc_layer) = maybe_oidc_layer {
+            routed.layer(
+                // Needs a service builder to convert a MiddleWareError into an actual reponse which can be
+                // combined with the rest of the routes, this is also in static_routes
+                // TODO: consider if this is nessesary with static_routes also handling oidc?
+                ServiceBuilder::new()
+                    .layer(HandleErrorLayer::new(|e: MiddlewareError| async move {
+                        eprintln!("OIDC auth layer error: {e:#?}");
+                        Redirect::to("/oidc").into_response()
+                    }))
+                    .layer(oidc_layer)
+            )
+        } else {
+            routed
+        };
+        routed.layer(session_layer)
     } else {
-        Router::new().nest(&base_path, normal_routes).layer(cors)
+        let routed = Router::new()
+            .nest(&base_path, normal_routes)
+            .layer(middleware::from_fn(|req: Request<Body>, next: Next| async move {
+                eprintln!("INCOMING: {} {}", req.method(), req.uri());
+                next.run(req).await
+            }))
+            .layer(cors)
+            .layer(auth_layer);
+
+        let routed = if let Some(oidc_layer) = maybe_oidc_layer {
+            routed.layer(
+                // Same reason for ServiceBuilder as explained above
+                ServiceBuilder::new()
+                    .layer(HandleErrorLayer::new(|e: MiddlewareError| async move {
+                        eprintln!("OIDC auth layer error: {e:#?}");
+                        Redirect::to("/oidc").into_response()
+                    }))
+                    .layer(oidc_layer)
+            )
+        } else {
+            routed
+        };
+
+        // adds a session to everything
+        routed.layer(session_layer)
     };
 
-    // serves the website
     let addr: SocketAddr = config_local_url.parse().unwrap();
     println!("Listening on http://{}{}", addr, base_path);
 
@@ -1887,57 +1909,188 @@ async fn ws_handler(
 }
 
 // routes_static provides middlewares for authentication as well as serving all the user-orintated content
-fn routes_static(state: Arc<RwLock<AppState>>) -> Router<Arc<RwLock<AppState>>> {
+// and also, this works for SPA and non-SPA content, e.g non-spa for either entire new UI's or
+// plugin files which might not be included with the rest of the files
+// if its an SPA, there is practically 0 benifit from the server side login middleware
+// although for Non-SPA files that served as soley a user convenience feature rather than an actual security
+// measure
+// also I pass auth layer because sometimes it says that there is no auth layer present instead of serving the webpage
+// the fix mainly worked in the router in main, I am just covering future cases 
+async fn routes_static(
+    state: Arc<RwLock<AppState>>,
+    auth_layer: AuthManagerLayer<Backend, MemoryStore>,
+) -> (Router<Arc<RwLock<AppState>>>, Option<OidcAuthLayer<EmptyAdditionalClaims>>) {
     let base_path = std::env::var("SITE_URL")
         .map(|mut s| {
             s = s.trim().to_string();
             if !s.is_empty() {
-                if !s.starts_with('/') {
-                    s.insert(0, '/');
-                }
-                if s.ends_with('/') && s != "/" {
-                    s.pop();
-                }
+                if !s.starts_with('/') { s.insert(0, '/'); }
+                if s.ends_with('/') && s != "/" { s.pop(); }
             }
             s
         })
         .unwrap_or_default();
 
-    let login_url_base = Arc::new(format!("{}/", base_path));
+    // login_required_middleware will for all files served, will redirect the user back to the main login page
+    // if they are not authenticated, for an SPA this does not change anything
 
+    // TODO: remove /oidc? from the end of this
+    // need to check to make sure that doesnt break anything
+    // during OIDC implimentation i tried several things and have not fully determined the bare configuration
+    // needed for OIDC
+    let login_url_base = Arc::new(format!("{}/oidc", base_path));
     let login_required_middleware = from_fn(
         move |auth_session: AuthSession, req: Request<Body>, next: Next| {
-            let login_url_base = login_url_base.clone();
+            let login_url = login_url_base.clone();
             async move {
+                let path = req.uri().path().to_string();
+                if path.starts_with("/oidc") {
+                    return next.run(req).await;
+                }
                 if auth_session.user.is_some() {
                     next.run(req).await
                 } else {
-                    let original_uri = req.uri();
-                    let next_path = original_uri.to_string();
-                    let redirect_url = format!(
-                        "{}?next={}",
-                        login_url_base,
-                        urlencoding::encode(&next_path)
-                    );
-                    Redirect::temporary(&redirect_url).into_response()
+                    Redirect::temporary(&login_url).into_response()
                 }
             }
         },
     );
 
+    // OIDC layers and routes will not be constructed if there is an issue with creating the layer 
+    // and routes, and will just merge and empty router
+    let mut maybe_oidc_layer: Option<OidcAuthLayer<EmptyAdditionalClaims>> = None;
+    let mut oidc_routes: Router<Arc<RwLock<AppState>>> = Router::new();
+
+    if let Ok((raw_oidc_layer, _)) = get_oidc_layer().await {
+        // adds the callback and the oidc route to actually start the login initiation (includes fallback for /oidc/ if the user adds a path, maybe not nessesary?)
+        let callback_router: Router<Arc<RwLock<AppState>>> = Router::new()
+            .route("/oidc/callback", any(handle_oidc_redirect::<EmptyAdditionalClaims>));
+
+        let login_router: Router<Arc<RwLock<AppState>>> = Router::new()
+            .route("/oidc", any(oidc_login_initiate))
+            .route("/oidc/", any(oidc_login_initiate))
+            .layer(
+                // Needs a service builder to convert a MiddleWareError into an actual reponse which can be
+                // combined with the rest of the routes, this is also in main
+                ServiceBuilder::new()
+                    .layer(HandleErrorLayer::new(|e: MiddlewareError| async move {
+                        eprintln!("OIDC login layer error: {e:#?}");
+                        e.into_response()
+                    }))
+                    .layer(OidcLoginLayer::<EmptyAdditionalClaims>::new()),
+            );
+
+        oidc_routes = Router::new()
+            .merge(callback_router)
+            .merge(login_router);
+
+        maybe_oidc_layer = Some(raw_oidc_layer);
+    }
+
     let public = Router::new()
         .route("/", get(handle_static_request))
-        .route("/authenticate", get(authenticate_route))
+        .route("/authenticate", get(authenticate_route_with_jwt))
         .route("/index.html", get(handle_static_request))
-        .with_state(state.clone());
+        .route("/assets/{*wildcard}", get(handle_static_request));
 
     let protected = Router::new()
         .route("/{*wildcard}", get(handle_static_request))
-        .with_state(state.clone())
         .layer(login_required_middleware);
 
-    // Apply auth_layer only once at the root
-    Router::new().merge(public).merge(protected)
+    let router = Router::new()
+        .merge(public)
+        .merge(oidc_routes)
+        .merge(protected)
+        .with_state(state.clone());
+
+    (router, maybe_oidc_layer)
+}
+
+// This function will construct a layer with the OIDC client, which includes stuff like the local
+// callback URL and importanly the OIDC redirect
+// client ids and secrets
+async fn get_oidc_layer() -> Result<(OidcAuthLayer<EmptyAdditionalClaims>, OidcClient<EmptyAdditionalClaims>), Box<dyn Error + Send + Sync>> {
+    // get_env_var_or_arg("TCPURL", Some(StaticTcpUrl.to_string())).unwrap();
+
+    // TODO: maybe make a function which trims the last / in a url 
+    let oidc_callback =
+        format!("{}/oidc/callback", get_env_var_or_arg("LOCALURL", Some(StaticLocalUrl.to_string())).unwrap());
+    
+    let oidc_url: String = get_env_var_or_arg("OIDC_URL", Some("http://localhost:5556/dex".into())).unwrap();
+
+    let oidc_secret: String = get_env_var_or_arg("OIDC_SECRET", Some("axum-app-secret".into())).unwrap();
+    let oidc_id: String = get_env_var_or_arg("OIDC_ID", Some("axum-app-secret".into())).unwrap();
+
+    let client = OidcClient::<EmptyAdditionalClaims>::builder()
+        .with_default_http_client()
+        .with_redirect_url(oidc_callback.parse()?)
+        .with_client_id(ClientId::new(oidc_id))
+        .with_client_secret(ClientSecret::new(oidc_secret))
+        .add_scope(Scope::new("openid".into()))
+        .add_scope(Scope::new("profile".into()))
+        .discover(IssuerUrl::new(oidc_url.into())?)
+        .await?
+        .build();
+
+    let layer = OidcAuthLayer::new(client.clone());
+    Ok((layer, client))
+}
+
+#[axum::debug_handler]  
+async fn oidc_login_initiate(
+    mut auth_session: AuthSession,
+    claims: Option<OidcClaims<EmptyAdditionalClaims>>,
+) -> impl IntoResponse {
+    eprintln!(
+        "oidc_login_initiate: claims={} user={}",
+        claims.is_some(),
+        auth_session.user.is_some()
+    );
+    if auth_session.user.is_some() {
+        return Redirect::to("/").into_response();
+    }
+    if let Some(claims) = claims {
+        let mut decoded_user = String::new();
+
+        // Code for decoding the claims itself
+        // if let Ok(decoded_user_bytes) = STANDARD.decode(local_claim_name.to_string()){
+        //     if let Ok(inner_decoded_user) = String::from_utf8(decoded_user_bytes){
+        //         decoded_user = inner_decoded_user;
+        //     } else {
+        //         println!("D");
+        //         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        //     }
+        // } else {
+        //     println!("C");
+        //     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        // }
+
+        if let Some(claim_name) = claims.name() {
+            if let Some(local_claim_name) = claim_name.get(None) {
+                decoded_user = local_claim_name.to_string();
+            } else {
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        } else {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+        let user = User {
+            username: decoded_user,
+            password_hash: None,
+            user_perms: vec![],
+        };
+        match auth_session.login(&user).await {
+            Ok(_) => eprintln!("axum_login: login succeeded"),
+            Err(e) => {
+                eprintln!("axum_login: login FAILED: {e:?}");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        }
+        return Redirect::to("/").into_response();
+    } else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    }
+    StatusCode::UNAUTHORIZED.into_response()
 }
 
 async fn load_settings(
@@ -3121,6 +3274,10 @@ async fn serve_html_with_replacement(
 ) -> Result<Response<Body>, StatusCode> {
     let path = Path::new("src/frontend/build").join(file);
 
+    let path = if path.exists() { path } else {
+        Path::new("src/frontend/build/index.html").to_path_buf()
+    };
+
     if path.extension().and_then(|e| e.to_str()) == Some("html") {
         let html = tokio_fs::read_to_string(&path)
             .await
@@ -3133,7 +3290,6 @@ async fn serve_html_with_replacement(
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
     let content_type = from_path(&path).first_or_octet_stream().to_string();
-
     Ok(Response::builder()
         .header("Content-Type", content_type)
         .body(Body::from(bytes))
@@ -3150,18 +3306,6 @@ async fn handle_static_request(
     let state = arc_state.read().await;
     let path = req.uri().path();
 
-    // let query = req.uri().query().unwrap_or("");
-    // let params: FileParams = match serde_urlencoded::from_str(query) {
-    //     Ok(p) => p,
-    //     Err(_) => return Err(StatusCode::BAD_REQUEST),
-    // };
-    // let response = get_files(
-    //     State(arc_state.clone()),
-    //     Query(params),
-    // )
-    // .await
-    // .into_response();
-
     let file = if path == "/" || path.is_empty() {
         "index.html"
     } else {
@@ -3177,6 +3321,10 @@ async fn handle_static_request(
             .unwrap()),
     }
 }
+
+// This will get the content of a file from gameserver, it will use the custom Tcp filesystem I created
+// it will ensure it is not a path escape
+// then return the file content
 async fn get_files_content(
     State(state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<FileChunk>,
@@ -3203,7 +3351,7 @@ async fn get_files_content(
     let (dir_path, file_name) = match (requested_path.parent(), requested_path.file_name()) {
         (Some(dir), Some(file)) => (dir.to_path_buf(), file.to_os_string()),
         _ => {
-            eprintln!("[get_files] Could not split path into directory and file");
+            eprintln!("Could not split path into directory and file");
             return Err((StatusCode::BAD_REQUEST, "Invalid path structure").into_response());
         }
     };
@@ -3223,6 +3371,7 @@ async fn get_files_content(
     Ok(Json(content))
 }
 
+// Gets a list of files and return to to things like the filebrowser
 pub async fn get_files(
     State(state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<IncomingMessage>,
@@ -3267,14 +3416,14 @@ pub async fn get_files(
         Ok(Ok(true)) => true,
         Ok(Ok(false)) => {
             eprintln!(
-                "[get_files] Path is not a directory: '{}'",
+                "Path is not a directory: '{}'",
                 requested_path.to_string()
             );
             return (StatusCode::BAD_REQUEST, "Path is not a directory").into_response();
         }
         Ok(Err(e)) => {
             eprintln!(
-                "[get_files] Error checking dir '{}': {}",
+                "Error checking dir '{}': {}",
                 requested_path.to_string(),
                 e
             );
@@ -3286,7 +3435,7 @@ pub async fn get_files(
         }
         Err(_) => {
             eprintln!(
-                "[get_files] Timeout checking dir '{}'",
+                "Timeout checking dir '{}'",
                 requested_path.to_string()
             );
             return (StatusCode::GATEWAY_TIMEOUT, "Request timed out").into_response();
@@ -3297,7 +3446,7 @@ pub async fn get_files(
         Ok(Ok(list)) => list,
         Ok(Err(e)) => {
             eprintln!(
-                "[get_files] Failed to read directory '{}': {}",
+                "Failed to read directory '{}': {}",
                 requested_path.to_string(),
                 e
             );
@@ -3309,7 +3458,7 @@ pub async fn get_files(
         }
         Err(_) => {
             eprintln!(
-                "[get_files] Timeout reading dir '{}'",
+                "Timeout reading dir '{}'",
                 requested_path.to_string()
             );
             return (StatusCode::GATEWAY_TIMEOUT, "Request timed out").into_response();
@@ -3343,7 +3492,7 @@ pub struct AuthenticateParams {
     jwk: String,
 }
 
-async fn authenticate_route(
+async fn authenticate_route_with_jwt(
     State(_state): State<Arc<RwLock<AppState>>>,
     Query(params): Query<AuthenticateParams>,
     mut auth_session: AuthSession,
