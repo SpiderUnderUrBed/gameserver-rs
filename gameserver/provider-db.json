@@ -8,7 +8,8 @@
         "post_hook": "cd {{SERVERLOCATION}} && id && ls -la . && wget --no-check-certificate -O server.jar https://piston-data.mojang.com/v1/objects/84194a2f286ef7c14ed7ce0090dba59902951553/server.jar && echo 'eula=true' > eula.txt",
         "start": "cd {{SERVERLOCATION}} && java -Xmx1024M -Xms1024M -jar server.jar nogui",
         "needed_paths": ["/usr/lib/jvm", "/opt/java", "/usr/java"],
-        "needed_commands": ["java", "wget"]
+        "needed_commands": ["java", "wget"],
+        "sandbox": false
       },
       "windows": {
         "location": "",
@@ -17,7 +18,8 @@
         "post_hook": "cd {{SERVERLOCATION}}; Invoke-WebRequest -Uri https://piston-data.mojang.com/v1/objects/84194a2f286ef7c14ed7ce0090dba59902951553/server.jar -OutFile server.jar; 'eula=true' | Out-File -Encoding ASCII eula.txt",
         "start": "cd {{SERVERLOCATION}}; java -Xmx1024M -Xms1024M -jar server.jar nogui",
         "needed_paths": ["/usr/lib/jvm", "/opt/java", "/usr/java"],
-        "needed_commands": ["java", "wget"]
+        "needed_commands": ["java", "wget"],
+        "sandbox": false
       }
     }
   }

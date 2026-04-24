@@ -74,3 +74,4 @@ For nixos users this command might be useful:
 # Licence
 
 This project is licenced under [GPL3](./LICENSE.txt).
+

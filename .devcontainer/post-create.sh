@@ -19,8 +19,9 @@ echo 'export CARGO_HOME="$HOME/.cargo"' >> ~/.bashrc
 
 # Add completions
 mkdir -p ~/.local/share/bash-completion/completions/
-printf '. <(k3d completion bash)\n'       >~/.local/share/bash-completion/completions/k3d
-printf '. <(rustup completions bash)\n'       >~/.local/share/bash-completion/completions/rustup
-printf '. <(rustup completions bash cargo)\n' >~/.local/share/bash-completion/completions/cargo
+printf '. <(k3d completion bash)\n' > ~/.local/share/bash-completion/completions/k3d
+printf '. <(rustup completions bash)\n' > ~/.local/share/bash-completion/completions/rustup
+printf '. <(rustup completions bash cargo)\n' > ~/.local/share/bash-completion/completions/cargo
+printf '. <(pnpm completion bash)\n' > ~/.local/share/bash-completion/completions/pnpm
 
 echo "Development environment is ready!"
