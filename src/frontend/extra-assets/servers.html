@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="site-url" content="[[SITE_URL]]">
+    <title>Document</title>
+    <link rel="stylesheet" href="servers.css">
+    <script src="servers.js" defer></script>
+</head>
+<body>
+    <div class="server-whole">
+        <div class="side-bar">
+            <button class="server-button-page" onclick="window.location.href='main.html'">Homepage</button>
+            <button class="server-button-page" onclick="window.location.href='users.html'">Users</button>
+            <button class="server-button-page" onclick="window.location.href='servers.html'">Servers</button>
+            <button class="server-button-page" onclick="window.location.href='nodes.html'">Nodes</button>
+        </div>
+        
+        <div class="server-center">
+            <div class="server-background">
+                <div class="server-operations">
+                    <button class="servers-element-operations" onclick="document.getElementById('addServerDialog').showModal()">Add Server</button>
+                    <button class="servers-element-operations" onclick="document.getElementById('deleteServerDialog').showModal()">Delete Server</button>
+                </div>
+    
+                <div class="server-spacer"></div>
+    
+                <div class="server-data-colum">
+                    <div style="flex-grow: 1.3;"></div>
+                    <h5 style="flex-grow: 3;">Servername:</h5>
+                    <div style="display: flex; flex-grow: 1.3;">
+                        <h5>Roles:</h5>
+                        <div style="width: 5vh;"></div>
+                        <h5>Extra settings:</h5>
+                    </div>
+                </div>
+    
+                <div class="servers">
+                </div>
+    
+                <div id="message"></div>
+            </div>
+    
+            <dialog id="deleteServerDialog" class="server-dialog">
+                <form method="dialog">
+                    <h3>Delete Server</h3>
+                    <label for="servername">Servername:</label><br>
+                    <input type="text" id="delete-servername" name="servername" required><br>
+                    <div class="dialog-buttons">
+                        <button type="submit" onclick="deleteServerByDialog()">Delete Server</button>
+                        <button onclick="document.getElementById('deleteServerDialog').close()">Cancel</button>
+                    </div>
+                </form>
+            </dialog>
+    
+            <dialog id="globalServerDialog" class="server-dialog" data-value="edit-perms">
+                <div class="server-dialog" data-server-container>
+                    <p id="server"></p>
+                    <div id="perms" class="perms">
+                        <select id="perms-selector" name="perms-selector">
+                            <option value="server">Create Server</option>
+                            <option value="createservers">Create Servers</option>
+                        </select>
+                        <button onclick="addPerms(this)">+</button>
+                    </div>
+                    <button onclick="deleteServerByClick(this)">Delete server</button>
+                    <button onclick="editPermissions(this)">Edit permissions</button>
+                    <button onclick="document.getElementById('globalServerDialog').close()">Close</button>
+                </div>
+            </dialog>
+    
+            <dialog id="addServerDialog" class="server-dialog">
+                <div class="server-dialog" data-server-container>
+                    <form method="dialog">
+                        <h3>Add Server</h3>
+                        <label for="servername">Servername:</label><br>
+                        <input type="text" id="create-servername" name="servername" required><br>
+                        <label for="password">Password:</label><br>
+                        <input type="password" id="password" name="password" required><br>
+                        <div style="height: 20px;"></div>
+                        <div id="perms"></div>
+                        <label for="perms-selector"></label><br>
+                        <select id="perms-selector" name="perms-selector">
+                            <option value="server">Create Server</option>
+                            <option value="createservers">Create Servers</option>
+                        </select>
+                        <button type="button" onclick="addPerms(this)">Add permission</button>
+                        <div style="height: 5vh;"></div>
+                        <div class="dialog-buttons">
+                            <button type="submit" onclick="addServer()">Add Server</button>
+                            <button onclick="document.getElementById('addServerDialog').close()">Cancel</button>
+                        </div>
+                    </form>
+                </div>
+            </dialog>
+            <!-- <dialog id="extraSettingsDialog">
+                <form method="dialog">
+                    <button onclick="document.getElementById('extraSettingsDialog').close()">Cancel</button>
+                </form>
+            </dialog> -->
+        </div>
+    </div>    
+    <template id="server-element-inner-template">
+        <div class="servers-element" data-server-container>
+            <!-- <div style="width: 47vh"></div> -->
+            <div style="flex-grow: 0.9;"></div>
+            <h5 style="flex-grow: 2.4;" id="servername"></h5>
+            <!-- <div style="width: 105vh"></div> -->
+            <div style="display: flex; flex-grow: 1;">
+                <p id="roles">None</p>
+                <div style="width: 5vh;"></div>
+                <button onclick="extraSettings(this)" style="letter-spacing: 2px;">•••</button>
+            </div>
+        </div>
+    </template>
+    <template id="passwordbox">
+        <h5>•••••••••••••••••</h5>
+        <button onclick="togglePassword(this)">
+            <img style="width: 1rem; height: 1rem;" src="icons/show.svg">
+        </button>
+    </template>
+</body>
+</html>

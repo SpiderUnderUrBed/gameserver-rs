@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Markdown Render</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="manual.css" />
+</head>
+<body>
+    <!-- <aside>
+        <button onclick="window.location.href='main.html'">Homepage</button>
+        <button onclick="window.location.href='users.html'">Users</button>
+        <button onclick="window.location.href='servers.html'">Servers</button>
+        <button onclick="window.location.href='nodes.html'">Nodes</button>
+        <button onclick="window.location.href='manual.html'">Manual</button>
+
+        <div class="toggablePages" id="toggablePages">
+            <button onclick="window.location.href='create-servers.html'">Create servers</button>
+            <button onclick="window.location.href='svelte-main.html'">Svelte main</button>
+        </div>
+
+        <button class="bottom" onclick="enableDeveloperOptions()">Toggle Developer Options</button>
+    </aside> -->
+    <div class="center">
+        <div class="side-panel">
+            <button onclick="window.location.href='main.html'">Homepage</button>
+            <button onclick="window.location.href='users.html'">Users</button>
+            <button onclick="window.location.href='servers.html'">Servers</button>
+            <button onclick="window.location.href='nodes.html'">Nodes</button>
+            <button onclick="window.location.href='manual.html'">Manual</button>
+        </div>
+        <div id="markdown" style="display: none;">
+            # Hello
+        </div>
+        <div id="markdown-render"></div>
+    </div>
+    <script>
+        const input = document.getElementById("markdown");
+        const preview = document.getElementById("markdown-render");
+
+        function render() {
+            preview.innerHTML = marked.parse(input.textContent);
+        }
+
+        render();
+    </script>
+</body>
+</html>

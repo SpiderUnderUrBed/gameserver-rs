@@ -1,0 +1,55 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/typescript-node
+{
+    "name": "gameserver-rs",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "context": ".."
+    },
+    "workspaceFolder": "/workspaces/gameserver-rs",
+    "features": {
+        // 1. Install Node.js & TypeScript
+        "ghcr.io/devcontainers/features/node:1": {
+            "version": "24",
+            "pnpmVersion": "latest",
+            "nvmVersion": "latest"
+        },
+        // 2. Enable Docker (required for k3d)
+        // See: github.com/devcontainers/features/pull/1425
+        "./docker-in-docker-patched": {
+            "version": "latest",
+            "moby": false
+        },
+        // 3. Install Kubernetes tools (kubectl & helm)
+        "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {
+            "version": "latest",
+            "minikube": "none"
+        }
+    },
+    "containerEnv": {
+        "PGHOST": "127.0.0.1",
+        "PGUSER": "postgres",
+        "PGDATABASE": "postgres",
+        "PGPASSWORD": "postgres",
+        "DATABASE_URL": "postgresql://postgres:postgres@localhost/postgres"
+    },
+    "remoteUser": "vscode",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "rust-lang.rust-analyzer",
+                "tamasfe.even-better-toml",
+                "dbaeumer.vscode-eslint",
+                "ms-kubernetes-tools.vscode-kubernetes-tools",
+                "1YiB.svelte-bundle",
+                "esbenp.prettier-vscode",
+                "bradlc.vscode-tailwindcss"
+            ],
+            "settings": {
+                "rust-analyzer.check.command": "clippy"
+            }
+        }
+    },
+    // Now postCreate is only for things that change per-repo, like cluster creation
+    "postCreateCommand": "bash .devcontainer/post-create.sh"
+}

@@ -1,0 +1,34 @@
+FROM node:20 AS frontend-build
+
+WORKDIR /app/frontend
+
+COPY src/frontend/package*.json ./
+COPY src/frontend/tsconfig.json ./
+COPY src/frontend/svelte.config.js ./
+COPY src/frontend/vite.config.ts ./
+COPY src/frontend/src ./src
+COPY src/frontend/static ./static
+COPY src/frontend/extra-assets ./extra-assets 
+
+RUN mkdir -p build
+
+RUN npm install && npm run build
+
+FROM rust:latest
+
+RUN apt-get update && apt-get install -y bubblewrap && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /usr/src/app
+
+RUN cargo install cargo-watch
+
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+COPY gameserver ./gameserver
+
+COPY --from=frontend-build /app/frontend/build ./src/frontend/build
+
+VOLUME ["/usr/src/app/server"]
+EXPOSE 8080
+
+CMD ["cargo", "watch", "--ignore", "src/vanilla/*", "--ignore", "src/svelte/*", "--ignore", "gameserver/*", "-x", "run --features full-stack"]

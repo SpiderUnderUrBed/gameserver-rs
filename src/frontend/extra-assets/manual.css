@@ -1,0 +1,23 @@
+
+body {
+    background-color: orange;
+}
+
+aside {
+  background: #000;
+  display: flex;
+  padding: 1em;
+  gap: 1em;
+  flex-direction: column;
+}
+
+.center {
+    display: flex;
+}
+
+.side-panel {
+    display: flex;
+    flex-direction: column;
+    background-color: black;
+    height: 100svh;
+}
