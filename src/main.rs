@@ -226,7 +226,6 @@ static StaticTcpUrl: &str = "127.0.0.1:8082";
 
 #[cfg(not(feature = "full-stack"))]
 static StaticLocalUrl: &str = "127.0.0.1:8083";
-static StaticLocalUrl: &str = "127.0.0.1:8083";
 
 #[cfg(not(feature = "full-stack"))]
 static K8S_WORKS: bool = false;
