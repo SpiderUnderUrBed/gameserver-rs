@@ -226,6 +226,7 @@ static StaticTcpUrl: &str = "127.0.0.1:8082";
 
 #[cfg(not(feature = "full-stack"))]
 static StaticLocalUrl: &str = "127.0.0.1:8083";
+static StaticLocalUrl: &str = "127.0.0.1:8083";
 
 #[cfg(not(feature = "full-stack"))]
 static K8S_WORKS: bool = false;
@@ -3219,6 +3220,9 @@ async fn sign_in(
     let password_valid = verify_password(request.password, user.password_hash.unwrap())
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
+    if !password_valid {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
     if !password_valid {
         return Err(StatusCode::UNAUTHORIZED);
     }
