@@ -1,4 +1,4 @@
-import { unknown } from 'valibot';
+import { object, unknown } from 'valibot';
 import { httpClient } from '../utils/http';
 
 export type ServerStatusMode = 'node' | 'server-keyword' | 'server-process';
@@ -96,6 +96,7 @@ export class ServerConsoleState {
 			this.ws.addEventListener('message', (event) => {
 				const payload = event.data;
 				const out = typeof payload === 'string' ? payload : JSON.stringify(payload);
+				// console.log(out);
 				this.addConsoleEntry({ type: 'output', text: this.cleanOutput(this.cleanJson(out)) });
 			});
 
@@ -119,21 +120,30 @@ export class ServerConsoleState {
 
 		while (
 			output !== null &&
-			typeof output === "object" &&
-			"data" in output
+			(typeof output === "object" &&
+			"data" in output) || typeof output == "string"
 		) {
-			output = (output as Record<string, unknown>).data;
-		}
-
-		while (typeof output === "string") {
-			try {
-				const parsed = JSON.parse(output);
-
-				output = parsed;
-			} catch {
-				break;
+			let json = (output as Record<string, unknown>);
+			if (typeof output == "string") {
+				try {
+					json = JSON.parse(output);
+				} catch {
+					break;
+				}
+			}
+			let data = json.data;
+			if (typeof data == "string"){
+				try {
+					output = JSON.parse(data);
+				} catch {
+					output = data;
+					break;
+				}
+			} else {
+				output = data;
 			}
 		}
+
 
 		if (output !== null && typeof output === "object") {
 			const obj = output as Record<string, unknown>;
@@ -152,7 +162,7 @@ export class ServerConsoleState {
 
 			return JSON.stringify(obj);
 		}
-
+		//console.log(output);
 		return String(output);
 	}
 
@@ -225,6 +235,16 @@ export class ServerConsoleState {
 			console.error(e);
 		}
 		this.addConsoleEntry({ type: 'output', text: 'Stop server called' });
+	}
+
+	public async deleteServer(servername: string = '', authcode: string = '0') {
+		console.log("deleting current server");
+		try {
+			await httpClient.post('/api/deleteserver', { json: { message: servername, authcode } });
+			console.log("Success");
+		} catch (err) {
+			console.error(err);
+		}
 	}
 
 	public async createDefaultServer(

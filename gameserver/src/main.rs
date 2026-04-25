@@ -1403,7 +1403,7 @@ async fn handle_typical_command_or_console(
     if typ == "command" {
         let cmd_str = payload.message.clone();
         match cmd_str.as_str() {
-            "delete_server" => {
+            "delete_current_server" => {
                 let option_path = get_definite_path_from_name(
                     &state,
                     get_provider_from_servername(
@@ -1421,7 +1421,7 @@ async fn handle_typical_command_or_console(
                 )
                 .await;
                 if let Some(mut path) = option_path {
-                    if !path.starts_with("server/") {
+                    if !path.trim().starts_with("server") && !path.trim().starts_with("server/") {
                         path = format!("server/{}", path);
                     }
                     if let Err(errro) = fs::remove_dir_all(&path).await {

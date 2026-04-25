@@ -423,6 +423,12 @@ struct List {
     list: ApiCalls,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct SimpleMesagePayload {
+    message: String, 
+    authcode: String
+}
+
 // May be redundant, but this is a struct for incoming messages
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct IncomingMessage {
@@ -1469,6 +1475,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/editbuttons", post(edit_buttons))
         .route("/api/addnode", post(add_node))
         .route("/api/addserver", post(add_server))
+        .route("/api/deleteserver", post(delete_server))
         .route("/api/startserver", post(start_server))
         .route("/api/stopserver", post(stop_server))
         .route("/api/edituser", post(edit_user))
@@ -2262,6 +2269,33 @@ async fn add_node(
         .await
         .map_err(|e| StatusCode::INTERNAL_SERVER_ERROR);
     result
+}
+async fn delete_server(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    Json(request): Json<SimpleMesagePayload>,
+) -> impl IntoResponse {
+    let state = arc_state.write().await;
+
+    let msg = MessagePayload {
+        r#type: "command".to_string(),
+        message: "delete_current_server".to_string(),
+        authcode: "0".to_string(),
+    };
+
+    let mut bytes = match serde_json::to_vec(&msg) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("Serialization error: {}", e);
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    bytes.push(b'\n');
+
+    if let Err(e) = state.tcp_tx.send(bytes) {
+        eprintln!("Failed to send 'delete server' to TCP: {}", e);
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    StatusCode::CREATED.into_response()
 }
 async fn add_server(
     State(arc_state): State<Arc<RwLock<AppState>>>,

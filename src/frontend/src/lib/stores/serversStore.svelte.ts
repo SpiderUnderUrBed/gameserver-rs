@@ -60,10 +60,11 @@ export class ServersStore {
 		}
 	}
 
-	public async deleteServer(servername: string, authcode: string = '0') {
+	public async deleteServer(servername: string = '', authcode: string = '0') {
+		console.log("deleting current server");
 		this.error = null;
 		try {
-			await httpClient.post('/api/deleteserver', { json: { server: servername, authcode } });
+			await httpClient.post('/api/deleteserver', { json: { message: servername, authcode } });
 			await this.fetchServers();
 		} catch (err) {
 			this.error = 'Failed to delete server';
