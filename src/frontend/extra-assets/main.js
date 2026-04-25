@@ -853,17 +853,19 @@ async changeNode(node) {
 
   async deleteServer(){
     try {
-      const res = await fetch(`${this.basePath}/api/general`, {
+      const res = await fetch(`${this.basePath}/api/deleteserver`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          kind: "IncomingMessage",
-          data: { 
-            type: "command", 
-            message: "delete_server", 
-            authcode: "0", 
-            // metadata: "minecraft"
-           },
+          message: "",
+          authcode: ""
+          // kind: "IncomingMessage",
+          // data: { 
+          //   type: "command", 
+          //   message: "delete_server", 
+          //   authcode: "0", 
+          //   // metadata: "minecraft"
+          //  },
         }),
       });
 
@@ -1035,17 +1037,17 @@ async changeNode(node) {
   async stopServer() {
     this.updateStatus("down", true)
     try {
-      const res = await fetch(`${this.basePath}/api/general`, {
+      const res = await fetch(`${this.basePath}/api/stopserver`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          kind: "IncomingMessage",
-          data: { 
-            type: "command", 
-            message: "stop_server", 
-            authcode: "0", 
-            // metadata: "minecraft"
-           },
+          // kind: "IncomingMessage",
+          // data: { 
+          //   type: "command", 
+          //   message: "stop_server", 
+          //   authcode: "0", 
+          //   // metadata: "minecraft"
+          //  },
         }),
       });
 
@@ -1224,12 +1226,12 @@ async changeNode(node) {
   async startServer() {
     this.updateStatus("up", true)
     try {
-      const res = await fetch(`${this.basePath}/api/general`, {
+      const res = await fetch(`${this.basePath}/api/startserver`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          kind: "IncomingMessage",
-          data: { type: "command", message: "start_server", authcode: "0" },
+          // kind: "IncomingMessage",
+          // data: { type: "command", message: "start_server", authcode: "0" },
         }),
       });
 
@@ -1306,28 +1308,42 @@ async changeNode(node) {
     let sandbox = document.getElementById("server-sandbox-selector").value == "enabled";
 
     try {
-      const res = await fetch(`${this.basePath}/api/generalwithmetadata`, {
+      const node = (await fetch(`${this.basePath}/getcurrentnode`, {})).json();
+      const res = await fetch(`${this.basePath}/api/addserver`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          kind: "IncomingMessageWithMetadata",
-          data: {
-            message: "create_server",
-            type: "command",
-            authcode: "0",
-            //metadata: "minecraft"
-            metadata: {
-              kind: "Server",
-              data: {
-                // providertype, location, provider, servername
-                servername,
-                providertype: "",
-                provider,
-                location,
-                sandbox
-              }
+          element: {
+            kind: 'Server',
+            data: {
+              servername,
+              provider,
+              providertype: "",
+              location,
+              node,
+              sandbox
             }
           },
+          "jwt": "0",
+          require_auth: false,
+          // kind: "IncomingMessageWithMetadata",
+          // data: {
+          //   message: "create_server",
+          //   type: "command",
+          //   authcode: "0",
+          //   //metadata: "minecraft"
+          //   metadata: {
+          //     kind: "Server",
+          //     data: {
+          //       // providertype, location, provider, servername
+          //       servername,
+          //       providertype: "",
+          //       provider,
+          //       location,
+          //       sandbox
+          //     }
+          //   }
+          // },
         }),
       });
 

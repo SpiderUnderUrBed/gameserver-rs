@@ -7,8 +7,14 @@
     let userMessage = '';
     let serverMessage = '';
     let showDeveloper = false;
-    let colorState = 'WHITE';
-    
+    let colorState = $state('WHITE');
+    let currentLogin = $state('manual');
+    let logged_in = $state(false);
+
+    let loggedInClass = $derived(
+      logged_in ? `logged-in-${colorState === 'WHITE' ? 'white' : 'black'}` : ''
+    );
+
     const logins = [
       {
         id: "manual",
@@ -19,11 +25,11 @@
         label: "Oidc"
       }
     ];
-    let currentLogin = $state('manual');
   
     onMount(() => {
       const meta = document.querySelector('meta[name="site-url"]');
       siteUrl = (meta?.getAttribute('content') ?? '').replace(/\/$/, '');
+      checkLoggedInStatus();
     });
     function toggleColor(){
       if (colorState == "WHITE"){
@@ -45,6 +51,21 @@
       showDeveloper = !showDeveloper;
     }
   
+    async function logout(){
+      try {
+        const res = await fetch(`${siteUrl}/api/signout`, {
+          method: 'DELETE'
+        });
+        if (res.ok){
+          checkLoggedInStatus();
+        } else {
+          console.log("log out failed");
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
     async function login() {
       const formBody = new URLSearchParams();
       formBody.append('user', username);
@@ -64,6 +85,8 @@
         }
   
         const data = await res.json();
+        checkLoggedInStatus();
+
         const jwtToken = encodeURIComponent(data.response);
         const nextUrl = encodeURIComponent(`${siteUrl}/main.html`);
   
@@ -72,6 +95,19 @@
       } catch (err) {
         console.error('Login error:', err);
         alert('Login failed: ' + err.message);
+      }
+    }
+    async function checkLoggedInStatus(){
+      try {
+        const res = await fetch(`${siteUrl}/api/user/me`)
+        if (res.ok) {
+          logged_in = true;
+        } else {
+          logged_in = false;
+        }
+      } catch (e) {
+        logged_in = false;
+        console.error(e);
       }
     }
   
@@ -143,6 +179,7 @@
       background-color: orange;
       color: white;
     }
+    
     .general-buttons-white {
       background-color: white;
       color: black; 
@@ -150,6 +187,16 @@
     .general-buttons-black {
       background-color: black;
       color: white;
+    }
+
+    .logged-in-white {
+      text-decoration: solid;
+      background-color: green;
+    }
+
+    .logged-in-black {
+      text-decoration: solid;
+      background-color: green;
     }
     .user-login-white {
       background-color: white;
@@ -213,9 +260,16 @@
 
 
         <div>
-          <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}" onclick={goToMainPage}>Go to main page</button>
           <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}" onclick={toggleColor}>Toggle {colorState}</button>
           <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}" onclick={toggleDeveloper}>Developer Work</button>
+          {#if logged_in}
+            <br>
+            <p>You are logged in</p>
+            <br>
+          {:else}
+
+          {/if}
+          <button class="{logged_in ? loggedInClass : ''} general-buttons-{colorState === 'WHITE' ? 'white' : 'black'}" onclick={goToMainPage}>Go to main page</button>
         </div>
 
         {#if showDeveloper}
@@ -239,6 +293,7 @@
   <div>
     <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}">Signup</button>
     <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}" onclick={login}>Login</button>
+    <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}" onclick={logout}>Logout</button>
   </div>
 {/snippet}
 {#snippet oidcLogin()}
