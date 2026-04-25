@@ -2119,11 +2119,15 @@ async fn oidc_login_initiate(
             if let Some(local_claim_name) = claim_name.get(None) {
                 decoded_user = local_claim_name.to_string();
             } else {
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                //return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
         } else {
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            //return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            if let Some(claim_name) = claims.email() {
+                decoded_user = claim_name.to_string();
+            }
         }
+
         let user = User {
             username: decoded_user,
             password_hash: None,

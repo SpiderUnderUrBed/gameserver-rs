@@ -8,6 +8,18 @@
     let serverMessage = '';
     let showDeveloper = false;
     let colorState = 'WHITE';
+    
+    const logins = [
+      {
+        id: "manual",
+        label: "Manual",
+      },
+      {
+        id: "oidc",
+        label: "Oidc"
+      }
+    ];
+    let currentLogin = $state('manual');
   
     onMount(() => {
       const meta = document.querySelector('meta[name="site-url"]');
@@ -55,7 +67,8 @@
         const jwtToken = encodeURIComponent(data.response);
         const nextUrl = encodeURIComponent(`${siteUrl}/main.html`);
   
-        window.location.href = `${siteUrl}/authenticate?next=${nextUrl}&jwk=${jwtToken}`;
+        window.location.href = `${siteUrl}/?next=${nextUrl}`;
+        //window.location.href = `${siteUrl}/authenticate?next=${nextUrl}&jwk=${jwtToken}`;
       } catch (err) {
         console.error('Login error:', err);
         alert('Login failed: ' + err.message);
@@ -179,34 +192,65 @@
     <div class="orange-banner">
       <div>
         <div class="login">
+  				{#each logins as login}
+					<button
+						type="button"
+						
+						onclick={() => { currentLogin = login.id; }}
+					>
+						{login.label}
+					</button>
+				{/each}
           <h4 class="secondary-header-{colorState === "WHITE" ? "white" : "black"}">Login:</h4>
-          <input class="user-login-{colorState === "WHITE" ? "white" : "black"}" type="text" bind:value={username} placeholder="Username" />
-          <input class="user-password-{colorState === "WHITE" ? "white" : "black"}" type="password" bind:value={password} placeholder="Password" />
-          <div>
-            <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}">Signup</button>
-            <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}" on:click={login}>Login</button>
+          <div id="inner-login">
+            {#if currentLogin === 'manual'}
+              {@render manualLogin()}
+            {:else if currentLogin === 'oidc'}
+              {@render oidcLogin()}
+            {/if}           
           </div>
         </div>
 
 
         <div>
-          <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}" on:click={goToMainPage}>Go to main page</button>
-          <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}" on:click={toggleColor}>Toggle {colorState}</button>
-          <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}" on:click={toggleDeveloper}>Developer Work</button>
+          <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}" onclick={goToMainPage}>Go to main page</button>
+          <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}" onclick={toggleColor}>Toggle {colorState}</button>
+          <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}" onclick={toggleDeveloper}>Developer Work</button>
         </div>
 
         {#if showDeveloper}
           <div class="developer-section">
             <p>Click the button to get a message from the server:</p>
-            <button on:click={fetchMessage}>Get Message</button>
+            <button onclick={fetchMessage}>Get Message</button>
             <div>{serverMessage}</div>
         
             <h2>Send a Message to the Server:</h2>
             <input type="text" bind:value={userMessage} placeholder="Type your message here" />
-            <button on:click={sendUserMessage}>Send Message</button>
+            <button onclick={sendUserMessage}>Send Message</button>
           </div>
         {/if}
       </div>
     </div>
 </div>
   
+{#snippet manualLogin()}
+  <input class="user-login-{colorState === "WHITE" ? "white" : "black"}" type="text" bind:value={username} placeholder="Username" />
+  <input class="user-password-{colorState === "WHITE" ? "white" : "black"}" type="password" bind:value={password} placeholder="Password" />
+  <div>
+    <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}">Signup</button>
+    <button class="general-buttons-{colorState === "WHITE" ? "white" : "black"}" onclick={login}>Login</button>
+  </div>
+{/snippet}
+{#snippet oidcLogin()}
+	<button
+		onclick={() => {
+			window.location.replace('/oidc');
+		}}
+	>
+		Log in with configured OIDC provider
+	</button>
+{/snippet}
+
+<!-- class="btn btn-sm" 
+  class:btn-primary={currentLogin === login.id}
+  class:btn-ghost={currentLogin !== login.id} -->
