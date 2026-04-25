@@ -2,7 +2,6 @@
 // first imports are std ones
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::default;
 use std::fmt;
 use std::fmt::Debug;
 use std::io::ErrorKind;
@@ -90,6 +89,7 @@ use crate::http::header;
 // chrono for time, tower for cors (TODO:: use less permissive CORS due to potential security risks)
 // jsonwebtokens is standard when working with authentication, and bcrypt so I can use password hashs, I explain the authentication methods later
 use async_trait::async_trait;
+use anyhow::anyhow;
 use chrono::{Duration as OtherDuration, Utc};
 use futures_util::{sink::SinkExt, stream::StreamExt};
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, TokenData, Validation, decode, encode};
@@ -1100,6 +1100,7 @@ pub async fn connect_to_server(
 
 // this is where it determines wether or not to try and create the container and deployment, as attempt_connection itself is used in various diffrent contexts (like it will constantly
 // try to connect upon failing but it should not try to create the container and deployment every time it fails)
+// I use anyhow here because it saves me having to try and downcast the error type
 async fn try_initial_connection(
     conn_attempts: u64,
     conn_timeout: u64,
@@ -1108,9 +1109,8 @@ async fn try_initial_connection(
     tcp_url: String,
     ws_tx: &broadcast::Sender<String>,
     tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut final_error: Box<dyn std::error::Error + Send + Sync> =
-        "This should not show up".into();
+) -> Result<(), anyhow::Error> {
+    let mut final_error= anyhow!(String::new());
     for _ in 0..conn_attempts {
         match attempt_connection(tcp_url.clone()).await {
             Ok(mut stream) => {
@@ -1137,7 +1137,7 @@ async fn try_initial_connection(
                         println!("Stream finished");
                         return Ok(());
                     } else {
-                        final_error = stream_result.err().unwrap()
+                        final_error = anyhow!(stream_result.err().unwrap())
                     }
                 } else {
                     return Ok(());
@@ -1356,10 +1356,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         kubernetes::create_k8s_deployment(&client).await?;
                     }
                     if !unbuilt_img_was_the_issue {
-                        println!("{:#?}", initial_connection_result.as_ref().err().unwrap());
+                        // if let Some(initial_connection_result_string) = initial_connection_result.err().unwrap().to_string() {
+                        if  let Some(initial_connection_result_string) = initial_connection_result.as_ref().err().unwrap().downcast_ref::<String>() {
+                            if (!initial_connection_result_string.is_empty()){
+                                println!("{:#?}", initial_connection_result_string);
+                            }
+                        } else {
+                            println!("{:#?}", initial_connection_result.as_ref().err().unwrap());
+                        }
                     }
                 } else {
-                    println!("{:#?}", initial_connection_result.as_ref().err().unwrap());
+                    if  let Some(initial_connection_result_string) = initial_connection_result.as_ref().err().unwrap().downcast_ref::<String>() {
+                        if (!initial_connection_result_string.is_empty()){
+                            println!("{:#?}", initial_connection_result_string);
+                        }
+                    } else {
+                        println!("{:#?}", initial_connection_result.as_ref().err().unwrap());
+                    }
                 }
             }
             if initial_connection_result.is_ok() {
@@ -2013,13 +2026,17 @@ async fn get_oidc_layer() -> Result<(OidcAuthLayer<EmptyAdditionalClaims>, OidcC
     // get_env_var_or_arg("TCPURL", Some(StaticTcpUrl.to_string())).unwrap();
 
     // TODO: maybe make a function which trims the last / in a url 
-    let oidc_callback =
-        format!("{}/oidc/callback", get_env_var_or_arg("LOCALURL", Some(StaticLocalUrl.to_string())).unwrap());
-    
+    let local_url = get_env_var_or_arg("LOCALURL", Some(StaticLocalUrl.to_string())).unwrap();
+    let oidc_callback = if local_url.starts_with("http") {
+        format!("{}/oidc/callback", local_url)
+    } else {
+        format!("http://{}/oidc/callback", local_url)
+    };
+
     let oidc_url: String = get_env_var_or_arg("OIDC_URL", Some("http://localhost:5556/dex".into())).unwrap();
 
     let oidc_secret: String = get_env_var_or_arg("OIDC_SECRET", Some("axum-app-secret".into())).unwrap();
-    let oidc_id: String = get_env_var_or_arg("OIDC_ID", Some("axum-app-secret".into())).unwrap();
+    let oidc_id: String = get_env_var_or_arg("OIDC_ID", Some("axum-app".into())).unwrap();
 
     let client = OidcClient::<EmptyAdditionalClaims>::builder()
         .with_default_http_client()
@@ -2041,11 +2058,6 @@ async fn oidc_login_initiate(
     mut auth_session: AuthSession,
     claims: Option<OidcClaims<EmptyAdditionalClaims>>,
 ) -> impl IntoResponse {
-    eprintln!(
-        "oidc_login_initiate: claims={} user={}",
-        claims.is_some(),
-        auth_session.user.is_some()
-    );
     if auth_session.user.is_some() {
         return Redirect::to("/").into_response();
     }
@@ -2080,9 +2092,9 @@ async fn oidc_login_initiate(
             user_perms: vec![],
         };
         match auth_session.login(&user).await {
-            Ok(_) => eprintln!("axum_login: login succeeded"),
+            Ok(_) => eprintln!("login succeeded"),
             Err(e) => {
-                eprintln!("axum_login: login FAILED: {e:?}");
+                eprintln!("login FAILED: {:#?}", e);
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
         }
@@ -3095,6 +3107,7 @@ pub struct Claims {
     pub exp: usize,
     pub iat: usize,
     pub user: String,
+    pub user_perms: Vec<String>
 }
 
 // Our custom backend, which only hash a list of users
@@ -3117,11 +3130,13 @@ impl AuthnBackend for Backend {
         let user = resolve_jwt(&token).ok().map(|data| User {
             username: data.claims.user,
             password_hash: None,
-            user_perms: vec![],
+            user_perms: data.claims.user_perms,
         });
         Ok(user)
     }
 
+    // I dont even use this function so its fine if I dont add user perms or even do it correctly
+    // it was just required by the trait
     async fn get_user(&self, user_id: &String) -> Result<Option<Self::User>, Self::Error> {
         Ok(Some(User {
             username: user_id.clone(),
@@ -3146,11 +3161,11 @@ fn resolve_jwt(token: &str) -> Result<TokenData<Claims>, StatusCode> {
 }
 
 // Creates a claim with respect to the secret, and gives it a expirery
-fn encode_token(user: String) -> Result<String, StatusCode> {
+fn encode_token(user: String, user_perms: Vec<String>) -> Result<String, StatusCode> {
     let now = Utc::now();
     let exp = (now + chrono::Duration::hours(24)).timestamp() as usize;
     let iat = now.timestamp() as usize;
-    let claims = Claims { exp, iat, user };
+    let claims = Claims { exp, iat, user, user_perms };
 
     let secret = std::env::var("SECRET").unwrap_or_else(|_| {
         panic!("Need to specify a secret");
