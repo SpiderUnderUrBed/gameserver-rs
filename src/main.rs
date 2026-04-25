@@ -1199,6 +1199,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let conn = first_connection().await?;
     let database = database::Database::new(Some(conn));
 
+    let database_conn_result = database.ensure_database_conn().await;
+
+    if let Err(err) = database_conn_result {
+        println!("{}", err);
+    }  
+
     let verbose = std::env::var("VERBOSE").is_ok();
     let base_path = std::env::var("SITE_URL")
         .map(|s| {
@@ -1219,6 +1225,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config_local_url =
         get_env_var_or_arg("LOCALURL", Some(StaticLocalUrl.to_string())).unwrap();
 
+    // Overrides for testing or specific cases where how it works a setup may be diffrent
     let enable_k8s_client: bool = get_env_var_or_arg("ENABLE_K8S_CLIENT", Some(true)).unwrap();
     let force_rebuild: bool = get_env_var_or_arg("FORCE_REBUILD", Some(false)).unwrap();
     let build_docker_image: bool = get_env_var_or_arg("BUILD_DOCKER_IMAGE", Some(true)).unwrap();
@@ -1226,6 +1233,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let dont_override_conn_with_k8s: bool =
         get_env_var_or_arg("DONT_OVERRIDE_CONN_WITH_K8S", Some(true)).unwrap();
 
+    // TODO:
+    // consider if I should not have enable_initial_connection and instead if initial_connection_attempts dont
+    // try to connect to the server
     let enable_initial_connection: bool =
         get_env_var_or_arg("ENABLE_INITIAL_CONNECTION", Some(true)).unwrap();
     let initial_connection_attempts: u64 =
@@ -1233,9 +1243,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let initial_connection_timeout: u64 =
         get_env_var_or_arg("INITIAL_CONNECTION_TIMEOUT", Some(2)).unwrap();
 
+    // creates a websocket broadcase and tcp channels
     let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
     let (tcp_tx, tcp_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
 
+    // sets the client to be none by default unless this is ran the stanard way which will be ran with the appropriate feature-flag
+    // which will set the k8s client
     let mut client: Clients = Clients::None;
     if enable_k8s_client && K8S_WORKS {
         client = Clients::K8s(Client::try_default().await?);
@@ -1298,6 +1311,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         current_server = Some(database.get_settings().await?.current_server.into_server())
     }
 
+    // use everything so far to make the app state
     let mut state: AppState = AppState {
         tcp_tx: tcp_tx,
         tcp_rx: tcp_rx,
@@ -1325,6 +1339,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let multifaceted_state = Arc::new(RwLock::new(state));
     let _ = load_settings(multifaceted_state.clone()).await;
 
+    // if there is supposed to be a initial connection and if there is a client (as it wont be able to create the deployment without it, and it would be pointless to create a docker container
+    // without the abbility to deploy it)
     let inner_state = Arc::clone(&multifaceted_state);
     if enable_initial_connection {
         println!("Trying initial connection...");
@@ -1333,6 +1349,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let tcp_tx_clone = inner_state.write().await.tcp_tx.clone();
         let tcp_url_clone = tcp_url.to_string();
 
+        // TODO: Since I never create a handler with initial connections, should i take it out of the thread?, or rather,
+        // leave it to set a TcpStream for the appstate for when it sorts itself out
         let handle = tokio::spawn(async move {
             let initial_connection_result = try_initial_connection(
                 initial_connection_attempts,
@@ -1381,6 +1399,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     }
                 }
             }
+            // If the initial connection result succeeded, it will define all the relevent channels in AppState so messages can be sent
+            // and recived from it, internal_tx will also be used as an internal messaging service which can be used
+            // internal for things like terminating a connection to a node locally, or forwarding said message to node
             if initial_connection_result.is_ok() {
                 println!("Creating a new connection");
                 let (new_tcp_tx, new_tcp_rx) = broadcast::channel::<Vec<u8>>(100);
@@ -1414,6 +1435,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
         });
 
+        // This will make sure that the results of the initial connections attempt to build a docker image, or create a k8s deployment succeeded
+        // and it will log the result, will if its an error. An error not logging here does not mean the initial connection went fine
         match handle.await {
             Ok(Ok(_)) => {}
             Ok(Err(e)) => {
@@ -1425,12 +1448,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
+    // CORS are currently very permissive
     let cors = CorsLayer::new()
         .allow_origin(CorsAny)
         .allow_methods([Method::GET, Method::POST])
         .allow_headers(CorsAny);
 
     let session_store = MemoryStore::default();
+    // TODO:
+    // In the future, once cookies work, improve overrall https support
+    // there was an issue where users could not log in because cookies have the Secure flag
+    // but the site is http, which causes the cookie to be blocked
+    // meaning every request to protected routes had no session and redirected back to login
     let session_layer = SessionManagerLayer::new(session_store.clone())
         .with_secure(false)
         .with_same_site(tower_sessions::cookie::SameSite::Lax)
@@ -1446,6 +1475,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         auth_layer.clone(),
     ).await;
 
+    // the main route, this serves all the api stuff that wont be behind a login, but I handle the main routes in routes_static for better control
+    // over the authentication flow, if the api could be publically accessible in the future, you would need a diffrent way to authenticate with a api
     let inner = Router::new()
         .route("/api/message", get(get_message))
         .route("/api/nodes", get(get_nodes))

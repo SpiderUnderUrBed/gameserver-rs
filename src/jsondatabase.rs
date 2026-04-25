@@ -7,6 +7,7 @@ use std::result;
 pub mod databasespec;
 pub use databasespec::{User, Node, Element, ModifyElementData, UserDatabase, NodesDatabase, RetrieveElement, DatabaseError};
 use std::path::PathBuf;
+use std::path::Path;
 use std::fs::OpenOptions;
 use std::fs::File;
 use std::io::Write;
@@ -147,6 +148,16 @@ impl Database {
             connection,
         }
     }
+    pub async fn ensure_database_conn(&self) -> Result<(), String> {
+        if Path::new("database.json").exists(){
+            Ok(())
+        } else {
+            let mut file = File::create("database.json").unwrap();
+            file.write_all(&serde_json::to_vec(&JsonBackendContent::default()).unwrap())
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        }
+    } 
     pub async fn clear_db(&self) -> Result<(), String> {
         let clear_file = OpenOptions::new()
             .write(true)
