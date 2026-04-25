@@ -1,3 +1,4 @@
+import { unknown } from 'valibot';
 import { httpClient } from '../utils/http';
 
 export type ServerStatusMode = 'node' | 'server-keyword' | 'server-process';
@@ -95,7 +96,7 @@ export class ServerConsoleState {
 			this.ws.addEventListener('message', (event) => {
 				const payload = event.data;
 				const out = typeof payload === 'string' ? payload : JSON.stringify(payload);
-				this.addConsoleEntry({ type: 'output', text: this.cleanOutput(out) });
+				this.addConsoleEntry({ type: 'output', text: this.cleanOutput(this.cleanJson(out)) });
 			});
 
 			this.ws.addEventListener('close', () => {
@@ -111,6 +112,48 @@ export class ServerConsoleState {
 		} catch (err) {
 			console.error('connectWebSocket error', err);
 		}
+	}
+
+	public cleanJson(input: unknown): string {
+    	let output: unknown = input;
+
+		while (
+			output !== null &&
+			typeof output === "object" &&
+			"data" in output
+		) {
+			output = (output as Record<string, unknown>).data;
+		}
+
+		while (typeof output === "string") {
+			try {
+				const parsed = JSON.parse(output);
+
+				output = parsed;
+			} catch {
+				break;
+			}
+		}
+
+		if (output !== null && typeof output === "object") {
+			const obj = output as Record<string, unknown>;
+
+			if (typeof obj.message === "string") {
+				return obj.message;
+			}
+
+			if (typeof obj.response === "string") {
+				return obj.response;
+			}
+
+			if (typeof obj.data === "string") {
+				return obj.data;
+			}
+
+			return JSON.stringify(obj);
+		}
+
+		return String(output);
 	}
 
 	public cleanOutput(str: string) {
