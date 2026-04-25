@@ -119,9 +119,10 @@
 				<h3 class="font-semibold">Editing: {fileBrowserStore.selectedFile}</h3>
 				<textarea
 					class="textarea textarea-bordered w-full h-64 mt-2 font-mono text-sm"
-					readonly
-					value={fileBrowserStore.fileContent}
+					//value={fileBrowserStore.fileContent}
+					bind:value={fileBrowserStore.modifiedFileContent}
 				></textarea>
+				<button class="btn" onclick={() => {fileBrowserStore.uploadCurrentFile()}}>Save</button>
 			</div>
 		{/if}
 	{/if}

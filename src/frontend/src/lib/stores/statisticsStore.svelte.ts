@@ -44,8 +44,8 @@ export class StatisticsStore {
 
 		try {
 			const response = await httpClient('/api/statistics', {
-				signal: this.abortController.signal,
-				timeout: 0
+				// signal: this.abortController.signal,
+				// timeout: 3
 			});
 
 			if (!response.ok) {

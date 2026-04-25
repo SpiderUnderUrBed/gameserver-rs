@@ -11,6 +11,7 @@ export class FileBrowserStore {
 	public loading = $state(false);
 	public error = $state<string | null>(null);
 	public fileContent = $state('');
+	public modifiedFileContent = $state('');
 	public selectedFile = $state('');
 
 	private async processResponse(res: any) {
@@ -24,6 +25,7 @@ export class FileBrowserStore {
 		this.loading = true;
 		this.error = null;
 		this.fileContent = '';
+		this.modifiedFileContent = '';
 		this.selectedFile = '';
 		try {
 			const response = await httpClient
@@ -51,6 +53,7 @@ export class FileBrowserStore {
 		this.loading = true;
 		this.error = null;
 		this.fileContent = '';
+		this.modifiedFileContent = '';
 		this.selectedFile = filename;
 		try {
 			const fullFileName = this.path ? `${this.path}/${filename}` : filename;
@@ -83,12 +86,36 @@ export class FileBrowserStore {
 			};
 
 			this.fileContent = extractMessage(response) ?? '';
+			this.modifiedFileContent = extractMessage(response) ?? '';
 		} catch (err) {
 			this.error = 'Failed to fetch file content';
 			console.error(err);
 		} finally {
 			this.loading = false;
 		}
+	}
+	public async uploadCurrentFile(){
+		const fullFileName = this.path ? `${this.path}/${this.selectedFile}` : this.selectedFile;
+		try {
+			const blob = new Blob([this.modifiedFileContent], { type: 'text/plain' });
+			const formData = new FormData();
+			formData.append('file', blob, fullFileName);
+
+			const res = await httpClient.post(`/api/upload`, {
+				method: 'POST',
+				body: formData
+			});
+
+			if (!res.ok) {
+				throw new Error(`Upload failed: ${res.status}`);
+			}
+
+			console.log(`Saved ${fullFileName}`);
+		} catch (err) {
+			console.error('Error saving file:', err);
+			alert('Failed to save file.');
+		}
+
 	}
 
 	public async uploadFiles(files: FileList | File[]) {
@@ -99,7 +126,7 @@ export class FileBrowserStore {
 			const form = new FormData();
 			Array.from(files).forEach((file) => form.append('file', file));
 
-			const response = await fetch(`${httpClient.baseUrl || ''}/api/upload`, {
+			const response = await fetch(`/api/upload`, {
 				method: 'POST',
 				body: form
 			});
