@@ -1509,10 +1509,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/deleteserver", post(delete_server))
         .route("/api/startserver", post(start_server))
         .route("/api/stopserver", post(stop_server))
-        .route("/api/edituser", post(edit_user))
-        .route("/api/getuser", post(get_user))
         .route("/api/setserver", post(set_server))
         .route("/api/getserver", post(get_server))
+        .route("/api/edituser", post(edit_user))
+        .route("/api/getuser", post(get_user))
         .route("/api/send", post(receive_message))
         .route("/api/general", post(process_general))
         .route("/api/generalwithmetadata", post(process_general_with_metadata))
@@ -2119,11 +2119,15 @@ async fn oidc_login_initiate(
             if let Some(local_claim_name) = claim_name.get(None) {
                 decoded_user = local_claim_name.to_string();
             } else {
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                //return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
         } else {
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            //return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            if let Some(claim_name) = claims.email() {
+                decoded_user = claim_name.to_string();
+            }
         }
+
         let user = User {
             username: decoded_user,
             password_hash: None,
@@ -2138,9 +2142,9 @@ async fn oidc_login_initiate(
         }
         return Redirect::to("/").into_response();
     } else {
+        //println!("Invalid claims");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response()
     }
-    StatusCode::UNAUTHORIZED.into_response()
 }
 
 async fn load_settings(
