@@ -78,10 +78,10 @@
 		ramChart.data.labels = points.map((p) => p.label);
 		ramChart.data.datasets[0].data = points.map((p) => p.usedMemoryGB);
 
-		const lastPoint = points[-1].totalMemoryGB;
-		if (lastPoint) {
-			// @ts-expect-error
-			ramConfig.options.scales.y!.max = lastPoint;
+		const lastPoint = statisticsStore.points.at(-1);
+
+		if (lastPoint?.totalMemoryGB != null) {
+			ramChart.options.scales!.y!.max = lastPoint.totalMemoryGB;
 		}
 		ramChart.update('none');
 	});

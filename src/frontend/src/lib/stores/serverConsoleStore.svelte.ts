@@ -1,4 +1,6 @@
+import { object, unknown } from 'valibot';
 import { httpClient } from '../utils/http';
+import { writable } from 'svelte/store';
 
 export type ServerStatusMode = 'node' | 'server-keyword' | 'server-process';
 
@@ -35,6 +37,8 @@ export class ServerConsoleState {
 	public finalStatus = $state<ServerStatusMode>('node');
 	public isConnected = $state(false);
 
+	// public scrollContainer: HTMLDivElement;
+
 	private ws: WebSocket | null = null;
 
 	constructor() {
@@ -48,6 +52,12 @@ export class ServerConsoleState {
 		this.loadTopmostButtons();
 		this.connectWebSocket();
 		this.updateStatus('up', false);
+
+		scrollHeight.subscribe(([height, scrollpos]) => {
+			//if (height - scrollpos < 400){
+				newScrollHeightEvent.set([false, height]);
+			//}
+		});
 	}
 
 	public addConsoleEntry(entry: ConsoleEntry) {
@@ -95,7 +105,10 @@ export class ServerConsoleState {
 			this.ws.addEventListener('message', (event) => {
 				const payload = event.data;
 				const out = typeof payload === 'string' ? payload : JSON.stringify(payload);
-				this.addConsoleEntry({ type: 'output', text: this.cleanOutput(out) });
+				console.log("message: " + out);
+				if (this.correctMessage(out)) {
+					this.addConsoleEntry({ type: 'output', text: this.cleanOutput(this.cleanJson(out)) });
+				}
 			});
 
 			this.ws.addEventListener('close', () => {
@@ -111,6 +124,93 @@ export class ServerConsoleState {
 		} catch (err) {
 			console.error('connectWebSocket error', err);
 		}
+	}
+	public correctMessage(input: unknown): boolean {
+		let output: unknown = input;
+		// if (typeof output == "string"){
+		// 	return true
+		// } else {
+		// 	return false
+		// }
+		// while (
+		// 	output !== null &&
+		// 	(typeof output === "object" &&
+		// 	"data" in output) 
+		// ) {
+		// }
+
+		// if (output !== null &&
+		// 	typeof output === "object" &&
+		// 	"data" in output) {
+		// 		return false;
+		// 	} else {
+		// 		return true;
+		// 	}
+
+		if (typeof input !== 'string') return true;
+		
+		try {
+			const parsed = JSON.parse(input);
+			if (parsed && typeof parsed === 'object' && 'authcode' in parsed) {
+				return false;
+			}
+		} catch {
+		}
+		
+		return true;
+
+	}
+
+	public cleanJson(input: unknown): string {
+    	let output: unknown = input;
+
+		while (
+			output !== null &&
+			(typeof output === "object" &&
+			"data" in output) || typeof output == "string"
+		) {
+			let json = (output as Record<string, unknown>);
+			if (typeof output == "string") {
+				try {
+					json = JSON.parse(output);
+				} catch {
+					break;
+				}
+			}
+			let data = json.data;
+			if (typeof data == "string"){
+				try {
+					output = JSON.parse(data);
+				} catch {
+					output = data;
+					break;
+				}
+			} else {
+				output = data;
+			}
+		}
+
+
+		if (output !== null && typeof output === "object") {
+			const obj = output as Record<string, unknown>;
+
+			if (typeof obj.message === "string") {
+				return obj.message;
+			}
+
+			if (typeof obj.response === "string") {
+				return obj.response;
+			}
+
+			if (typeof obj.data === "string") {
+				return obj.data;
+			}
+
+			return JSON.stringify(obj);
+		}
+		console.log("json: " + output);
+		//console.log(output);
+		return String(output);
 	}
 
 	public cleanOutput(str: string) {
@@ -182,6 +282,16 @@ export class ServerConsoleState {
 			console.error(e);
 		}
 		this.addConsoleEntry({ type: 'output', text: 'Stop server called' });
+	}
+
+	public async deleteServer(servername: string = '', authcode: string = '0') {
+		console.log("deleting current server");
+		try {
+			await httpClient.post('/api/deleteserver', { json: { message: servername, authcode } });
+			console.log("Success");
+		} catch (err) {
+			console.error(err);
+		}
 	}
 
 	public async createDefaultServer(
@@ -264,5 +374,10 @@ export class ServerConsoleState {
 		this.addConsoleEntry({ type: 'output', text: 'Loaded topmost buttons' });
 	}
 }
+// scrollHeight.subscribe((value) => {
+// 	console.log('scrollHeight changed:', value);
+// });
 
 export const serverConsole = new ServerConsoleState();
+export let scrollHeight = writable([0, 0]);
+export let newScrollHeightEvent = writable<[boolean, number]>([false, 0]);

@@ -137,12 +137,14 @@
 
 <dialog id="delete-server-dialog" class="modal">
 	<form
-		onsubmit={(event) => {
+		onsubmit={async (event) => {
 			if ((<HTMLButtonElement | null>event.submitter)?.value === 'cancel') return;
 			serverConsole.addConsoleEntry({
 				type: 'output',
 				text: 'Delete server request executed'
-			});
+			});	
+			await serverConsole.deleteServer();
+			(<HTMLFormElement>event.target).reset();
 		}}
 		method="dialog"
 		class="modal-box"

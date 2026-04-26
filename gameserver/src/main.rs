@@ -1403,7 +1403,11 @@ async fn handle_typical_command_or_console(
     if typ == "command" {
         let cmd_str = payload.message.clone();
         match cmd_str.as_str() {
-            "delete_server" => {
+            "delete_current_server" => {
+                // let current = state.current_server.lock().await.clone();
+                // println!("delete_current_server: current_server = {:?}", current);
+                // let current = current.ok_or("there is no current server")?;
+
                 let option_path = get_definite_path_from_name(
                     &state,
                     get_provider_from_servername(
@@ -1420,10 +1424,13 @@ async fn handle_typical_command_or_console(
                     .await,
                 )
                 .await;
+                // println!("{:#?}", option_path);
                 if let Some(mut path) = option_path {
-                    if !path.starts_with("server/") {
+                    //println!("{path}");
+                    if !path.trim().starts_with("server") && !path.trim().starts_with("server/") {
                         path = format!("server/{}", path);
                     }
+                    //println!("{path}");
                     if let Err(errro) = fs::remove_dir_all(&path).await {
                         eprintln!("Failed to delete directory {}: {}", path, errro);
                         Ok(())
@@ -1624,6 +1631,7 @@ async fn handle_typical_command_or_console(
                 //create_server(state, cmd_tx, stdin_ref, serde_json::to_value(payload)?).await
             }
             other => {
+                println!("{other}");
                 let _ = cmd_tx.send(format!("Unknown command: {}", other)).await;
                 Ok(())
             }

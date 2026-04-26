@@ -17,7 +17,17 @@ pub struct ServerIndex {
 }
 
 impl ServerIndex {
-    pub fn new(location: String, provider: String, providertype: String, sandbox: bool) -> ServerIndex {
-        ServerIndex { location, provider, providertype, sandbox }
+    pub fn new(
+        location: String,
+        provider: String,
+        providertype: String,
+        sandbox: bool,
+    ) -> ServerIndex {
+        ServerIndex {
+            location,
+            provider,
+            providertype,
+            sandbox,
+        }
     }
 }

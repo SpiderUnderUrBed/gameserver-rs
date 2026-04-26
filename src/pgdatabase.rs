@@ -22,12 +22,130 @@ pub struct Database {
 }
 
 impl Database {
-    pub fn new(connection: Option<Pool<SqlxPostgres>>) -> Database {
+    pub fn new(connection_option: Option<Pool<SqlxPostgres>>) -> Database {
         Database {
-            connection: connection.unwrap(),
+            connection: connection_option.unwrap(),
         }
     }
-    
+    pub async fn fix_connection(connection_option: Option<Pool<SqlxPostgres>>) -> Database {
+        if let Some(connection) = connection_option {
+            Database {
+                connection: connection,
+            }
+        } else {
+            let db_user = std::env::var("POSTGRES_USER").unwrap_or("gameserver".to_string());
+            let db_password = std::env::var("POSTGRES_PASSWORD").unwrap_or("gameserverpass".to_string());
+            let db = std::env::var("POSTGRES_DB").unwrap_or("gameserver_db".to_string());
+            let db_port = std::env::var("POSTGRES_PORT").unwrap_or("5432".to_string());
+            let db_host = std::env::var("POSTGRES_HOST").unwrap_or("gameserver-postgres".to_string());
+
+            // initial connection which is returned
+            let conn = sqlx::postgres::PgPool::connect(&format!(
+                "postgres://{}:{}@{}:{}/{}",
+                db_user, db_password, db_host, db_port, db
+            ))
+            .await;
+            Database {
+                connection: conn.unwrap()
+            }
+                
+        }
+    }
+
+    pub async fn ensure_database_conn(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE IF NOT EXISTS users (
+                username      VARCHAR PRIMARY KEY,
+                password_hash TEXT,
+                authcode      TEXT DEFAULT '',
+                user_perms    TEXT[] NOT NULL DEFAULT '{}',
+                created_at    TIMESTAMPTZ DEFAULT now(),
+                updated_at    TIMESTAMPTZ DEFAULT now()
+            );
+            CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+
+            CREATE TABLE IF NOT EXISTS nodes (
+                nodename   VARCHAR PRIMARY KEY,
+                ip         VARCHAR NOT NULL,
+                nodetype   TEXT DEFAULT 'unknown',
+                nodestatus TEXT DEFAULT 'unknown',
+                created_at TIMESTAMPTZ DEFAULT now(),
+                updated_at TIMESTAMPTZ DEFAULT now()
+            );
+            CREATE INDEX IF NOT EXISTS idx_nodes_nodename ON nodes(nodename);
+
+            CREATE TABLE IF NOT EXISTS servers (
+                servername   VARCHAR PRIMARY KEY,
+                provider     VARCHAR NOT NULL,
+                providertype VARCHAR NOT NULL,
+                location     VARCHAR NOT NULL,
+                sandbox      BOOLEAN NOT NULL DEFAULT true,
+                node         JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at   TIMESTAMPTZ DEFAULT now(),
+                updated_at   TIMESTAMPTZ DEFAULT now()
+            );
+            CREATE INDEX IF NOT EXISTS idx_servers_servername ON servers(servername);
+
+            CREATE TABLE IF NOT EXISTS buttons (
+                name       VARCHAR PRIMARY KEY,
+                link       VARCHAR DEFAULT '',
+                type       VARCHAR DEFAULT 'default',
+                created_at TIMESTAMPTZ DEFAULT now(),
+                updated_at TIMESTAMPTZ DEFAULT now()
+            );
+            CREATE INDEX IF NOT EXISTS idx_buttons_name_lower ON buttons(lower(name));
+
+            CREATE TABLE IF NOT EXISTS intergrations (
+                type       TEXT PRIMARY KEY,
+                status     VARCHAR NOT NULL,
+                settings   JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ DEFAULT now(),
+                updated_at TIMESTAMPTZ DEFAULT now()
+            );
+            CREATE INDEX IF NOT EXISTS idx_intergrations_type ON intergrations(type);
+            CREATE INDEX IF NOT EXISTS idx_intergrations_status ON intergrations(status);
+
+            CREATE TABLE IF NOT EXISTS settings (
+                id                             SERIAL PRIMARY KEY,
+                toggled_default_buttons        BOOLEAN NOT NULL DEFAULT false,
+                status_type                    VARCHAR DEFAULT '',
+                enabled_rcon                   BOOLEAN NOT NULL DEFAULT true,
+                rcon_url                       VARCHAR DEFAULT 'localhost:25575',
+                rcon_password                  VARCHAR DEFAULT 'testing',
+                driver                         VARCHAR DEFAULT '',
+                file_system_driver             VARCHAR DEFAULT '',
+                enable_statistics_on_home_page VARCHAR DEFAULT '',
+                current_server                 JSONB DEFAULT '{}'::jsonb,
+                created_at                     TIMESTAMPTZ DEFAULT now(),
+                updated_at                     TIMESTAMPTZ DEFAULT now()
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_settings_singleton ON settings((id IS NOT NULL));
+
+            INSERT INTO buttons (name, link, type) VALUES
+                ('Filebrowser',   '', 'default'),
+                ('Statistics',    '', 'default'),
+                ('Workflows',     '', 'default'),
+                ('Intergrations', '', 'default'),
+                ('Backups',       '', 'default'),
+                ('Settings',      '', 'default')
+            ON CONFLICT (name) DO NOTHING;
+
+            INSERT INTO settings (
+                toggled_default_buttons, status_type, enabled_rcon,
+                rcon_url, rcon_password, driver, file_system_driver,
+                enable_statistics_on_home_page, current_server
+            )
+            SELECT false, '', true, 'localhost:25575', 'testing', '', '', '', '{}'::jsonb
+            WHERE NOT EXISTS (SELECT 1 FROM settings);
+            "#,
+        )
+        .execute(&self.connection)
+        .await?;
+
+        Ok(())
+    }
+
     pub async fn clear_db(&self) -> Result<(), sqlx::Error> {
         let tables = [
             "users", "nodes", "servers", "buttons", "settings"
