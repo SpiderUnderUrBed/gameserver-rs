@@ -8,9 +8,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ─────────────────────────────────────────────────────────────────────────────
   # Job 1: Bare metal — spin up gameserver as separate process before main tests
-  # ─────────────────────────────────────────────────────────────────────────────
   test-bare-metal:
     name: Tests (bare metal with gameserver process)
     runs-on: ubuntu-latest
@@ -81,10 +79,8 @@ jobs:
             wait $GAMESERVER_PID 2>/dev/null || true
           fi
 
-  # ─────────────────────────────────────────────────────────────────────────────
   # Job 2: k3d — inner gameserver deployment (child node / workspace member)
   # Uses registry on port 5002
-  # ─────────────────────────────────────────────────────────────────────────────
   test-k3d-gameserver:
     name: Tests (full-stack feature / k3d inner gameserver)
     runs-on: ubuntu-latest
@@ -179,11 +175,6 @@ jobs:
             echo "Waiting for PostgreSQL... ($i/30)"
             sleep 2
           done
-          if [ -f "setup_db.sh" ]; then
-            bash setup_db.sh
-          else
-            echo "No setup_db.sh found, skipping database setup"
-          fi
         env:
           PGPASSWORD: gameserverpass
           PGHOST: localhost
@@ -229,16 +220,16 @@ jobs:
           echo "CMD: $IMAGE_CMD"
 
           if [[ "$IMAGE_CMD" == *"cargo"* ]]; then
-            echo "❌ ERROR: Built development image (contains cargo) instead of production image"
+            echo "ERROR: Built development image (contains cargo) instead of production image"
             exit 1
           fi
-          echo "✅ Correct production image built"
+          echo "Correct production image built"
 
           echo "=== Verifying binary ==="
           if docker run --rm localhost:5002/gameserver:latest test -x /app/gameserver-node; then
-            echo "✅ Binary found at /app/gameserver-node"
+            echo "Binary found at /app/gameserver-node"
           else
-            echo "❌ Binary NOT found at /app/gameserver-node"
+            echo "Binary NOT found at /app/gameserver-node"
             docker run --rm localhost:5002/gameserver:latest ls -la /app/ 2>/dev/null || echo "No /app directory"
             docker run --rm localhost:5002/gameserver:latest find / -name "gameserver*" -type f 2>/dev/null || true
             exit 1
