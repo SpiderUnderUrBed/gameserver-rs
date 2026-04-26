@@ -96,8 +96,10 @@ export class ServerConsoleState {
 			this.ws.addEventListener('message', (event) => {
 				const payload = event.data;
 				const out = typeof payload === 'string' ? payload : JSON.stringify(payload);
-				// console.log(out);
-				this.addConsoleEntry({ type: 'output', text: this.cleanOutput(this.cleanJson(out)) });
+				console.log("message: " + out);
+				if (this.correctMessage(out)) {
+					this.addConsoleEntry({ type: 'output', text: this.cleanOutput(this.cleanJson(out)) });
+				}
 			});
 
 			this.ws.addEventListener('close', () => {
@@ -113,6 +115,42 @@ export class ServerConsoleState {
 		} catch (err) {
 			console.error('connectWebSocket error', err);
 		}
+	}
+	public correctMessage(input: unknown): boolean {
+		let output: unknown = input;
+		// if (typeof output == "string"){
+		// 	return true
+		// } else {
+		// 	return false
+		// }
+
+		// while (
+		// 	output !== null &&
+		// 	(typeof output === "object" &&
+		// 	"data" in output) 
+		// ) {
+		// }
+
+		// if (output !== null &&
+		// 	typeof output === "object" &&
+		// 	"data" in output) {
+		// 		return false;
+		// 	} else {
+		// 		return true;
+		// 	}
+
+		if (typeof input !== 'string') return true;
+		
+		try {
+			const parsed = JSON.parse(input);
+			if (parsed && typeof parsed === 'object' && 'authcode' in parsed) {
+				return false;
+			}
+		} catch {
+		}
+		
+		return true;
+
 	}
 
 	public cleanJson(input: unknown): string {
@@ -162,6 +200,7 @@ export class ServerConsoleState {
 
 			return JSON.stringify(obj);
 		}
+		console.log("json: " + output);
 		//console.log(output);
 		return String(output);
 	}

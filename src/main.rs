@@ -650,6 +650,8 @@ async fn get_all_stream_data_parsed(line_content: &str) -> Result<Vec<Value>, se
             }
         }
     }
+    final_data.extend(list_values.clone());
+
     let mut list_lines: Vec<String> = list_values
         .iter()
         .map(|v| {
@@ -671,6 +673,8 @@ async fn get_all_stream_data_parsed(line_content: &str) -> Result<Vec<Value>, se
             }
         }
     }
+    final_data.extend(console_values);
+
     let message_parsed: Vec<Result<MessagePayload, serde_json::Error>> =
         value_from_line::<MessagePayload, _>(line_content, |line| !line.contains("\"list\"")).await;
 
@@ -684,6 +688,8 @@ async fn get_all_stream_data_parsed(line_content: &str) -> Result<Vec<Value>, se
             }
         }
     }
+    final_data.extend(message_values);
+
     let src_and_dest_parsed: Vec<Result<SrcAndDest, serde_json::Error>> =
         value_from_line::<SrcAndDest, _>(line_content, |line| line.contains("\"src\"")).await;
 
@@ -697,6 +703,7 @@ async fn get_all_stream_data_parsed(line_content: &str) -> Result<Vec<Value>, se
             }
         }
     }
+    final_data.extend(src_and_dest_values);
 
     let integration_parsed: Vec<Result<IntegrationCommands, serde_json::Error>> =
         value_from_line::<IntegrationCommands, _>(line_content, |line| line.contains("\"kind\""))
@@ -712,13 +719,7 @@ async fn get_all_stream_data_parsed(line_content: &str) -> Result<Vec<Value>, se
             }
         }
     }
-
-    final_data.extend(src_and_dest_values);
     final_data.extend(integration_values);
-    final_data.extend(list_values);
-    final_data.extend(console_values);
-    final_data.extend(message_values);
-
     return Ok(final_data);
 }
 
