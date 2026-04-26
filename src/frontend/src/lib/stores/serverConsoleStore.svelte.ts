@@ -1,5 +1,6 @@
 import { object, unknown } from 'valibot';
 import { httpClient } from '../utils/http';
+import { writable } from 'svelte/store';
 
 export type ServerStatusMode = 'node' | 'server-keyword' | 'server-process';
 
@@ -36,6 +37,8 @@ export class ServerConsoleState {
 	public finalStatus = $state<ServerStatusMode>('node');
 	public isConnected = $state(false);
 
+	// public scrollContainer: HTMLDivElement;
+
 	private ws: WebSocket | null = null;
 
 	constructor() {
@@ -49,6 +52,12 @@ export class ServerConsoleState {
 		this.loadTopmostButtons();
 		this.connectWebSocket();
 		this.updateStatus('up', false);
+
+		scrollHeight.subscribe(([height, scrollpos]) => {
+			//if (height - scrollpos < 400){
+				newScrollHeightEvent.set([false, height]);
+			//}
+		});
 	}
 
 	public addConsoleEntry(entry: ConsoleEntry) {
@@ -123,7 +132,6 @@ export class ServerConsoleState {
 		// } else {
 		// 	return false
 		// }
-
 		// while (
 		// 	output !== null &&
 		// 	(typeof output === "object" &&
@@ -366,5 +374,10 @@ export class ServerConsoleState {
 		this.addConsoleEntry({ type: 'output', text: 'Loaded topmost buttons' });
 	}
 }
+// scrollHeight.subscribe((value) => {
+// 	console.log('scrollHeight changed:', value);
+// });
 
 export const serverConsole = new ServerConsoleState();
+export let scrollHeight = writable([0, 0]);
+export let newScrollHeightEvent = writable<[boolean, number]>([false, 0]);
