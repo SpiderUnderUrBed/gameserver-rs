@@ -2,6 +2,7 @@
 .direnv/
 
 /target
+**/server/*
 **/target/
 /gameserver/target
 # /src/gameserver/target
