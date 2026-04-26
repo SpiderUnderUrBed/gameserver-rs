@@ -2,7 +2,6 @@
 // first imports are std ones
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::default;
 use std::fmt;
 use std::fmt::Debug;
 use std::io::ErrorKind;
@@ -20,12 +19,16 @@ use crate::http::HeaderMap;
 use crate::kubernetes::verify_is_k8s_gameserver;
 use crate::middleware::from_fn;
 use axum::Form;
+use axum::error_handling::HandleErrorLayer;
 use axum::extract::Multipart;
 use axum::extract::Query;
 use axum::extract::ws::Message as WsMessage;
 use axum::http::Uri;
 use axum::middleware::{self, Next};
 use axum::response::Redirect;
+use axum::response::Response;
+use axum::routing::any;
+use axum::routing::delete;
 use axum::{
     Router,
     body::Body,
@@ -33,16 +36,31 @@ use axum::{
         Request, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::{self, Method, Response, StatusCode},
+    http::{self, Method, StatusCode},
     response::{
         Html, IntoResponse, Json,
         sse::{Event, Sse},
     },
-    routing::{get, post},
+    routing::{get, post, put},
 };
+use axum_login::AuthManagerLayer;
 use axum_login::AuthUser;
 use axum_login::tower_sessions::{MemoryStore, SessionManagerLayer};
 use axum_login::{AuthManagerLayerBuilder, AuthnBackend};
+use axum_oidc::EmptyAdditionalClaims;
+use axum_oidc::OidcAuthLayer;
+use axum_oidc::OidcClaims;
+use axum_oidc::OidcClient;
+use axum_oidc::OidcLoginLayer;
+use axum_oidc::builder::RedirectUrl;
+use axum_oidc::error::MiddlewareError;
+use axum_oidc::handle_oidc_redirect;
+use axum_oidc::openidconnect;
+use axum_oidc::openidconnect::ClientId;
+use axum_oidc::openidconnect::ClientSecret;
+use axum_oidc::openidconnect::IssuerUrl;
+use axum_oidc::openidconnect::Scope;
+use base64::{Engine, engine::general_purpose::STANDARD};
 use futures_util::FutureExt;
 use serde::de::{self, DeserializeOwned};
 use tokio::fs::File;
@@ -50,6 +68,7 @@ use tokio::net::unix::pipe::Receiver;
 use tokio::sync::{RwLock, mpsc};
 
 use rcon::Connection;
+use tower::ServiceBuilder;
 
 use crate::database::Node;
 use crate::database::databasespec::Intergration;
@@ -69,6 +88,7 @@ use crate::http::header;
 // tokio because when working with alot of networking stuff and things that will take a indeterminent amount of time, async/await is the way to go (for better efficency too)
 // chrono for time, tower for cors (TODO:: use less permissive CORS due to potential security risks)
 // jsonwebtokens is standard when working with authentication, and bcrypt so I can use password hashs, I explain the authentication methods later
+use anyhow::anyhow;
 use async_trait::async_trait;
 use chrono::{Duration as OtherDuration, Utc};
 use futures_util::{sink::SinkExt, stream::StreamExt};
@@ -105,28 +125,20 @@ static LOG_NONFATAL_FORWARD_REQUESTS: bool = false;
 // For now I only restrict the json backend for running this without kubernetes
 // the json backend is only for testing in most cases, simple deployments would use full-stack feature flag
 // and you can use postgres manually with the database feature flag
-#[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
+#[cfg(any(feature = "full-stack", feature = "database"))]
 mod database {
     include!("pgdatabase.rs");
 }
 // TODO: consider if i want to have a varible that represents the database type enabled
 // static DATABASE_TYPE = "postgres";
 
-#[cfg(all(
-    not(feature = "full-stack"),
-    not(feature = "docker"),
-    not(feature = "database")
-))]
+#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
 mod database {
     include!("jsondatabase.rs");
 }
 
 // JsonDatabase is only something that would be unique to Json and not any other database managed by sqlx
-#[cfg(all(
-    not(feature = "full-stack"),
-    not(feature = "docker"),
-    not(feature = "database")
-))]
+#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
 use database::JsonBackend;
 
 // Both database files and any more should have these structs
@@ -213,7 +225,7 @@ mod kubernetes {
 static StaticTcpUrl: &str = "127.0.0.1:8082";
 
 #[cfg(not(feature = "full-stack"))]
-static StaticLocalUrl: &str = "127.0.0.1:8081";
+static StaticLocalUrl: &str = "127.0.0.1:8083";
 
 #[cfg(not(feature = "full-stack"))]
 static K8S_WORKS: bool = false;
@@ -250,7 +262,7 @@ impl Client {
 
 // The database connection would be avalible in the full-stack or explicit database testing
 // which in this case means postgres
-#[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
+#[cfg(any(feature = "full-stack", feature = "database"))]
 async fn first_connection() -> Result<sqlx::Pool<sqlx::Postgres>, sqlx::Error> {
     // The user should be able to customize alot about where the database is, how to authenticate with it,
     // whether it is being ran with the full stack or not, hence the env varibles with sensible defaults
@@ -272,11 +284,7 @@ async fn first_connection() -> Result<sqlx::Pool<sqlx::Postgres>, sqlx::Error> {
 // due to reduced complexity, and currently at the time of writing this
 // dependency issues, so unless you are testing the postgres db itself with this project
 // the json backend MIGHT be sufficent, but at the time of writing this I have not made the json backend work
-#[cfg(all(
-    not(feature = "full-stack"),
-    not(feature = "docker"),
-    not(feature = "database")
-))]
+#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
 async fn first_connection() -> Result<JsonBackend, String> {
     Ok(JsonBackend::new(None))
 }
@@ -363,7 +371,7 @@ enum MetadataTypes {
         provider: String,
         providertype: String,
         location: String,
-        sandbox: bool
+        sandbox: bool,
     },
     String(String),
 }
@@ -397,17 +405,28 @@ struct ResponseMessage {
     response: String,
 }
 
+#[derive(Debug, Serialize)]
+struct SignInResponse {
+    username: String,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct Statistics {
-    used_memory: String,
-    total_memory: String,
-    core_data: Vec<String>,
+    used_memory: u64,
+    total_memory: u64,
+    core_data: Vec<f32>,
     metadata: String,
 }
 // a list for things like nodes, capabilities, etc
 #[derive(Debug, Serialize, Deserialize)]
 struct List {
     list: ApiCalls,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct SimpleMesagePayload {
+    message: String,
+    authcode: String,
 }
 
 // May be redundant, but this is a struct for incoming messages
@@ -505,7 +524,6 @@ impl fmt::Display for ApiCalls {
 //     require_auth: String,
 //     api_call: ApiCalls
 // }
-use serde::Deserializer;
 #[derive(Clone, Default, Serialize, Deserialize, Debug)]
 enum Status {
     Unknown,
@@ -521,7 +539,7 @@ enum Status {
 // the base path like if all the routes are prefixed with something like /gameserver-rs which is the default for my testing deployment, and database as its needed frequently
 // for user information and etc
 // #[derive(Default)]
-struct AppState {
+pub struct AppState {
     tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
     tcp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
     tcp_conn_status: Status,
@@ -542,21 +560,21 @@ impl Default for AppState {
         let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
         let (tcp_tx, tcp_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
         let tcp_url = get_env_var_or_arg("TCPURL", Some(StaticTcpUrl.to_string())).unwrap();
-        Self { 
-            tcp_tx, 
-            tcp_rx, 
-            tcp_conn_status: Default::default(), 
-            internal_rx: Default::default(), 
-            internal_tx: Default::default(), 
-            additonal_node_tcp: Default::default(), 
-            current_node: Default::default(), 
-            ws_tx, 
-            base_path: Default::default(), 
-            client: Clients::None, 
-            database: Database::new(None), 
-            cached_status_type: Default::default(), 
-            rcon_connection: Default::default(), 
-            current_server: Default::default() 
+        Self {
+            tcp_tx,
+            tcp_rx,
+            tcp_conn_status: Default::default(),
+            internal_rx: Default::default(),
+            internal_tx: Default::default(),
+            additonal_node_tcp: Default::default(),
+            current_node: Default::default(),
+            ws_tx,
+            base_path: Default::default(),
+            client: Clients::None,
+            database: Database::new(None),
+            cached_status_type: Default::default(),
+            rcon_connection: Default::default(),
+            current_server: Default::default(),
         }
     }
 }
@@ -611,17 +629,313 @@ async fn attempt_connection(
         .map_err(Into::into)
 }
 
+async fn get_all_stream_data_parsed(line_content: &str) -> Result<Vec<Value>, serde_json::Error> {
+    let mut final_data = vec![];
+
+    let list_parsed: Vec<Result<List, serde_json::Error>> =
+        value_from_line::<List, _>(line_content, |line| line.contains("\"list\"")).await;
+
+    let mut list_values: Vec<Value> = vec![];
+    for item in list_parsed {
+        if let Ok(list_item) = item {
+            let serialized = serde_json::to_string(&list_item)?;
+            if let Ok(seralized_value) = serde_json::to_value(ConsoleData {
+                data: serialized,
+                r#type: "list_item".to_string(),
+                authcode: "0".to_string(),
+            }) {
+                if !list_values.contains(&seralized_value) {
+                    list_values.push(seralized_value)
+                }
+            }
+        }
+    }
+    final_data.extend(list_values.clone());
+
+    let mut list_lines: Vec<String> = list_values
+        .iter()
+        .map(|v| {
+            serde_json::to_string(v.get("data").clone().unwrap_or(&Value::Null))
+                .unwrap_or(String::new())
+        })
+        .collect();
+
+    let console_parsed: Vec<Result<ConsoleData, serde_json::Error>> =
+        value_from_line::<ConsoleData, _>(line_content, |line| !line.contains("\"list\"")).await;
+
+    let mut console_values: Vec<Value> = vec![];
+    for item in console_parsed {
+        if let Ok(data) = item {
+            if !list_lines.contains(&data.data) {
+                if let Ok(seralized_value) = serde_json::to_value(data) {
+                    console_values.push(seralized_value);
+                }
+            }
+        }
+    }
+    final_data.extend(console_values);
+
+    let message_parsed: Vec<Result<MessagePayload, serde_json::Error>> =
+        value_from_line::<MessagePayload, _>(line_content, |line| !line.contains("\"list\"")).await;
+
+    let mut message_values: Vec<Value> = vec![];
+    for item in message_parsed {
+        if let Ok(data) = item {
+            if let Ok(seralized_value) = serde_json::to_value(data) {
+                if !message_values.contains(&seralized_value) {
+                    message_values.push(seralized_value)
+                }
+            }
+        }
+    }
+    final_data.extend(message_values);
+
+    let src_and_dest_parsed: Vec<Result<SrcAndDest, serde_json::Error>> =
+        value_from_line::<SrcAndDest, _>(line_content, |line| line.contains("\"src\"")).await;
+
+    let mut src_and_dest_values: Vec<Value> = vec![];
+    for item in src_and_dest_parsed {
+        if let Ok(data) = item {
+            if let Ok(serialized_value) = serde_json::to_value(data) {
+                if !src_and_dest_values.contains(&serialized_value) {
+                    src_and_dest_values.push(serialized_value);
+                }
+            }
+        }
+    }
+    final_data.extend(src_and_dest_values);
+
+    let integration_parsed: Vec<Result<IntegrationCommands, serde_json::Error>> =
+        value_from_line::<IntegrationCommands, _>(line_content, |line| line.contains("\"kind\""))
+            .await;
+
+    let mut integration_values: Vec<Value> = vec![];
+    for item in integration_parsed {
+        if let Ok(data) = item {
+            if let Ok(serialized_value) = serde_json::to_value(data) {
+                if !integration_values.contains(&serialized_value) {
+                    integration_values.push(serialized_value);
+                }
+            }
+        }
+    }
+    final_data.extend(integration_values);
+    return Ok(final_data);
+}
+
+async fn handle_all_stream_values(
+    arc_state: Arc<RwLock<AppState>>,
+    value: Value,
+    ws_tx: &broadcast::Sender<String>,
+    ip: &str,
+    server_start_keyword: &mut String,
+    server_stop_keyword: &mut String,
+    reconnect_target: &mut Option<(String, String)>,
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    if let Ok(payload) = serde_json::from_value::<MessagePayload>(value.clone()) {
+        if payload.message == "end_conn" {
+            println!("Ending current connection");
+            let mut state_guard = arc_state.write().await;
+            state_guard.tcp_conn_status = Status::Down;
+            return Ok(true);
+        } else if payload.r#type == "change_conn" {
+            let node = {
+                let mut state_guard = arc_state.write().await;
+                let node = state_guard
+                    .database
+                    .retrieve_nodes(payload.message)
+                    .await
+                    .unwrap();
+                let (new_tcp_tx, new_tcp_rx) = broadcast::channel::<Vec<u8>>(100);
+                let (internal_tx, internal_rx) = broadcast::channel::<Vec<u8>>(100);
+                state_guard.tcp_tx = new_tcp_tx;
+                state_guard.tcp_rx = new_tcp_rx.resubscribe();
+                state_guard.internal_tx = Some(internal_tx);
+                state_guard.internal_rx = Some(internal_rx.resubscribe());
+                node
+            };
+            *reconnect_target = Some((node.ip, node.nodename));
+            return Ok(true);
+        } else if payload.r#type == "server_state" {
+            let mut state_guard = arc_state.write().await;
+            let sent_status = payload.message.parse().unwrap_or(false);
+            state_guard.current_node.status = match sent_status {
+                true => Status::Up,
+                false => Status::Down,
+            };
+        }
+    }
+
+    if let Ok(data_clone) = serde_json::from_value::<ConsoleData>(value.clone()) {
+        if let Ok(inner_value) = serde_json::from_str::<serde_json::Value>(&data_clone.data) {
+            if let (Some(start_kw), Some(stop_kw)) = (
+                inner_value.get("start_keyword").and_then(|v| v.as_str()),
+                inner_value.get("stop_keyword").and_then(|v| v.as_str()),
+            ) {
+                *server_start_keyword = start_kw.to_string();
+                *server_stop_keyword = stop_kw.to_string();
+            }
+        }
+
+        if data_clone.data.contains("\"type\":\"command\"") {
+            if let Ok(inner_msg) = serde_json::from_str::<MessagePayload>(&data_clone.data) {
+                if inner_msg.r#type == "command" {
+                    let (client_option, database) = {
+                        let state_guard = arc_state.read().await;
+                        (state_guard.client.clone(), state_guard.database.clone())
+                    };
+
+                    if let Ok(nodes) = database.fetch_all_nodes().await {
+                        let node_status = if let Clients::K8s(client) = client_option {
+                            let client_clone = client.clone();
+                            let ip_clone = ip.to_string();
+                            match tokio::time::timeout(
+                                std::time::Duration::from_millis(100),
+                                verify_is_k8s_gameserver(client_clone, ip_clone),
+                            )
+                            .await
+                            {
+                                Ok(Ok(true)) => NodeStatus::ImmutablyEnabled,
+                                _ => NodeStatus::Enabled,
+                            }
+                        } else {
+                            NodeStatus::Enabled
+                        };
+
+                        let node = Node {
+                            ip: ip.to_string(),
+                            nodename: inner_msg.message,
+                            nodetype: {
+                                let state_guard = arc_state.read().await;
+                                if let Clients::K8s(client) = &state_guard.client {
+                                    if kubernetes::verify_is_k8s_gameserver(
+                                        client.clone(),
+                                        ip.to_string(),
+                                    )
+                                    .await?
+                                    {
+                                        NodeType::Inbuilt
+                                    } else {
+                                        NodeType::Custom
+                                    }
+                                } else {
+                                    NodeType::Custom
+                                }
+                            },
+                            nodestatus: node_status,
+                            k8s_type: {
+                                let state_guard = arc_state.read().await;
+                                if let Clients::K8s(client) = &state_guard.client {
+                                    if kubernetes::verify_is_k8s_gameserver(
+                                        client.clone(),
+                                        ip.to_string(),
+                                    )
+                                    .await?
+                                    {
+                                        if kubernetes::verify_is_k8s_pod(client, ip.to_string())
+                                            .await?
+                                        {
+                                            K8sType::Pod
+                                        } else if kubernetes::verify_is_k8s_node(
+                                            client,
+                                            ip.to_string(),
+                                        )
+                                        .await?
+                                        {
+                                            K8sType::Node
+                                        } else {
+                                            K8sType::Unknown
+                                        }
+                                    } else {
+                                        K8sType::None
+                                    }
+                                } else {
+                                    K8sType::Unknown
+                                }
+                            },
+                        };
+
+                        if !nodes
+                            .iter()
+                            .any(|n| n.ip == node.ip && n.nodename == node.nodename)
+                        {
+                            let _ = database
+                                .create_nodes_in_db(ModifyElementData {
+                                    element: Element::Node(node),
+                                    jwt: "".to_string(),
+                                    require_auth: false,
+                                })
+                                .await;
+                        }
+                    }
+                }
+            }
+        }
+
+        if data_clone.data.contains("\"type\":\"stdout\"") {
+            if let Ok(output_msg) = serde_json::from_str::<serde_json::Value>(&data_clone.data) {
+                if let Some(server_output) = output_msg.get("data").and_then(|v| v.as_str()) {
+                    if !server_start_keyword.is_empty()
+                        && server_output.contains(&*server_start_keyword)
+                    {
+                        let _ = ws_tx.send("Server is ready for connections!".to_string());
+                        let mut state_guard = arc_state.write().await;
+                        state_guard.current_node.status = Status::Up;
+                    } else if !server_stop_keyword.is_empty()
+                        && server_output.contains(&*server_stop_keyword)
+                    {
+                        let mut state_guard = arc_state.write().await;
+                        state_guard.current_node.status = Status::Down;
+                    }
+                    let _ = ws_tx.send(server_output.to_string());
+                }
+            }
+        }
+
+        if !data_clone.data.contains("\"type\":\"stdout\"")
+            && !data_clone.data.contains("\"type\":\"command\"")
+        {
+            let _ = ws_tx.send(data_clone.data.clone());
+        }
+    }
+
+    if FORWARD_ALL_MESSAGES {
+        match serde_json::to_string(&value) {
+            Ok(string) => {
+                if let Err(err) = ws_tx.send(string) {
+                    if LOG_NONFATAL_FORWARD_REQUESTS {
+                        eprintln!("Failed to send request over broadcast: {} (not fatal)", err);
+                    }
+                }
+            }
+            Err(err) => eprintln!("Failed to serialize request: {}", err),
+        }
+    }
+
+    Ok(false)
+}
+
+pub enum StreamResult {
+    Done,
+    Reconnect(String, String),
+}
+
 pub async fn handle_stream(
     arc_state: Arc<RwLock<AppState>>,
     rx: &mut tokio::sync::broadcast::Receiver<Vec<u8>>,
     stream: &mut TcpStream,
     ws_tx: broadcast::Sender<String>,
     mut internal_stream: Option<broadcast::Receiver<Vec<u8>>>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<StreamResult, Box<dyn std::error::Error + Send + Sync>> {
     let ip = stream.peer_addr()?.to_string();
     let (reader, mut writer) = stream.split();
     let mut buf_reader = BufReader::new(reader);
     let mut buf = vec![0u8; 4096];
+    let mut lines = buf_reader.lines();
+
+    let mut server_start_keyword = String::new();
+    let mut server_stop_keyword = String::new();
+    let mut reconnect_target: Option<(String, String)> = None;
 
     let initial_node_password: String =
         get_env_var_or_arg("INITIAL_NODE_PASSWORD", Some(String::default())).unwrap();
@@ -644,9 +958,6 @@ pub async fn handle_stream(
         writer.write_all(cmd_msg.as_bytes()).await?;
     }
 
-    let mut server_start_keyword = String::new();
-    let mut server_stop_keyword = String::new();
-
     async fn process_stream_data(
         raw_data: &[u8],
         arc_state: &Arc<RwLock<AppState>>,
@@ -654,7 +965,8 @@ pub async fn handle_stream(
         ip: &str,
         server_start_keyword: &mut String,
         server_stop_keyword: &mut String,
-    ) -> Result<(bool, Option<Vec<u8>>), Box<dyn std::error::Error + Send + Sync>> {
+        reconnect_target: &mut Option<(String, String)>,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         {
             let state_guard = arc_state.read().await;
             let _ = state_guard.tcp_tx.send(raw_data.to_vec());
@@ -663,314 +975,60 @@ pub async fn handle_stream(
         if let Ok(text) = std::str::from_utf8(raw_data) {
             let line_content = text.trim();
             if line_content.is_empty() {
-                return Ok((false, None));
+                return Ok(false);
             }
 
-            let mut final_data: Vec<Value> = vec![];
-
-            let list_parsed: Vec<Result<List, serde_json::Error>> =
-                value_from_line::<List, _>(line_content, |line| line.contains("\"list\"")).await;
-
-            let mut list_values: Vec<Value> = vec![];
-            for item in list_parsed {
-                if let Ok(list_item) = item {
-                    let serialized = serde_json::to_string(&list_item)?;
-                    if let Ok(seralized_value) = serde_json::to_value(ConsoleData {
-                        data: serialized,
-                        r#type: "list_item".to_string(),
-                        authcode: "0".to_string(),
-                    }) {
-                        list_values.push(seralized_value)
-                    }
-                }
-            }
-            let mut list_lines: Vec<String> = list_values
-                .iter()
-                .map(|v| {
-                    serde_json::to_string(v.get("data").clone().unwrap_or(&Value::Null))
-                        .unwrap_or(String::new())
-                })
-                .collect();
-
-            let console_parsed: Vec<Result<ConsoleData, serde_json::Error>> =
-                value_from_line::<ConsoleData, _>(line_content, |line| !line.contains("\"list\""))
-                    .await;
-
-            let mut console_values: Vec<Value> = vec![];
-            for item in console_parsed {
-                if let Ok(data) = item {
-                    if !list_lines.contains(&data.data) {
-                        if let Ok(seralized_value) = serde_json::to_value(data) {
-                            console_values.push(seralized_value);
-                        }
-                    }
-                }
-            }
-            let message_parsed: Vec<Result<MessagePayload, serde_json::Error>> =
-                value_from_line::<MessagePayload, _>(line_content, |line| {
-                    !line.contains("\"list\"")
-                })
-                .await;
-
-            let mut message_values: Vec<Value> = vec![];
-            for item in message_parsed {
-                if let Ok(data) = item {
-                    if let Ok(seralized_value) = serde_json::to_value(data) {
-                        message_values.push(seralized_value)
-                    }
-                }
-            }
-            let src_and_dest_parsed: Vec<Result<SrcAndDest, serde_json::Error>> =
-                value_from_line::<SrcAndDest, _>(line_content, |line| line.contains("\"src\""))
-                    .await;
-
-            let mut src_and_dest_values: Vec<Value> = vec![];
-            for item in src_and_dest_parsed {
-                if let Ok(data) = item {
-                    if let Ok(serialized_value) = serde_json::to_value(data) {
-                        src_and_dest_values.push(serialized_value);
-                    }
-                }
-            }
-
-            let integration_parsed: Vec<Result<IntegrationCommands, serde_json::Error>> =
-                value_from_line::<IntegrationCommands, _>(line_content, |line| {
-                    line.contains("\"kind\"")
-                })
-                .await;
-
-            let mut integration_values: Vec<Value> = vec![];
-            for item in integration_parsed {
-                if let Ok(data) = item {
-                    if let Ok(serialized_value) = serde_json::to_value(data) {
-                        integration_values.push(serialized_value);
-                    }
-                }
-            }
-
-            final_data.extend(src_and_dest_values);
-            final_data.extend(integration_values);
-            final_data.extend(list_values);
-            final_data.extend(console_values);
-            final_data.extend(message_values);
+            let final_data: Vec<Value> = get_all_stream_data_parsed(line_content).await?;
 
             for value in final_data.iter() {
-                if let Ok(payload) = serde_json::from_value::<MessagePayload>(value.clone()) {
-                    if payload.message == "end_conn" {
-                        println!("Ending current connection");
-                        let mut state_guard = arc_state.write().await;
-                        state_guard.tcp_conn_status = Status::Down;
-                        return Ok((true, None));
-                    // TODO: change this from type to message on the nodes side and here?
-                    } else if payload.r#type == "server_state" {
-                        let mut state_guard = arc_state.write().await;
-                        let sent_status = payload.message.parse().unwrap_or(false);
-                        state_guard.current_node.status = match sent_status {
-                            true => Status::Up,
-                            false => Status::Down,
-                        }
-                    }
-                }
-
-                if let Ok(data_clone) = serde_json::from_value::<ConsoleData>(value.clone()) {
-                    if let Ok(inner_value) =
-                        serde_json::from_str::<serde_json::Value>(&data_clone.data)
-                    {
-                        if let (Some(start_kw), Some(stop_kw)) = (
-                            inner_value.get("start_keyword").and_then(|v| v.as_str()),
-                            inner_value.get("stop_keyword").and_then(|v| v.as_str()),
-                        ) {
-                            *server_start_keyword = start_kw.to_string();
-                            *server_stop_keyword = stop_kw.to_string();
-                        }
-                    }
-
-                    if data_clone.data.contains("\"type\":\"command\"") {
-                        if let Ok(inner_msg) =
-                            serde_json::from_str::<MessagePayload>(&data_clone.data)
-                        {
-                            if inner_msg.r#type == "command" {
-                                let (client_option, database) = {
-                                    let state_guard = arc_state.read().await;
-                                    (state_guard.client.clone(), state_guard.database.clone())
-                                };
-
-                                if let Ok(nodes) = database.fetch_all_nodes().await {
-                                    let node_status = if let Clients::K8s(client) = client_option {
-                                        let client_clone = client.clone();
-                                        let ip_clone = ip.to_string();
-
-                                        match tokio::time::timeout(
-                                            std::time::Duration::from_millis(100),
-                                            verify_is_k8s_gameserver(client_clone, ip_clone),
-                                        )
-                                        .await
-                                        {
-                                            Ok(Ok(true)) => NodeStatus::ImmutablyEnabled,
-                                            _ => NodeStatus::Enabled,
-                                        }
-                                    } else {
-                                        NodeStatus::Enabled
-                                    };
-
-                                    let node = Node {
-                                        ip: ip.to_string(),
-                                        nodename: inner_msg.message,
-                                        nodetype: {
-                                            let state_guard = arc_state.read().await;
-                                            if let Clients::K8s(client) = &state_guard.client {
-                                                if kubernetes::verify_is_k8s_gameserver(
-                                                    client.clone(),
-                                                    ip.to_string(),
-                                                )
-                                                .await?
-                                                {
-                                                    NodeType::Inbuilt
-                                                } else {
-                                                    NodeType::Custom
-                                                }
-                                            } else {
-                                                NodeType::Custom
-                                            }
-                                        },
-                                        nodestatus: node_status,
-                                        k8s_type: {
-                                            let state_guard = arc_state.read().await;
-                                            if let Clients::K8s(client) = &state_guard.client {
-                                                if kubernetes::verify_is_k8s_gameserver(
-                                                    client.clone(),
-                                                    ip.to_string(),
-                                                )
-                                                .await?
-                                                {
-                                                    if kubernetes::verify_is_k8s_pod(
-                                                        client,
-                                                        ip.to_string(),
-                                                    )
-                                                    .await?
-                                                    {
-                                                        K8sType::Pod
-                                                    } else if kubernetes::verify_is_k8s_node(
-                                                        client,
-                                                        ip.to_string(),
-                                                    )
-                                                    .await?
-                                                    {
-                                                        K8sType::Node
-                                                    } else {
-                                                        K8sType::Unknown
-                                                    }
-                                                } else {
-                                                    K8sType::None
-                                                }
-                                            } else {
-                                                K8sType::Unknown
-                                            }
-                                        },
-                                    };
-
-                                    if !nodes
-                                        .iter()
-                                        .any(|n| n.ip == node.ip && n.nodename == node.nodename)
-                                    {
-                                        let _ = database
-                                            .create_nodes_in_db(ModifyElementData {
-                                                element: Element::Node(node),
-                                                jwt: "".to_string(),
-                                                require_auth: false,
-                                            })
-                                            .await;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if data_clone.data.contains("\"type\":\"stdout\"") {
-                        if let Ok(output_msg) =
-                            serde_json::from_str::<serde_json::Value>(&data_clone.data)
-                        {
-                            if let Some(server_output) =
-                                output_msg.get("data").and_then(|v| v.as_str())
-                            {
-                                if !server_start_keyword.is_empty()
-                                    && server_output.contains(&*server_start_keyword)
-                                {
-                                    let _ =
-                                        ws_tx.send("Server is ready for connections!".to_string());
-                                    {
-                                        let mut state_guard = arc_state.write().await;
-                                        state_guard.current_node.status = Status::Up;
-                                    }
-                                } else if !server_stop_keyword.is_empty()
-                                    && server_output.contains(&*server_stop_keyword)
-                                {
-                                    {
-                                        let mut state_guard = arc_state.write().await;
-                                        state_guard.current_node.status = Status::Down;
-                                    }
-                                }
-                                let _ = ws_tx.send(server_output.to_string());
-                                continue;
-                            }
-                        }
-                    }
-
-                    if !data_clone.data.contains("\"type\":\"stdout\"")
-                        && !data_clone.data.contains("\"type\":\"command\"")
-                    {
-                        let _ = ws_tx.send(data_clone.data.clone());
-                    }
-                }
-
-                if FORWARD_ALL_MESSAGES == true {
-                    // TODO: Consider if i want to finish implimenting all_remaining_messages_result
-                    let all_remaining_messages_result = match serde_json::to_string(&value) {
-                        Ok(string) => {
-                            if let Err(err) = ws_tx.send(string) {
-                                if LOG_NONFATAL_FORWARD_REQUESTS {
-                                    eprintln!(
-                                        "Failed to send request over broadcast: {} (not fatal)",
-                                        err
-                                    );
-                                }
-                            }
-                        }
-                        Err(err) => eprintln!("Failed to serialize request: {}", err),
-                    };
+                let should_break = handle_all_stream_values(
+                    arc_state.clone(),
+                    value.clone(),
+                    ws_tx,
+                    ip,
+                    server_start_keyword,
+                    server_stop_keyword,
+                    reconnect_target,
+                )
+                .await?;
+                if should_break {
+                    return Ok(true);
                 }
             }
         }
-        Ok((false, None))
+        Ok(false)
     }
 
     loop {
         if let Some(ref mut internal_rx) = internal_stream {
             tokio::select! {
-                read_result = buf_reader.read(&mut buf) => {
+                read_result = lines.next_line() => {
                     match read_result {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            let raw_data = &buf[..n];
-                            let (end_connection, write_data) = process_stream_data(raw_data, &arc_state, &ws_tx, &ip, &mut server_start_keyword, &mut server_stop_keyword).await?;
-                            if let Some(data) = write_data {
-                                writer.write_all(&data).await?;
-                                writer.flush().await?;
+                        Ok(Some(line)) => {
+                            let raw = line.as_bytes();
+                            if process_stream_data(
+                                raw, &arc_state, &ws_tx, &ip,
+                                &mut server_start_keyword, &mut server_stop_keyword,
+                                &mut reconnect_target,
+                            ).await? {
+                                break;
                             }
-                            if end_connection { break; }
                         }
+                        Ok(None) => break,
                         Err(e) => return Err(e.into()),
                     }
                 }
-
                 internal_result = internal_rx.recv() => {
                     if let Ok(raw_data) = internal_result {
-                        if process_stream_data(&raw_data, &arc_state, &ws_tx, &ip, &mut server_start_keyword, &mut server_stop_keyword).await?.0 {
+                        if process_stream_data(
+                            &raw_data, &arc_state, &ws_tx, &ip,
+                            &mut server_start_keyword, &mut server_stop_keyword,
+                            &mut reconnect_target,
+                        ).await? {
                             break;
                         }
                     }
                 }
-
                 broadcast_result = rx.recv() => {
                     match broadcast_result {
                         Ok(data) => {
@@ -984,22 +1042,22 @@ pub async fn handle_stream(
             }
         } else {
             tokio::select! {
-                read_result = buf_reader.read(&mut buf) => {
+                read_result = lines.next_line() => {
                     match read_result {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            let raw_data = &buf[..n];
-                            let (end_connection, write_data) = process_stream_data(raw_data, &arc_state, &ws_tx, &ip, &mut server_start_keyword, &mut server_stop_keyword).await?;
-                            if let Some(data) = write_data {
-                                writer.write_all(&data).await?;
-                                writer.flush().await?;
+                        Ok(Some(line)) => {
+                            let raw = line.as_bytes();
+                            if process_stream_data(
+                                raw, &arc_state, &ws_tx, &ip,
+                                &mut server_start_keyword, &mut server_stop_keyword,
+                                &mut reconnect_target,
+                            ).await? {
+                                break;
                             }
-                            if end_connection { break; }
                         }
+                        Ok(None) => break,
                         Err(e) => return Err(e.into()),
                     }
                 }
-
                 broadcast_result = rx.recv() => {
                     match broadcast_result {
                         Ok(data) => {
@@ -1014,54 +1072,99 @@ pub async fn handle_stream(
         }
     }
 
-    Ok(())
+    if let Some((ip, name)) = reconnect_target {
+        return Ok(StreamResult::Reconnect(ip, name));
+    }
+    Ok(StreamResult::Done)
 }
 
 // does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
 pub async fn connect_to_server(
     arc_state: Arc<RwLock<AppState>>,
-    tcp_url: String,
-    mut rx: broadcast::Receiver<Vec<u8>>,
+    mut tcp_url: String,
     ws_tx: broadcast::Sender<String>,
-    internal_stream: Option<broadcast::Receiver<Vec<u8>>>,
     end_if_timeout: bool,
     block_with_stream: bool,
 ) -> Result<SocketAddr, Box<dyn Error + Send + Sync>> {
-    let deadline: Instant = Instant::now() + CONNECTION_TIMEOUT;
+    let mut last_peer: Option<SocketAddr> = None;
 
     loop {
+        let mut rx = {
+            let state = arc_state.read().await;
+            state.tcp_tx.subscribe()
+        };
+        let internal_stream = {
+            let state = arc_state.read().await;
+            state.internal_rx.as_ref().map(|r| r.resubscribe())
+        };
+
+        let deadline = Instant::now() + CONNECTION_TIMEOUT;
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             return Err("overall connect timeout".into());
         }
 
-        let per_attempt = CONNECTION_TIMEOUT.min(remaining);
-
-        match timeout(per_attempt, TcpStream::connect(&tcp_url)).await {
+        match timeout(remaining, TcpStream::connect(&tcp_url)).await {
             Ok(Ok(mut stream)) => {
                 let peer = stream.peer_addr()?;
-                let st = Arc::clone(&arc_state);
-                let tx = ws_tx.clone();
+                last_peer = Some(peer);
 
-                let mut state_guard = arc_state.write().await;
-                state_guard.tcp_conn_status = Status::Up;
+                {
+                    let mut state_guard = arc_state.write().await;
+                    state_guard.tcp_conn_status = Status::Up;
+                }
 
-                if !block_with_stream {
-                    tokio::spawn(async move {
-                        if let Err(e) =
-                            handle_stream(st, &mut rx, &mut stream, tx, internal_stream).await
-                        {
-                            eprintln!("handle_stream error: {}", e);
-                        }
-                    });
+                let result = if !block_with_stream {
+                    handle_stream(
+                        Arc::clone(&arc_state),
+                        &mut rx,
+                        &mut stream,
+                        ws_tx.clone(),
+                        internal_stream,
+                    )
+                    .await
                 } else {
-                    if let Err(e) =
-                        handle_stream(st, &mut rx, &mut stream, tx, internal_stream).await
-                    {
+                    handle_stream(
+                        Arc::clone(&arc_state),
+                        &mut rx,
+                        &mut stream,
+                        ws_tx.clone(),
+                        internal_stream,
+                    )
+                    .await
+                };
+
+                match result {
+                    Ok(StreamResult::Reconnect(new_ip, new_name)) => {
+                        println!("Reconnecting to {} ({})", new_name, new_ip);
+                        {
+                            let mut state = arc_state.write().await;
+                            state.current_node = NodeAndTCP {
+                                name: new_name,
+                                ip: new_ip.clone(),
+                                ..Default::default()
+                            };
+                            let node_state_bytes = serde_json::to_vec(&MessagePayload {
+                                r#type: "command".to_string(),
+                                message: "server_state".to_string(),
+                                authcode: "0".to_string(),
+                            })
+                            .unwrap_or_default();
+                            if let Some(tx) = &state.internal_tx {
+                                let _ = tx.send(node_state_bytes);
+                            }
+                        }
+                        tcp_url = new_ip;
+                        continue;
+                    }
+                    Ok(StreamResult::Done) => {
+                        return Ok(last_peer.unwrap_or(peer));
+                    }
+                    Err(e) => {
                         eprintln!("handle_stream error: {}", e);
+                        // Fall through to retry delay
                     }
                 }
-                return Ok(peer);
             }
             Ok(Err(e)) => {
                 eprintln!("TCP connect error: {}", e);
@@ -1070,12 +1173,11 @@ pub async fn connect_to_server(
                     let _ = tx.send("end_conn".into());
                 }
                 state_guard.tcp_conn_status = Status::Down;
-                println!("Done");
             }
             Err(_) => {
                 let mut state_guard = arc_state.write().await;
                 state_guard.tcp_conn_status = Status::Down;
-                eprintln!("TCP connect timed out ({:?})", per_attempt);
+                eprintln!("TCP connect timed out");
                 if end_if_timeout {
                     return Err("connection attempt timed out".into());
                 }
@@ -1088,6 +1190,7 @@ pub async fn connect_to_server(
 
 // this is where it determines wether or not to try and create the container and deployment, as attempt_connection itself is used in various diffrent contexts (like it will constantly
 // try to connect upon failing but it should not try to create the container and deployment every time it fails)
+// I use anyhow here because it saves me having to try and downcast the error type
 async fn try_initial_connection(
     conn_attempts: u64,
     conn_timeout: u64,
@@ -1096,16 +1199,15 @@ async fn try_initial_connection(
     tcp_url: String,
     ws_tx: &broadcast::Sender<String>,
     tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut final_error: Box<dyn std::error::Error + Send + Sync> =
-        "This should not show up".into();
+) -> Result<(), anyhow::Error> {
+    let mut final_error = anyhow!(String::new());
     for _ in 0..conn_attempts {
         match attempt_connection(tcp_url.clone()).await {
             Ok(mut stream) => {
                 println!("Initial connection succeeded!");
                 // note, possibly I wont ever need to create a handler from the test of the intial connection
                 // TODO: think about removing create_handler and just never create a handler here
-                // I was considering to return the handler from here, but it wouldnt make sense to add that complexity 
+                // I was considering to return the handler from here, but it wouldnt make sense to add that complexity
                 // when I only create the initial tcp stream within the main function, it would involve either a thread here, or in the main function
                 // and i rather keep this function focused on testing the connection (there might be a very NICHE case for making a handler here, but if there isnt ill remove it)
                 if create_handler {
@@ -1125,7 +1227,7 @@ async fn try_initial_connection(
                         println!("Stream finished");
                         return Ok(());
                     } else {
-                        final_error = stream_result.err().unwrap()
+                        final_error = anyhow!(stream_result.err().unwrap())
                     }
                 } else {
                     return Ok(());
@@ -1181,6 +1283,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let conn = first_connection().await?;
     let database = database::Database::new(Some(conn));
 
+    let database_conn_result = database.ensure_database_conn().await;
+
+    if let Err(err) = database_conn_result {
+        println!("{}", err);
+    }
+
     let verbose = std::env::var("VERBOSE").is_ok();
     let base_path = std::env::var("SITE_URL")
         .map(|s| {
@@ -1201,7 +1309,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config_local_url =
         get_env_var_or_arg("LOCALURL", Some(StaticLocalUrl.to_string())).unwrap();
 
-    // Overrides for testing or specific cases where how it worksin a setup may be diffrent
+    // Overrides for testing or specific cases where how it works a setup may be diffrent
     let enable_k8s_client: bool = get_env_var_or_arg("ENABLE_K8S_CLIENT", Some(true)).unwrap();
     let force_rebuild: bool = get_env_var_or_arg("FORCE_REBUILD", Some(false)).unwrap();
     let build_docker_image: bool = get_env_var_or_arg("BUILD_DOCKER_IMAGE", Some(true)).unwrap();
@@ -1267,22 +1375,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut rcon_connection: Option<Arc<Mutex<Connection<TcpStream>>>> = None;
     if let Ok(retrived_db) = database.get_settings().await {
-        if (retrived_db.enabled_rcon) {
+        if retrived_db.enabled_rcon {
             rcon_connection = match Connection::builder()
                 .enable_minecraft_quirks(true)
                 .connect(&retrived_db.rcon_url, &retrived_db.rcon_password)
                 .await
-                .map_err(|e| e)
-                // Temporary note, you could put e in a Error::new
-                // TODO: consider doing the above, and remove this and the above comment
-                {
-                    Ok(conn) => Some(Arc::new(Mutex::new(conn))),
-                    Err(e) => {
-                        eprintln!("Failed to connect to RCON: {}", e);
-                        None
-                        // Connection stays None
-                    }
+            {
+                Ok(conn) => Some(Arc::new(Mutex::new(conn))),
+                Err(e) => {
+                    eprintln!("Failed to connect to RCON: {}", e);
+                    None
                 }
+            }
         }
     }
 
@@ -1329,9 +1433,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let tcp_tx_clone = inner_state.write().await.tcp_tx.clone();
         let tcp_url_clone = tcp_url.to_string();
 
-        // TODO: Since I never create a handler with initial connections, should i take it out of the thread?, or rather, 
+        // TODO: Since I never create a handler with initial connections, should i take it out of the thread?, or rather,
         // leave it to set a TcpStream for the appstate for when it sorts itself out
-        let handle = tokio::spawn(async move {
+        tokio::spawn(async move {
             let initial_connection_result = try_initial_connection(
                 initial_connection_attempts,
                 initial_connection_timeout,
@@ -1353,22 +1457,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     let mut unbuilt_img_was_the_issue = false;
                     if build_docker_image {
                         unbuilt_img_was_the_issue = true;
-                        docker::build_docker_image().await?;
+                        if let Err(e) = docker::build_docker_image().await {
+                            eprintln!("Failed to build docker image: {:#?}", e);
+                        }
                     }
                     if build_deployment {
                         unbuilt_img_was_the_issue = true;
-                        kubernetes::create_k8s_deployment(&client).await?;
+                        if let Err(e) = kubernetes::create_k8s_deployment(&client).await {
+                            eprintln!("Failed to create k8s deployment: {:#?}", e);
+                        }
                     }
                     if !unbuilt_img_was_the_issue {
-                        println!("{:#?}", initial_connection_result.as_ref().err().unwrap());
+                        // if let Some(initial_connection_result_string) = initial_connection_result.err().unwrap().to_string() {
+                        if let Some(initial_connection_result_string) = initial_connection_result
+                            .as_ref()
+                            .err()
+                            .unwrap()
+                            .downcast_ref::<String>()
+                        {
+                            if !initial_connection_result_string.is_empty() {
+                                println!("{:#?}", initial_connection_result_string);
+                            }
+                        } else {
+                            println!("{:#?}", initial_connection_result.as_ref().err().unwrap());
+                        }
                     }
                 } else {
-                    println!("{:#?}", initial_connection_result.as_ref().err().unwrap());
+                    if let Some(initial_connection_result_string) = initial_connection_result
+                        .as_ref()
+                        .err()
+                        .unwrap()
+                        .downcast_ref::<String>()
+                    {
+                        if !initial_connection_result_string.is_empty() {
+                            println!("{:#?}", initial_connection_result_string);
+                        }
+                    } else {
+                        println!("{:#?}", initial_connection_result.as_ref().err().unwrap());
+                    }
                 }
             }
+            // If the initial connection result succeeded, it will define all the relevent channels in AppState so messages can be sent
+            // and recived from it, internal_tx will also be used as an internal messaging service which can be used
+            // internal for things like terminating a connection to a node locally, or forwarding said message to node
             if initial_connection_result.is_ok() {
                 println!("Creating a new connection");
-                //&inner_state.write().await.
                 let (new_tcp_tx, new_tcp_rx) = broadcast::channel::<Vec<u8>>(100);
                 let (internal_tx, internal_rx) = broadcast::channel::<Vec<u8>>(100);
 
@@ -1380,51 +1513,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     state.internal_rx = Some(internal_rx.resubscribe());
                 }
 
-                let bridge_rx = new_tcp_tx.subscribe();
                 let bridge_tx = inner_state.read().await.ws_tx.clone();
-                let internal_stream = Some(internal_rx);
-                //println!("Near to making a new connection");
-                let connect_to_server_result = connect_to_server(inner_state, tcp_url, bridge_rx, bridge_tx, internal_stream, true, false).await;
+
+                let connect_to_server_result =
+                    connect_to_server(inner_state, tcp_url, bridge_tx, true, false).await;
                 if let Err(err) = connect_to_server_result {
                     println!("{:#?}", err);
                 }
             }
-            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
         });
-
         // This will make sure that the results of the initial connections attempt to build a docker image, or create a k8s deployment succeeded
         // and it will log the result, will if its an error. An error not logging here does not mean the initial connection went fine
-        match handle.await {
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => {
-                eprintln!("The initial connection failed with: {:#?}", e)
-            }
-            Err(e) => {
-                eprintln!("The initial connection failed with: {:#?}", e)
-            }
-        }
+        // NOTE: we no longer await the handle here — the connection task runs in the background so axum::serve can start immediately
     }
 
-    // takes the tcp connection out of the arc mutex and gets a connection to the
-    // websocket to send to connect_to_server to establish the date pipeline
-    let server_connection_state = multifaceted_state.clone();
-    let bridge_rx = multifaceted_state.read().await.tcp_rx.resubscribe();
-    let bridge_tx = multifaceted_state.read().await.ws_tx.clone();
-
-    let arc_state_clone = multifaceted_state.clone();
-
-    // Currently very permissive CORS for permissions
+    // CORS are currently very permissive
     let cors = CorsLayer::new()
         .allow_origin(CorsAny)
         .allow_methods([Method::GET, Method::POST])
         .allow_headers(CorsAny);
 
-    // fallback_router will serve all the basic files
-    let fallback_router = routes_static(multifaceted_state.clone());
+    let session_store = MemoryStore::default();
+    // TODO:
+    // In the future, once cookies work, improve overrall https support
+    // there was an issue where users could not log in because cookies have the Secure flag
+    // but the site is http, which causes the cookie to be blocked
+    // meaning every request to protected routes had no session and redirected back to login
+    let session_layer = SessionManagerLayer::new(session_store.clone())
+        .with_secure(false)
+        .with_same_site(tower_sessions::cookie::SameSite::Lax)
+        .with_http_only(false)
+        .with_path("/")
+        .with_name("gameserver_session");
+
+    let backend = Backend::default();
+    let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer.clone()).build();
+
+    let (fallback_router, maybe_oidc_layer) =
+        routes_static(multifaceted_state.clone(), auth_layer.clone()).await;
 
     // the main route, this serves all the api stuff that wont be behind a login, but I handle the main routes in routes_static for better control
     // over the authentication flow, if the api could be publically accessible in the future, you would need a diffrent way to authenticate with a api
-    //let global_state = multifaceted_state.write().await.clone();
     let inner = Router::new()
         .route("/api/message", get(get_message))
         .route("/api/nodes", get(get_nodes))
@@ -1438,16 +1567,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/getsettings", get(get_settings))
         .route("/api/awaitserverstatus", get(ongoing_server_status))
         .route("/api/intergrations", get(get_integrations))
+        .route("/api/getcurrentnode", get(fetch_current_node))
         .route("/api/createintergrations", post(create_intergration))
         .route("/api/modifyintergrations", post(modify_intergration))
         .route("/api/deleteintergrations", post(delete_intergration))
-        // Actual intergrations
         .route("/api/rconcommand", post(rcon_command))
-        // End of actual intergrations
         .route("/api/refreshstatus", post(refresh_status))
         .route("/api/setsettings", post(set_settings))
-        .route("/api/changenode", post(change_node))
-        .route("/api/fetchnode", post(fetch_node))
+        .route("/api/changenode", put(change_node))
         .route("/api/migrate", post(migrate))
         .route("/api/getstatus", post(get_status))
         .route("/api/getfiles", post(get_files))
@@ -1456,19 +1583,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/editbuttons", post(edit_buttons))
         .route("/api/addnode", post(add_node))
         .route("/api/addserver", post(add_server))
-        .route("/api/edituser", post(edit_user))
-        .route("/api/getuser", post(get_user))
+        .route("/api/deleteserver", post(delete_server))
+        .route("/api/startserver", post(start_server))
+        .route("/api/stopserver", post(stop_server))
         .route("/api/setserver", post(set_server))
         .route("/api/getserver", post(get_server))
+        .route("/api/edituser", post(edit_user))
+        .route("/api/getuser", post(get_user))
         .route("/api/send", post(receive_message))
         .route("/api/general", post(process_general))
         .route(
             "/api/generalwithmetadata",
             post(process_general_with_metadata),
         )
-        // the above route is supposed to be the newer version to /api/general, adding a additonal metadata feild, changing all incomingmessages to incomingmessageswithmetadata
-        // will take awhile, so temporarially ill have this route
         .route("/api/signin", post(sign_in))
+        .route("/api/signout", delete(sign_out))
+        .route("/api/user/me", get(user_me))
         .route("/api/createuser", post(create_user))
         .route("/api/deleteuser", post(delete_user))
         .merge(fallback_router)
@@ -1476,14 +1606,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let normal_routes = Router::new().merge(inner);
 
-    // Does nesting of routes behind a base path if configured, otherwise use defaults
     let app = if base_path.is_empty() || base_path == "/" {
-        normal_routes.layer(cors)
+        let routed = normal_routes
+            .layer(middleware::from_fn(
+                |req: Request<Body>, next: Next| async move { next.run(req).await },
+            ))
+            .layer(cors)
+            .layer(auth_layer);
+
+        let routed = if let Some(oidc_layer) = maybe_oidc_layer {
+            routed.layer(
+                // Needs a service builder to convert a MiddleWareError into an actual reponse which can be
+                // combined with the rest of the routes, this is also in static_routes
+                // TODO: consider if this is nessesary with static_routes also handling oidc?
+                ServiceBuilder::new()
+                    .layer(HandleErrorLayer::new(|e: MiddlewareError| async move {
+                        eprintln!("OIDC auth layer error: {e:#?}");
+                        Redirect::to("/oidc").into_response()
+                    }))
+                    .layer(oidc_layer),
+            )
+        } else {
+            routed
+        };
+        routed.layer(session_layer)
     } else {
-        Router::new().nest(&base_path, normal_routes).layer(cors)
+        let routed = Router::new()
+            .nest(&base_path, normal_routes)
+            .layer(middleware::from_fn(
+                |req: Request<Body>, next: Next| async move {
+                    eprintln!("INCOMING: {} {}", req.method(), req.uri());
+                    next.run(req).await
+                },
+            ))
+            .layer(cors)
+            .layer(auth_layer);
+
+        let routed = if let Some(oidc_layer) = maybe_oidc_layer {
+            routed.layer(
+                // Same reason for ServiceBuilder as explained above
+                ServiceBuilder::new()
+                    .layer(HandleErrorLayer::new(|e: MiddlewareError| async move {
+                        eprintln!("OIDC auth layer error: {e:#?}");
+                        Redirect::to("/oidc").into_response()
+                    }))
+                    .layer(oidc_layer),
+            )
+        } else {
+            routed
+        };
+
+        // adds a session to everything
+        routed.layer(session_layer)
     };
 
-    // serves the website
     let addr: SocketAddr = config_local_url.parse().unwrap();
     println!("Listening on http://{}{}", addr, base_path);
 
@@ -1491,6 +1667,63 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     axum::serve(listener, app.into_make_service()).await?;
 
     Ok(())
+}
+
+// let msg = MessagePayloadWithMetadata {
+//     r#type: "command".to_string(),
+//     message: message.to_string(),
+//     metadata: MetadataTypes::Server {
+//         servername: server.servername.clone(),
+//         provider: server.provider.clone(),
+//         providertype: server.providertype.clone(),
+//         location: server.location.clone(),
+//         sandbox: server.sandbox,
+//     },
+//     authcode: "0".to_string(),
+// };
+
+// let mut bytes = match serde_json::to_vec(&msg) {
+//     Ok(b) => b,
+//     Err(e) => {
+//         eprintln!("Serialization error: {}", e);
+//         return StatusCode::INTERNAL_SERVER_ERROR;
+//     }
+// };
+// bytes.push(b'\n');
+
+// if let Err(e) = state.tcp_tx.send(bytes) {
+//     eprintln!("Failed to send {} to TCP: {}", message, e);
+//     return StatusCode::INTERNAL_SERVER_ERROR;
+// }
+
+pub async fn start_server(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl IntoResponse {
+    println!("Called start server");
+    let state = arc_state.write().await;
+    let msg = serde_json::to_vec(&MessagePayload {
+        r#type: "command".to_string(),
+        message: "start_server".to_string(),
+        authcode: "".to_string(),
+    });
+    if let Err(e) = msg {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let result = state.tcp_tx.send(msg.unwrap());
+    StatusCode::CREATED.into_response()
+}
+
+pub async fn stop_server(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl IntoResponse {
+    let state = arc_state.write().await;
+    let msg = serde_json::to_vec(&MessagePayload {
+        r#type: "command".to_string(),
+        message: "stop_server".to_string(),
+        authcode: "".to_string(),
+    })
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    if let Err(e) = msg {
+        return e;
+    };
+    let _ = state.tcp_tx.send(msg.unwrap());
+    StatusCode::CREATED.into_response()
 }
 
 pub async fn rcon_command(
@@ -1591,6 +1824,22 @@ async fn refresh_status(State(arc_state): State<Arc<RwLock<AppState>>>) {
             Status::Down
         }
     };
+}
+
+async fn fetch_current_node(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+) -> Result<Json<Node>, StatusCode> {
+    let mut state = arc_state.write().await;
+    println!("current node: {}", state.current_node.name.clone());
+    let option_node = state
+        .database
+        .retrieve_nodes(state.current_node.name.clone())
+        .await;
+    if let Some(node) = option_node {
+        Ok(Json(node))
+    } else {
+        Err(StatusCode::INTERNAL_SERVER_ERROR)
+    }
 }
 
 // TODO: maybe split this function and route into several routes with statuses for diffrent states/nodes/settings?
@@ -1793,20 +2042,20 @@ async fn ws_handler(
 }
 
 // routes_static provides middlewares for authentication as well as serving all the user-orintated content
-fn routes_static(state: Arc<RwLock<AppState>>) -> Router<Arc<RwLock<AppState>>> {
-    let session_store = MemoryStore::default();
-    // TODO:
-    // In the future, once cookies work, improve overrall https support
-    // there was an issue where users could not log in because cookies have the Secure flag
-    // but the site is http, which causes the cookie to be blocked
-    // meaning every request to protected routes had no session and redirected back to login
-    let session_layer = SessionManagerLayer::new(session_store)
-    .with_secure(false)
-    .with_same_site(tower_sessions::cookie::SameSite::Lax)
-    .with_http_only(true);
-    let backend = Backend::default();
-    let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
-
+// and also, this works for SPA and non-SPA content, e.g non-spa for either entire new UI's or
+// plugin files which might not be included with the rest of the files
+// if its an SPA, there is practically 0 benifit from the server side login middleware
+// although for Non-SPA files that served as soley a user convenience feature rather than an actual security
+// measure
+// also I pass auth layer because sometimes it says that there is no auth layer present instead of serving the webpage
+// the fix mainly worked in the router in main, I am just covering future cases
+async fn routes_static(
+    state: Arc<RwLock<AppState>>,
+    auth_layer: AuthManagerLayer<Backend, MemoryStore>,
+) -> (
+    Router<Arc<RwLock<AppState>>>,
+    Option<OidcAuthLayer<EmptyAdditionalClaims>>,
+) {
     let base_path = std::env::var("SITE_URL")
         .map(|mut s| {
             s = s.trim().to_string();
@@ -1822,44 +2071,177 @@ fn routes_static(state: Arc<RwLock<AppState>>) -> Router<Arc<RwLock<AppState>>> 
         })
         .unwrap_or_default();
 
-    let login_url_base = Arc::new(format!("{}/index.html", base_path));
+    // login_required_middleware will for all files served, will redirect the user back to the main login page
+    // if they are not authenticated, for an SPA this does not change anything
 
+    // TODO: remove /oidc? from the end of this
+    // need to check to make sure that doesnt break anything
+    // during OIDC implimentation i tried several things and have not fully determined the bare configuration
+    // needed for OIDC
+    let login_url_base = Arc::new(format!("{}/oidc", base_path));
     let login_required_middleware = from_fn(
         move |auth_session: AuthSession, req: Request<Body>, next: Next| {
-            let login_url_base = login_url_base.clone();
+            let login_url = login_url_base.clone();
             async move {
+                let path = req.uri().path().to_string();
+                if path.starts_with("/oidc") {
+                    return next.run(req).await;
+                }
                 if auth_session.user.is_some() {
                     next.run(req).await
                 } else {
-                    let original_uri = req.uri();
-                    let next_path = original_uri.to_string();
-                    let redirect_url = format!(
-                        "{}?next={}",
-                        login_url_base,
-                        urlencoding::encode(&next_path)
-                    );
-                    Redirect::temporary(&redirect_url).into_response()
+                    Redirect::temporary(&login_url).into_response()
                 }
             }
         },
     );
 
+    // OIDC layers and routes will not be constructed if there is an issue with creating the layer
+    // and routes, and will just merge and empty router
+    let mut maybe_oidc_layer: Option<OidcAuthLayer<EmptyAdditionalClaims>> = None;
+    let mut oidc_routes: Router<Arc<RwLock<AppState>>> = Router::new();
+
+    if let Ok((raw_oidc_layer, _)) = get_oidc_layer().await {
+        // adds the callback and the oidc route to actually start the login initiation (includes fallback for /oidc/ if the user adds a path, maybe not nessesary?)
+        let callback_router: Router<Arc<RwLock<AppState>>> = Router::new().route(
+            "/oidc/callback",
+            any(handle_oidc_redirect::<EmptyAdditionalClaims>),
+        );
+
+        let login_router: Router<Arc<RwLock<AppState>>> = Router::new()
+            .route("/oidc", any(oidc_login_initiate))
+            .route("/oidc/", any(oidc_login_initiate))
+            .layer(
+                // Needs a service builder to convert a MiddleWareError into an actual reponse which can be
+                // combined with the rest of the routes, this is also in main
+                ServiceBuilder::new()
+                    .layer(HandleErrorLayer::new(|e: MiddlewareError| async move {
+                        eprintln!("OIDC login layer error: {e:#?}");
+                        e.into_response()
+                    }))
+                    .layer(OidcLoginLayer::<EmptyAdditionalClaims>::new()),
+            );
+
+        oidc_routes = Router::new().merge(callback_router).merge(login_router);
+
+        maybe_oidc_layer = Some(raw_oidc_layer);
+    }
+
     let public = Router::new()
         .route("/", get(handle_static_request))
-        .route("/authenticate", get(authenticate_route))
+        .route("/authenticate", get(authenticate_route_with_jwt))
         .route("/index.html", get(handle_static_request))
-        .with_state(state.clone());
+        .route("/assets/{*wildcard}", get(handle_static_request));
 
     let protected = Router::new()
         .route("/{*wildcard}", get(handle_static_request))
-        .with_state(state.clone())
         .layer(login_required_middleware);
 
-    // Apply auth_layer only once at the root
-    Router::new()
+    let router = Router::new()
         .merge(public)
+        .merge(oidc_routes)
         .merge(protected)
-        .layer(auth_layer)
+        .with_state(state.clone());
+
+    (router, maybe_oidc_layer)
+}
+
+// This function will construct a layer with the OIDC client, which includes stuff like the local
+// callback URL and importanly the OIDC redirect
+// client ids and secrets
+async fn get_oidc_layer() -> Result<
+    (
+        OidcAuthLayer<EmptyAdditionalClaims>,
+        OidcClient<EmptyAdditionalClaims>,
+    ),
+    Box<dyn Error + Send + Sync>,
+> {
+    // get_env_var_or_arg("TCPURL", Some(StaticTcpUrl.to_string())).unwrap();
+
+    // TODO: maybe make a function which trims the last / in a url
+    let local_url = get_env_var_or_arg("LOCALURL", Some(StaticLocalUrl.to_string())).unwrap();
+    let oidc_callback = if local_url.starts_with("http") {
+        format!("{}/oidc/callback", local_url)
+    } else {
+        format!("http://{}/oidc/callback", local_url)
+    };
+
+    let oidc_url: String =
+        get_env_var_or_arg("OIDC_URL", Some("http://localhost:5556/dex".into())).unwrap();
+
+    let oidc_secret: String =
+        get_env_var_or_arg("OIDC_SECRET", Some("axum-app-secret".into())).unwrap();
+    let oidc_id: String = get_env_var_or_arg("OIDC_ID", Some("axum-app".into())).unwrap();
+
+    let client = OidcClient::<EmptyAdditionalClaims>::builder()
+        .with_default_http_client()
+        .with_redirect_url(oidc_callback.parse()?)
+        .with_client_id(ClientId::new(oidc_id))
+        .with_client_secret(ClientSecret::new(oidc_secret))
+        .add_scope(Scope::new("openid".into()))
+        .add_scope(Scope::new("profile".into()))
+        .discover(IssuerUrl::new(oidc_url.into())?)
+        .await?
+        .build();
+
+    let layer = OidcAuthLayer::new(client.clone());
+    Ok((layer, client))
+}
+
+#[axum::debug_handler]
+async fn oidc_login_initiate(
+    mut auth_session: AuthSession,
+    claims: Option<OidcClaims<EmptyAdditionalClaims>>,
+) -> impl IntoResponse {
+    if auth_session.user.is_some() {
+        return Redirect::to("/").into_response();
+    }
+    if let Some(claims) = claims {
+        let mut decoded_user = String::new();
+
+        // Code for decoding the claims itself
+        // if let Ok(decoded_user_bytes) = STANDARD.decode(local_claim_name.to_string()){
+        //     if let Ok(inner_decoded_user) = String::from_utf8(decoded_user_bytes){
+        //         decoded_user = inner_decoded_user;
+        //     } else {
+        //         println!("D");
+        //         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        //     }
+        // } else {
+        //     println!("C");
+        //     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        // }
+
+        if let Some(claim_name) = claims.name() {
+            if let Some(local_claim_name) = claim_name.get(None) {
+                decoded_user = local_claim_name.to_string();
+            } else {
+                //return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        } else {
+            //return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            if let Some(claim_name) = claims.email() {
+                decoded_user = claim_name.to_string();
+            }
+        }
+
+        let user = User {
+            username: decoded_user,
+            password_hash: None,
+            user_perms: vec![],
+        };
+        match auth_session.login(&user).await {
+            Ok(_) => eprintln!("login succeeded"),
+            Err(e) => {
+                eprintln!("login FAILED: {:#?}", e);
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        }
+        return Redirect::to("/").into_response();
+    } else {
+        //println!("Invalid claims");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
 }
 
 async fn load_settings(
@@ -1933,14 +2315,10 @@ async fn statistics(
             interval.tick().await;
             system.refresh_all();
 
-            let core_data: Vec<String> = system
-                .cpus()
-                .into_iter()
-                .map(|core| core.cpu_usage().to_string())
-                .collect();
+            let core_data = system.cpus().iter().map(|core| core.cpu_usage()).collect();
             let statistics = Statistics {
-                total_memory: system.total_memory().to_string(),
-                used_memory: system.used_memory().to_string(),
+                total_memory: system.total_memory(),
+                used_memory: system.used_memory(),
                 core_data,
                 metadata: "".to_string(),
             };
@@ -2024,20 +2402,97 @@ async fn add_node(
         .map_err(|e| StatusCode::INTERNAL_SERVER_ERROR);
     result
 }
+async fn delete_server(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    Json(request): Json<SimpleMesagePayload>,
+) -> impl IntoResponse {
+    let state = arc_state.write().await;
 
-// Not currently in use
-// TODO: consider removing this
+    let msg = MessagePayload {
+        r#type: "command".to_string(),
+        message: "delete_current_server".to_string(),
+        authcode: "0".to_string(),
+    };
+
+    let mut bytes = match serde_json::to_vec(&msg) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("Serialization error: {}", e);
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    bytes.push(b'\n');
+
+    if let Err(e) = state.tcp_tx.send(bytes) {
+        eprintln!("Failed to send 'delete server' to TCP: {}", e);
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    StatusCode::CREATED.into_response()
+}
 async fn add_server(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
-    let state = arc_state.write().await;
-    let result = state
+    let mut state = arc_state.write().await;
+
+    let server = match &request.element {
+        Element::Server(s) => s.clone(),
+        _ => return StatusCode::BAD_REQUEST,
+    };
+
+    state.current_server = Some(server.clone());
+
+    let exists = match state
         .database
-        .create_server_in_db(request)
+        .get_from_servers_database(&server.servername)
         .await
-        .map_err(|e| StatusCode::INTERNAL_SERVER_ERROR);
-    result
+    {
+        Ok(result) => result.is_some(),
+        Err(e) => {
+            println!("{:#?}", e);
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
+    };
+
+    if exists {
+        return StatusCode::CONFLICT;
+    }
+
+    if let Err(e) = state.database.create_server_in_db(request).await {
+        println!("{:#?}", e);
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    }
+
+    for message in ["set_server", "create_server"] {
+        let msg = MessagePayloadWithMetadata {
+            r#type: "command".to_string(),
+            message: message.to_string(),
+            metadata: MetadataTypes::Server {
+                servername: server.servername.clone(),
+                provider: server.provider.clone(),
+                providertype: server.providertype.clone(),
+                location: server.location.clone(),
+                sandbox: server.sandbox,
+            },
+            authcode: "0".to_string(),
+        };
+
+        let mut bytes = match serde_json::to_vec(&msg) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("Serialization error: {}", e);
+                return StatusCode::INTERNAL_SERVER_ERROR;
+            }
+        };
+        bytes.push(b'\n');
+
+        if let Err(e) = state.tcp_tx.send(bytes) {
+            eprintln!("Failed to send {} to TCP: {}", message, e);
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
+    }
+
+    StatusCode::OK
 }
 
 async fn get_integrations(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl IntoResponse {
@@ -2293,7 +2748,7 @@ async fn set_server(
                 provider: retrieved_server.provider,
                 providertype: retrieved_server.providertype,
                 location: retrieved_server.location,
-                sandbox: retrieved_server.sandbox
+                sandbox: retrieved_server.sandbox,
             },
             authcode: "0".to_string(),
         };
@@ -2451,7 +2906,7 @@ async fn process_general_with_metadata(
                 provider,
                 providertype,
                 location,
-                sandbox
+                sandbox,
             } = payload.metadata.clone()
             {
                 // Sets the server on the local server when creating a new game server
@@ -2487,7 +2942,7 @@ async fn process_general_with_metadata(
                         location,
                         provider,
                         servername,
-                        sandbox
+                        sandbox,
                     } = payload.metadata.clone()
                     {
                         let _ = database
@@ -2525,7 +2980,7 @@ async fn process_general_with_metadata(
                                 provider: retrieved_server.provider,
                                 providertype: retrieved_server.providertype,
                                 location: retrieved_server.location,
-                                sandbox: retrieved_server.sandbox
+                                sandbox: retrieved_server.sandbox,
                             },
                             authcode: "0".to_string(),
                         };
@@ -2600,76 +3055,96 @@ async fn users(
         list: ApiCalls::UserDataList(users),
     }))
 }
+
+#[derive(serde::Deserialize)]
+struct ChangeNodeRequest {
+    node_id: String,
+    server_id: String,
+}
+
 async fn change_node(
     State(arc_state): State<Arc<RwLock<AppState>>>,
-    Json(request): Json<IncomingMessage>,
+    Json(request): Json<ChangeNodeRequest>,
 ) -> Result<StatusCode, StatusCode> {
+    println!("Changing node");
+    // {
+    //     let state = arc_state.read().await;
+    //     println!("all nodes: {:#?}", state.database.fetch_all_nodes().await);
+    //     println!("changed node: {}", request.node_id)
+    // }
     let option_node = {
         let state = arc_state.read().await;
-        state.database.retrieve_nodes(request.message).await
+        state.database.retrieve_nodes(request.node_id.clone()).await
     };
 
     if let Some(node) = option_node {
         {
+            // let termination_payload = MessagePayload {
+            //     r#type: "conn_state".to_string(),
+            //     message: "end_conn".to_string(),
+            //     authcode: "0".to_string(),
+            // };
             let termination_payload = MessagePayload {
-                r#type: "conn_state".to_string(),
-                message: "end_conn".to_string(),
+                r#type: "change_conn".to_string(),
+                message: request.node_id,
                 authcode: "0".to_string(),
             };
 
             let termination_bytes = serde_json::to_vec(&termination_payload).unwrap_or_default();
 
             if let Some(tx) = &arc_state.read().await.internal_tx {
+                println!("Sending termination bytes");
                 let _ = tx.send(termination_bytes);
             }
         }
 
-        let (new_tcp_tx, new_tcp_rx) = broadcast::channel::<Vec<u8>>(100);
-        let (internal_tx, internal_rx) = broadcast::channel::<Vec<u8>>(100);
+        // let (new_tcp_tx, new_tcp_rx) = broadcast::channel::<Vec<u8>>(100);
+        // let (internal_tx, internal_rx) = broadcast::channel::<Vec<u8>>(100);
 
-        {
-            let mut state = arc_state.write().await;
-            state.tcp_tx = new_tcp_tx.clone();
-            state.tcp_rx = new_tcp_rx.resubscribe();
-            state.internal_tx = Some(internal_tx);
-            state.internal_rx = Some(internal_rx.resubscribe());
-        }
+        // {
+        //     let mut state = arc_state.write().await;
+        //     state.tcp_tx = new_tcp_tx.clone();
+        //     state.tcp_rx = new_tcp_rx.resubscribe();
+        //     println!("Re-assigning internal_tx");
+        //     state.internal_tx = Some(internal_tx);
+        //     state.internal_rx = Some(internal_rx.resubscribe());
+        // }
 
-        let bridge_rx = new_tcp_tx.subscribe();
-        let bridge_tx = arc_state.read().await.ws_tx.clone();
-        let internal_stream = Some(internal_rx);
+        // let bridge_rx = new_tcp_tx.subscribe();
+        // let bridge_tx = arc_state.read().await.ws_tx.clone();
+        // let internal_stream = Some(internal_rx);
 
-        if let Err(e) = connect_to_server(
-            Arc::clone(&arc_state),
-            node.ip.to_string(),
-            bridge_rx,
-            bridge_tx,
-            internal_stream,
-            true,
-            false,
-        )
-        .await
-        {
-            eprintln!("Connection task failed: {}", e);
-        } else {
-            let mut state = arc_state.write().await;
-            state.current_node = NodeAndTCP {
-                name: node.nodename,
-                ip: node.ip,
-                ..Default::default()
-            };
+        // if let Err(e) = connect_to_server(
+        //     Arc::clone(&arc_state),
+        //     node.ip.to_string(),
+        //     bridge_rx,
+        //     bridge_tx,
+        //     internal_stream,
+        //     true,
+        //     false,
+        // )
+        // .await
+        // {
+        //     eprintln!("Connection task failed: {}", e);
+        // } else {
+        //     let mut state = arc_state.write().await;
+        //     state.current_node = NodeAndTCP {
+        //         name: node.nodename,
+        //         ip: node.ip,
+        //         ..Default::default()
+        //     };
 
-            let node_state_payload = MessagePayload {
-                r#type: "command".to_string(),
-                message: "server_state".to_string(),
-                authcode: "0".to_string(),
-            };
-            let node_state_bytes = serde_json::to_vec(&node_state_payload).unwrap_or_default();
+        //     let node_state_payload = MessagePayload {
+        //         r#type: "command".to_string(),
+        //         message: "server_state".to_string(),
+        //         authcode: "0".to_string(),
+        //     };
+        //     let node_state_bytes = serde_json::to_vec(&node_state_payload).unwrap_or_default();
 
-            if let Some(tx) = &state.internal_tx {
-                let _ = tx.send(node_state_bytes);
-            }
-        }
+        //     if let Some(tx) = &state.internal_tx {
+        //         let _ = tx.send(node_state_bytes);
+        //     }
+        // }
 
         Ok(StatusCode::OK)
     } else {
@@ -2677,18 +3152,7 @@ async fn change_node(
         Err(StatusCode::INTERNAL_SERVER_ERROR)
     }
 }
-async fn fetch_node(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
-    Json(request): Json<IncomingMessage>,
-) -> Result<Json<Node>, StatusCode> {
-    let mut state = arc_state.write().await;
-    let option_node = state.database.retrieve_nodes(request.message).await;
-    if let Some(node) = option_node {
-        Ok(Json(node))
-    } else {
-        Err(StatusCode::INTERNAL_SERVER_ERROR)
-    }
-}
+
 // A list of nodes in a k8s cluster is returned, nothing is returned if there is not a client (k8s support is off)
 async fn get_nodes(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl IntoResponse {
     let mut state = arc_state.write().await;
@@ -2816,6 +3280,7 @@ pub struct Claims {
     pub exp: usize,
     pub iat: usize,
     pub user: String,
+    pub user_perms: Vec<String>,
 }
 
 // Our custom backend, which only hash a list of users
@@ -2838,11 +3303,13 @@ impl AuthnBackend for Backend {
         let user = resolve_jwt(&token).ok().map(|data| User {
             username: data.claims.user,
             password_hash: None,
-            user_perms: vec![],
+            user_perms: data.claims.user_perms,
         });
         Ok(user)
     }
 
+    // I dont even use this function so its fine if I dont add user perms or even do it correctly
+    // it was just required by the trait
     async fn get_user(&self, user_id: &String) -> Result<Option<Self::User>, Self::Error> {
         Ok(Some(User {
             username: user_id.clone(),
@@ -2867,11 +3334,16 @@ fn resolve_jwt(token: &str) -> Result<TokenData<Claims>, StatusCode> {
 }
 
 // Creates a claim with respect to the secret, and gives it a expirery
-fn encode_token(user: String) -> Result<String, StatusCode> {
+fn encode_token(user: String, user_perms: Vec<String>) -> Result<String, StatusCode> {
     let now = Utc::now();
     let exp = (now + chrono::Duration::hours(24)).timestamp() as usize;
     let iat = now.timestamp() as usize;
-    let claims = Claims { exp, iat, user };
+    let claims = Claims {
+        exp,
+        iat,
+        user,
+        user_perms,
+    };
 
     let secret = std::env::var("SECRET").unwrap_or_else(|_| {
         panic!("Need to specify a secret");
@@ -2915,46 +3387,73 @@ impl AuthUser for User {
 // rely on the database to try and find the user entry, if it fails, its immediately unauthorized, or it will try and match the password next
 // if it fails, its unauthorized
 #[axum::debug_handler]
-pub async fn sign_in(
+async fn sign_out(mut auth_session: AuthSession) -> Result<Response, StatusCode> {
+    if let Err(e) = auth_session.logout().await {
+        eprintln!("Failed to log in user {e:?}");
+        return Ok((StatusCode::INTERNAL_SERVER_ERROR, "Failed to log in").into_response());
+    }
+
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[axum::debug_handler]
+async fn sign_in(
+    mut auth_session: AuthSession,
     State(arc_state): State<Arc<RwLock<AppState>>>,
     Form(request): Form<LoginData>,
-) -> Result<Json<ResponseMessage>, StatusCode> {
+) -> Result<Response, StatusCode> {
     let state = arc_state.write().await;
 
-    let mut username: Option<String> = None;
+    let user = state
+        .database
+        .retrieve_user(request.user.clone())
+        .await
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let password_valid = verify_password(request.password, user.password_hash.unwrap())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let admin_enabled: bool = get_env_var_or_arg("ENABLE_ADMIN_USER", Some(false)).unwrap();
-    if (admin_enabled) {
-        let admin_user: String = get_env_var_or_arg("ADMIN_USER", Some(String::new())).unwrap();
-        let admin_password: String =
-            get_env_var_or_arg("ADMIN_PASSWORD", Some(String::new())).unwrap();
-
-        if request.user != admin_user || request.password != admin_password {
-            return Err(StatusCode::UNAUTHORIZED);
-        }
-
-        username = Some(admin_user);
-    } else {
-        let user = state
-            .database
-            .retrieve_user(request.user.clone())
-            .await
-            .ok_or(StatusCode::UNAUTHORIZED)?;
-        let password_valid = verify_password(request.password, user.password_hash.unwrap())
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-        if !password_valid {
-            return Err(StatusCode::UNAUTHORIZED);
-        }
-
-        username = Some(user.username);
+    if !password_valid {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    if !password_valid {
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
-    if username.is_none() {
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    let user = User {
+        username: user.username,
+        password_hash: None,
+        user_perms: vec![],
+    };
+
+    if let Err(e) = auth_session.login(&user).await {
+        eprintln!("Failed to log in user {e:?}");
+        return Ok((StatusCode::INTERNAL_SERVER_ERROR, "Failed to log in").into_response());
     }
-    let token = encode_token(username.unwrap())?;
-    Ok(Json(ResponseMessage { response: token }))
+
+    Ok((
+        StatusCode::OK,
+        Json(SignInResponse {
+            username: user.username,
+        }),
+    )
+        .into_response())
+}
+
+#[derive(serde::Serialize)]
+struct UserResponse {
+    username: String,
+}
+
+#[axum::debug_handler]
+async fn user_me(auth_session: AuthSession) -> impl IntoResponse {
+    eprintln!("User: {:?}", auth_session.user);
+    match auth_session.user {
+        Some(user) => Json(UserResponse {
+            username: user.username,
+        })
+        .into_response(),
+        None => StatusCode::UNAUTHORIZED.into_response(),
+    }
 }
 
 // Simple way to check if the passwords correct with bycrypt, considering the hash and normal password
@@ -2971,6 +3470,12 @@ async fn serve_html_with_replacement(
 ) -> Result<Response<Body>, StatusCode> {
     let path = Path::new("src/frontend/build").join(file);
 
+    let path = if path.exists() {
+        path
+    } else {
+        Path::new("src/frontend/build/index.html").to_path_buf()
+    };
+
     if path.extension().and_then(|e| e.to_str()) == Some("html") {
         let html = tokio_fs::read_to_string(&path)
             .await
@@ -2983,7 +3488,6 @@ async fn serve_html_with_replacement(
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
     let content_type = from_path(&path).first_or_octet_stream().to_string();
-
     Ok(Response::builder()
         .header("Content-Type", content_type)
         .body(Body::from(bytes))
@@ -3000,18 +3504,6 @@ async fn handle_static_request(
     let state = arc_state.read().await;
     let path = req.uri().path();
 
-    // let query = req.uri().query().unwrap_or("");
-    // let params: FileParams = match serde_urlencoded::from_str(query) {
-    //     Ok(p) => p,
-    //     Err(_) => return Err(StatusCode::BAD_REQUEST),
-    // };
-    // let response = get_files(
-    //     State(arc_state.clone()),
-    //     Query(params),
-    // )
-    // .await
-    // .into_response();
-
     let file = if path == "/" || path.is_empty() {
         "index.html"
     } else {
@@ -3027,6 +3519,10 @@ async fn handle_static_request(
             .unwrap()),
     }
 }
+
+// This will get the content of a file from gameserver, it will use the custom Tcp filesystem I created
+// it will ensure it is not a path escape
+// then return the file content
 async fn get_files_content(
     State(state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<FileChunk>,
@@ -3053,7 +3549,7 @@ async fn get_files_content(
     let (dir_path, file_name) = match (requested_path.parent(), requested_path.file_name()) {
         (Some(dir), Some(file)) => (dir.to_path_buf(), file.to_os_string()),
         _ => {
-            eprintln!("[get_files] Could not split path into directory and file");
+            eprintln!("Could not split path into directory and file");
             return Err((StatusCode::BAD_REQUEST, "Invalid path structure").into_response());
         }
     };
@@ -3073,6 +3569,7 @@ async fn get_files_content(
     Ok(Json(content))
 }
 
+// Gets a list of files and return to to things like the filebrowser
 pub async fn get_files(
     State(state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<IncomingMessage>,
@@ -3116,18 +3613,11 @@ pub async fn get_files(
     let is_dir = match timeout(Duration::from_secs(3), requested_path.is_dir()).await {
         Ok(Ok(true)) => true,
         Ok(Ok(false)) => {
-            eprintln!(
-                "[get_files] Path is not a directory: '{}'",
-                requested_path.to_string()
-            );
+            eprintln!("Path is not a directory: '{}'", requested_path.to_string());
             return (StatusCode::BAD_REQUEST, "Path is not a directory").into_response();
         }
         Ok(Err(e)) => {
-            eprintln!(
-                "[get_files] Error checking dir '{}': {}",
-                requested_path.to_string(),
-                e
-            );
+            eprintln!("Error checking dir '{}': {}", requested_path.to_string(), e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to check directory",
@@ -3135,10 +3625,7 @@ pub async fn get_files(
                 .into_response();
         }
         Err(_) => {
-            eprintln!(
-                "[get_files] Timeout checking dir '{}'",
-                requested_path.to_string()
-            );
+            eprintln!("Timeout checking dir '{}'", requested_path.to_string());
             return (StatusCode::GATEWAY_TIMEOUT, "Request timed out").into_response();
         }
     };
@@ -3147,7 +3634,7 @@ pub async fn get_files(
         Ok(Ok(list)) => list,
         Ok(Err(e)) => {
             eprintln!(
-                "[get_files] Failed to read directory '{}': {}",
+                "Failed to read directory '{}': {}",
                 requested_path.to_string(),
                 e
             );
@@ -3158,10 +3645,7 @@ pub async fn get_files(
                 .into_response();
         }
         Err(_) => {
-            eprintln!(
-                "[get_files] Timeout reading dir '{}'",
-                requested_path.to_string()
-            );
+            eprintln!("Timeout reading dir '{}'", requested_path.to_string());
             return (StatusCode::GATEWAY_TIMEOUT, "Request timed out").into_response();
         }
     };
@@ -3193,7 +3677,7 @@ pub struct AuthenticateParams {
     jwk: String,
 }
 
-async fn authenticate_route(
+async fn authenticate_route_with_jwt(
     State(_state): State<Arc<RwLock<AppState>>>,
     Query(params): Query<AuthenticateParams>,
     mut auth_session: AuthSession,
@@ -3636,7 +4120,13 @@ mod tests {
                 };
 
                 let result = database.create_server_in_db(server).await;
-                assert!(result.is_ok());
+                //assert!(result.is_ok());
+                if result.is_err() {
+                    assert!(false);
+                    //panic!("{:#?}", result);
+                } else {
+                    assert!(true);
+                }
             }
 
             #[tokio::test]
@@ -3678,8 +4168,7 @@ mod tests {
                 let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
                 let (tcp_tx, _) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
 
-                let tcp_url =
-                    get_env_var_or_arg("TCPURL", Some(StaticTcpUrl.to_string())).unwrap();
+                let tcp_url = get_env_var_or_arg("TCPURL", Some(StaticTcpUrl.to_string())).unwrap();
 
                 let initial_connection_attempts: u64 =
                     get_env_var_or_arg("INITIAL_CONNECTION_ATTEMPTS", Some(5)).unwrap();

@@ -27,7 +27,99 @@ impl Database {
             connection: connection.unwrap(),
         }
     }
-    
+    pub async fn ensure_database_conn(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE users (
+                username     VARCHAR PRIMARY KEY,
+                password_hash TEXT,
+                authcode     TEXT DEFAULT '',
+                user_perms   TEXT[] NOT NULL DEFAULT '{}',
+                created_at   TIMESTAMPTZ DEFAULT now(),
+                updated_at   TIMESTAMPTZ DEFAULT now()
+            );
+            CREATE INDEX idx_users_username ON users(username);
+
+            CREATE TABLE nodes (
+                nodename   VARCHAR PRIMARY KEY,
+                ip         VARCHAR NOT NULL,
+                nodetype   TEXT DEFAULT 'unknown',
+                nodestatus TEXT DEFAULT 'unknown',
+                created_at TIMESTAMPTZ DEFAULT now(),
+                updated_at TIMESTAMPTZ DEFAULT now()
+            );
+            CREATE INDEX idx_nodes_nodename ON nodes(nodename);
+
+            CREATE TABLE servers (
+                servername   VARCHAR PRIMARY KEY,
+                provider     VARCHAR NOT NULL,
+                providertype VARCHAR NOT NULL,
+                location     VARCHAR NOT NULL,
+                sandbox      BOOLEAN NOT NULL DEFAULT true,
+                node         JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at   TIMESTAMPTZ DEFAULT now(),
+                updated_at   TIMESTAMPTZ DEFAULT now()
+            );
+            CREATE INDEX idx_servers_servername ON servers(servername);
+
+            CREATE TABLE buttons (
+                name       VARCHAR PRIMARY KEY,
+                link       VARCHAR DEFAULT '',
+                type       VARCHAR DEFAULT 'default',
+                created_at TIMESTAMPTZ DEFAULT now(),
+                updated_at TIMESTAMPTZ DEFAULT now()
+            );
+            CREATE INDEX idx_buttons_name_lower ON buttons(lower(name));
+
+            CREATE TABLE intergrations (
+                type       TEXT PRIMARY KEY,
+                status     VARCHAR NOT NULL,
+                settings   JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ DEFAULT now(),
+                updated_at TIMESTAMPTZ DEFAULT now()
+            );
+            CREATE INDEX idx_intergrations_type ON intergrations(type);
+            CREATE INDEX idx_intergrations_status ON intergrations(status);
+
+            CREATE TABLE settings (
+                id                              SERIAL PRIMARY KEY,
+                toggled_default_buttons         BOOLEAN NOT NULL DEFAULT false,
+                status_type                     VARCHAR DEFAULT '',
+                enabled_rcon                    BOOLEAN NOT NULL DEFAULT true,
+                rcon_url                        VARCHAR DEFAULT 'localhost:25575',
+                rcon_password                   VARCHAR DEFAULT 'testing',
+                driver                          VARCHAR DEFAULT '',
+                file_system_driver              VARCHAR DEFAULT '',
+                enable_statistics_on_home_page  VARCHAR DEFAULT '',
+                current_server                  JSONB DEFAULT '{}'::jsonb,
+                created_at                      TIMESTAMPTZ DEFAULT now(),
+                updated_at                      TIMESTAMPTZ DEFAULT now()
+            );
+            CREATE UNIQUE INDEX idx_settings_singleton ON settings((id IS NOT NULL));
+
+            INSERT INTO buttons (name, link, type) VALUES
+                ('Filebrowser',   '', 'default'),
+                ('Statistics',    '', 'default'),
+                ('Workflows',     '', 'default'),
+                ('Intergrations', '', 'default'),
+                ('Backups',       '', 'default'),
+                ('Settings',      '', 'default')
+            ON CONFLICT (name) DO NOTHING;
+
+            INSERT INTO settings (
+                toggled_default_buttons, status_type, enabled_rcon,
+                rcon_url, rcon_password, driver, file_system_driver,
+                enable_statistics_on_home_page, current_server
+            )
+            SELECT false, '', true, 'localhost:25575', 'testing', '', '', '', '{}'::jsonb
+            WHERE NOT EXISTS (SELECT 1 FROM settings);
+            "#,
+        )
+        .execute(&self.connection)
+        .await?;
+
+        Ok(())
+    }
     pub async fn clear_db(&self) -> Result<(), sqlx::Error> {
         let tables = [
             "users", "nodes", "servers", "buttons", "settings"
@@ -304,13 +396,15 @@ impl ServerDatabase for Database {
             }
 
             let _result = sqlx::query_as::<_, Server>(
-                "INSERT INTO servers (servername, provider, providertype, location, sandbox) VALUES ($1, $2, $3, $4, $5) RETURNING *"
+                "INSERT INTO servers (servername, provider, providertype, location, sandbox, node) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *"
             )
             .bind(&server.servername)
             .bind(&server.provider)
             .bind(&server.providertype)
             .bind(&server.location)
             .bind(&server.sandbox)
+            //.bind(&server.node.nodename)
+            .bind(&server.node)
             .fetch_one(&self.connection)
             .await?;
 

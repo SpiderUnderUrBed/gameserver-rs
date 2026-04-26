@@ -17,6 +17,7 @@
       bubblewrap
       clippy
       rust-analyzer
+      ripgrep
     ];
     
     commonNativeBuildInputs = with pkgs; [
@@ -64,7 +65,8 @@
           export ADMIN_USER="testing"
           export ADMIN_PASSWORD="test"
           export SECRET=ejCrnROblT0sRX6OQCLrANXtCxkeyUgG
-          echo "Testing environment enabled (INSECURE)"
+          echo "Testing environment enabled (INSECURE)" 
+          export TMPDIR=/var/tmp
           echo "ADMIN_USER=$ADMIN_USER"
           echo "ADMIN_PASSWORD=$ADMIN_PASSWORD"
         '';

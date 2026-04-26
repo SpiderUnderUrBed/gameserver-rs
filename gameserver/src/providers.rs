@@ -82,7 +82,7 @@ impl ProviderGame {
             location,
             config: std::collections::HashMap::new(),
             needed_paths: vec![],
-            needed_commands: vec![]
+            needed_commands: vec![],
         }
     }
 
@@ -98,7 +98,7 @@ impl ProviderGame {
         }
         self
     }
-    
+
     // pub fn with_config(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
     //     self.config.insert(key.into(), Some(value.into()));
     //     self
@@ -131,7 +131,7 @@ impl Custom {
             start_cmd: None,
             location: String::new(),
             needed_paths: vec![],
-            needed_commands: vec![]
+            needed_commands: vec![],
         }
     }
 
@@ -348,7 +348,7 @@ pub struct ProviderConfig {
     pub start: Option<String>,
     pub location: String,
     pub needed_paths: Vec<String>,
-    pub needed_commands: Vec<String>
+    pub needed_commands: Vec<String>,
 }
 
 impl From<ProviderConfig> for ProviderGame {
