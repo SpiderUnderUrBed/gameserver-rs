@@ -148,6 +148,12 @@ impl Database {
             connection,
         }
     }
+    pub async fn fix_connection(conn: Option<JsonBackend>) -> Database {  
+        let connection = conn.unwrap_or_default();
+        Database {
+            connection,
+        }
+    }
     pub async fn ensure_database_conn(&self) -> Result<(), String> {
         if Path::new("database.json").exists(){
             Ok(())

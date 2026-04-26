@@ -3909,23 +3909,33 @@ mod tests {
     use super::*;
 
     /*
-    shared tests (work on both bare-metal and k8s)
+    shared tests (which should work on both bare-metal and k8s)
     */
     mod shared {
         use super::*;
         use crate::database::{Database, Element};
 
-        #[cfg(not(any(feature = "full-stack", feature = "docker", feature = "database")))]
-        async fn create_db_for_tests() -> Result<Database, String> {
-            Ok(Database::new(None))
-        }
 
-        #[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
-        async fn create_db_for_tests() -> Result<Database, sqlx::Error> {
+        async fn create_db_for_tests() -> Result<Database, Box<dyn std::error::Error + Send + Sync>> {
             let conn = first_connection().await?;
-            let database = database::Database::new(Some(conn));
+            let database: Database = database::Database::fix_connection(Some(conn)).await;
+            database.ensure_database_conn().await.expect("Failed to ensure db structure");
             Ok(database)
         }
+        // #[cfg(not(any(feature = "full-stack", feature = "docker", feature = "database")))]
+        // async fn create_db_for_tests() -> Result<Database, String> {
+        //     let database = Database::new(None);
+        //     database.ensure_database_conn().await.expect("Failed to ensure db structure");
+        //     Ok(database)
+        // }
+
+        // #[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
+        // async fn create_db_for_tests() -> Result<Database, sqlx::Error> {
+        //     let conn = first_connection().await?;
+        //     let database = database::Database::new(Some(conn));
+        //     database.ensure_database_conn().await.expect("Failed to ensure db structure");
+        //     Ok(database)
+        // }
 
         mod users {
             use super::*;
@@ -3933,7 +3943,7 @@ mod tests {
             #[tokio::test]
             #[serial]
             async fn remove_user() {
-                let database = create_db_for_tests().await.unwrap();
+                let database: Database = create_db_for_tests().await.unwrap();
                 database.clear_db().await.expect("Failed to clear DB");
 
                 let user = ModifyElementData {
@@ -3966,7 +3976,7 @@ mod tests {
             #[tokio::test]
             #[serial]
             async fn create_user_perms() {
-                let database = create_db_for_tests().await.unwrap();
+                let database: Database = create_db_for_tests().await.unwrap();
                 database.clear_db().await.expect("Failed to clear DB");
 
                 let user = ModifyElementData {
@@ -3993,7 +4003,7 @@ mod tests {
             #[tokio::test]
             #[serial]
             async fn create_user() {
-                let database = create_db_for_tests().await.unwrap();
+                let database: Database = create_db_for_tests().await.unwrap();
                 database.clear_db().await.expect("Failed to clear DB");
 
                 let user = ModifyElementData {
@@ -4013,7 +4023,7 @@ mod tests {
             #[tokio::test]
             #[serial]
             async fn duplicate_user() {
-                let database = create_db_for_tests().await.unwrap();
+                let database: Database = create_db_for_tests().await.unwrap();
                 database.clear_db().await.expect("Failed to clear DB");
 
                 let user_a = ModifyElementData {
@@ -4049,7 +4059,7 @@ mod tests {
             #[tokio::test]
             #[serial]
             async fn create_node() {
-                let database = create_db_for_tests().await.unwrap();
+                let database: Database = create_db_for_tests().await.unwrap();
                 database.clear_db().await.expect("Failed to clear DB");
 
                 let node = ModifyElementData {
@@ -4085,9 +4095,10 @@ mod tests {
         use crate::database::Database;
         use sqlx::types::Json;
 
-        async fn create_db_for_tests() -> Result<Database, sqlx::Error> {
+        async fn create_db_for_tests() -> Result<Database, Box<dyn std::error::Error + Send + Sync>> {
             let conn = first_connection().await?;
-            let database = database::Database::new(Some(conn));
+            let database: Database = database::Database::fix_connection(Some(conn)).await;
+            database.ensure_database_conn().await.expect("Failed to ensure db structure");
             Ok(database)
         }
 
@@ -4097,7 +4108,7 @@ mod tests {
             #[tokio::test]
             #[serial]
             async fn create_server() {
-                let database = create_db_for_tests().await.unwrap();
+                let database: Database = create_db_for_tests().await.unwrap();
                 database.clear_db().await.expect("Failed to clear DB");
 
                 let server = ModifyElementData {
@@ -4132,7 +4143,7 @@ mod tests {
             #[tokio::test]
             #[serial]
             async fn create_server_without_name() {
-                let database = create_db_for_tests().await.unwrap();
+                let database: Database = create_db_for_tests().await.unwrap();
                 database.clear_db().await.expect("Failed to clear DB");
 
                 let server = ModifyElementData {
