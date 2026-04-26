@@ -190,12 +190,12 @@ impl<'de> serde::Deserialize<'de> for NodeType {
     }
 }
 
-#[cfg(any(feature = "full-stack", feature = "database"))]
-impl From<Node> for sqlx::types::Json<Node> {
-    fn from(n: Node) -> Self {
-        sqlx::types::Json(n)
-    }
-}
+// #[cfg(any(feature = "full-stack", feature = "database"))]
+// impl From<Node> for sqlx::types::Json<Node> {
+//     fn from(n: Node) -> Self {
+//         sqlx::types::Json(n)
+//     }
+// }
 
 #[derive(Debug, Default, Serialize, Clone, PartialEq)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
@@ -268,11 +268,11 @@ impl ToString for NodeType {
 // #[cfg(any(feature = "full-stack", feature = "database"))]
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 // #[sqlx(type_name = "node_status", rename_all = "snake_case")]
+#[cfg_attr(any(feature = "full-stack", feature = "database"), derive(sqlx::Type))]
 #[cfg_attr(
     any(feature = "full-stack", feature = "database"),
     sqlx(type_name = "text")
 )]
-#[cfg_attr(any(feature = "full-stack", feature = "database"), derive(sqlx::Type))]
 #[serde(rename_all = "lowercase", tag = "kind", content = "data")]
 pub enum Intergrations {
     Minecraft,
@@ -310,7 +310,6 @@ impl ToString for Intergrations {
     }
 }
 
-#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(
     any(feature = "full-stack", feature = "database"),
@@ -329,20 +328,20 @@ impl From<Node> for Json<Node> {
     }
 }
 
-#[cfg(any(feature = "full-stack", feature = "database"))]
-impl From<Node> for sqlx::types::Json<Node> {
-    fn from(n: Node) -> Self {
-        sqlx::types::Json(n)
-    }
-}
+// #[cfg(any(feature = "full-stack", feature = "database"))]
+// impl From<Node> for sqlx::types::Json<Node> {
+//     fn from(n: Node) -> Self {
+//         sqlx::types::Json(n)
+//     }
+// }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 #[cfg_attr(
     any(feature = "full-stack", feature = "database"),
-    sqlx(type_name = "text", rename_all = "lowercase")
+    derive(sqlx::FromRow)
 )]
 #[cfg_attr(
     any(feature = "full-stack", feature = "database"),
-    derive(sqlx::FromRow)
+    derive(sqlx::Encode)
 )]
 pub struct Node {
     pub nodename: String,
@@ -352,6 +351,13 @@ pub struct Node {
     //#[sqlx(rename = "nodetype")]
     #[cfg_attr(any(feature = "full-stack", feature = "database"), sqlx(skip))]
     pub k8s_type: K8sType,
+}
+
+#[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
+impl Type<Postgres> for Node {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        <String as Type<Postgres>>::type_info()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

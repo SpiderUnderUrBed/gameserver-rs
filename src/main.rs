@@ -4107,13 +4107,13 @@ mod tests {
                         providertype: "".to_string(),
                         location: "test".to_string(),
                         sandbox: false,
-                        node: Json(Node {
+                        node: Node {
                             nodename: "test".to_string(),
                             ip: "127.0.0.1:8080".to_string(),
                             nodestatus: NodeStatus::Unknown,
                             nodetype: NodeType::Custom,
                             k8s_type: K8sType::Unknown,
-                        }),
+                        },
                     }),
                     jwt: "".to_string(),
                     require_auth: false,
@@ -4142,13 +4142,13 @@ mod tests {
                         providertype: "".to_string(),
                         location: "test".to_string(),
                         sandbox: false,
-                        node: Json(Node {
+                        node: Node {
                             nodename: "test".to_string(),
                             ip: "127.0.0.1:8080".to_string(),
                             nodestatus: NodeStatus::Unknown,
                             nodetype: NodeType::Custom,
                             k8s_type: K8sType::Unknown,
-                        }),
+                        },
                     }),
                     jwt: "".to_string(),
                     require_auth: false,

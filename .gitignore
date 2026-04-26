@@ -9,6 +9,7 @@
 app.tar.gz
 # /src/gameserver/server/*
 /gameserver/server/*
+**/server/*
 /src/credentials.json
 credentials.json
 /.history
