@@ -20,8 +20,8 @@
 			if (wasNearBottom || overrideHeight) {
 				scrollContainer.scrollTop = scrollContainer.scrollHeight;
 			} else {
-				const heightIncrease = newScrollHeight - oldScrollHeight;
-				scrollContainer.scrollTop = scrollY + heightIncrease;
+				// const heightIncrease = newScrollHeight - oldScrollHeight;
+				// scrollContainer.scrollTop = scrollY + heightIncrease;
 			}
 		}
 		oldScrollHeight = newScrollHeight;
