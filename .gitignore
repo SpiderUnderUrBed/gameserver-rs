@@ -13,6 +13,7 @@ app.tar.gz
 **/server/*
 /src/credentials.json
 credentials.json
+database.json
 /.history
 
 /src/svelte.old/*

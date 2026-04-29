@@ -95,7 +95,7 @@ pub struct Database {
 impl Default for JsonBackend {
     fn default() -> Self {
         JsonBackend {
-            file: PathBuf::from("credentials.json")
+            file: PathBuf::from("database.json")
         }
     }
 }
@@ -571,8 +571,8 @@ impl IntergrationsDatabase for Database {
 //     not(feature = "database")
 // ))]
 async fn create_db_for_tests() -> Result<Database, String> {
-    // Create credentials.json if it doesn't exist so clear_db() doesn't fail
-    let path = std::path::Path::new("credentials.json");
+    // Create database.json if it doesn't exist so clear_db() doesn't fail
+    let path = std::path::Path::new("database.json");
     if !path.exists() {
         std::fs::write(path, "{}").map_err(|e| e.to_string())?;
     }

@@ -2437,16 +2437,6 @@ async fn delete_node(
     } else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
-    // let nodes_result = state
-    //     .database
-    //     .fetch_all_nodes(nodename)
-    //     .await;
-    // if let Some(nodes) = nodes_result {
-    //     for node in nodes 
-    // } else {
-    //     StatusCode::INTERNAL_SERVER_ERROR.into_response()
-    // }
-
 }
 async fn add_node(
     State(arc_state): State<Arc<RwLock<AppState>>>,

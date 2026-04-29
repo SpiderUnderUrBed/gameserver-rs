@@ -252,7 +252,7 @@ export class ServerConsoleState {
 			const source = new EventSource(`/api/awaitserverstatus`);
 			source.onmessage = (event) => {
 				const data = event.data || '';
-				this.addConsoleEntry({ type: 'output', text: `[STATUS] ${data}` });
+				//this.addConsoleEntry({ type: 'output', text: `[STATUS] ${data}` });
 			};
 			source.onerror = () => {
 				source.close();

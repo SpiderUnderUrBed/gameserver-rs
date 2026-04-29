@@ -71,7 +71,8 @@ pub struct Settings {
     pub(crate) rcon_password: String,
     pub(crate) driver: String,
     pub(crate) file_system_driver: String,
-    pub(crate) enable_statistics_on_home_page: String,
+    pub(crate) enable_statistics_on_home_page: bool,
+    pub(crate) enable_nodes_on_home_page: bool,
     pub(crate) current_server: Server,
 }
 
@@ -84,7 +85,8 @@ impl Default for Settings {
             rcon_url: "localhost:25575".to_string(),
             rcon_password: "testing".to_string(),
             driver: "".to_string(),
-            enable_statistics_on_home_page: "".to_string(),
+            enable_statistics_on_home_page: false,
+            enable_nodes_on_home_page: false,
             file_system_driver: "".to_string(),
             current_server: Server::default().into(),
         }

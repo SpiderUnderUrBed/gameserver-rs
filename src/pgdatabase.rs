@@ -115,7 +115,8 @@ impl Database {
                 rcon_password                  VARCHAR DEFAULT 'testing',
                 driver                         VARCHAR DEFAULT '',
                 file_system_driver             VARCHAR DEFAULT '',
-                enable_statistics_on_home_page VARCHAR DEFAULT '',
+                enable_statistics_on_home_page BOOLEAN NOT NULL DEFAULT false,
+                enable_nodes_on_home_page      BOOLEAN NOT NULL DEFAULT false,
                 current_server                 JSONB DEFAULT '{}'::jsonb,
                 created_at                     TIMESTAMPTZ DEFAULT now(),
                 updated_at                     TIMESTAMPTZ DEFAULT now()
@@ -597,7 +598,8 @@ impl SettingsDatabase for Database {
                 rcon_password = $5,
                 driver = $6,
                 file_system_driver = $7,
-                enable_statistics_on_home_page = $8
+                enable_statistics_on_home_page = $8,
+                enable_nodes_on_home_page = $9
             "#
         )
         .bind(&settings.toggled_default_buttons)
@@ -608,6 +610,7 @@ impl SettingsDatabase for Database {
         .bind(&settings.driver)
         .bind(&settings.file_system_driver)
         .bind(&settings.enable_statistics_on_home_page)
+        .bind(&settings.enable_nodes_on_home_page)
         .execute(&self.connection)
         .await?;
         
