@@ -1582,6 +1582,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/buttonreset", post(button_reset))
         .route("/api/editbuttons", post(edit_buttons))
         .route("/api/addnode", post(add_node))
+        .route("/api/deletenode", post(delete_node))
         .route("/api/addserver", post(add_server))
         .route("/api/deleteserver", post(delete_server))
         .route("/api/startserver", post(start_server))
@@ -2390,6 +2391,63 @@ async fn ongoing_server_status(
     Sse::new(updates).keep_alive(axum::response::sse::KeepAlive::default())
 }
 
+// TODO: clean up sometime, delete_node should only expect one node type, just verify nothing is using it weirdly
+async fn delete_node(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    Json(request): Json<ModifyElementData>,
+) -> impl IntoResponse {
+    let node_request_name_option = 'node: {
+        if let Element::Node(node) = request.element {
+            break 'node Some(node.nodename);
+        } 
+        if let Ok(value) = serde_json::to_value(request.element) {
+            if let Some(Value::String(nodename)) = value.get("nodename"){
+                break 'node Some(nodename.to_string());
+            } else {
+                break 'node None;
+            }
+        } else {
+            break 'node None;
+        }
+    };
+    if let Some(node_request_name) = node_request_name_option {
+        let state = arc_state.write().await;
+        let node_option = state
+            .database
+            .retrieve_nodes(node_request_name)
+            .await;
+        if let Some(node) = node_option {
+            if matches!(node.k8s_type, K8sType::None) || matches!(node.k8s_type, K8sType::Unknown){
+                let delete_node_result = state
+                    .database
+                    .remove_node_in_db_directly(node)
+                    .await;
+                if let Ok(operation_status) = delete_node_result {
+                    return operation_status.into_response();
+                } else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
+                
+            } else {
+                return StatusCode::SERVICE_UNAVAILABLE.into_response();
+            }
+        } else {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    } else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    // let nodes_result = state
+    //     .database
+    //     .fetch_all_nodes(nodename)
+    //     .await;
+    // if let Some(nodes) = nodes_result {
+    //     for node in nodes 
+    // } else {
+    //     StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    // }
+
+}
 async fn add_node(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<ModifyElementData>,

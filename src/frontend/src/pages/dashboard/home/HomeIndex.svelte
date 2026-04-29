@@ -3,14 +3,32 @@
 	import ConsolePanel from '../../../components/dashboard/ConsolePanel.svelte';
 	import TopBar from '../../../components/dashboard/TopBar.svelte';
 
+	type NodeData = {
+		nodename: string;
+		ip: string;
+		nodetype?: string;
+		nodestatus?: { kind: string; data: unknown };
+	};
+
 	let serverName = $state('');
 	let serverLocation = $state('');
 	let serverProvider = $state('minecraft');
 	let serverSandbox = $state(true);
+
+	let nodes: NodeData[] = $state([]);
+	
+	let selectedNodeName = $state('');
+
 	let nodeName = $state('');
 	let nodeIp = $state('');
 	let nodeType = $state('Custom');
 	let switchNodeId = $state('');
+
+	const fetchNodes = async () => {
+		serverConsole.fetchNodes().then((node_list) => {
+			nodes = node_list;
+		})
+	}
 
 	const submitCreateServer = async (event: SubmitEvent) => {
 		if ((<HTMLButtonElement | null>event.submitter)?.value !== 'cancel') {
@@ -24,6 +42,16 @@
 		}
 		(<HTMLFormElement>event.target).reset();
 	};
+	const deleteNode = async (event: SubmitEvent) => {
+		if ((<HTMLButtonElement | null>event.submitter)?.value !== 'cancel') {
+			//selectedNodeName
+			await serverConsole.deleteNode(selectedNodeName, nodeIp, nodeType);
+			nodeName = '';
+			nodeIp = '';
+			nodeType = 'Custom';
+			fetchNodes();
+		}
+	}
 
 	const submitAddNode = async (event: SubmitEvent) => {
 		if ((<HTMLButtonElement | null>event.submitter)?.value === 'cancel') return;
@@ -31,13 +59,35 @@
 		nodeName = '';
 		nodeIp = '';
 		nodeType = 'Custom';
+		fetchNodes();
 	};
+	fetchNodes();
 </script>
 
 <TopBar />
 
 <ConsolePanel />
-
+<dialog id="delete-node-dialog" class="modal">
+	<form onsubmit={deleteNode} method="dialog">
+		<div class="p-4 fieldset">
+			<label for="selected_node">Select node</label>
+			<select bind:value={selectedNodeName} id="selected_node" class="select">
+				<option selected value={nodeName}>{nodeName}</option>
+				{#each nodes as node}
+					{#if (node.nodename != nodeName)}
+						<option value={node.nodename}>{node.nodename}</option>
+					{/if}
+				{/each}	
+			</select>
+		</div>
+		<div class="modal-action">
+			<button class="btn btn-ghost btn-error" type="submit" value="cancel" formnovalidate>
+				Cancel
+			</button>
+			<button class="btn btn-primary" type="submit">Delete</button>
+		</div>
+	</form>
+</dialog>
 <dialog id="create-server-dialog" class="modal">
 	<form onsubmit={submitCreateServer} method="dialog" class="modal-box">
 		<h3 class="text-lg font-bold">Create Server</h3>

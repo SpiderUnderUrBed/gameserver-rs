@@ -504,6 +504,10 @@ pub trait NodesDatabase {
         &self,
         node: ModifyElementData,
     ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn remove_node_in_db_directly(
+        &self,
+        node: Node,
+    ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
     async fn edit_node_in_db(
         &self,
         node: ModifyElementData,

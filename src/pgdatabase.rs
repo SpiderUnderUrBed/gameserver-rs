@@ -346,16 +346,19 @@ impl NodesDatabase for Database {
     
     async fn remove_node_in_db(&self, node: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         if let Element::Node(node_data) = node.element {
-            let result = sqlx::query("DELETE FROM nodes WHERE nodename = $1")
-                .bind(&node_data.nodename)
-                .execute(&self.connection)
-                .await?;
+            return remove_node_in_db_directly.await;
+        } else {
+            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+        }
+    }
+    async fn remove_node_in_db_directly(&self, node_data: Node) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+        let result = sqlx::query("DELETE FROM nodes WHERE nodename = $1")
+            .bind(&node_data.nodename)
+            .execute(&self.connection)
+            .await?;
 
-            if result.rows_affected() > 0 {
-                Ok(StatusCode::CREATED)
-            } else {
-                Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
-            }
+        if result.rows_affected() > 0 {
+            Ok(StatusCode::CREATED)
         } else {
             Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
         }

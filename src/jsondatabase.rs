@@ -417,7 +417,17 @@ impl NodesDatabase for Database {
         }
     }
     async fn remove_node_in_db(&self, node: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
-        todo!()
+        if let Element::Node(node_data) = node.element {
+            self.remove_node_in_db_directly(node_data).await
+        } else {
+            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+        }
+    }
+    async fn remove_node_in_db_directly(&self, node_data: Node) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+        let mut database = self.get_database().await?;
+        database.nodes.retain(|node| node.nodename != node_data.nodename);
+        self.write_database(database).await;
+        Ok(StatusCode::CREATED)
     }
     async fn edit_node_in_db(&self, node: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         todo!()

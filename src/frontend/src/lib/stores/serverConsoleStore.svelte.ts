@@ -70,13 +70,15 @@ export class ServerConsoleState {
 		}
 	}
 
-	public async fetchNodes() {
+	public async fetchNodes() : Promise<NodeData[]> {
 		try {
 			const resp = await httpClient.get(`/api/nodes`).json<{ list?: { data: NodeData[] } }>();
 			this.nodes = resp.list?.data ?? [];
+			return this.nodes;
 		} catch (err) {
 			console.error('fetchNodes error', err);
 			this.nodes = [];
+			return this.nodes;
 		}
 	}
 
@@ -349,6 +351,30 @@ export class ServerConsoleState {
 			this.addConsoleEntry({ type: 'output', text: `Node added: ${nodename}` });
 			this.fetchNodes();
 		} catch (err) {
+			this.addConsoleEntry({ type: 'output', text: `Add node error: ${err}` });
+		}
+	}
+	public async deleteNode(nodename: string, ip: string, nodetype: string) {
+		try {
+			const payload = {
+				element: {
+					kind: 'Node',
+					data: {
+						nodename,
+						ip,
+						nodetype,
+						nodestatus: { kind: 'enabled', data: null },
+						k8s_type: 'Unknown'
+					}
+				},
+				jwt: '',
+				require_auth: true
+			};
+			await httpClient.post(`/api/deletenode`, { json: payload }).json();
+			this.addConsoleEntry({ type: 'output', text: `Node deleted: ${nodename}` });
+			this.fetchNodes();
+		} catch (err) {
+			console.log(err);
 			this.addConsoleEntry({ type: 'output', text: `Add node error: ${err}` });
 		}
 	}

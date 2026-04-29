@@ -37,6 +37,7 @@
 		</button>
 		<button class="btn" commandfor="add-node-dialog" command="show-modal">Add Node</button>
 		<button class="btn" commandfor="switch-node-dialog" command="show-modal">Switch node ({serverConsole.selectedNode ?? 'None'})</button>
+		<button class="btn" commandfor="delete-node-dialog" command="show-modal">Delete node</button>
 	</div>
 
 	<label class="input w-full">
