@@ -1619,11 +1619,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             routed.layer(
                 // Needs a service builder to convert a MiddleWareError into an actual reponse which can be
                 // combined with the rest of the routes, this is also in static_routes
-                // TODO: consider if this is nessesary with static_routes also handling oidc?
                 ServiceBuilder::new()
                     .layer(HandleErrorLayer::new(|e: MiddlewareError| async move {
                         eprintln!("OIDC auth layer error: {e:#?}");
-                        Redirect::to("/oidc").into_response()
+                        Redirect::to("/").into_response()
                     }))
                     .layer(oidc_layer),
             )
@@ -2262,6 +2261,9 @@ async fn load_settings(
     Ok(())
 }
 
+// Because with user perms I am thinking of restricting what settings that can be changed based on user perms
+// Instead of submitting a entire new settings feild, you send a list of values you want to change
+// it will go through and see if the user can edit those settings
 async fn set_settings(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<IncomingMessageWithValue>,
@@ -3494,7 +3496,6 @@ struct UserResponse {
 
 #[axum::debug_handler]
 async fn user_me(auth_session: AuthSession) -> impl IntoResponse {
-    eprintln!("User: {:?}", auth_session.user);
     match auth_session.user {
         Some(user) => Json(UserResponse {
             username: user.username,
