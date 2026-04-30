@@ -1590,15 +1590,25 @@ async fn handle_typical_command_or_console(
                 }
             }
             "server_data" => {
-                let _ = out_tx
-                    .send(
-                        serde_json::to_string(&GetState {
-                            start_keyword: "help".to_string(),
-                            stop_keyword: "All dimensions are saved".to_string(),
-                        })
-                        .unwrap(),
-                    )
-                    .await;
+                if let Some(current_server) = state.current_server.lock().await.clone() {
+                    let provider = get_provider_from_servername(&state, Some(current_server.clone())).await;
+                    let location = get_definite_path_from_name(&state, Some(current_server.clone())).await;
+
+                    if let Some((_, provider)) = get_provider_object(provider.as_deref(), location.as_deref()).await {
+                        if let Some(platform ) = pick_platform(provider) {
+                            let _ = out_tx
+                                .send(
+                                    serde_json::to_string(&GetState {
+                                        start_keyword: platform.start_keyword.unwrap_or("".to_string()),
+                                        stop_keyword: platform.stop_keyword.unwrap_or("".to_string()),
+                                    })
+                                    .unwrap(),
+                                )
+                                .await;
+                        }
+                    }
+                }
+                //println!("This was called");
                 Ok(())
             }
             "server_name" => {

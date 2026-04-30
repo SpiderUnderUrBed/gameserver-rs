@@ -24,6 +24,8 @@ impl From<ProviderGame> for Custom {
             install_cmd: provider.get_config_commands("install").cloned(),
             post_hook_cmd: provider.get_config_commands("post_hook").cloned(),
             start_cmd: provider.get_config_commands("start").cloned(),
+            start_keyword: provider.get_config_commands("start_keyword").cloned(),
+            stop_keyword: provider.get_config_commands("stop_keyword").cloned(),
             location: provider
                 .get_config_commands("location")
                 .cloned()
@@ -61,6 +63,8 @@ pub struct Custom {
     pub install_cmd: Option<String>,
     pub post_hook_cmd: Option<String>,
     pub start_cmd: Option<String>,
+    pub start_keyword: Option<String>,
+    pub stop_keyword: Option<String>,
     pub location: String,
     pub needed_paths: Vec<String>,
     pub needed_commands: Vec<String>,
@@ -129,6 +133,8 @@ impl Custom {
             install_cmd: None,
             post_hook_cmd: None,
             start_cmd: None,
+            start_keyword: None,
+            stop_keyword: None,
             location: String::new(),
             needed_paths: vec![],
             needed_commands: vec![],
@@ -346,6 +352,8 @@ pub struct ProviderConfig {
     pub install: Option<String>,
     pub post_hook: Option<String>,
     pub start: Option<String>,
+    pub start_keyword: Option<String>,
+    pub stop_keyword: Option<String>,
     pub location: String,
     pub needed_paths: Vec<String>,
     pub needed_commands: Vec<String>,
@@ -378,6 +386,8 @@ impl From<ProviderGame> for ProviderConfig {
             install: game.get_config_commands("install").cloned(),
             post_hook: game.get_config_commands("post_hook").cloned(),
             start: game.get_config_commands("start").cloned(),
+            start_keyword: game.get_config_commands("start_keyword").cloned(),
+            stop_keyword: game.get_config_commands("stop_keyword").cloned(),
             location: game
                 .get_config_commands("location")
                 .cloned()
@@ -409,6 +419,8 @@ impl From<Custom> for Platforms {
             install: custom.install_cmd,
             post_hook: custom.post_hook_cmd,
             start: custom.start_cmd,
+            start_keyword: custom.start_keyword,
+            stop_keyword: custom.stop_keyword,
             location: custom.location,
             needed_paths: custom.needed_paths,
             needed_commands: custom.needed_commands,

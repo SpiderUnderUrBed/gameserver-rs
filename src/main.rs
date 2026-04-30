@@ -664,6 +664,7 @@ async fn get_all_stream_data_parsed(line_content: &str) -> Result<Vec<Value>, se
         value_from_line::<ConsoleData, _>(line_content, |line| !line.contains("\"list\"")).await;
 
     let mut console_values: Vec<Value> = vec![];
+    
     for item in console_parsed {
         if let Ok(data) = item {
             if !list_lines.contains(&data.data) {
@@ -674,6 +675,21 @@ async fn get_all_stream_data_parsed(line_content: &str) -> Result<Vec<Value>, se
         }
     }
     final_data.extend(console_values);
+
+    if let Ok(value) = serde_json::from_str::<Value>(line_content){
+        if let (Some(start_kw), Some(stop_kw)) = (
+            value.get("start_keyword").and_then(|v| v.as_str()),
+            value.get("stop_keyword").and_then(|v| v.as_str()),
+        ) {
+            final_data.push(
+                serde_json::to_value(ConsoleData {
+                    authcode: "0".to_string(),
+                    data: serde_json::to_string(&value).unwrap_or("".to_string()),
+                    r#type: "info".to_string(),
+                }).unwrap()
+            )
+        }
+    }
 
     let message_parsed: Vec<Result<MessagePayload, serde_json::Error>> =
         value_from_line::<MessagePayload, _>(line_content, |line| !line.contains("\"list\"")).await;
@@ -2372,6 +2388,8 @@ async fn ongoing_server_status(
                     Status::Unknown
                 } else if state.cached_status_type == "node" {
                     state.tcp_conn_status.clone()
+                } else if state.cached_status_type == "manual-click" {
+                    Status::Unknown
                 } else {
                     Status::Unknown
                 }

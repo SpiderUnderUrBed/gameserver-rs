@@ -1,6 +1,10 @@
 import { object, unknown } from 'valibot';
 import { httpClient } from '../utils/http';
-import { writable } from 'svelte/store';
+import { get, writable } from 'svelte/store';
+
+//export const statusStore = writable<('manual', 'server'), ('up' | 'down' | 'unknown')>(('manual'), ('unknown'));
+export const statusStore = writable<'up' | 'down' | 'unknown'>('unknown');
+export const statusType = writable<'node-status' | 'server-keyword' | 'server-process' | 'manual-click'>('manual-click');
 
 export type ServerStatusMode = 'node' | 'server-keyword' | 'server-process';
 
@@ -31,7 +35,7 @@ export class ServerConsoleState {
 	public nodes = $state<NodeData[]>([]);
 	public integrations = $state<any[]>([]);
 	public selectedNode = $state<string | null>(null);
-	public statusIndicator = $state<'up' | 'down' | 'unknown'>('unknown');
+	//public statusIndicator = $state<'up' | 'down' | 'unknown'>('unknown');
 	public rawOutputEnabled = $state(false);
 	public pendingStatus = $state<ServerStatusMode>('node');
 	public finalStatus = $state<ServerStatusMode>('node');
@@ -243,15 +247,19 @@ export class ServerConsoleState {
 		});
 	}
 
-	public async updateStatus(status: 'up' | 'down' | 'none', awaitFlag: boolean) {
-		if (status !== 'none') {
-			this.statusIndicator = status;
+	public async updateStatus(status: 'up' | 'down' | 'unknown', awaitFlag: boolean) {
+		if (get(statusType) == "manual-click") {
+			console.log(get(statusType));
+			statusStore.set(status);
 		}
 
 		try {
 			const source = new EventSource(`/api/awaitserverstatus`);
 			source.onmessage = (event) => {
-				const data = event.data || '';
+				const data = event.data || 'unknown';
+				if (get(statusType) != "manual-click") {
+					statusStore.set(data);
+				}
 				//this.addConsoleEntry({ type: 'output', text: `[STATUS] ${data}` });
 			};
 			source.onerror = () => {
