@@ -45,7 +45,17 @@
 		type: 'line',
 		data: {
 			labels: [],
-			datasets: []
+			datasets: [
+				{
+					label: 'CPU Usage (Ghz)',
+					data: [],
+					borderWidth: 2,
+					borderColor: 'rgba(75, 192, 192, 1)',
+					backgroundColor: 'rgba(75, 192, 192, 0.2)',
+					fill: true,
+					tension: 0.3
+				}			
+			]
 		},
 		options: {
 			maintainAspectRatio: true,
@@ -57,7 +67,7 @@
 				},
 				y: {
 					beginAtZero: true,
-					title: { display: true, text: 'Hz' }
+					title: { display: true, text: 'Ghz' }
 				}
 			}
 		}
@@ -90,10 +100,21 @@
 		if (!coreChart || statisticsStore.points.length === 0) return;
 
 		const points = statisticsStore.points;
+		const average = points.map((p) => {
+			const count = p.coreUsageHz.length;
+			if (count === 0) return 0;
+
+			const total = p.coreUsageHz.reduce(
+				(acc, val) => (acc ?? 0) + (val ?? 0),
+				0
+			);
+
+			return (total ?? 0) / count;
+		});
 		if (coreChart.data.datasets.length === 0) {
 			coreChart.data.datasets.push({
-				label: 'CPU Hz (placeholder)',
-				data: points.map((p) => p.coreUsageHz ?? 0),
+				label: 'CPU Ghz (placeholder)',
+				data: average,
 				borderWidth: 2,
 				borderColor: 'rgba(255, 99, 132, 1)',
 				backgroundColor: 'rgba(255, 99, 132, 0.2)',
@@ -101,7 +122,7 @@
 				tension: 0.3
 			});
 		} else {
-			coreChart.data.datasets[0].data = points.map((p) => p.coreUsageHz ?? 0);
+			coreChart.data.datasets[0].data = average;
 		}
 		coreChart.data.labels = points.map((p) => p.label);
 		coreChart.update('none');
@@ -123,7 +144,7 @@
 		</div>
 		<div class="card bg-base-100 h-full">
 			<div class="card-body">
-				<h3 class="card-title">CPU</h3>
+				<h3 class="card-title">CPU (Average core usage)</h3>
 				<div class="flex-1 max-w-xl h-96 bg-base-200/40 rounded p-4">
 					<ChartWrapper config={coreConfig} onChartReady={(chart) => (coreChart = chart)} />
 				</div>

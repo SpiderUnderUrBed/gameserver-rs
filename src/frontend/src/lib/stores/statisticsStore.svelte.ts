@@ -7,13 +7,13 @@ export type StatisticsPoint = {
 	label: string;
 	usedMemoryGB: number;
 	totalMemoryGB: number | null;
-	coreUsageHz?: number;
+	coreUsageHz: Array<number | undefined>;
 };
 
 const statsSchema = v.object({
 	used_memory: v.fallback(v.number(), 0),
 	total_memory: v.fallback(v.number(), 0),
-	core_usage: v.fallback(v.number(), 0)
+	core_data: v.fallback(v.array(v.number()), [])
 });
 
 export class StatisticsStore {
@@ -100,7 +100,7 @@ export class StatisticsStore {
 		const data = await v.parseAsync(statsSchema, payload);
 		const usedMemoryBytes = data.used_memory;
 		const totalMemoryBytes = data.total_memory;
-		const coreHz = data.core_usage;
+		const coreHz = data.core_data;
 
 		const usedMemoryGB = Number.isFinite(usedMemoryBytes) ? usedMemoryBytes / (1024 * 1024) : 0;
 		const totalMemoryGB =
@@ -112,7 +112,9 @@ export class StatisticsStore {
 			label: new Date().toLocaleTimeString(),
 			usedMemoryGB,
 			totalMemoryGB,
-			coreUsageHz: coreHz != null ? Number(coreHz) : undefined
+			coreUsageHz: coreHz.map((core) => {
+				return core != null ? Number(core) : undefined
+			})
 		};
 
 		const copied = [...this.points, nextPoint];
