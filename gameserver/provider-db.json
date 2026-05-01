@@ -2,6 +2,7 @@
   "list": {
     "minecraft": {
       "linux": {
+        "default_name": "minecraft",
         "location": "",
         "pre_hook": "cd {{SERVERLOCATION}} && wget -q https://packages.adoptium.net/artifactory/api/gpg/key/public | tee /etc/apt/trusted.gpg.d/adoptium.asc || true",
         "install": "cd {{SERVERLOCATION}} && which java || (echo 'Java not found, please install JRE 17 manually')",
@@ -14,6 +15,7 @@
         "sandbox": false
       },
       "windows": {
+        "default_name": "minecraft",
         "location": "",
         "pre_hook": "cd {{SERVERLOCATION}}; choco install -y wget",
         "install": "cd {{SERVERLOCATION}}; choco install -y openjdk",

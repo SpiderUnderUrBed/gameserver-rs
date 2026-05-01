@@ -163,19 +163,8 @@ impl Database {
 
 impl UserDatabase for Database { 
     async fn retrieve_user(&self, username: String) -> Option<User> {
-        let enable_admin_user = std::env::var("ENABLE_ADMIN_USER").unwrap_or_default() == "true";
-        let admin_user = std::env::var("ADMIN_USER").unwrap_or_default();
-        let admin_password = std::env::var("ADMIN_PASSWORD").unwrap_or_default();
-
         if let Ok(Some(user)) = self.get_from_database(&username.clone()).await {
             Some(user)
-        } else if username == admin_user && enable_admin_user {
-            let password_hash = bcrypt::hash(admin_password, bcrypt::DEFAULT_COST).ok();
-            Some(User{
-                username,
-                password_hash,
-                user_perms: vec!["all".to_string()]
-            })
         } else {
             None
         }
@@ -347,7 +336,7 @@ impl NodesDatabase for Database {
     
     async fn remove_node_in_db(&self, node: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         if let Element::Node(node_data) = node.element {
-            return remove_node_in_db_directly.await;
+            return self.remove_node_in_db_directly(node_data).await;
         } else {
             Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
         }

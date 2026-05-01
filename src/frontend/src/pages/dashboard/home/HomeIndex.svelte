@@ -26,6 +26,17 @@
 		nodestatus?: { kind: string; data: unknown };
 	};
 
+	type ServerData = {
+		servername: string
+		provider: string,
+		providertype: string,
+		location: string,
+		node: NodeData,
+		sandbox: boolean
+	}
+
+	let servers: ServerData[] = $state([]);
+
 	let serverName = $state('');
 	let serverLocation = $state('');
 	let serverProvider = $state('minecraft');
@@ -34,6 +45,7 @@
 	let nodes: NodeData[] = $state([]);
 	
 	let selectedNodeName = $state('');
+	let selectedServerName = $state('');
 
 	let nodeName = $state('');
 	let nodeIp = $state('');
@@ -43,6 +55,13 @@
 	const fetchNodes = async () => {
 		serverConsole.fetchNodes().then((node_list) => {
 			nodes = node_list;
+		})
+	}
+	const fetchServers = async () => {
+		serverConsole.fetchServers().then((server_list) => {
+			if (server_list) {
+				servers = server_list;
+			}
 		})
 	}
 
@@ -78,6 +97,7 @@
 		fetchNodes();
 	};
 	fetchNodes();
+	fetchServers();
 </script>
 
 <TopBar />
@@ -182,7 +202,7 @@
 		<h3 class="font-semibold text-lg">Configure Server</h3>
 
 		<div class="p-4">
-			<p>Selected server: {serverConsole.selectedNode ?? 'none'}</p>
+			<p>Selected server: {serverConsole.selectedServer ?? 'none'}</p>
 		</div>
 
 		<div class="modal-action">

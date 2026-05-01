@@ -16,6 +16,14 @@ type NodeData = {
 	nodetype?: string;
 	nodestatus?: { kind: string; data: unknown };
 };
+type ServerData = {
+	servername: string
+	provider: string,
+	providertype: string,
+	location: string,
+	node: NodeData,
+	sandbox: boolean
+}
 
 interface GetCurrentNodeResponse {
 	nodename: string;
@@ -35,6 +43,7 @@ export class ServerConsoleState {
 	public nodes = $state<NodeData[]>([]);
 	public integrations = $state<any[]>([]);
 	public selectedNode = $state<string | null>(null);
+	public selectedServer = $state<string | null>(null);
 	//public statusIndicator = $state<'up' | 'down' | 'unknown'>('unknown');
 	public rawOutputEnabled = $state(false);
 	public pendingStatus = $state<ServerStatusMode>('node');
@@ -52,6 +61,7 @@ export class ServerConsoleState {
 	public init(basePath = '') {
 		this.basePath = basePath.replace(/\/$/, '');
 		this.fetchNodes();
+		this.fetchCurrentServer();
 		this.fetchIntegrations();
 		this.loadTopmostButtons();
 		this.connectWebSocket();
@@ -62,6 +72,24 @@ export class ServerConsoleState {
 				newScrollHeightEvent.set([false, height]);
 			//}
 		});
+	}
+	public async fetchServers(): Promise<Array<ServerData> | undefined>{
+		try {
+			let response = await httpClient.get("/api/servers").json<{ list: Array<ServerData> }>();
+			console.log(response);
+			return response.list;
+		} catch (e) {
+			console.error(e);
+		}	
+	}
+	public async fetchCurrentServer(){
+		try {
+			let response = await httpClient.post("/api/getserver", { json: { element: "" } }).json<ServerData>();
+			console.log(response);
+			this.selectedServer = response.servername;
+		} catch (e) {
+			console.error(e);
+		}
 	}
 
 	public addConsoleEntry(entry: ConsoleEntry) {

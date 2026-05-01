@@ -16,6 +16,7 @@ use tokio::process::{ChildStdin, Command as TokioCommand};
 use tokio::sync::{mpsc, Mutex};
 
 use crate::broadcast::Sender;
+use crate::databasespec::ServerMetadata;
 use crate::filesystem::cleanup_end_file_markers;
 use crate::filesystem::execute_file_operation;
 use crate::filesystem::get_files_content;
@@ -91,6 +92,7 @@ enum MetadataTypes {
         providertype: String,
         location: String,
         sandbox: bool,
+        server_metadata: ServerMetadata
     },
     String(String),
 }
@@ -217,6 +219,7 @@ static StaticLocalUrl: &str = "0.0.0.0:8082";
 // might be phased out in favor of determining whether or not the process is running or not
 #[derive(serde::Serialize)]
 struct GetState {
+    name: String,
     start_keyword: String,
     stop_keyword: String,
 }
@@ -677,6 +680,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 "minecraft".to_string(),
                 "".to_string(),
                 true,
+                ServerMetadata::default()
             ),
         );
         save_db(&db);
@@ -1596,9 +1600,11 @@ async fn handle_typical_command_or_console(
 
                     if let Some((_, provider)) = get_provider_object(provider.as_deref(), location.as_deref()).await {
                         if let Some(platform ) = pick_platform(provider) {
+                            println!("Sending out the info");
                             let _ = out_tx
                                 .send(
                                     serde_json::to_string(&GetState {
+                                        name: platform.default_name.unwrap_or("".to_string()),
                                         start_keyword: platform.start_keyword.unwrap_or("".to_string()),
                                         stop_keyword: platform.stop_keyword.unwrap_or("".to_string()),
                                     })
@@ -1989,7 +1995,8 @@ async fn handle_commands_with_metadata(
                     provider: _,
                     location: _,
                     providertype: _,
-                    sandbox,
+                    sandbox: _,
+                    server_metadata: _
                 } = &payload.metadata
                 {
                     let mut db = state.db.lock().await;
@@ -2023,6 +2030,7 @@ async fn create_server(
             location,
             providertype: _,
             sandbox,
+            server_metadata: _,
         } = &payload.metadata.clone()
         {
             let filtered_location = if location.starts_with("server/") {
@@ -2051,6 +2059,7 @@ async fn create_server(
                                 true
                             }
                         },
+                        server_metadata: ServerMetadata::default()
                     },
                 );
                 save_db(&db);
