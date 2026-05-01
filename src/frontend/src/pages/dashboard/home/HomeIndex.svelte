@@ -2,6 +2,22 @@
 	import { serverConsole } from '../../../lib/stores/serverConsoleStore.svelte';
 	import ConsolePanel from '../../../components/dashboard/ConsolePanel.svelte';
 	import TopBar from '../../../components/dashboard/TopBar.svelte';
+	import { type Settings, SettingsStore } from '../../../lib/stores/settingsStore.svelte';
+	import StatisticsBar from '../../../components/dashboard/StatisticsBar.svelte';
+	import { NodesStore } from '../../../lib/stores/nodesStore.svelte';
+	import { onMount } from 'svelte';
+
+	let store = new SettingsStore();
+	let settings = $state<Settings | undefined>({
+		enable_statistics_on_home_page: false,
+    	enable_nodes_on_home_page: false
+	})
+
+	onMount(async () => {
+		settings = await store.getSettings();
+		await fetchNodes();
+	});
+
 
 	type NodeData = {
 		nodename: string;
@@ -65,8 +81,28 @@
 </script>
 
 <TopBar />
-
+{#if settings?.enable_statistics_on_home_page == true}
+{@render nodesBar()}
+{/if}
 <ConsolePanel />
+{#if settings?.enable_nodes_on_home_page == true}
+{@render statisticsBar()}
+{/if}
+{#snippet nodesBar()}
+	<!-- <h1>test1</h1> -->
+	 <div class="card bg-base-100 shadow-md p-4 flex flex-row gap-2">
+		{#each nodes as node}
+			<div>{node.nodename}</div>
+		{/each}
+	</div>
+{/snippet}
+{#snippet statisticsBar()}
+	<StatisticsBar></StatisticsBar>
+{/snippet}
+{#snippet intergrationsBar()}
+	<h1>test3</h1>
+{/snippet}
+
 <dialog id="delete-node-dialog" class="modal">
 	<form onsubmit={deleteNode} method="dialog">
 		<div class="p-4 fieldset">

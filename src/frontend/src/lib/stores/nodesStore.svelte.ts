@@ -24,7 +24,7 @@ export class NodesStore {
 			this.loading = false;
 		}
 	}
-
+	
 	public async addNode(nodename: string, password: string, authcode: string = '0') {
 		this.error = null;
 		try {

@@ -4,7 +4,6 @@ use std::{
     io::{self, Cursor},
     pin::Pin,
 };
-//
 use bollard::{
     Docker,
     auth::DockerCredentials,
@@ -27,6 +26,7 @@ use bytes::Bytes as BytesRaw;
 // Manually parse or enter the .dockerignore and also
 // make sure the root is correct (should it be ./Dockefile or within gameserver/Dockerfile?)
 
+
 const ENABLE_TAG_AND_PUSH: bool = true;
 
 #[derive(Debug)]
@@ -41,23 +41,20 @@ impl std::fmt::Display for DockerBuildError {
 impl std::error::Error for DockerBuildError {}
 
 pub async fn build_docker_image() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    //    let docker = Docker::connect_with_local_defaults()?;
     let docker =
         Docker::connect_with_unix("/var/run/docker.sock", 120, bollard::API_DEFAULT_VERSION)?;
     let context_path = Path::new("gameserver");
-    // 1. Create in-memory tar archive with strict filtering
     let mut archive = Vec::new();
     {
         let mut tar = Builder::new(&mut archive);
 
         for entry in WalkDir::new(context_path)
-            .min_depth(1) // Skip the root directory itself
+            .min_depth(1)
             .into_iter()
             .filter_map(|e| e.ok())
         {
             let path = entry.path();
 
-            // Skip non-file/non-directory and symlink entries
             if !path.is_file() && !path.is_dir() {
                 continue;
             }
@@ -66,10 +63,9 @@ pub async fn build_docker_image() -> Result<(), Box<dyn std::error::Error + Send
             }
 
             let relative_path = path.strip_prefix(context_path)?;
-            // Check if the first component is "target"
             if let Some(first_component) = relative_path.components().next() {
                 if first_component.as_os_str() == "target" {
-                    continue; // Skip the top-level "target" directory and its contents
+                    continue;
                 }
             }
             if relative_path.starts_with("gameserver/target") {
@@ -84,16 +80,13 @@ pub async fn build_docker_image() -> Result<(), Box<dyn std::error::Error + Send
                 continue;
             }
 
-            // Optionally skip hidden files/directories if needed:
             if let Some(relative_str) = relative_path.to_str() {
                 if relative_str.starts_with('.') || relative_str.contains("/.") {
                     continue;
                 }
             }
 
-            // Append to tar archive
             if path.is_dir() {
-                // Create directory header
                 let mut header = Header::new_gnu();
                 header.set_size(0);
                 header.set_entry_type(tar::EntryType::Directory);
@@ -101,7 +94,6 @@ pub async fn build_docker_image() -> Result<(), Box<dyn std::error::Error + Send
                 header.set_cksum();
                 tar.append(&header, &mut io::empty())?;
             } else {
-                // Append file
                 let mut file = File::open(path)?;
                 let mut header = Header::new_gnu();
                 header.set_path(relative_path)?;
@@ -113,31 +105,22 @@ pub async fn build_docker_image() -> Result<(), Box<dyn std::error::Error + Send
         }
 
         tar.finish()?;
-    } // here, `tar` is dropped and the mutable borrow of `archive` is over
+    }
 
-    // 2. Create properly typed stream
-    // Wrap the `archive` in a Cursor
     let cursor = Cursor::new(archive);
     let framed: FramedRead<Cursor<Vec<u8>>, BytesCodec> =
         FramedRead::new(cursor, BytesCodec::new());
 
-    // The BytesCodec produces BytesMut values; convert them to the Bytes type (which is really the same underlying type)
     let stream_converted = framed
         .map_ok(|bytes_mut| {
-            // Convert BytesMut to axum::body::Bytes.
-            // Depending on your version, you may either call `freeze` and then use it,
-            // or if they are actually the same type, the conversion should be a no-op.
             let b: BytesRaw = bytes_mut.freeze();
-            // axum::body::Bytes is re-exported from bytes::Bytes, so this should work:
             Bytes::from(b)
         })
         .map_ok(|b: Bytes| {
-            // Now create an HTTP frame carrying that bytes value.
             Frame::data(b)
         })
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
 
-    // Box the stream into a trait object with the desired type.
     let boxed_stream: Pin<Box<dyn Stream<Item = Result<Frame<Bytes>, io::Error>> + Send>> =
         Box::pin(stream_converted);
 
@@ -149,10 +132,8 @@ pub async fn build_docker_image() -> Result<(), Box<dyn std::error::Error + Send
         repo.clone().unwrap_or("Nothing here".to_string())
     );
 
-    // 3. Configure build options
     let options = BuildImageOptions {
         dockerfile: "Dockerfile",
-        //t: "localhost:5000/gameserver:latest"
         t: &format!(
             "{}/gameserver:latest",
             repo.clone().unwrap_or("".to_string())
@@ -162,10 +143,8 @@ pub async fn build_docker_image() -> Result<(), Box<dyn std::error::Error + Send
         ..Default::default()
     };
 
-    // 4. Execute build
     let mut build_stream = docker.build_image(options, None, Some(Either::Right(stream_body)));
 
-    // 5. Process build output
     while let Some(update) = build_stream.next().await {
         match update {
             Ok(update) => {
@@ -182,10 +161,8 @@ pub async fn build_docker_image() -> Result<(), Box<dyn std::error::Error + Send
         }
     }
 
-    // !repo.clone().unwrap_or_else(|_| "".to_string()).is_empty()
     if ENABLE_TAG_AND_PUSH && repo.clone().is_ok() {
         println!("Tagging and pushing repo");
-        // Tag the image before pushing
         docker
             .tag_image(
                 &format!(
@@ -193,8 +170,6 @@ pub async fn build_docker_image() -> Result<(), Box<dyn std::error::Error + Send
                     repo.clone().unwrap_or("".to_string())
                 ),
                 Some(TagImageOptions {
-                    //repo: "gameserver".to_string(),
-                    // repo: "localhost:5000/gameserver".to_string(),
                     repo: format!(
                         "{}/gameserver",
                         repo.clone().unwrap_or("localhost:5000/".to_string())
@@ -204,11 +179,8 @@ pub async fn build_docker_image() -> Result<(), Box<dyn std::error::Error + Send
             )
             .await?;
 
-        // Now push the tagged image
         docker
             .push_image(
-                //"gameserver",
-                //  "localhost:5000/gameserver",
                 &format!(
                     "{}/gameserver",
                     repo.clone().unwrap_or("localhost:5000/".to_string())
@@ -220,6 +192,6 @@ pub async fn build_docker_image() -> Result<(), Box<dyn std::error::Error + Send
             .await?;
     }
 
-    println!("\n✅ Docker image built successfully!");
+    println!("\nDocker image built successfully!");
     Ok(())
 }

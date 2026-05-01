@@ -35,9 +35,10 @@
 		<button class="btn" commandfor="configure-server-dialog" command="show-modal">
 			Configure Server
 		</button>
-		<button class="btn raw-toggle-button" onclick={() => serverConsole.toggleRaw()}>
+		<!-- TODO: consider if i want a raw output button -->
+		<!-- <button class="btn raw-toggle-button" onclick={() => serverConsole.toggleRaw()}>
 			Raw Output: {serverConsole.rawOutputEnabled ? 'ON' : 'OFF'}
-		</button>
+		</button> -->
 		<button class="btn" commandfor="add-node-dialog" command="show-modal">Add Node</button>
 		<button class="btn" commandfor="switch-node-dialog" command="show-modal">Switch node ({serverConsole.selectedNode ?? 'None'})</button>
 		<button class="btn" commandfor="delete-node-dialog" command="show-modal">Delete node</button>
