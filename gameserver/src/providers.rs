@@ -20,10 +20,13 @@ pub trait Provider {
 impl From<ProviderGame> for Custom {
     fn from(provider: ProviderGame) -> Self {
         Self {
+            default_name: provider.get_config_commands("default_name").cloned(),
             pre_hook_cmd: provider.get_config_commands("pre_hook").cloned(),
             install_cmd: provider.get_config_commands("install").cloned(),
             post_hook_cmd: provider.get_config_commands("post_hook").cloned(),
             start_cmd: provider.get_config_commands("start").cloned(),
+            start_keyword: provider.get_config_commands("start_keyword").cloned(),
+            stop_keyword: provider.get_config_commands("stop_keyword").cloned(),
             location: provider
                 .get_config_commands("location")
                 .cloned()
@@ -57,10 +60,13 @@ impl From<Custom> for ProviderGame {
 
 #[derive(Debug, Clone)]
 pub struct Custom {
+    pub default_name: Option<String>,
     pub pre_hook_cmd: Option<String>,
     pub install_cmd: Option<String>,
     pub post_hook_cmd: Option<String>,
     pub start_cmd: Option<String>,
+    pub start_keyword: Option<String>,
+    pub stop_keyword: Option<String>,
     pub location: String,
     pub needed_paths: Vec<String>,
     pub needed_commands: Vec<String>,
@@ -125,10 +131,13 @@ impl ProviderGame {
 impl Custom {
     pub fn new() -> Self {
         Self {
+            default_name: None,
             pre_hook_cmd: None,
             install_cmd: None,
             post_hook_cmd: None,
             start_cmd: None,
+            start_keyword: None,
+            stop_keyword: None,
             location: String::new(),
             needed_paths: vec![],
             needed_commands: vec![],
@@ -342,10 +351,13 @@ impl Provider for Custom {
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, Default)]
 pub struct ProviderConfig {
+    pub default_name: Option<String>,
     pub pre_hook: Option<String>,
     pub install: Option<String>,
     pub post_hook: Option<String>,
     pub start: Option<String>,
+    pub start_keyword: Option<String>,
+    pub stop_keyword: Option<String>,
     pub location: String,
     pub needed_paths: Vec<String>,
     pub needed_commands: Vec<String>,
@@ -374,10 +386,13 @@ impl From<ProviderConfig> for ProviderGame {
 impl From<ProviderGame> for ProviderConfig {
     fn from(game: ProviderGame) -> Self {
         Self {
+            default_name: game.get_config_commands("default_name").cloned(),
             pre_hook: game.get_config_commands("pre_hook").cloned(),
             install: game.get_config_commands("install").cloned(),
             post_hook: game.get_config_commands("post_hook").cloned(),
             start: game.get_config_commands("start").cloned(),
+            start_keyword: game.get_config_commands("start_keyword").cloned(),
+            stop_keyword: game.get_config_commands("stop_keyword").cloned(),
             location: game
                 .get_config_commands("location")
                 .cloned()
@@ -405,10 +420,13 @@ impl Platforms {
 impl From<Custom> for Platforms {
     fn from(custom: Custom) -> Self {
         let config = ProviderConfig {
+            default_name: custom.default_name,
             pre_hook: custom.pre_hook_cmd,
             install: custom.install_cmd,
             post_hook: custom.post_hook_cmd,
             start: custom.start_cmd,
+            start_keyword: custom.start_keyword,
+            stop_keyword: custom.stop_keyword,
             location: custom.location,
             needed_paths: custom.needed_paths,
             needed_commands: custom.needed_commands,

@@ -11,7 +11,7 @@ use crate::database::Database;
 // Axum is the routing framework, and the backbone to this project helping intergrate the backend with the frontend
 // and the general api, redirections, it will take form data and queries and make it easily accessible
 // I also use axum_login to take off alot of effort that would be required for authentication
-use crate::database::databasespec::IntoServer;
+use crate::database::databasespec::{IntoServer, ServerMetadata};
 use crate::database::{DatabaseError, Element};
 use crate::filesystem::TcpFileStream;
 use crate::filesystem::{FsType, send_multipart_over_broadcast};
@@ -264,6 +264,7 @@ impl Client {
 // which in this case means postgres
 #[cfg(any(feature = "full-stack", feature = "database"))]
 async fn first_connection() -> Result<sqlx::Pool<sqlx::Postgres>, sqlx::Error> {
+    // TODO: use get_env_or_arg here?
     // The user should be able to customize alot about where the database is, how to authenticate with it,
     // whether it is being ran with the full stack or not, hence the env varibles with sensible defaults
     let db_user = std::env::var("POSTGRES_USER").unwrap_or("gameserver".to_string());
@@ -316,6 +317,12 @@ struct MessagePayloadWithMetadata {
     metadata: MetadataTypes,
     authcode: String,
 }
+
+pub enum StreamResult {
+    Done,
+    Reconnect(String, String),
+}
+
 
 // TODO: Is this truely nessesary for the RCON response?
 #[derive(Debug, Serialize, Deserialize)]
@@ -372,6 +379,7 @@ enum MetadataTypes {
         providertype: String,
         location: String,
         sandbox: bool,
+        server_metadata: ServerMetadata
     },
     String(String),
 }
@@ -486,20 +494,6 @@ enum ApiCalls {
     FileDownloadOperation(String),
     FileDownloadAllOperation(String),
     FileUploadAllOperation(String),
-}
-impl ApiCalls {
-    fn as_inner_str(&self) -> Option<&str> {
-        match self {
-            ApiCalls::FileDownloadOperation(s) => Some(s),
-            ApiCalls::FileZipOperation(s) => Some(s),
-            ApiCalls::FileMoveOperation(s) => Some(s),
-            ApiCalls::FileUnzipOperation(s) => Some(s),
-            ApiCalls::FileCopyOperation(s) => Some(s),
-            ApiCalls::FileUploadAllOperation(s) => Some(s),
-            ApiCalls::FileDownloadAllOperation(s) => Some(s),
-            _ => None, // handle other variants if needed
-        }
-    }
 }
 
 impl fmt::Display for ApiCalls {
@@ -629,6 +623,10 @@ async fn attempt_connection(
         .map_err(Into::into)
 }
 
+// What this does is that it will go over the lines retrived from the TCP stream
+// and try parsing them into serveral objects, then it will put them in ConsoleData for it to be extracted and processed
+// individually again 
+// (Sometimes the data sent is weird so this is why i do this intermediary step rather than directly processing things)
 async fn get_all_stream_data_parsed(line_content: &str) -> Result<Vec<Value>, serde_json::Error> {
     let mut final_data = vec![];
 
@@ -664,6 +662,7 @@ async fn get_all_stream_data_parsed(line_content: &str) -> Result<Vec<Value>, se
         value_from_line::<ConsoleData, _>(line_content, |line| !line.contains("\"list\"")).await;
 
     let mut console_values: Vec<Value> = vec![];
+    
     for item in console_parsed {
         if let Ok(data) = item {
             if !list_lines.contains(&data.data) {
@@ -674,6 +673,22 @@ async fn get_all_stream_data_parsed(line_content: &str) -> Result<Vec<Value>, se
         }
     }
     final_data.extend(console_values);
+
+    if let Ok(value) = serde_json::from_str::<Value>(line_content){
+        if let (Some(_), Some(_), Some(_)) = (
+            value.get("start_keyword").and_then(|v| v.as_str()),
+            value.get("stop_keyword").and_then(|v| v.as_str()),
+            value.get("name").and_then(|v| v.as_str()),
+        ) {
+            final_data.push(
+                serde_json::to_value(ConsoleData {
+                    authcode: "0".to_string(),
+                    data: serde_json::to_string(&value).unwrap_or("".to_string()),
+                    r#type: "info".to_string(),
+                }).unwrap()
+            )
+        }
+    }
 
     let message_parsed: Vec<Result<MessagePayload, serde_json::Error>> =
         value_from_line::<MessagePayload, _>(line_content, |line| !line.contains("\"list\"")).await;
@@ -723,6 +738,8 @@ async fn get_all_stream_data_parsed(line_content: &str) -> Result<Vec<Value>, se
     return Ok(final_data);
 }
 
+// Deserializes all the values which has previously been serialized and processed individually
+// rationale for this extra step is explained above
 async fn handle_all_stream_values(
     arc_state: Arc<RwLock<AppState>>,
     value: Value,
@@ -768,12 +785,19 @@ async fn handle_all_stream_values(
 
     if let Ok(data_clone) = serde_json::from_value::<ConsoleData>(value.clone()) {
         if let Ok(inner_value) = serde_json::from_str::<serde_json::Value>(&data_clone.data) {
-            if let (Some(start_kw), Some(stop_kw)) = (
+            if let (Some(start_kw), Some(stop_kw), Some(name)) = (
                 inner_value.get("start_keyword").and_then(|v| v.as_str()),
                 inner_value.get("stop_keyword").and_then(|v| v.as_str()),
+                inner_value.get("name").and_then(|v| v.as_str()),
             ) {
                 *server_start_keyword = start_kw.to_string();
                 *server_stop_keyword = stop_kw.to_string();
+                let mut state_guard = arc_state.write().await;
+                if let Some(current_server) = &mut state_guard.current_server {
+                    if current_server.servername.is_empty() {
+                        current_server.servername = name.to_string();
+                    }
+                }
             }
         }
 
@@ -913,11 +937,6 @@ async fn handle_all_stream_values(
     }
 
     Ok(false)
-}
-
-pub enum StreamResult {
-    Done,
-    Reconnect(String, String),
 }
 
 pub async fn handle_stream(
@@ -1272,6 +1291,24 @@ where
         .or(default)
 }
 
+async fn ensure_admin_user(database: Database){
+    let enable_admin_user = std::env::var("ENABLE_ADMIN_USER").unwrap_or_default() == "true";
+    let admin_user = std::env::var("ADMIN_USER").unwrap_or_default();
+    let admin_password = std::env::var("ADMIN_PASSWORD").unwrap_or_default();
+    if enable_admin_user {
+        database.create_user_in_db(
+            ModifyElementData { 
+                element: Element::User { 
+                    password: admin_password,
+                    user: admin_user, 
+                    user_perms: vec!["admin".to_string()] 
+                }, 
+                jwt: "0".to_string(), 
+                require_auth: false
+            }
+        ).await;
+    } 
+}
 // main function handles the initial connection
 // initilizing the database struct, getting and setting the base path as well as alot of defaults in AppState
 // trying the initial tcp connection to gameserver, and considering creating it if it doesnt exist, and will continually try to make a connection with it
@@ -1284,6 +1321,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let database = database::Database::new(Some(conn));
 
     let database_conn_result = database.ensure_database_conn().await;
+
+    ensure_admin_user(database.clone()).await;
 
     if let Err(err) = database_conn_result {
         println!("{}", err);
@@ -1582,6 +1621,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/buttonreset", post(button_reset))
         .route("/api/editbuttons", post(edit_buttons))
         .route("/api/addnode", post(add_node))
+        .route("/api/deletenode", post(delete_node))
         .route("/api/addserver", post(add_server))
         .route("/api/deleteserver", post(delete_server))
         .route("/api/startserver", post(start_server))
@@ -1618,11 +1658,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             routed.layer(
                 // Needs a service builder to convert a MiddleWareError into an actual reponse which can be
                 // combined with the rest of the routes, this is also in static_routes
-                // TODO: consider if this is nessesary with static_routes also handling oidc?
                 ServiceBuilder::new()
                     .layer(HandleErrorLayer::new(|e: MiddlewareError| async move {
                         eprintln!("OIDC auth layer error: {e:#?}");
-                        Redirect::to("/oidc").into_response()
+                        Redirect::to("/").into_response()
                     }))
                     .layer(oidc_layer),
             )
@@ -2261,6 +2300,9 @@ async fn load_settings(
     Ok(())
 }
 
+// Because with user perms I am thinking of restricting what settings that can be changed based on user perms
+// Instead of submitting a entire new settings feild, you send a list of values you want to change
+// it will go through and see if the user can edit those settings
 async fn set_settings(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<IncomingMessageWithValue>,
@@ -2369,6 +2411,8 @@ async fn ongoing_server_status(
                     Status::Unknown
                 } else if state.cached_status_type == "node" {
                     state.tcp_conn_status.clone()
+                } else if state.cached_status_type == "manual-click" {
+                    Status::Unknown
                 } else {
                     Status::Unknown
                 }
@@ -2390,6 +2434,53 @@ async fn ongoing_server_status(
     Sse::new(updates).keep_alive(axum::response::sse::KeepAlive::default())
 }
 
+// TODO: clean up sometime, delete_node should only expect one node type, just verify nothing is using it weirdly
+async fn delete_node(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    Json(request): Json<ModifyElementData>,
+) -> impl IntoResponse {
+    let node_request_name_option = 'node: {
+        if let Element::Node(node) = request.element {
+            break 'node Some(node.nodename);
+        } 
+        if let Ok(value) = serde_json::to_value(request.element) {
+            if let Some(Value::String(nodename)) = value.get("nodename"){
+                break 'node Some(nodename.to_string());
+            } else {
+                break 'node None;
+            }
+        } else {
+            break 'node None;
+        }
+    };
+    if let Some(node_request_name) = node_request_name_option {
+        let state = arc_state.write().await;
+        let node_option = state
+            .database
+            .retrieve_nodes(node_request_name)
+            .await;
+        if let Some(node) = node_option {
+            if matches!(node.k8s_type, K8sType::None) || matches!(node.k8s_type, K8sType::Unknown){
+                let delete_node_result = state
+                    .database
+                    .remove_node_in_db_directly(node)
+                    .await;
+                if let Ok(operation_status) = delete_node_result {
+                    return operation_status.into_response();
+                } else {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
+                
+            } else {
+                return StatusCode::SERVICE_UNAVAILABLE.into_response();
+            }
+        } else {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    } else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+}
 async fn add_node(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     Json(request): Json<ModifyElementData>,
@@ -2463,7 +2554,7 @@ async fn add_server(
         return StatusCode::INTERNAL_SERVER_ERROR;
     }
 
-    for message in ["set_server", "create_server"] {
+    for message in ["create_server", "set_server", "server_data"] {
         let msg = MessagePayloadWithMetadata {
             r#type: "command".to_string(),
             message: message.to_string(),
@@ -2472,7 +2563,8 @@ async fn add_server(
                 provider: server.provider.clone(),
                 providertype: server.providertype.clone(),
                 location: server.location.clone(),
-                sandbox: server.sandbox,
+                sandbox: server.sandbox.clone(),
+                server_metadata: server.server_metadata.clone()
             },
             authcode: "0".to_string(),
         };
@@ -2736,6 +2828,7 @@ async fn set_server(
                 // TODO: Have it so if the user has a specific perm, they can create unsandboxed servers
                 sandbox: retrieved_server.sandbox.clone(),
                 //sandbox: true
+                server_metadata: ServerMetadata::default()
             }
             .into(),
         );
@@ -2749,6 +2842,7 @@ async fn set_server(
                 providertype: retrieved_server.providertype,
                 location: retrieved_server.location,
                 sandbox: retrieved_server.sandbox,
+                server_metadata: retrieved_server.server_metadata
             },
             authcode: "0".to_string(),
         };
@@ -2907,6 +3001,7 @@ async fn process_general_with_metadata(
                 providertype,
                 location,
                 sandbox,
+                server_metadata
             } = payload.metadata.clone()
             {
                 // Sets the server on the local server when creating a new game server
@@ -2923,7 +3018,8 @@ async fn process_general_with_metadata(
                         nodestatus: NodeStatus::Unknown,
                         nodetype: state.current_node.nodetype.clone(),
                         k8s_type: state.current_node.k8s_type.clone(),
-                    }
+                    },
+                    server_metadata: ServerMetadata::default()
                     .into(),
                 });
                 let database = &state.database;
@@ -2943,6 +3039,7 @@ async fn process_general_with_metadata(
                         provider,
                         servername,
                         sandbox,
+                        server_metadata
                     } = payload.metadata.clone()
                     {
                         let _ = database
@@ -2961,6 +3058,7 @@ async fn process_general_with_metadata(
                                         k8s_type: state.current_node.k8s_type.clone(),
                                     }
                                     .into(),
+                                    server_metadata,
                                 }),
                                 jwt: payload.authcode,
                                 require_auth: false,
@@ -2981,6 +3079,7 @@ async fn process_general_with_metadata(
                                 providertype: retrieved_server.providertype,
                                 location: retrieved_server.location,
                                 sandbox: retrieved_server.sandbox,
+                                server_metadata: retrieved_server.server_metadata
                             },
                             authcode: "0".to_string(),
                         };
@@ -3446,7 +3545,6 @@ struct UserResponse {
 
 #[axum::debug_handler]
 async fn user_me(auth_session: AuthSession) -> impl IntoResponse {
-    eprintln!("User: {:?}", auth_session.user);
     match auth_session.user {
         Some(user) => Json(UserResponse {
             username: user.username,
@@ -4125,6 +4223,7 @@ mod tests {
                             nodetype: NodeType::Custom,
                             k8s_type: K8sType::Unknown,
                         },
+                        server_metadata: ServerMetadata::default()
                     }),
                     jwt: "".to_string(),
                     require_auth: false,
@@ -4160,6 +4259,7 @@ mod tests {
                             nodetype: NodeType::Custom,
                             k8s_type: K8sType::Unknown,
                         },
+                        server_metadata: ServerMetadata::default()
                     }),
                     jwt: "".to_string(),
                     require_auth: false,

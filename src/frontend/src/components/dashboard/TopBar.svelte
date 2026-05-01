@@ -2,6 +2,7 @@
 	import { serverConsole } from '../../lib/stores/serverConsoleStore.svelte';
 	// import { serversStore } from '../../lib/stores/serversStore.svelte';
 	import Status from './Status.svelte';
+	// import StatusStore from './Status.svelte';
 	import { SlashIcon } from '@lucide/svelte';
 
 	let commandInput = $state('');
@@ -11,12 +12,14 @@
 		serverConsole.sendConsoleCommand(commandInput);
 		commandInput = '';
 	}
+
+	
 </script>
 
 <div class="bg-base-100 flex flex-col rounded p-2 gap-2">
 	<div class="flex flex-row gap-2 items-center overflow-x-auto">
 		<Status
-			status={serverConsole.statusIndicator}
+			//status={serverConsole.statusIndicator}
 			aria-label="Server Status"
 			data-tip="Server Status"
 			class="tooltip p-4"
@@ -32,11 +35,13 @@
 		<button class="btn" commandfor="configure-server-dialog" command="show-modal">
 			Configure Server
 		</button>
-		<button class="btn raw-toggle-button" onclick={() => serverConsole.toggleRaw()}>
+		<!-- TODO: consider if i want a raw output button -->
+		<!-- <button class="btn raw-toggle-button" onclick={() => serverConsole.toggleRaw()}>
 			Raw Output: {serverConsole.rawOutputEnabled ? 'ON' : 'OFF'}
-		</button>
+		</button> -->
 		<button class="btn" commandfor="add-node-dialog" command="show-modal">Add Node</button>
 		<button class="btn" commandfor="switch-node-dialog" command="show-modal">Switch node ({serverConsole.selectedNode ?? 'None'})</button>
+		<button class="btn" commandfor="delete-node-dialog" command="show-modal">Delete node</button>
 	</div>
 
 	<label class="input w-full">

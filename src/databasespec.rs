@@ -61,8 +61,11 @@ pub struct ModifyElementData {
     pub require_auth: bool,
 }
 
-#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
 #[derive(Debug, Deserialize, Serialize, Clone)]
+#[cfg_attr(
+    any(feature = "full-stack", feature = "database"),
+    derive(sqlx::FromRow)
+)]
 pub struct Settings {
     pub(crate) toggled_default_buttons: bool,
     pub(crate) status_type: String,
@@ -71,7 +74,9 @@ pub struct Settings {
     pub(crate) rcon_password: String,
     pub(crate) driver: String,
     pub(crate) file_system_driver: String,
-    pub(crate) enable_statistics_on_home_page: String,
+    pub(crate) enable_statistics_on_home_page: bool,
+    pub(crate) enable_nodes_on_home_page: bool,
+    #[cfg_attr(any(feature = "full-stack", feature = "database"), sqlx(json))]
     pub(crate) current_server: Server,
 }
 
@@ -84,26 +89,14 @@ impl Default for Settings {
             rcon_url: "localhost:25575".to_string(),
             rcon_password: "testing".to_string(),
             driver: "".to_string(),
-            enable_statistics_on_home_page: "".to_string(),
+            enable_statistics_on_home_page: false,
+            enable_nodes_on_home_page: false,
             file_system_driver: "".to_string(),
             current_server: Server::default().into(),
         }
     }
 }
 
-#[cfg(any(feature = "full-stack", feature = "database"))]
-#[derive(Debug, Deserialize, Serialize, Clone, sqlx::FromRow)]
-pub struct Settings {
-    pub(crate) toggled_default_buttons: bool,
-    pub(crate) status_type: String,
-    pub(crate) enabled_rcon: bool,
-    pub(crate) rcon_url: String,
-    pub(crate) rcon_password: String,
-    pub(crate) driver: String,
-    pub(crate) file_system_driver: String,
-    pub(crate) enable_statistics_on_home_page: String,
-    pub(crate) current_server: Json<Server>,
-}
 
 #[derive(Debug, Serialize, Clone, PartialEq, Default)]
 #[cfg_attr(any(feature = "full-stack", feature = "database"), derive(sqlx::Type))]
@@ -402,6 +395,23 @@ impl<T> std::ops::DerefMut for Json<T> {
         &mut self.0
     }
 }
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
+// #[cfg_attr(
+//     any(feature = "full-stack", feature = "database"),
+//     derive(sqlx::FromRow)
+// )]
+// #[cfg_attr(
+//     any(feature = "full-stack", feature = "database"),
+//     derive(sqlx::Decode)
+// )]
+#[cfg_attr(
+    any(feature = "full-stack", feature = "database"),
+    derive(sqlx::Type)
+)]
+pub struct ServerMetadata {
+    start_keyword: Option<String>,
+    stop_keyword: Option<String>
+}
 
 // I made the mistake of NOT documenting my original plans for provider and providertype,
 // I'll assume provide would have been something like the game, I have no idea for provider type but
@@ -412,7 +422,6 @@ impl<T> std::ops::DerefMut for Json<T> {
     any(feature = "full-stack", feature = "database"),
     derive(sqlx::FromRow)
 )]
-//#[sqlx(flatten)]
 pub struct Server {
     #[serde(default)]
     pub servername: String,
@@ -425,11 +434,12 @@ pub struct Server {
     #[cfg_attr(any(feature = "full-stack", feature = "database"), sqlx(json))]
     #[serde(default)]
     pub node: Node,
-    //pub node: Node,
     #[serde(default)]
     pub sandbox: bool,
+    #[cfg_attr(any(feature = "full-stack", feature = "database"), sqlx(json))]
+    #[serde(default)]
+    pub server_metadata: ServerMetadata,
 }
-
 pub trait IntoServer {
     fn into_server(self) -> Server;
 }
@@ -503,6 +513,10 @@ pub trait NodesDatabase {
     async fn remove_node_in_db(
         &self,
         node: ModifyElementData,
+    ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn remove_node_in_db_directly(
+        &self,
+        node: Node,
     ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
     async fn edit_node_in_db(
         &self,

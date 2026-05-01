@@ -115,7 +115,8 @@ impl Database {
                 rcon_password                  VARCHAR DEFAULT 'testing',
                 driver                         VARCHAR DEFAULT '',
                 file_system_driver             VARCHAR DEFAULT '',
-                enable_statistics_on_home_page VARCHAR DEFAULT '',
+                enable_statistics_on_home_page BOOLEAN NOT NULL DEFAULT false,
+                enable_nodes_on_home_page      BOOLEAN NOT NULL DEFAULT false,
                 current_server                 JSONB DEFAULT '{}'::jsonb,
                 created_at                     TIMESTAMPTZ DEFAULT now(),
                 updated_at                     TIMESTAMPTZ DEFAULT now()
@@ -162,19 +163,8 @@ impl Database {
 
 impl UserDatabase for Database { 
     async fn retrieve_user(&self, username: String) -> Option<User> {
-        let enable_admin_user = std::env::var("ENABLE_ADMIN_USER").unwrap_or_default() == "true";
-        let admin_user = std::env::var("ADMIN_USER").unwrap_or_default();
-        let admin_password = std::env::var("ADMIN_PASSWORD").unwrap_or_default();
-
         if let Ok(Some(user)) = self.get_from_database(&username.clone()).await {
             Some(user)
-        } else if username == admin_user && enable_admin_user {
-            let password_hash = bcrypt::hash(admin_password, bcrypt::DEFAULT_COST).ok();
-            Some(User{
-                username,
-                password_hash,
-                user_perms: vec!["all".to_string()]
-            })
         } else {
             None
         }
@@ -346,16 +336,19 @@ impl NodesDatabase for Database {
     
     async fn remove_node_in_db(&self, node: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         if let Element::Node(node_data) = node.element {
-            let result = sqlx::query("DELETE FROM nodes WHERE nodename = $1")
-                .bind(&node_data.nodename)
-                .execute(&self.connection)
-                .await?;
+            return self.remove_node_in_db_directly(node_data).await;
+        } else {
+            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+        }
+    }
+    async fn remove_node_in_db_directly(&self, node_data: Node) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+        let result = sqlx::query("DELETE FROM nodes WHERE nodename = $1")
+            .bind(&node_data.nodename)
+            .execute(&self.connection)
+            .await?;
 
-            if result.rows_affected() > 0 {
-                Ok(StatusCode::CREATED)
-            } else {
-                Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
-            }
+        if result.rows_affected() > 0 {
+            Ok(StatusCode::CREATED)
         } else {
             Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
         }
@@ -594,7 +587,8 @@ impl SettingsDatabase for Database {
                 rcon_password = $5,
                 driver = $6,
                 file_system_driver = $7,
-                enable_statistics_on_home_page = $8
+                enable_statistics_on_home_page = $8,
+                enable_nodes_on_home_page = $9
             "#
         )
         .bind(&settings.toggled_default_buttons)
@@ -605,6 +599,7 @@ impl SettingsDatabase for Database {
         .bind(&settings.driver)
         .bind(&settings.file_system_driver)
         .bind(&settings.enable_statistics_on_home_page)
+        .bind(&settings.enable_nodes_on_home_page)
         .execute(&self.connection)
         .await?;
         

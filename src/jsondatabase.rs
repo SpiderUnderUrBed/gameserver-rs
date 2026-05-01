@@ -95,7 +95,7 @@ pub struct Database {
 impl Default for JsonBackend {
     fn default() -> Self {
         JsonBackend {
-            file: PathBuf::from("credentials.json")
+            file: PathBuf::from("database.json")
         }
     }
 }
@@ -237,7 +237,7 @@ impl ServerDatabase for Database {
         Ok(database.servers.iter().find(|server| server.servername == servername).cloned())  
     }
     async fn create_server_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
-        if let Element::Server(Server {servername, provider, providertype, location, node, sandbox }) = element.element {
+        if let Element::Server(Server {servername, provider, providertype, location, node, sandbox, server_metadata }) = element.element {
             if servername.is_empty(){
                 return Err("Need to have specified a server name".into());
             }
@@ -246,7 +246,7 @@ impl ServerDatabase for Database {
             if database.servers.iter().any(|server| server.servername == servername){
                 return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
             } else {
-                let server = Server { servername, provider, providertype, location, node, sandbox };
+                let server = Server { servername, provider, providertype, location, node, sandbox, server_metadata };
                 database.servers.push(server.clone());
             }
         
@@ -258,7 +258,7 @@ impl ServerDatabase for Database {
     }
     async fn remove_server_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         let mut database = self.get_database().await?;
-        if let Element::Server(Server {servername, provider, providertype, location, node, sandbox }) = element.element {
+        if let Element::Server(Server {servername, provider, providertype, location, node, sandbox, server_metadata }) = element.element {
             database.servers.retain(|db_server| db_server.servername != servername);
         } else {
             return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
@@ -269,7 +269,7 @@ impl ServerDatabase for Database {
         Ok(StatusCode::CREATED)
     }
     async fn edit_server_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
-        if let Element::Server(Server {servername, provider, providertype, location, node, sandbox }) = element.element {
+        if let Element::Server(Server {servername, provider, providertype, location, node, sandbox, server_metadata }) = element.element {
             let mut database = self.get_database().await?;
             if let Some(db_server) = database.servers.iter_mut().find(|db_server| db_server.servername == servername) {
                 // db_server.user_perms = user_perms.clone();
@@ -286,17 +286,7 @@ impl ServerDatabase for Database {
 
 impl UserDatabase for Database {
     async fn retrieve_user(&self, username: String) -> Option<User> {
-        let enable_admin_user = std::env::var("ENABLE_ADMIN_USER").unwrap_or_default() == "true";
-        let admin_user = std::env::var("ADMIN_USER").unwrap_or_default();
-        let admin_password = std::env::var("ADMIN_PASSWORD").unwrap_or_default();
-        if username == admin_user && enable_admin_user {
-            let password_hash = bcrypt::hash(admin_password, bcrypt::DEFAULT_COST).ok();
-            return Some(User{
-                username,
-                password_hash, 
-                user_perms: vec!["all".to_string()]
-            });
-        } if let Ok(Some(user)) = self.get_from_database(&username.clone()).await {
+        if let Ok(Some(user)) = self.get_from_database(&username.clone()).await {
             Some(user)
         } else {
             None
@@ -417,7 +407,17 @@ impl NodesDatabase for Database {
         }
     }
     async fn remove_node_in_db(&self, node: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
-        todo!()
+        if let Element::Node(node_data) = node.element {
+            self.remove_node_in_db_directly(node_data).await
+        } else {
+            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+        }
+    }
+    async fn remove_node_in_db_directly(&self, node_data: Node) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+        let mut database = self.get_database().await?;
+        database.nodes.retain(|node| node.nodename != node_data.nodename);
+        self.write_database(database).await;
+        Ok(StatusCode::CREATED)
     }
     async fn edit_node_in_db(&self, node: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         todo!()
@@ -561,8 +561,8 @@ impl IntergrationsDatabase for Database {
 //     not(feature = "database")
 // ))]
 async fn create_db_for_tests() -> Result<Database, String> {
-    // Create credentials.json if it doesn't exist so clear_db() doesn't fail
-    let path = std::path::Path::new("credentials.json");
+    // Create database.json if it doesn't exist so clear_db() doesn't fail
+    let path = std::path::Path::new("database.json");
     if !path.exists() {
         std::fs::write(path, "{}").map_err(|e| e.to_string())?;
     }

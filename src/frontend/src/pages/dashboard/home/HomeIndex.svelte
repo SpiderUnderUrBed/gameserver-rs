@@ -2,15 +2,70 @@
 	import { serverConsole } from '../../../lib/stores/serverConsoleStore.svelte';
 	import ConsolePanel from '../../../components/dashboard/ConsolePanel.svelte';
 	import TopBar from '../../../components/dashboard/TopBar.svelte';
+	import { type Settings, SettingsStore } from '../../../lib/stores/settingsStore.svelte';
+	import StatisticsBar from '../../../components/dashboard/StatisticsBar.svelte';
+	import { NodesStore } from '../../../lib/stores/nodesStore.svelte';
+	import { onMount } from 'svelte';
+
+	let store = new SettingsStore();
+	let settings = $state<Settings | undefined>({
+		enable_statistics_on_home_page: false,
+    	enable_nodes_on_home_page: false
+	})
+
+	onMount(async () => {
+		settings = await store.getSettings();
+		await fetchServers();
+		await fetchNodes();
+	});
+
+
+	type NodeData = {
+		nodename: string;
+		ip: string;
+		nodetype?: string;
+		nodestatus?: { kind: string; data: unknown };
+	};
+
+	type ServerData = {
+		servername: string
+		provider: string,
+		providertype: string,
+		location: string,
+		node: NodeData,
+		sandbox: boolean
+	}
+
+	let servers: ServerData[] = $state([]);
 
 	let serverName = $state('');
 	let serverLocation = $state('');
 	let serverProvider = $state('minecraft');
 	let serverSandbox = $state(true);
+
+	let nodes: NodeData[] = $state([]);
+	
+	let selectedNodeName = $state('');
+	let selectedServerName = $state('');
+
 	let nodeName = $state('');
 	let nodeIp = $state('');
 	let nodeType = $state('Custom');
 	let switchNodeId = $state('');
+
+	const fetchNodes = async () => {
+		serverConsole.fetchNodes().then((node_list) => {
+			nodes = node_list;
+		})
+	}
+	const fetchServers = async () => {
+		let server_list = await serverConsole.fetchServers();
+		if (server_list){
+			if (server_list) {
+				servers = server_list;
+			}
+		}
+	}
 
 	const submitCreateServer = async (event: SubmitEvent) => {
 		if ((<HTMLButtonElement | null>event.submitter)?.value !== 'cancel') {
@@ -22,8 +77,27 @@
 				serverSandbox
 			);
 		}
+		fetchServers();
 		(<HTMLFormElement>event.target).reset();
 	};
+	const configureServer = async (event: SubmitEvent) => {
+		if ((<HTMLButtonElement | null>event.submitter)?.value === 'cancel') return;
+			await serverConsole.setServer(selectedServerName);
+		// serverConsole.addConsoleEntry({
+		// 	type: 'output',
+		// 	text: 'Configure server placeholder'
+		// });
+	}
+	const deleteNode = async (event: SubmitEvent) => {
+		if ((<HTMLButtonElement | null>event.submitter)?.value !== 'cancel') {
+			//selectedNodeName
+			await serverConsole.deleteNode(selectedNodeName, nodeIp, nodeType);
+			nodeName = '';
+			nodeIp = '';
+			nodeType = 'Custom';
+			fetchNodes();
+		}
+	}
 
 	const submitAddNode = async (event: SubmitEvent) => {
 		if ((<HTMLButtonElement | null>event.submitter)?.value === 'cancel') return;
@@ -31,13 +105,54 @@
 		nodeName = '';
 		nodeIp = '';
 		nodeType = 'Custom';
+		fetchNodes();
 	};
 </script>
 
 <TopBar />
-
+{#if settings?.enable_statistics_on_home_page == true}
+{@render nodesBar()}
+{/if}
 <ConsolePanel />
+{#if settings?.enable_nodes_on_home_page == true}
+{@render statisticsBar()}
+{/if}
+{#snippet nodesBar()}
+	<!-- <h1>test1</h1> -->
+	 <div class="card bg-base-100 shadow-md p-4 flex flex-row gap-2">
+		{#each nodes as node}
+			<div>{node.nodename}</div>
+		{/each}
+	</div>
+{/snippet}
+{#snippet statisticsBar()}
+	<StatisticsBar></StatisticsBar>
+{/snippet}
+{#snippet intergrationsBar()}
+	<h1>test3</h1>
+{/snippet}
 
+<dialog id="delete-node-dialog" class="modal">
+	<form onsubmit={deleteNode} method="dialog">
+		<div class="p-4 fieldset">
+			<label for="selected_node">Select node</label>
+			<select bind:value={selectedNodeName} id="selected_node" class="select">
+				<option selected value={nodeName}>{nodeName}</option>
+				{#each nodes as node}
+					{#if (node.nodename != nodeName)}
+						<option value={node.nodename}>{node.nodename}</option>
+					{/if}
+				{/each}	
+			</select>
+		</div>
+		<div class="modal-action">
+			<button class="btn btn-ghost btn-error" type="submit" value="cancel" formnovalidate>
+				Cancel
+			</button>
+			<button class="btn btn-primary" type="submit">Delete</button>
+		</div>
+	</form>
+</dialog>
 <dialog id="create-server-dialog" class="modal">
 	<form onsubmit={submitCreateServer} method="dialog" class="modal-box">
 		<h3 class="text-lg font-bold">Create Server</h3>
@@ -83,20 +198,21 @@
 
 <dialog id="configure-server-dialog" class="modal">
 	<form
-		onsubmit={(event) => {
-			if ((<HTMLButtonElement | null>event.submitter)?.value === 'cancel') return;
-			serverConsole.addConsoleEntry({
-				type: 'output',
-				text: 'Configure server placeholder'
-			});
-		}}
+		onsubmit={configureServer}
 		method="dialog"
 		class="modal-box"
 	>
 		<h3 class="font-semibold text-lg">Configure Server</h3>
 
 		<div class="p-4">
-			<p>Selected server: {serverConsole.selectedNode ?? 'none'}</p>
+			<p>Current server: {serverConsole.selectedServer ?? 'none'}</p>
+			<br>
+			<label for="servers_selection"><p>Select server:</p></label>
+			<select id="servers_selection" bind:value={selectedServerName}>
+				{#each servers as server}
+					<option value={server.servername}>{server.servername}</option>
+				{/each}
+			</select>
 		</div>
 
 		<div class="modal-action">
@@ -181,7 +297,7 @@
 
 			{#if serverConsole.nodes}
 				<select bind:value={switchNodeId} class="select" id="node_name">
-					{#each serverConsole.nodes as node}
+					{#each nodes as node}
 						<option value={node.nodename} selected={serverConsole.selectedNode === node.nodename}>{node.nodename}</option>
 					{/each}
 				</select>

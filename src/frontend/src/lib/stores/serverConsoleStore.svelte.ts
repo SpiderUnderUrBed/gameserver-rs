@@ -1,6 +1,10 @@
 import { object, unknown } from 'valibot';
 import { httpClient } from '../utils/http';
-import { writable } from 'svelte/store';
+import { get, writable } from 'svelte/store';
+
+//export const statusStore = writable<('manual', 'server'), ('up' | 'down' | 'unknown')>(('manual'), ('unknown'));
+export const statusStore = writable<'up' | 'down' | 'unknown'>('unknown');
+export const statusType = writable<'node-status' | 'server-keyword' | 'server-process' | 'manual-click'>('manual-click');
 
 export type ServerStatusMode = 'node' | 'server-keyword' | 'server-process';
 
@@ -12,6 +16,14 @@ type NodeData = {
 	nodetype?: string;
 	nodestatus?: { kind: string; data: unknown };
 };
+type ServerData = {
+	servername: string
+	provider: string,
+	providertype: string,
+	location: string,
+	node: NodeData,
+	sandbox: boolean
+}
 
 interface GetCurrentNodeResponse {
 	nodename: string;
@@ -29,9 +41,11 @@ export class ServerConsoleState {
 
 	public consoleHistory = $state<ConsoleEntry[]>([]);
 	public nodes = $state<NodeData[]>([]);
+	public servers = $state<ServerData[]>([]);
 	public integrations = $state<any[]>([]);
 	public selectedNode = $state<string | null>(null);
-	public statusIndicator = $state<'up' | 'down' | 'unknown'>('unknown');
+	public selectedServer = $state<string | null>(null);
+	//public statusIndicator = $state<'up' | 'down' | 'unknown'>('unknown');
 	public rawOutputEnabled = $state(false);
 	public pendingStatus = $state<ServerStatusMode>('node');
 	public finalStatus = $state<ServerStatusMode>('node');
@@ -48,6 +62,8 @@ export class ServerConsoleState {
 	public init(basePath = '') {
 		this.basePath = basePath.replace(/\/$/, '');
 		this.fetchNodes();
+		this.fetchServers();
+		this.fetchCurrentServer();
 		this.fetchIntegrations();
 		this.loadTopmostButtons();
 		this.connectWebSocket();
@@ -58,6 +74,27 @@ export class ServerConsoleState {
 				newScrollHeightEvent.set([false, height]);
 			//}
 		});
+	}
+	public async fetchServers(): Promise<ServerData[] | undefined> {
+		try {
+			const response = await httpClient
+				.get('/api/servers')
+				.json<{ list?: { data: ServerData[] } }>();
+
+			this.servers = response.list?.data ?? [];
+			return this.servers;
+		} catch (e) {
+			console.error(e);
+		}
+	}
+	public async fetchCurrentServer(){
+		try {
+			let response = await httpClient.post("/api/getserver", { json: { element: "" } }).json<ServerData>();
+			console.log(response);
+			this.selectedServer = response.servername;
+		} catch (e) {
+			console.error(e);
+		}
 	}
 
 	public addConsoleEntry(entry: ConsoleEntry) {
@@ -70,13 +107,15 @@ export class ServerConsoleState {
 		}
 	}
 
-	public async fetchNodes() {
+	public async fetchNodes() : Promise<NodeData[]> {
 		try {
 			const resp = await httpClient.get(`/api/nodes`).json<{ list?: { data: NodeData[] } }>();
 			this.nodes = resp.list?.data ?? [];
+			return this.nodes;
 		} catch (err) {
 			console.error('fetchNodes error', err);
 			this.nodes = [];
+			return this.nodes;
 		}
 	}
 
@@ -241,22 +280,46 @@ export class ServerConsoleState {
 		});
 	}
 
-	public async updateStatus(status: 'up' | 'down' | 'none', awaitFlag: boolean) {
-		if (status !== 'none') {
-			this.statusIndicator = status;
+	public async updateStatus(status: 'up' | 'down' | 'unknown', awaitFlag: boolean) {
+		if (get(statusType) == "manual-click") {
+			console.log(get(statusType));
+			statusStore.set(status);
 		}
 
 		try {
 			const source = new EventSource(`/api/awaitserverstatus`);
 			source.onmessage = (event) => {
-				const data = event.data || '';
-				this.addConsoleEntry({ type: 'output', text: `[STATUS] ${data}` });
+				const data = event.data || 'unknown';
+				if (get(statusType) != "manual-click") {
+					statusStore.set(data);
+				}
+				//this.addConsoleEntry({ type: 'output', text: `[STATUS] ${data}` });
 			};
 			source.onerror = () => {
 				source.close();
 			};
 		} catch (err) {
 			console.error('updateStatus error', err);
+		}
+	}
+	public async setServer(servername: string){
+		try {
+			let response = await httpClient.post(`/api/setserver`, {
+				json: {
+					element: {
+						kind: "String",
+						data: servername
+					},
+					jwt: "",
+					require_auth: true
+
+				}
+			});
+			if (response.ok) {
+				this.selectedServer = servername;
+			}
+		} catch (e) {
+			console.error(e);
 		}
 	}
 
@@ -349,6 +412,30 @@ export class ServerConsoleState {
 			this.addConsoleEntry({ type: 'output', text: `Node added: ${nodename}` });
 			this.fetchNodes();
 		} catch (err) {
+			this.addConsoleEntry({ type: 'output', text: `Add node error: ${err}` });
+		}
+	}
+	public async deleteNode(nodename: string, ip: string, nodetype: string) {
+		try {
+			const payload = {
+				element: {
+					kind: 'Node',
+					data: {
+						nodename,
+						ip,
+						nodetype,
+						nodestatus: { kind: 'enabled', data: null },
+						k8s_type: 'Unknown'
+					}
+				},
+				jwt: '',
+				require_auth: true
+			};
+			await httpClient.post(`/api/deletenode`, { json: payload }).json();
+			this.addConsoleEntry({ type: 'output', text: `Node deleted: ${nodename}` });
+			this.fetchNodes();
+		} catch (err) {
+			console.log(err);
 			this.addConsoleEntry({ type: 'output', text: `Add node error: ${err}` });
 		}
 	}
