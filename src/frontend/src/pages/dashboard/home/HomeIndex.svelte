@@ -15,6 +15,7 @@
 
 	onMount(async () => {
 		settings = await store.getSettings();
+		await fetchServers();
 		await fetchNodes();
 	});
 
@@ -58,11 +59,12 @@
 		})
 	}
 	const fetchServers = async () => {
-		serverConsole.fetchServers().then((server_list) => {
+		let server_list = await serverConsole.fetchServers();
+		if (server_list){
 			if (server_list) {
 				servers = server_list;
 			}
-		})
+		}
 	}
 
 	const submitCreateServer = async (event: SubmitEvent) => {
@@ -75,8 +77,17 @@
 				serverSandbox
 			);
 		}
+		fetchServers();
 		(<HTMLFormElement>event.target).reset();
 	};
+	const configureServer = async (event: SubmitEvent) => {
+		if ((<HTMLButtonElement | null>event.submitter)?.value === 'cancel') return;
+			await serverConsole.setServer(selectedServerName);
+		// serverConsole.addConsoleEntry({
+		// 	type: 'output',
+		// 	text: 'Configure server placeholder'
+		// });
+	}
 	const deleteNode = async (event: SubmitEvent) => {
 		if ((<HTMLButtonElement | null>event.submitter)?.value !== 'cancel') {
 			//selectedNodeName
@@ -96,8 +107,6 @@
 		nodeType = 'Custom';
 		fetchNodes();
 	};
-	fetchNodes();
-	fetchServers();
 </script>
 
 <TopBar />
@@ -189,20 +198,21 @@
 
 <dialog id="configure-server-dialog" class="modal">
 	<form
-		onsubmit={(event) => {
-			if ((<HTMLButtonElement | null>event.submitter)?.value === 'cancel') return;
-			serverConsole.addConsoleEntry({
-				type: 'output',
-				text: 'Configure server placeholder'
-			});
-		}}
+		onsubmit={configureServer}
 		method="dialog"
 		class="modal-box"
 	>
 		<h3 class="font-semibold text-lg">Configure Server</h3>
 
 		<div class="p-4">
-			<p>Selected server: {serverConsole.selectedServer ?? 'none'}</p>
+			<p>Current server: {serverConsole.selectedServer ?? 'none'}</p>
+			<br>
+			<label for="servers_selection"><p>Select server:</p></label>
+			<select id="servers_selection" bind:value={selectedServerName}>
+				{#each servers as server}
+					<option value={server.servername}>{server.servername}</option>
+				{/each}
+			</select>
 		</div>
 
 		<div class="modal-action">
@@ -287,7 +297,7 @@
 
 			{#if serverConsole.nodes}
 				<select bind:value={switchNodeId} class="select" id="node_name">
-					{#each serverConsole.nodes as node}
+					{#each nodes as node}
 						<option value={node.nodename} selected={serverConsole.selectedNode === node.nodename}>{node.nodename}</option>
 					{/each}
 				</select>

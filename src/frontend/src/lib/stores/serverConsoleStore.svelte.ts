@@ -41,6 +41,7 @@ export class ServerConsoleState {
 
 	public consoleHistory = $state<ConsoleEntry[]>([]);
 	public nodes = $state<NodeData[]>([]);
+	public servers = $state<ServerData[]>([]);
 	public integrations = $state<any[]>([]);
 	public selectedNode = $state<string | null>(null);
 	public selectedServer = $state<string | null>(null);
@@ -61,6 +62,7 @@ export class ServerConsoleState {
 	public init(basePath = '') {
 		this.basePath = basePath.replace(/\/$/, '');
 		this.fetchNodes();
+		this.fetchServers();
 		this.fetchCurrentServer();
 		this.fetchIntegrations();
 		this.loadTopmostButtons();
@@ -73,14 +75,17 @@ export class ServerConsoleState {
 			//}
 		});
 	}
-	public async fetchServers(): Promise<Array<ServerData> | undefined>{
+	public async fetchServers(): Promise<ServerData[] | undefined> {
 		try {
-			let response = await httpClient.get("/api/servers").json<{ list: Array<ServerData> }>();
-			console.log(response);
-			return response.list;
+			const response = await httpClient
+				.get('/api/servers')
+				.json<{ list?: { data: ServerData[] } }>();
+
+			this.servers = response.list?.data ?? [];
+			return this.servers;
 		} catch (e) {
 			console.error(e);
-		}	
+		}
 	}
 	public async fetchCurrentServer(){
 		try {
@@ -295,6 +300,26 @@ export class ServerConsoleState {
 			};
 		} catch (err) {
 			console.error('updateStatus error', err);
+		}
+	}
+	public async setServer(servername: string){
+		try {
+			let response = await httpClient.post(`/api/setserver`, {
+				json: {
+					element: {
+						kind: "String",
+						data: servername
+					},
+					jwt: "",
+					require_auth: true
+
+				}
+			});
+			if (response.ok) {
+				this.selectedServer = servername;
+			}
+		} catch (e) {
+			console.error(e);
 		}
 	}
 
