@@ -135,9 +135,10 @@ impl Database {
             INSERT INTO settings (
                 toggled_default_buttons, status_type, enabled_rcon,
                 rcon_url, rcon_password, driver, file_system_driver,
-                enable_statistics_on_home_page, current_server
+                enable_statistics_on_home_page, enable_nodes_on_home_page, current_server
             )
-            SELECT false, '', true, 'localhost:25575', 'testing', '', '', '', '{}'::jsonb
+            SELECT false, '', true, 'localhost:25575', 'testing', '', '',
+                false, false, '{}'::jsonb
             WHERE NOT EXISTS (SELECT 1 FROM settings);
             "#,
         )
