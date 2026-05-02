@@ -1462,110 +1462,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let multifaceted_state = Arc::new(RwLock::new(state));
     let _ = load_settings(multifaceted_state.clone()).await;
 
-    // if there is supposed to be a initial connection and if there is a client (as it wont be able to create the deployment without it, and it would be pointless to create a docker container
-    // without the abbility to deploy it)
-    let inner_state = Arc::clone(&multifaceted_state);
-    if enable_initial_connection {
-        println!("Trying initial connection...");
-        let state_clone = inner_state.clone();
-        let ws_tx_clone = ws_tx.clone();
-        let tcp_tx_clone = inner_state.write().await.tcp_tx.clone();
-        let tcp_url_clone = tcp_url.to_string();
-
-        // TODO: Since I never create a handler with initial connections, should i take it out of the thread?, or rather,
-        // leave it to set a TcpStream for the appstate for when it sorts itself out
-        tokio::spawn(async move {
-            let initial_connection_result = try_initial_connection(
-                initial_connection_attempts,
-                initial_connection_timeout,
-                false,
-                &state_clone,
-                tcp_url_clone,
-                &ws_tx_clone,
-                tcp_tx_clone,
-            )
-            .await;
-            if initial_connection_result.is_err() {
-                println!("All initial connections failed");
-            }
-            if initial_connection_result.is_err() || force_rebuild {
-                if let Clients::K8s(client) = &inner_state.write().await.client {
-                    eprintln!(
-                        "Initial connection failed or force rebuild enabled, will possibly enable auto-build (configurable)"
-                    );
-                    let mut unbuilt_img_was_the_issue = false;
-                    if build_docker_image {
-                        unbuilt_img_was_the_issue = true;
-                        if let Err(e) = docker::build_docker_image().await {
-                            eprintln!("Failed to build docker image: {:#?}", e);
-                        }
-                    }
-                    if build_deployment {
-                        unbuilt_img_was_the_issue = true;
-                        if let Err(e) = kubernetes::create_k8s_deployment(&client).await {
-                            eprintln!("Failed to create k8s deployment: {:#?}", e);
-                        }
-                    }
-                    if !unbuilt_img_was_the_issue {
-                        // if let Some(initial_connection_result_string) = initial_connection_result.err().unwrap().to_string() {
-                        if let Some(initial_connection_result_string) = initial_connection_result
-                            .as_ref()
-                            .err()
-                            .unwrap()
-                            .downcast_ref::<String>()
-                        {
-                            if !initial_connection_result_string.is_empty() {
-                                println!("{:#?}", initial_connection_result_string);
-                            }
-                        } else {
-                            println!("{:#?}", initial_connection_result.as_ref().err().unwrap());
-                        }
-                    }
-                } else {
-                    if let Some(initial_connection_result_string) = initial_connection_result
-                        .as_ref()
-                        .err()
-                        .unwrap()
-                        .downcast_ref::<String>()
-                    {
-                        if !initial_connection_result_string.is_empty() {
-                            println!("{:#?}", initial_connection_result_string);
-                        }
-                    } else {
-                        println!("{:#?}", initial_connection_result.as_ref().err().unwrap());
-                    }
-                }
-            }
-            // If the initial connection result succeeded, it will define all the relevent channels in AppState so messages can be sent
-            // and recived from it, internal_tx will also be used as an internal messaging service which can be used
-            // internal for things like terminating a connection to a node locally, or forwarding said message to node
-            if initial_connection_result.is_ok() {
-                println!("Creating a new connection");
-                let (new_tcp_tx, new_tcp_rx) = broadcast::channel::<Vec<u8>>(100);
-                let (internal_tx, internal_rx) = broadcast::channel::<Vec<u8>>(100);
-
-                {
-                    let mut state = inner_state.write().await;
-                    state.tcp_tx = new_tcp_tx.clone();
-                    state.tcp_rx = new_tcp_rx.resubscribe();
-                    state.internal_tx = Some(internal_tx);
-                    state.internal_rx = Some(internal_rx.resubscribe());
-                }
-
-                let bridge_tx = inner_state.read().await.ws_tx.clone();
-
-                let connect_to_server_result =
-                    connect_to_server(inner_state, tcp_url, bridge_tx, true, false).await;
-                if let Err(err) = connect_to_server_result {
-                    println!("{:#?}", err);
-                }
-            }
-        });
-        // This will make sure that the results of the initial connections attempt to build a docker image, or create a k8s deployment succeeded
-        // and it will log the result, will if its an error. An error not logging here does not mean the initial connection went fine
-        // NOTE: we no longer await the handle here — the connection task runs in the background so axum::serve can start immediately
-    }
-
     // CORS are currently very permissive
     let cors = CorsLayer::new()
         .allow_origin(CorsAny)
@@ -1698,6 +1594,110 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // adds a session to everything
         routed.layer(session_layer)
     };
+
+    // if there is supposed to be a initial connection and if there is a client (as it wont be able to create the deployment without it, and it would be pointless to create a docker container
+    // without the abbility to deploy it)
+    let inner_state = Arc::clone(&multifaceted_state);
+    if enable_initial_connection {
+        println!("Trying initial connection...");
+        let state_clone = inner_state.clone();
+        let ws_tx_clone = ws_tx.clone();
+        let tcp_tx_clone = inner_state.write().await.tcp_tx.clone();
+        let tcp_url_clone = tcp_url.to_string();
+
+        // TODO: Since I never create a handler with initial connections, should i take it out of the thread?, or rather,
+        // leave it to set a TcpStream for the appstate for when it sorts itself out
+        tokio::spawn(async move {
+            let initial_connection_result = try_initial_connection(
+                initial_connection_attempts,
+                initial_connection_timeout,
+                false,
+                &state_clone,
+                tcp_url_clone,
+                &ws_tx_clone,
+                tcp_tx_clone,
+            )
+            .await;
+            if initial_connection_result.is_err() {
+                println!("All initial connections failed");
+            }
+            if initial_connection_result.is_err() || force_rebuild {
+                if let Clients::K8s(client) = &inner_state.write().await.client {
+                    eprintln!(
+                        "Initial connection failed or force rebuild enabled, will possibly enable auto-build (configurable)"
+                    );
+                    let mut unbuilt_img_was_the_issue = false;
+                    if build_docker_image {
+                        unbuilt_img_was_the_issue = true;
+                        if let Err(e) = docker::build_docker_image().await {
+                            eprintln!("Failed to build docker image: {:#?}", e);
+                        }
+                    }
+                    if build_deployment {
+                        unbuilt_img_was_the_issue = true;
+                        if let Err(e) = kubernetes::create_k8s_deployment(&client).await {
+                            eprintln!("Failed to create k8s deployment: {:#?}", e);
+                        }
+                    }
+                    if !unbuilt_img_was_the_issue {
+                        // if let Some(initial_connection_result_string) = initial_connection_result.err().unwrap().to_string() {
+                        if let Some(initial_connection_result_string) = initial_connection_result
+                            .as_ref()
+                            .err()
+                            .unwrap()
+                            .downcast_ref::<String>()
+                        {
+                            if !initial_connection_result_string.is_empty() {
+                                println!("{:#?}", initial_connection_result_string);
+                            }
+                        } else {
+                            println!("{:#?}", initial_connection_result.as_ref().err().unwrap());
+                        }
+                    }
+                } else {
+                    if let Some(initial_connection_result_string) = initial_connection_result
+                        .as_ref()
+                        .err()
+                        .unwrap()
+                        .downcast_ref::<String>()
+                    {
+                        if !initial_connection_result_string.is_empty() {
+                            println!("{:#?}", initial_connection_result_string);
+                        }
+                    } else {
+                        println!("{:#?}", initial_connection_result.as_ref().err().unwrap());
+                    }
+                }
+            }
+            // If the initial connection result succeeded, it will define all the relevent channels in AppState so messages can be sent
+            // and recived from it, internal_tx will also be used as an internal messaging service which can be used
+            // internal for things like terminating a connection to a node locally, or forwarding said message to node
+            if initial_connection_result.is_ok() {
+                println!("Creating a new connection");
+                let (new_tcp_tx, new_tcp_rx) = broadcast::channel::<Vec<u8>>(100);
+                let (internal_tx, internal_rx) = broadcast::channel::<Vec<u8>>(100);
+
+                {
+                    let mut state = inner_state.write().await;
+                    state.tcp_tx = new_tcp_tx.clone();
+                    state.tcp_rx = new_tcp_rx.resubscribe();
+                    state.internal_tx = Some(internal_tx);
+                    state.internal_rx = Some(internal_rx.resubscribe());
+                }
+
+                let bridge_tx = inner_state.read().await.ws_tx.clone();
+
+                let connect_to_server_result =
+                    connect_to_server(inner_state, tcp_url, bridge_tx, true, false).await;
+                if let Err(err) = connect_to_server_result {
+                    println!("{:#?}", err);
+                }
+            }
+        });
+        // This will make sure that the results of the initial connections attempt to build a docker image, or create a k8s deployment succeeded
+        // and it will log the result, will if its an error. An error not logging here does not mean the initial connection went fine
+        // NOTE: we no longer await the handle here — the connection task runs in the background so axum::serve can start immediately
+    }
 
     let addr: SocketAddr = config_local_url.parse().unwrap();
     println!("Listening on http://{}{}", addr, base_path);
