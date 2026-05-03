@@ -1,9 +1,18 @@
 <script lang="ts">
-	import { RouterView } from 'cross-router-svelte';
-	import { router } from './router';
-	import ThemeProvider from './lib/theme/ThemeProvider.svelte';
+  import DashboardRoot from './pages/dashboard/DashboardRoot.svelte';
+  import Home from './pages/dashboard/Home.svelte';
+  import HomeIndex from './pages/dashboard/home/HomeIndex.svelte';
+  import ThemeProvider from './lib/theme/ThemeProvider.svelte';
 </script>
 
 <ThemeProvider>
-	<RouterView {router} />
+  <DashboardRoot>
+    {#snippet outlet()}
+      <Home>
+        {#snippet outlet()}
+          <HomeIndex />
+        {/snippet}
+      </Home>
+    {/snippet}
+  </DashboardRoot>
 </ThemeProvider>

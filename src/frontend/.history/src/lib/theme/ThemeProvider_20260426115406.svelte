@@ -6,4 +6,4 @@
 	setThemeContext();
 </script>
 
-{@render children?.()}
+{@render children()}

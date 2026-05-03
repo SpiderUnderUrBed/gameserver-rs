@@ -1,8 +1,3 @@
-import { defineMiddleware, redirect } from 'cross-router-core';
-import { auth } from '../auth/auth.svelte';
-
-export const guestMiddleware = defineMiddleware(async ({}) => {
-	if (auth.loggedIn) {
-		throw redirect('/');
-	}
-});
+// Router removed, guest guard now handled directly in components
+// Use auth.loggedIn from auth.svelte.ts and redirect via window.location
+export {}

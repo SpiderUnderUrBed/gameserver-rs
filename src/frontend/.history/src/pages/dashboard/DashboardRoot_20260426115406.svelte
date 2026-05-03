@@ -1,20 +1,25 @@
 <script lang="ts">
-  import type { Snippet } from 'svelte';
-  import ThemeToggle from '../../components/ThemeToggle.svelte';
-  import { LogOutIcon } from '@lucide/svelte';
-  import SideNav from '../../components/dashboard/SideNav.svelte';
-  import { auth } from '../../lib/auth/auth.svelte';
+	import { RouterView, useNavigate } from 'cross-router-svelte';
+	import ThemeToggle from '../../components/ThemeToggle.svelte';
+	import { LogOutIcon } from '@lucide/svelte';
+	import SideNav from '../../components/dashboard/SideNav.svelte';
+	import { auth } from '../../lib/auth/auth.svelte';
+	import type { Snippet } from 'svelte';
 
-  let { outlet }: { outlet?: Snippet } = $props();
+	let { outlet }: { outlet?: Snippet } = $props();
 
-  async function logout(event: Event) {
-    event.preventDefault();
-    try {
-      await auth.logout();
-    } catch {}
-    window.location.href = '/auth/login';
-  }
+	const navigate = useNavigate();
+
+	async function logout(event: Event) {
+		event.preventDefault();
+		try {
+			await auth.logout();
+		} catch {}
+
+		navigate('/auth/login');
+	}
 </script>
+
 <div class="app-grid">
 	<header class="navbar bg-primary flex flex-row gap-2">
 		<span class="flex-1 text-xl font-semibold">Server Panel</span>

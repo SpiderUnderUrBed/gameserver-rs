@@ -15,6 +15,7 @@ app.tar.gz
 credentials.json
 database.json
 /.history
+**/.history/*
 
 /src/svelte.old/*
 /src/svelte/node_modules/*
