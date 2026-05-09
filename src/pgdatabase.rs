@@ -117,6 +117,7 @@ impl Database {
                 file_system_driver             VARCHAR DEFAULT '',
                 enable_statistics_on_home_page BOOLEAN NOT NULL DEFAULT false,
                 enable_nodes_on_home_page      BOOLEAN NOT NULL DEFAULT false,
+                console_entry_on_top           BOOLEAN NOT NULL DEFAULT true,
                 current_server                 JSONB DEFAULT '{}'::jsonb,
                 created_at                     TIMESTAMPTZ DEFAULT now(),
                 updated_at                     TIMESTAMPTZ DEFAULT now()

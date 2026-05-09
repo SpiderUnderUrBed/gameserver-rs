@@ -6,7 +6,8 @@ import { httpClient } from "../utils/http";
 
 export interface Settings {
     enable_statistics_on_home_page: boolean,
-    enable_nodes_on_home_page: boolean
+    enable_nodes_on_home_page: boolean,
+    console_entry_on_top: boolean
 }
 
 

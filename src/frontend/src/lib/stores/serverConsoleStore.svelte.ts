@@ -25,7 +25,7 @@ type ServerData = {
 	sandbox: boolean
 }
 
-interface GetCurrentNodeResponse {
+export interface GetCurrentNodeResponse {
 	nodename: string;
 	ip: string;
 	nodestatus: {

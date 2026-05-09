@@ -3,6 +3,7 @@
 @plugin 'daisyui' {
     themes: corporate --default, business --prefersdark;
 }
+@plugin "@tailwindcss/typography";
 #app {
 	@apply flex flex-col min-h-screen bg-base-200;
 }

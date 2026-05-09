@@ -17,6 +17,8 @@ export default defineConfig({
       }
     }
   },
+  publicDir: 'static',
+  // assetsInclude: ['**/*.md'],
   build: {
     outDir: "build/",
     rolldownOptions: {

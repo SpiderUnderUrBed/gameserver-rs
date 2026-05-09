@@ -2661,11 +2661,12 @@ async fn modify_intergration(
                                             }
                                         }
 
-                                        // TODO: consider if this is useful at all
-                                        // // Send to tcp_tx to forward to remote server
-                                        // if let Err(err) = state.tcp_tx.send(bytes) {
-                                        //     eprintln!("Failed to send to TCP stream: {}", err);
-                                        // }
+                                        // Tells the remote server to enable RCON
+                                        if let Some(internal_tx) = &state.internal_tx {
+                                            if let Err(err) = internal_tx.send(bytes) {
+                                                eprintln!("Failed to send to TCP stream: {}", err);
+                                            }
+                                        }
                                     }
                                     Err(err) => eprintln!("Failed to serialize request: {}", err),
                                 }
@@ -2680,14 +2681,15 @@ async fn modify_intergration(
     }
 
     match state.database.edit_intergrations_in_db(request).await {
-        Ok(status_code) => (
+        Ok(status_code) => {
+            (
             status_code,
             Json(serde_json::json!({
                 "success": true,
                 "message": "Integration modified successfully"
             })),
         )
-            .into_response(),
+            .into_response()},
         Err(e) => {
             let status_code = if let Some(db_err) = e.downcast_ref::<DatabaseError>() {
                 db_err.0
@@ -2734,15 +2736,19 @@ async fn create_intergration(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
+    println!("got request");
+
     match state.database.create_intergrations_in_db(request).await {
-        Ok(status_code) => (
+        Ok(status_code) => {
+            (
             status_code,
             Json(serde_json::json!({
                 "success": true,
                 "message": "Integration created successfully"
             })),
         )
-            .into_response(),
+            .into_response()
+        },
         Err(e) => {
             let status_code = if let Some(db_err) = e.downcast_ref::<DatabaseError>() {
                 db_err.0

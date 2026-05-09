@@ -11,10 +11,10 @@ pub enum IntergrationCommands {
     MinecraftEnableRcon,
 }
 
-pub async fn run_intergration_commands(intergration_command: IntergrationCommands) {
+pub async fn run_intergration_commands(path: String, intergration_command: IntergrationCommands) {
     match intergration_command {
         IntergrationCommands::MinecraftEnableRcon => {
-            if let Err(e) = enable_minecraft_rcon().await {
+            if let Err(e) = enable_minecraft_rcon(path).await {
                 eprintln!("Failed to enable Minecraft RCON: {}", e);
             } else {
                 println!("Successfully enabled Minecraft RCON");
@@ -23,8 +23,12 @@ pub async fn run_intergration_commands(intergration_command: IntergrationCommand
     }
 }
 
-async fn enable_minecraft_rcon() -> Result<(), Box<dyn std::error::Error>> {
-    let properties_path = "server/server.properties";
+async fn enable_minecraft_rcon(path: String) -> Result<(), Box<dyn std::error::Error>> {
+    let final_path = path.trim_start_matches("/").trim_start_matches("server/").trim_end_matches("/");
+    // if final_path.starts_with("server/"){
+    //     final_path.trim()
+    // }
+    let properties_path = &format!("server/{}/server.properties", final_path);
 
     if !Path::new(properties_path).exists() {
         return Err(format!("server.properties not found at {}", properties_path).into());

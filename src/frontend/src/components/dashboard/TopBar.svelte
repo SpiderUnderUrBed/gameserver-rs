@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { serverConsole } from '../../lib/stores/serverConsoleStore.svelte';
+	// import { showNodeDialog } from '../../pages/dashboard/home/dialogs';
 	// import { serversStore } from '../../lib/stores/serversStore.svelte';
 	import Status from './Status.svelte';
 	// import StatusStore from './Status.svelte';
@@ -40,7 +41,7 @@
 			Raw Output: {serverConsole.rawOutputEnabled ? 'ON' : 'OFF'}
 		</button> -->
 		<button class="btn" commandfor="add-node-dialog" command="show-modal">Add Node</button>
-		<button class="btn" commandfor="switch-node-dialog" command="show-modal">Switch node ({serverConsole.selectedNode ?? 'None'})</button>
+		<button class="btn"  commandfor="switch-node-dialog" command="show-modal">Switch node ({serverConsole.selectedNode ?? 'None'})</button>
 		<button class="btn" commandfor="delete-node-dialog" command="show-modal">Delete node</button>
 	</div>
 

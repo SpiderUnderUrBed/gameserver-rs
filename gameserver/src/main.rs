@@ -1380,11 +1380,39 @@ async fn sort_command_type_or_console(
             return Err(Box::new(CommandOrConsoleErrors::AuthDisconnect));
         }
     }
+    println!("{:#?}", payload.clone());
 
     let intergration_command_payload_result: Result<IntergrationCommands, serde_json::Error> =
         serde_json::from_value(payload.clone());
     if let Ok(intergration_command_payload) = intergration_command_payload_result {
-        run_intergration_commands(intergration_command_payload).await;
+        let state = Arc::clone(arc_state);
+        // let provider = get_provider_from_servername(
+        //         &state,
+        //         Some(
+        //             state
+        //                 .current_server
+        //                 .lock()
+        //                 .await
+        //                 .clone()
+        //                 .ok_or("there is no current server")?,
+        //         ),
+        //     )
+        //     .await;
+        //println!("{:#?}", provider);
+        let option_path = get_definite_path_from_name(
+            &state,
+            Some(
+                state
+                    .current_server
+                    .lock()
+                    .await
+                    .clone()
+                    .ok_or("there is no current server")?,
+            ),
+        )
+        .await;
+        println!("{:#?}", option_path);
+        run_intergration_commands(option_path.unwrap_or("".to_string()), intergration_command_payload).await;
     }
 
     Ok(())
