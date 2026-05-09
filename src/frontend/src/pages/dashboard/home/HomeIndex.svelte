@@ -113,7 +113,7 @@
 </script>
 
 <TopBar />
-{#if settings?.enable_statistics_on_home_page == true}
+{#if settings?.enable_nodes_on_home_page == true}
 {@render nodesBar()}
 {/if}
 {#each integrationsStore.integrations as intergration}
@@ -128,7 +128,7 @@
 {#if settings?.console_entry_on_top == false}
 <ConsoleInput></ConsoleInput>
 {/if}
-{#if settings?.enable_nodes_on_home_page == true}
+{#if settings?.enable_statistics_on_home_page == true}
 {@render statisticsBar()}
 {/if}
 

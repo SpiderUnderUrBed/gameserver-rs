@@ -56,18 +56,28 @@
 </script>
 
 <div class="content-grid">
-	<TopmostBar />
-
-	{@render outlet?.()}
+    <TopmostBar />
+    <div class="outlet-wrapper">
+        {@render outlet?.()}
+    </div>
 </div>
 
 
 <style>
-	.content-grid {
-		padding: 0.8rem;
-		display: flex;
-		flex-direction: column;
-		gap: 0.8rem;
-	}
+.content-grid {
+    padding: 0.8rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+    height: 100vh;
+    overflow: hidden;
+}
+.outlet-wrapper {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+}
 </style>
-
