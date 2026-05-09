@@ -50,6 +50,9 @@ export class ServerConsoleState {
 	public pendingStatus = $state<ServerStatusMode>('node');
 	public finalStatus = $state<ServerStatusMode>('node');
 	public isConnected = $state(false);
+	private pendingEntries: ConsoleEntry[] = [];
+	private flushTimer: ReturnType<typeof setTimeout> | null = null;
+
 
 	// public scrollContainer: HTMLDivElement;
 
@@ -98,13 +101,20 @@ export class ServerConsoleState {
 	}
 
 	public addConsoleEntry(entry: ConsoleEntry) {
-		this.consoleHistory = [...this.consoleHistory, entry];
-		const consoleHistoryElem = document.getElementById('consoleHistory');
-		if (consoleHistoryElem) {
-			setTimeout(() => {
-				consoleHistoryElem.scrollTop = consoleHistoryElem.scrollHeight;
-			}, 1);
-		}
+		// this.consoleHistory = [...this.consoleHistory, entry];
+		// const consoleHistoryElem = document.getElementById('consoleHistory');
+		// if (consoleHistoryElem) {
+		// 	setTimeout(() => {
+		// 		consoleHistoryElem.scrollTop = consoleHistoryElem.scrollHeight;
+		// 	}, 1);
+		// }
+	    this.pendingEntries.push(entry);
+		if (this.flushTimer) clearTimeout(this.flushTimer);
+		this.flushTimer = setTimeout(() => {
+			this.consoleHistory = [...this.consoleHistory, ...this.pendingEntries];
+			this.pendingEntries = [];
+			this.flushTimer = null;
+		}, 16);
 	}
 
 	public async fetchNodes() : Promise<NodeData[]> {

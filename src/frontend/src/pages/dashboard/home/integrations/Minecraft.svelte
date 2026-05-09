@@ -5,13 +5,16 @@
     let { integration } = $props();
 
     let playercount = $state();
-    
+
+    let showPlayerCountTooltip = $state(false);
+
     interface SimpleMessagePayload {
         type: String,
         message: String
     }
 
     let fetchPlayerCount = async () => {
+        //showPlayerCountTooltip = true;
         try {
             const response = await httpClient.post<SimpleMessagePayload>(`/api/rconcommand`, {
                 json: {
@@ -32,10 +35,21 @@
       }
     }
 
+    $effect(() => {
+        showPlayerCountTooltip;
+        fetchPlayerCount()
+    })
     onMount(async() => {
         await fetchPlayerCount()
     })
 </script>
 <div>
-    <button onclick={fetchPlayerCount}>Player count is {playercount}</button>
+    <div class="w-64 tooltip" data-tooltip-target="player-count-tooltip" role="button" tabindex="0" onmouseleave={() => showPlayerCountTooltip = false} onmouseenter={() => showPlayerCountTooltip = true}>Hover for player count</div>
+    
+    {#if showPlayerCountTooltip}
+    <div data-tooltip="player-count-tooltip"
+        class="absolute z-50 whitespace-normal break-words rounded-lg bg-black py-1.5 px-3 font-sans text-sm font-normal text-white focus:outline-none">
+        Player count is {playercount}
+    </div>
+    {/if}
 </div>

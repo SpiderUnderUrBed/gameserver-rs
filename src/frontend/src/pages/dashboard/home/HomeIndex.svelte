@@ -10,6 +10,7 @@
 	import { showNodeDialog, showServerDialog } from './dialogs';
 	import { integrationsStore, type Integration } from '../../../lib/stores/integrationsStore.svelte';
 	import Minecraft from './integrations/Minecraft.svelte';
+	import ConsoleInput from '../../../components/dashboard/ConsoleInput.svelte';
 
 	let store = new SettingsStore();
 	let settings = $state<Settings | undefined>({
@@ -116,12 +117,21 @@
 {@render nodesBar()}
 {/if}
 {#each integrationsStore.integrations as intergration}
-	{@render intergrationsBar(intergration)}
+	<div class="bg-base-100 flex flex-col rounded p-2 gap-2">
+		{@render intergrationsBar(intergration)}
+	</div>
 {/each}
+{#if settings?.console_entry_on_top == true}
+<ConsoleInput></ConsoleInput>
+{/if}
 <ConsolePanel />
+{#if settings?.console_entry_on_top == false}
+<ConsoleInput></ConsoleInput>
+{/if}
 {#if settings?.enable_nodes_on_home_page == true}
 {@render statisticsBar()}
 {/if}
+
 {#snippet nodesBar()}
 	<!-- <h1>test1</h1> -->
 	 <div class="card bg-base-100 shadow-md p-4 flex flex-row gap-2">
