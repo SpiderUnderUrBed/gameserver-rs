@@ -59,6 +59,7 @@ pub trait FsType: Clone + Send + Sync {
 pub struct FsMetadata {
     pub is_file: bool,
     pub is_dir: bool,
+    pub file_size: Option<u64>,
     pub optional_folder_children: Option<u64>,
     pub canonical_path: String,
 }
@@ -170,7 +171,6 @@ impl TcpFs {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::ConnectionAborted, e))?;
         Ok(id)
     }
-
     pub async fn recv_response(&mut self, id: u64) -> std::io::Result<Vec<Vec<u8>>> {
         use tokio::time::{Duration, Instant};
 
@@ -197,61 +197,44 @@ impl TcpFs {
                 continue;
             }
 
-            let response_str = String::from_utf8_lossy(&response);
+            let Ok(val) = serde_json::from_slice::<serde_json::Value>(&response) else {
+                continue;
+            };
 
-            if expecting_fragments {
-            } else {
-                if response_str.contains("\"type\":\"Metadata\"")
-                    || response_str.contains("\"type\":\"ListDir\"")
-                    || response_str.contains("\"type\":\"FileChunk\"")
-                {
+            if !expecting_fragments {
+                if val.get("in_response_to").is_none() {
                     continue;
                 }
 
-                if !response_str.contains("\"in_response_to\"") {
+                let Some(response_id) = val.get("in_response_to").and_then(|v| v.as_u64()) else {
+                    continue;
+                };
+
+                if response_id != id {
                     continue;
                 }
 
-                if !response_str.contains(&format!("\"in_response_to\":{}", id)) {
-                    continue;
-                }
-
-                if response_str.starts_with("{\"in_response_to\"") {
+                if val.get("data").is_some() {
                     expecting_fragments = true;
                 }
             }
 
-            let preview_snippet: &str = if response_str.len() > 512 {
-                &response_str[..512]
-            } else {
-                &response_str
-            };
-            let before_len = assembler.buffer.len();
+            let response_str = String::from_utf8_lossy(&response);
 
             let completed = assembler.feed_chunk(&response_str, id).await;
-
-            let after_len = assembler.buffer.len();
 
             if !completed.is_empty() {
                 expecting_fragments = false;
                 return Ok(completed);
             }
 
-            if expecting_fragments && assembler.buffer.len() > 0 {
+            if expecting_fragments && !assembler.buffer.is_empty() {
                 continue;
             }
 
             if let Some(result) = assembler.check_timeout(id) {
-                match &result {
-                    Ok(bytes) => {
-                        let s = String::from_utf8_lossy(bytes);
-                    }
-                    Err(e) => {
-                        println!(
-                            "[recv_response:{}] assembler.check_timeout error: {}",
-                            id, e
-                        );
-                    }
+                if let Err(e) = &result {
+                    println!("[recv_response:{}] assembler.check_timeout error: {}", id, e);
                 }
                 expecting_fragments = false;
                 return result.map(|v| vec![v]);
@@ -917,11 +900,6 @@ impl FsType for TcpFs {
             }
         }
 
-        println!(
-            "[get_metadata:{}] final parse error: missing field `is_file` at line 1 column 58",
-            id
-        );
-
         Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("Failed to parse metadata response for path '{}'", path),
@@ -1175,6 +1153,7 @@ pub async fn get_metadata(path: &str) -> std::io::Result<FsMetadata> {
     Ok(FsMetadata {
         is_file: metadata.is_file(),
         is_dir: metadata.is_dir(),
+        file_size: if metadata.is_file() { Some(metadata.len()) } else { None },
         optional_folder_children,
         canonical_path: canonical.to_string_lossy().to_string(),
     })
@@ -1340,8 +1319,20 @@ pub fn execute_file_operation(
     let src = encoded_src
         .as_inner_str()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid source"))?;
-    let src_path = PathBuf::from(&dir).join(src);
-    let dest_path = PathBuf::from(&dir).join(dest);
+    let src_path = { 
+        if dir.is_empty() {
+            PathBuf::from(src)
+        } else {
+            PathBuf::from(&dir).join(src)
+        }
+    };
+    let dest_path = {
+        if dir.is_empty() {
+            PathBuf::from(dest)
+        } else {
+            PathBuf::from(&dir).join(dest)
+        }
+    };
 
     match &encoded_src {
         FileOperations::FileCopyOperation(_) => {

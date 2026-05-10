@@ -3936,7 +3936,7 @@ pub async fn stream_file_download(
         remote_fs.cached_metadata.clone()
     };
 
-    let file_size = None;
+    let file_size = metadata.as_ref().and_then(|m| m.file_size);
     let chunk_size = 64 * 1024;
 
     let stream = TcpFileStream::new(
