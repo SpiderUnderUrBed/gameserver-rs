@@ -1001,8 +1001,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 if line_str.trim().starts_with('{')
                                     && line_str.trim().ends_with('}')
                                 {
-                                    println!("[{}] Received JSON line: {}", addr, line_str.trim());
+                                    
                                     if let Ok(json_value) = serde_json::from_slice::<Value>(line) {
+                                        let is_response = json_value.get("in_response_to").is_some() 
+                                            && json_value.get("data").is_some()
+                                            && json_value.as_object().map(|o| o.len() == 2).unwrap_or(false);
+                                        if !is_response {
+                                            println!("[{}] Received JSON here line: {}", addr, line_str.trim());
+                                        }
+
+
                                         if let Ok(request) =
                                             serde_json::from_value::<FileRequestMessage>(
                                                 json_value.clone(),
