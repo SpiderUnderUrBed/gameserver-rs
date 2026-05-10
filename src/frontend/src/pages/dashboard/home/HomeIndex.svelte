@@ -152,22 +152,24 @@
 
 <dialog id="delete-node-dialog" class="modal">
 	<form onsubmit={deleteNode} method="dialog">
-		<div class="p-4 fieldset">
-			<label for="selected_node">Select node</label>
-			<select bind:value={selectedNodeName} id="selected_node" class="select">
-				<option selected value={nodeName}>{nodeName}</option>
-				{#each nodes as node}
-					{#if (node.nodename != nodeName)}
-						<option value={node.nodename}>{node.nodename}</option>
-					{/if}
-				{/each}	
-			</select>
-		</div>
-		<div class="modal-action">
-			<button class="btn btn-ghost btn-error" type="submit" value="cancel" formnovalidate>
-				Cancel
-			</button>
-			<button class="btn btn-primary" type="submit">Delete</button>
+		<div class="bg-base-100 rounded">
+			<div class="p-4 fieldset">
+				<label for="selected_node">Select node</label>
+				<select bind:value={selectedNodeName} id="selected_node" class="select">
+					<option selected value={nodeName}>{nodeName}</option>
+					{#each nodes as node}
+						{#if (node.nodename != nodeName)}
+							<option value={node.nodename}>{node.nodename}</option>
+						{/if}
+					{/each}	
+				</select>
+			</div>
+			<div class="modal-action">
+				<button class="btn btn-ghost btn-error" type="submit" value="cancel" formnovalidate>
+					Cancel
+				</button>
+				<button class="btn btn-primary" type="submit">Delete</button>
+			</div>
 		</div>
 	</form>
 </dialog>

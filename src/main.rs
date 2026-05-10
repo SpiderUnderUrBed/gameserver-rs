@@ -2525,6 +2525,7 @@ async fn add_server(
     Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
     let mut state = arc_state.write().await;
+    println!("Got create server request");
 
     let server = match &request.element {
         Element::Server(s) => s.clone(),
@@ -2578,6 +2579,7 @@ async fn add_server(
         };
         bytes.push(b'\n');
 
+        println!("Sending create server message");
         if let Err(e) = state.tcp_tx.send(bytes) {
             eprintln!("Failed to send {} to TCP: {}", message, e);
             return StatusCode::INTERNAL_SERVER_ERROR;

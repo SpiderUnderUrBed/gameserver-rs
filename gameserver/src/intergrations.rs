@@ -24,7 +24,10 @@ pub async fn run_intergration_commands(path: String, intergration_command: Inter
 }
 
 async fn enable_minecraft_rcon(path: String) -> Result<(), Box<dyn std::error::Error>> {
-    let final_path = path.trim_start_matches("/").trim_start_matches("server/").trim_end_matches("/");
+    let final_path = path
+        .trim_start_matches("/")
+        .trim_start_matches("server/")
+        .trim_end_matches("/");
     // if final_path.starts_with("server/"){
     //     final_path.trim()
     // }
