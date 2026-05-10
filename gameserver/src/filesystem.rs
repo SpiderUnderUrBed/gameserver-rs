@@ -1291,7 +1291,8 @@ pub async fn handle_multipart_message(
     Ok(())
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[serde(tag = "kind", content = "data")]
 pub enum FileOperations {
     FileDownloadOperation(String),
     FileMoveOperation(String),

@@ -192,25 +192,26 @@ enum ApiCalls {
     NodeList(Vec<String>),
     IncomingMessage(MessagePayload),
     Node(Node),
-    FileDownloadOperation(String),
-    FileMoveOperation(String),
-    FileZipOperation(String),
-    FileUnzipOperation(String),
-    FileCopyOperation(String),
+    FileOperations(FileOperations)
+    // FileDownloadOperation(String),
+    // FileMoveOperation(String),
+    // FileZipOperation(String),
+    // FileUnzipOperation(String),
+    // FileCopyOperation(String),
 }
 
-impl From<ApiCalls> for FileOperations {
-    fn from(api_call: ApiCalls) -> Self {
-        match api_call {
-            ApiCalls::FileDownloadOperation(s) => FileOperations::FileDownloadOperation(s),
-            ApiCalls::FileMoveOperation(s) => FileOperations::FileMoveOperation(s),
-            ApiCalls::FileZipOperation(s) => FileOperations::FileZipOperation(s),
-            ApiCalls::FileUnzipOperation(s) => FileOperations::FileUnzipOperation(s),
-            ApiCalls::FileCopyOperation(s) => FileOperations::FileCopyOperation(s),
-            _ => FileOperations::Unknown,
-        }
-    }
-}
+// impl From<ApiCalls> for FileOperations {
+//     fn from(api_call: ApiCalls) -> Self {
+//         match api_call {
+//             ApiCalls::FileDownloadOperation(s) => FileOperations::FileDownloadOperation(s),
+//             ApiCalls::FileMoveOperation(s) => FileOperations::FileMoveOperation(s),
+//             ApiCalls::FileZipOperation(s) => FileOperations::FileZipOperation(s),
+//             ApiCalls::FileUnzipOperation(s) => FileOperations::FileUnzipOperation(s),
+//             ApiCalls::FileCopyOperation(s) => FileOperations::FileCopyOperation(s),
+//             _ => FileOperations::Unknown,
+//         }
+//     }
+// }
 
 // I tried to convert from a Value, as in undefined data type, to a List, as its a data type created only
 // here and its used sometimes, maybe it would be better to just do the conversion when its needed
@@ -1397,9 +1398,24 @@ async fn sort_command_type_or_console(
     let file_operation_result: Result<SrcAndDest, serde_json::Error> =
         serde_json::from_value(payload.clone());
     if let Ok(file_operation) = file_operation_result {
+        let src = {
+            if let ApiCalls::FileOperations(src) = file_operation.src {
+                Some(src)
+            } else {
+                None
+            }
+        };
+        let dest = {
+            if let ApiCalls::FileOperations(dest) = file_operation.dest {
+                Some(dest)
+            } else {
+                None
+            }
+        };
+
         let (converted_src, converted_dest): (FileOperations, FileOperations) = (
-            file_operation.clone().src.into(),
-            file_operation.clone().dest.into(),
+            src.unwrap(),
+            dest.unwrap()
         );
 
         let state = Arc::clone(arc_state);
@@ -1426,10 +1442,15 @@ async fn sort_command_type_or_console(
         };
 
         if let Some(mut path) = option_path {
-            if !path.starts_with("server/") {
+            let new_path = Path::new(&path);
+            path = new_path.parent().unwrap_or(new_path).to_str().unwrap().to_string();
+            if !path.starts_with("server") {
                 path = format!("server/{}", path);
             }
-            let _ = execute_file_operation(converted_src, converted_dest, path);
+            println!("Executing file operation");
+            if let Err(e) = execute_file_operation(converted_src, converted_dest, path){
+                println!("{:#?}", e);  
+            };
         }
     }
 
@@ -1441,37 +1462,12 @@ async fn sort_command_type_or_console(
             return Err(Box::new(CommandOrConsoleErrors::AuthDisconnect));
         }
     }
-    println!("{:#?}", payload.clone());
 
     let intergration_command_payload_result: Result<IntergrationCommands, serde_json::Error> =
         serde_json::from_value(payload.clone());
     if let Ok(intergration_command_payload) = intergration_command_payload_result {
         let state = Arc::clone(arc_state);
-        // let provider = get_provider_from_servername(
-        //         &state,
-        //         Some(
-        //             state
-        //                 .current_server
-        //                 .lock()
-        //                 .await
-        //                 .clone()
-        //                 .ok_or("there is no current server")?,
-        //         ),
-        //     )
-        //     .await;
-        //println!("{:#?}", provider);
-        // let option_path = get_definite_path_from_name(
-        //     &state,
-        //     Some(
-        //         state
-        //             .current_server
-        //             .lock()
-        //             .await
-        //             .clone()
-        //             .ok_or("there is no current server")?,
-        //     ),
-        // )
-        // .await;
+
         let current_server = state
             .current_server
             .lock()
@@ -1492,7 +1488,6 @@ async fn sort_command_type_or_console(
             }
         };
 
-        println!("{:#?}", option_path);
         run_intergration_commands(
             option_path.unwrap_or("".to_string()),
             intergration_command_payload,
@@ -2555,9 +2550,7 @@ async fn convert_provider(
     expected_output: ProviderReturnTypes,
 ) -> Option<ProviderTypes> {
     let mut output: Option<ProviderTypes> = None;
-    println!("{:#?}, {:#?}", inputs, expected_output);
     for input in inputs {
-        println!("{:#?}", input);
         match expected_output {
             ProviderReturnTypes::Path => match input {
                 ProviderTypes::Path(path) => {}

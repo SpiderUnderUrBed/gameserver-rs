@@ -1317,7 +1317,8 @@ pub async fn handle_multipart_message(
     Ok(())
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[serde(tag = "kind", content = "data")]
 pub enum FileOperations {
     FileDownloadOperation(String),
     FileMoveOperation(String),
@@ -1365,8 +1366,20 @@ pub fn execute_file_operation(
     let src = encoded_src
         .as_inner_str()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid source"))?;
-    let src_path = PathBuf::from(&dir).join(src);
-    let dest_path = PathBuf::from(&dir).join(dest);
+    let src_path = { 
+        if dir.is_empty() {
+            PathBuf::from(src)
+        } else {
+            PathBuf::from(&dir).join(src)
+        }
+    };
+    let dest_path = {
+        if dir.is_empty() {
+            PathBuf::from(dest)
+        } else {
+            PathBuf::from(&dir).join(dest)
+        }
+    };
 
     match &encoded_src {
         FileOperations::FileCopyOperation(_) => {

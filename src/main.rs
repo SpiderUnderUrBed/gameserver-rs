@@ -13,7 +13,7 @@ use crate::database::Database;
 // I also use axum_login to take off alot of effort that would be required for authentication
 use crate::database::databasespec::{IntoServer, ServerMetadata};
 use crate::database::{DatabaseError, Element};
-use crate::filesystem::TcpFileStream;
+use crate::filesystem::{execute_file_operation, FileOperations, TcpFileStream};
 use crate::filesystem::{FsType, send_multipart_over_broadcast};
 use crate::http::HeaderMap;
 use crate::kubernetes::verify_is_k8s_gameserver;
@@ -488,30 +488,31 @@ enum ApiCalls {
     IncomingMessageWithMetadata(IncomingMessageWithMetadata),
     FileDataList(Vec<FsItem>),
     Node(Node),
-    FileMoveOperation(String),
-    FileCopyOperation(String),
-    FileZipOperation(String),
-    FileUnzipOperation(String),
-    FileDownloadOperation(String),
-    FileDownloadAllOperation(String),
-    FileUploadAllOperation(String),
+    FileOperations(FileOperations)
+    // FileMoveOperation(String),
+    // FileCopyOperation(String),
+    // FileZipOperation(String),
+    // FileUnzipOperation(String),
+    // FileDownloadOperation(String),
+    // FileDownloadAllOperation(String),
+    // FileUploadAllOperation(String),
 }
 
-impl fmt::Display for ApiCalls {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self {
-            ApiCalls::FileDownloadOperation(_) => "FileDownloadOperation",
-            ApiCalls::FileZipOperation(_) => "FileZipOperation",
-            ApiCalls::FileMoveOperation(_) => "FileMoveOperation",
-            ApiCalls::FileUnzipOperation(_) => "FileUnzipOperation",
-            ApiCalls::FileCopyOperation(_) => "FileCopyOperation",
-            ApiCalls::FileUploadAllOperation(_) => "FileUploadAllOperation",
-            ApiCalls::FileDownloadAllOperation(_) => "FileDownloadAllOperation",
-            _ => "not implemented",
-        };
-        write!(f, "{}", s)
-    }
-}
+// impl fmt::Display for ApiCalls {
+//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//         let s = match self {
+//             ApiCalls::FileDownloadOperation(_) => "FileDownloadOperation",
+//             ApiCalls::FileZipOperation(_) => "FileZipOperation",
+//             ApiCalls::FileMoveOperation(_) => "FileMoveOperation",
+//             ApiCalls::FileUnzipOperation(_) => "FileUnzipOperation",
+//             ApiCalls::FileCopyOperation(_) => "FileCopyOperation",
+//             ApiCalls::FileUploadAllOperation(_) => "FileUploadAllOperation",
+//             ApiCalls::FileDownloadAllOperation(_) => "FileDownloadAllOperation",
+//             _ => "not implemented",
+//         };
+//         write!(f, "{}", s)
+//     }
+// }
 
 // TODO: consider using this or implimenting a broader struct for any object
 // struct ApiCallsWithAuth {
@@ -1499,6 +1500,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/ws", get(ws_handler))
         .route("/api/upload", post(upload))
         .route("/api/download/{*wildcard}", get(stream_file_download))
+        .route("/api/fileoperations", post(file_operations))
         .route("/api/statistics", get(statistics))
         .route("/api/getsettings", get(get_settings))
         .route("/api/awaitserverstatus", get(ongoing_server_status))
@@ -1796,6 +1798,47 @@ pub async fn ensure_rcon(arc_state: Arc<RwLock<AppState>>) -> Result<(), String>
     }
 
     Ok(())
+}
+
+async fn file_operations(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    Json(request): Json<SrcAndDest>
+) -> StatusCode {
+    let state = arc_state.write().await;
+
+    let request_bytes = serde_json::to_vec(&request).unwrap_or_default();
+
+    if let Some(tx) = &state.internal_tx {
+        let _ = tx.send(request_bytes);
+    }
+
+    StatusCode::CREATED
+    // let src = {
+    //     if let ApiCalls::FileOperations(src) = request.src {
+    //         src
+    //     } else {
+    //         return StatusCode::UNPROCESSABLE_ENTITY;
+    //     }
+    // };
+    // let dest = {
+    //     if let ApiCalls::FileOperations(dest) = request.dest {
+    //         dest
+    //     } else {
+    //         return StatusCode::UNPROCESSABLE_ENTITY;
+    //     }
+    // };
+  
+    // if let Err(e) = execute_file_operation(src, dest, "server/".to_string()) {
+    //     println!("{:#?}", e);
+    //     StatusCode::INTERNAL_SERVER_ERROR
+    // } else {
+    //     StatusCode::CREATED
+    // }
+    // if execute_file_operation(src, dest, String::new()).is_ok(){
+    //     StatusCode::CREATED
+    // } else {
+    //     StatusCode::INTERNAL_SERVER_ERROR
+    // }
 }
 
 async fn upload(

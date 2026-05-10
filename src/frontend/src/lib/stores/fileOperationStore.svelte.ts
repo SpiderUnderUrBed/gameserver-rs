@@ -21,14 +21,14 @@ export class FileOperationStore {
     public first_item = $state<FileEntry | null>(null)
     public second_item = $state<FileEntry | null>(null)
     public modes: FileOperation[] = [
-        { id: "None", name: "None" },
-        { id: "Copy", name: "Copy" },
-        { id: "Move", name: "Move" },
-        { id: "Zip", name: "Zip" },
-        { id: "Unzip", name: "Unzip" },
-        { id: "Download", name: "Download" },
-        { id: "DownloadAll", name: "Download All" },
-        { id: "UploadAll", name: "Upload All" },
+        { id: "Unknown", name: "None" },
+        { id: "FileCopyOperation", name: "Copy" },
+        { id: "FileMoveOperation", name: "Move" },
+        { id: "FileZipOperation", name: "Zip" },
+        { id: "FileUnzipOperation", name: "Unzip" },
+        { id: "FileDownloadOperation", name: "Download" },
+        // { id: "DownloadAll", name: "Download All" },
+        // { id: "UploadAll", name: "Upload All" },
     ];
     // public current_file_operation_index = $derived(
     //     this.modes.findIndex(
@@ -47,18 +47,26 @@ export class FileOperationStore {
             final_operation = this.current_file_operation?.id
         }
         if (final_operation){
-            const response = await httpClient.post("/api/fileoperations", {
-                json: {
-                    src: {
+            let request = {
+                src: {
+                    kind: "FileOperations",
+                    data: {
                         kind: final_operation,
                         data: this.first_item ? this.first_item.data : ""
-                    },
-                    dest: {
+                    }
+                },
+                dest: {
+                    kind: "FileOperations",
+                    data: {
                         kind: final_operation,
                         data: this.second_item ? this.second_item.data : ""
-                    },
-                    metadata: ""
-                }
+                    }
+                },
+                metadata: ""
+            }
+            console.log(request);
+            const response = await httpClient.post("/api/fileoperations", {
+                json: request
             });
             if (!response.ok){
                 console.error("File operation failed with " + response.ok)
