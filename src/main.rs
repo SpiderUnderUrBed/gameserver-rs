@@ -68,6 +68,7 @@ use tokio::net::unix::pipe::Receiver;
 use tokio::sync::{RwLock, mpsc};
 
 use rcon::Connection;
+use tokio_util::io::ReaderStream;
 use tower::ServiceBuilder;
 
 use crate::database::Node;
@@ -1708,32 +1709,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
-// let msg = MessagePayloadWithMetadata {
-//     r#type: "command".to_string(),
-//     message: message.to_string(),
-//     metadata: MetadataTypes::Server {
-//         servername: server.servername.clone(),
-//         provider: server.provider.clone(),
-//         providertype: server.providertype.clone(),
-//         location: server.location.clone(),
-//         sandbox: server.sandbox,
-//     },
-//     authcode: "0".to_string(),
-// };
-
-// let mut bytes = match serde_json::to_vec(&msg) {
-//     Ok(b) => b,
-//     Err(e) => {
-//         eprintln!("Serialization error: {}", e);
-//         return StatusCode::INTERNAL_SERVER_ERROR;
-//     }
-// };
-// bytes.push(b'\n');
-
-// if let Err(e) = state.tcp_tx.send(bytes) {
-//     eprintln!("Failed to send {} to TCP: {}", message, e);
-//     return StatusCode::INTERNAL_SERVER_ERROR;
-// }
 
 pub async fn start_server(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl IntoResponse {
     println!("Called start server");
