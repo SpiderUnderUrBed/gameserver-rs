@@ -18,6 +18,9 @@ We use svelte and rust, and with rust we use axum as the routing framework, you 
 
 For more information, please check the [contribution guide](./CONTRIBUTING.md).
 
+# Usage
+Look at the [manual](./src/frontend/static/manual.md)
+
 # Running it 
 
 Running it in kubernetes:
