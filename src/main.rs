@@ -1986,26 +1986,26 @@ async fn refresh_status(
     headers: HeaderMap
 ) {
     let mut state = arc_state.write().await;
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
+    // let mut authorized = false;
+    // if let Some(user) = auth_session.user {
+    //     if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+    //         authorized = true;
+    //     }
+    // }
+    // if let Some(token) = get_auth_bearer(headers) {
+    //     if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+    //         authorized = true;
+    //     }
+    // }
+    // if !authorized {
+    state.tcp_conn_status = {
+        if check_channel_health(&state.tcp_tx, state.tcp_rx.resubscribe()).await {
+            Status::Up
+        } else {
+            Status::Down
         }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if !authorized {
-        state.tcp_conn_status = {
-            if check_channel_health(&state.tcp_tx, state.tcp_rx.resubscribe()).await {
-                Status::Up
-            } else {
-                Status::Down
-            }
-        };
-    }
+    };
+    //}
 }
 
 async fn fetch_current_node(
@@ -2182,9 +2182,28 @@ async fn edit_buttons(
 }
 async fn button_reset(
     State(arc_state): State<Arc<RwLock<AppState>>>,
+    auth_session: AuthSession,
+    headers: HeaderMap,
     Json(request): Json<IncomingMessage>,
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
+
+    let mut authorized = false;
+    if let Some(user) = auth_session.user {
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if let Some(token) = get_auth_bearer(headers) {
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if !authorized {
+        return StatusCode::UNAUTHORIZED
+    }
+
+
     if request.message == "toggle" {
         let result = state.database.toggle_default_buttons().await;
         if result.is_ok() {
@@ -2306,8 +2325,28 @@ async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
 async fn ws_handler(
     ws: WebSocketUpgrade,
     State(arc_state): State<Arc<RwLock<AppState>>>,
+    auth_session: AuthSession,
     headers: HeaderMap,
 ) -> impl IntoResponse {
+
+    let state = arc_state.write().await;
+    let mut authorized = false;
+    if let Some(user) = auth_session.user {
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if let Some(token) = get_auth_bearer(headers) {
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if !authorized {
+        return StatusCode::UNAUTHORIZED.into_response()
+    }
+    drop(state);
+
+
     ws.max_frame_size(1024 * 1024)
         .max_message_size(1024 * 1024)
         .on_failed_upgrade(|e| {
@@ -3911,9 +3950,28 @@ async fn get_servers(
 // TODO:, REMOVE THIS
 async fn receive_message(
     State(arc_state): State<Arc<RwLock<AppState>>>,
+    auth_session: AuthSession,
+    headers: HeaderMap,
     Json(res): Json<ApiCalls>,
 ) -> Result<Json<ResponseMessage>, (StatusCode, String)> {
     let state = arc_state.write().await;
+
+    let mut authorized = false;
+    if let Some(user) = auth_session.user {
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if let Some(token) = get_auth_bearer(headers) {
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if !authorized {
+        return Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string()))
+    }
+
+
     if let ApiCalls::IncomingMessage(payload) = res {
         let json_payload = MessagePayload {
             r#type: payload.message_type.clone(),
@@ -4219,11 +4277,30 @@ async fn handle_static_request(
 // it will ensure it is not a path escape
 // then return the file content
 async fn get_files_content(
-    State(state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    auth_session: AuthSession,
+    headers: HeaderMap,
     Json(request): Json<FileChunk>,
 ) -> Result<impl IntoResponse, impl IntoResponse> {
+    let state = arc_state.read().await;
+    let mut authorized = false;
+    if let Some(user) = auth_session.user {
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if let Some(token) = get_auth_bearer(headers) {
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if !authorized {
+        return Err(StatusCode::UNAUTHORIZED.into_response())
+    }
+
+
     let (tcp_tx, tcp_rx) = {
-        let state = state.read().await;
+        let state = arc_state.read().await;
         (state.tcp_tx.clone(), state.tcp_tx.subscribe())
     };
 
@@ -4423,8 +4500,27 @@ async fn authenticate_route_with_jwt(
 // TODO: think about removing this
 async fn get_message(
     State(arc_state): State<Arc<RwLock<AppState>>>,
+    auth_session: AuthSession,
+    headers: HeaderMap
 ) -> Result<Json<MessagePayload>, (StatusCode, String)> {
     let mut state = arc_state.write().await;
+
+    let mut authorized = false;
+    if let Some(user) = auth_session.user {
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if let Some(token) = get_auth_bearer(headers) {
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if !authorized {
+        return Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string()))
+    }
+
+
     let request = MessagePayload {
         r#type: "request".to_string(),
         message: "get_message".to_string(),
@@ -4478,11 +4574,31 @@ async fn get_message(
 }
 
 pub async fn stream_file_download(
-    State(state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    auth_session: AuthSession,
+    headers: HeaderMap,
     axum::extract::Path(file_path): axum::extract::Path<String>,
 ) -> Result<Response<Body>, StatusCode> {
+    let state = arc_state.read().await;
+    let mut authorized = false;
+    if let Some(user) = auth_session.user {
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if let Some(token) = get_auth_bearer(headers) {
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if !authorized {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    drop(state);
+
+
     let tcp_fs = {
-        let state = state.read().await;
+        let state = arc_state.read().await;
         let (tcp_tx, tcp_rx) = (state.tcp_tx.clone(), state.tcp_tx.subscribe());
         Arc::new(Mutex::new(TcpFs::new(tcp_tx, tcp_rx)))
     };
