@@ -126,7 +126,7 @@ impl Database {
             CREATE UNIQUE INDEX IF NOT EXISTS idx_settings_singleton ON settings((id IS NOT NULL));
 
             INSERT INTO settings DEFAULT VALUES
-            WHERE NOT EXISTS (SELECT 1 FROM settings);
+            ON CONFLICT DO NOTHING;
 
             INSERT INTO buttons (name, link, type) VALUES
                 ('Filebrowser',   '', 'default'),

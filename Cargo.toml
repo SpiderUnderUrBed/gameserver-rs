@@ -37,7 +37,7 @@ env = "1.0.1"
 rcon = { version = "0.6.0", features = ["rt-tokio"] }
 bytes = "1.11.0"
 tower-sessions = "0.14.0"
-axum-oidc = { path = "./lib/axum-oidc" }
+axum-oidc = { git = "https://github.com/pfzetto/axum-oidc" }
 tower = "0.5.3"
 base64 = "0.22.1"
 

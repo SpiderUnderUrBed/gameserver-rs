@@ -1,3 +1,0 @@
-[submodule "lib/axum-oidc"]
-	path = lib/axum-oidc
-	url = https://github.com/pfzetto/axum-oidc
