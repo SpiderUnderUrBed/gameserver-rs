@@ -1,8 +1,13 @@
 import { httpClient } from '../utils/http';
 
+export interface UserPerm {
+	perm: string,
+	scope: string
+}
+
 export interface User {
 	username: string;
-	user_perms: string[];
+	user_perms: UserPerm[];
 }
 
 export class UserStore {
@@ -26,7 +31,7 @@ export class UserStore {
 		}
 	}
 
-	public async createUser(username: string, password: string, user_perms: string[]) {
+	public async createUser(username: string, password: string, user_perms: UserPerm[]) {
 		this.error = null;
 		try {
 			const payload = {
@@ -45,7 +50,7 @@ export class UserStore {
 		}
 	}
 
-	public async editUser(username: string, password?: string, user_perms?: string[]) {
+	public async editUser(username: string, password?: string, user_perms?: UserPerm[]) {
 		this.error = null;
 		try {
 			const payload = {
@@ -87,7 +92,7 @@ export class UserStore {
 		try {
 			const response = await httpClient
 				.post('/api/getuser', { json: { user: username } })
-				.json<{ user_perms: string[] }>();
+				.json<{ user_perms: UserPerm[] }>();
 			return { username, user_perms: response.user_perms };
 		} catch (err) {
 			console.error(err);

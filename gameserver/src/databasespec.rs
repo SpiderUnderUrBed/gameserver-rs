@@ -6,7 +6,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct Database {
     pub current_server: String,
+    pub filter: Filters,
     pub server_index: HashMap<String, ServerIndex>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+pub enum Filters {
+    AlternatingLine,
+    #[default]
+    None
 }
 
 #[derive(Clone, Default, Debug, Deserialize, Serialize)]
@@ -39,5 +47,20 @@ impl ServerIndex {
             sandbox,
             server_metadata,
         }
+    }
+}
+
+
+pub fn parse_filter(s: &str) -> Filters {
+    match s {
+        "AlternatingLine" => Filters::AlternatingLine,
+        _ => Filters::None,
+    }
+}
+
+pub fn filter_to_str(f: &Filters) -> &'static str {
+    match f {
+        Filters::AlternatingLine => "AlternatingLine",
+        Filters::None => "None",
     }
 }

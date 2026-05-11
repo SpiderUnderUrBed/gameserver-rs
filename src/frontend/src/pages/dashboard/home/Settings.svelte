@@ -1,10 +1,15 @@
 <script lang="ts">
-	import { type Settings, SettingsStore } from '../../../lib/stores/settingsStore.svelte';
+	import { type Settings, type FileSystemDriver, type Filters, SettingsStore } from '../../../lib/stores/settingsStore.svelte';
 	let settingsStore = new SettingsStore();
 	let enabledNodesOnHomepage = $state<boolean | undefined> (false);
 	let enabledStatsOnHomepage = $state<boolean | undefined>(false);
 	let consoleEntryOnTop = $state<boolean | undefined>(false);
-	
+	let rconUrl = $state<string | undefined>();
+	let rconPassword = $state<string | undefined>();
+	let currentFilter = $state<Filters | undefined>();
+	let fileSystemDriver = $state<FileSystemDriver | undefined>();
+
+
 	(async () => {
 		await settingsStore.refreshSettings();
 		enabledNodesOnHomepage = settingsStore.currentSettings?.enable_nodes_on_home_page;
@@ -17,6 +22,10 @@
 			enable_nodes_on_home_page: enabledNodesOnHomepage ?? false,
 			enable_statistics_on_home_page: enabledStatsOnHomepage ?? false,
 			console_entry_on_top: consoleEntryOnTop ?? false,
+			file_system_driver: fileSystemDriver ?? { kind: "none" },
+			filters: currentFilter ?? { kind: "none" },
+			rcon_url: rconUrl ?? '',
+			rcon_password: rconPassword ?? ''
 		}
 		settingsStore.changeSettings(newSettings)
 	}
@@ -24,7 +33,11 @@
 		let newSettings: Settings = {
 			enable_nodes_on_home_page: enabledNodesOnHomepage ?? false,
 			enable_statistics_on_home_page: enabledStatsOnHomepage ?? false,
-			console_entry_on_top: consoleEntryOnTop ?? false
+			console_entry_on_top: consoleEntryOnTop ?? false,
+			file_system_driver: fileSystemDriver ?? { kind: "none" },
+			filters: currentFilter ?? { kind: "none" },
+			rcon_url: rconUrl ?? '',
+			rcon_password: rconPassword ?? ''
 		}
 		settingsStore.changeSettings(newSettings)
 		settingsStore.syncSettings()

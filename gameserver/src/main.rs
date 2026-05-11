@@ -16,6 +16,7 @@ use tokio::process::{ChildStdin, Command as TokioCommand};
 use tokio::sync::{mpsc, Mutex};
 
 use crate::broadcast::Sender;
+use crate::databasespec::Filters;
 use crate::databasespec::ServerMetadata;
 use crate::filesystem::cleanup_end_file_markers;
 use crate::filesystem::execute_file_operation;
@@ -46,7 +47,21 @@ mod providers;
 
 use databasespec::ServerIndex;
 
-use jsondatabase::{load_db, save_db};
+#[cfg(feature = "postgres")]
+mod database {
+    include!("pgdatabase.rs");
+}
+#[cfg(feature = "postgres")]
+use pgdatabase::{DbConn, load_db, save_db};
+
+#[cfg(not(feature = "postgres"))]
+mod database {
+    include!("jsondatabase.rs");
+}
+#[cfg(not(feature = "postgres"))]
+use jsondatabase::{DbConn, load_db, save_db};
+
+// use jsondatabase::{load_db, save_db};
 
 use intergrations::{run_intergration_commands, IntergrationCommands};
 
@@ -94,6 +109,7 @@ enum MetadataTypes {
         sandbox: bool,
         server_metadata: ServerMetadata,
     },
+    Filter(Filters),
     String(String),
 }
 
@@ -184,6 +200,8 @@ struct MessagePayload {
 // ApiCalls represent some common types so I can keep track of them, its not used them much
 // and might be worth phasing out in the future, its definitately used in the main server for mixed data types and sending
 // them over a common interface
+// TODO: phase out, this works on the outdated model where i send everything in one route which is automatically proxied
+// to the node, but this should not always be the case, atleast this was the primary use
 #[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
 #[serde(tag = "kind", content = "data")]
 enum ApiCalls {
@@ -585,6 +603,7 @@ struct AppState {
     // so now any changes will still be in sync so you never have a case of a longer operation based on older data writting to the db overwriting the newer one).
     // now I am considering if I need db at all, ill keep it here for now to consider parity with the main gameserver node based on design choices.
     db: Arc<Mutex<databasespec::Database>>,
+    db_conn: Arc<Mutex<Option<DbConn>>>,
 }
 
 // Will remove this, this was kept because at a time there was a issue with the channels reciving messages they sent, so
@@ -720,6 +739,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         server_running: Arc::new(Mutex::new(false)),
         server_output_tx: Arc::new(Mutex::new(None)),
         server_process: Arc::new(Mutex::new(None)),
+        db_conn: Arc::new(Mutex::new(Some(DbConn::first_connection().await))),
         db: Arc::clone(&arc_db),
     };
 
@@ -1387,7 +1407,7 @@ async fn sort_command_type_or_console(
     let standard_command_payload_result: Result<MessagePayload, serde_json::Error> =
         serde_json::from_value(payload.clone());
     if let Ok(standard_command_payload) = standard_command_payload_result {
-        // Skip create_server here — it's handled by handle_commands_with_metadata
+        // Skip create_server here, it's handled by handle_commands_with_metadata
         // which has the metadata field. Handling it here would cause an infinite loop
         // because handle_typical_command_or_console sends request_server_metadata again.
         if standard_command_payload.message != "create_server" {
@@ -2285,6 +2305,17 @@ async fn handle_commands_with_metadata(
     if typ == "command" {
         let cmd_str = payload.message.clone();
         match cmd_str.as_str() {
+            "set_filter" => {
+                // parse_filter(payload.metadata);
+                if let MetadataTypes::Filter(filter) = &payload.metadata {
+                        let mut db = state.db.lock().await;
+                        db.filter = filter.clone();
+                        save_db(&db);
+                    return Ok(());
+                } else {
+                    return Err("Did not get filter in metadata feilds".into())
+                }
+            }
             "create_server" => {
                 let result =
                     create_server(state, cmd_tx, stdin_ref, serde_json::to_value(payload)?).await;

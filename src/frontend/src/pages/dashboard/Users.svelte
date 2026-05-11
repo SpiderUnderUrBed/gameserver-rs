@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { userStore, type User } from '../../lib/stores/usersStore.svelte';
-	import { XIcon } from '@lucide/svelte';
+	import { userStore, type User, type UserPerm } from '../../lib/stores/usersStore.svelte';
+	import { UserPen, XIcon } from '@lucide/svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 
 	let editDialog: HTMLDialogElement;
@@ -11,12 +11,13 @@
 
 	let newUsername = $state('');
 	let newPassword = $state('');
-	let perms = new SvelteSet<string>();
+	let perms = new SvelteSet<UserPerm>();
 
 	let editUsername = $state('');
 	let editPassword = $state('');
 
-	let availablePerms = $state(['server', 'createusers']);
+	let availablePerms = $state(['admin', 'server', 'createusers']);
+	let availableScopes = $state(['all']);
 
 	onMount(() => {
 		userStore.fetchUsers();
@@ -78,7 +79,7 @@
 			{#each userStore.users as user}
 				<div class="card bg-base-100 shadow-md p-4">
 					<h2 class="card-title">{user.username}</h2>
-					<p>Permissions: {user.user_perms.join(', ') || 'None'}</p>
+					<p>Permissions: {user.user_perms.map((full_perm) => full_perm.perm + ":" + full_perm.scope).join(', ') || 'None'}</p>
 					<div class="card-actions justify-end">
 						<button class="btn btn-secondary" onclick={() => openEditDialog(user)}>Edit</button>
 						<button class="btn btn-error" onclick={() => openDeleteDialog(user.username)}>
@@ -103,7 +104,10 @@
 			<input id="password" type="password" class="input" bind:value={newPassword} required />
 
 			<div class="fieldset">
-				<label for="add-perm-select" class="label">Permissions</label>
+				<div class="flex gap-30">
+					<label for="add-perm-select" class="label">Permissions</label>
+					<label for="add-scope-select" class="label">Scope</label>
+				</div>
 				<div class="join">
 					<select class="select join-item" id="add-perm-select">
 						<option disabled selected>Select permission</option>
@@ -111,14 +115,27 @@
 							<option value={perm}>{perm}</option>
 						{/each}
 					</select>
+					<select class="select join-item" id="add-scope-select">
+						<option disabled selected>Select scope</option>
+						{#each availableScopes as scope}
+							<option value={scope}>{scope}</option>
+						{/each}
+					</select>
 					<button
 						type="button"
 						class="btn join-item"
 						onclick={() => {
-							const select = document.getElementById('add-perm-select') as HTMLSelectElement;
-							const currentOpts = select.selectedOptions[0];
-							if (currentOpts?.value && !currentOpts.disabled) {
-								perms.add(currentOpts.value);
+							const perm = document.getElementById('add-perm-select') as HTMLSelectElement;
+							const scope = document.getElementById('add-scope-select') as HTMLSelectElement;
+							const currentPerm = perm.selectedOptions[0];
+							const currentScope = scope.selectedOptions[0];
+							if (currentPerm?.value && !currentPerm.disabled && currentScope?.value && !currentScope.disabled) {
+								perms.add(
+									{
+										perm: currentPerm.value,
+										scope: currentScope.value
+									}
+								);
 							}
 						}}
 					>
@@ -134,7 +151,7 @@
 								perms.delete(perm);
 							}}
 						>
-							<span>{perm}</span>
+							<span>{perm.perm}:{perm.scope}</span>
 							<XIcon class="w-3 btn btn-sm btn-circle btn-ghost h-auto" />
 						</button>
 					{/each}
@@ -164,7 +181,10 @@
 				<input type="password" class="input" id="new_password" bind:value={editPassword} />
 			</div>
 			<div class="fieldset">
-				<label for="edit-perm-select" class="label">Permissions</label>
+				<div class="flex gap-30">
+					<label for="add-perm-select" class="label">Permissions</label>
+					<label for="add-scope-select" class="label">Scope</label>
+				</div>
 				<div class="join">
 					<select class="select join-item" id="edit-perm-select">
 						<option disabled selected>Select permission</option>
@@ -172,13 +192,28 @@
 							<option value={perm}>{perm}</option>
 						{/each}
 					</select>
+					<select class="select join-item" id="add-scope-select">
+						<option disabled selected>Select scope</option>
+						{#each availableScopes as scope}
+							<option value={scope}>{scope}</option>
+						{/each}
+					</select>
 					<button
 						type="button"
 						class="btn join-item"
 						onclick={() => {
-							const select = document.getElementById('edit-perm-select') as HTMLSelectElement;
-							const currentOpts = select.selectedOptions[0];
-							if (currentOpts?.value && !currentOpts.disabled) perms.add(currentOpts.value);
+							const perm = document.getElementById('add-perm-select') as HTMLSelectElement;
+							const scope = document.getElementById('add-scope-select') as HTMLSelectElement;
+							const currentPerm = perm.selectedOptions[0];
+							const currentScope = scope.selectedOptions[0];
+							if (currentPerm?.value && !currentPerm.disabled && currentScope?.value && !currentScope.disabled) {
+								perms.add(
+									{
+										perm: currentPerm.value,
+										scope: currentScope.value
+									}
+								);
+							}
 						}}
 					>
 						Add
@@ -193,7 +228,7 @@
 								perms.delete(perm);
 							}}
 						>
-							<span>{perm}</span>
+							<span>{perm.perm}:{perm.scope}</span>
 							<XIcon class="w-3 btn btn-sm btn-circle btn-ghost h-auto" />
 						</button>
 					{/each}

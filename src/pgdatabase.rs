@@ -53,6 +53,7 @@ impl Database {
     }
 
     pub async fn ensure_database_conn(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+        //driver                         VARCHAR DEFAULT '',
         sqlx::raw_sql(
             r#"
             CREATE TABLE IF NOT EXISTS users (
@@ -113,8 +114,8 @@ impl Database {
                 enabled_rcon                   BOOLEAN NOT NULL DEFAULT true,
                 rcon_url                       VARCHAR DEFAULT 'localhost:25575',
                 rcon_password                  VARCHAR DEFAULT 'testing',
-                driver                         VARCHAR DEFAULT '',
-                file_system_driver             VARCHAR DEFAULT '',
+                filter                         VARCHAR DEFAULT 'None',
+                file_system_driver             VARCHAR DEFAULT 'None',
                 enable_statistics_on_home_page BOOLEAN NOT NULL DEFAULT false,
                 enable_nodes_on_home_page      BOOLEAN NOT NULL DEFAULT false,
                 console_entry_on_top           BOOLEAN NOT NULL DEFAULT true,
@@ -124,6 +125,9 @@ impl Database {
             );
             CREATE UNIQUE INDEX IF NOT EXISTS idx_settings_singleton ON settings((id IS NOT NULL));
 
+            INSERT INTO settings DEFAULT VALUES
+            WHERE NOT EXISTS (SELECT 1 FROM settings);
+
             INSERT INTO buttons (name, link, type) VALUES
                 ('Filebrowser',   '', 'default'),
                 ('Statistics',    '', 'default'),
@@ -132,15 +136,6 @@ impl Database {
                 ('Backups',       '', 'default'),
                 ('Settings',      '', 'default')
             ON CONFLICT (name) DO NOTHING;
-
-            INSERT INTO settings (
-                toggled_default_buttons, status_type, enabled_rcon,
-                rcon_url, rcon_password, driver, file_system_driver,
-                enable_statistics_on_home_page, enable_nodes_on_home_page, current_server
-            )
-            SELECT false, '', true, 'localhost:25575', 'testing', '', '',
-                false, false, '{}'::jsonb
-            WHERE NOT EXISTS (SELECT 1 FROM settings);
             "#,
         )
         .execute(&self.connection)
@@ -191,7 +186,12 @@ impl UserDatabase for Database {
                     WHERE username = $2
                     "#
                 )
-                .bind(&user_perms)
+                .bind(
+                    user_perms
+                        .iter()
+                        .map(|p| p.to_string())
+                        .collect::<Vec<String>>()
+                )
                 .bind(&user)
                 .execute(&self.connection)
                 .await {
@@ -218,7 +218,12 @@ impl UserDatabase for Database {
                     "#
                 )
                 .bind(&password_hash)
-                .bind(&user_perms)
+                .bind(
+                    user_perms
+                        .iter()
+                        .map(|p| p.to_string())
+                        .collect::<Vec<String>>()
+                )
                 .bind(&user)
                 .execute(&self.connection)
                 .await {
@@ -253,7 +258,12 @@ impl UserDatabase for Database {
                 .bind(user)
                 .bind(hashed)
                 .bind("0")
-                .bind(user_perms)
+                .bind(
+                    user_perms
+                        .iter()
+                        .map(|p| p.to_string())
+                        .collect::<Vec<String>>()
+                )
                 .fetch_one(&self.connection)
                 .await?;
 
@@ -578,19 +588,35 @@ impl ButtonsDatabase for Database {
 }
 
 impl SettingsDatabase for Database {
+            //     toggled_default_buttons: Default::default(),
+            // status_type: Default::default(),
+            // enabled_rcon: true,
+            // rcon_url: "localhost:25575".to_string(),
+            // rcon_password: "testing".to_string(),
+            // filter: Filters::None,
+            // //driver: "".to_string(),
+            // enable_statistics_on_home_page: false,
+            // enable_nodes_on_home_page: false,
+            // console_entry_on_top: true,
+            // file_system_driver: FileSystemDrivers::None,
+            // current_server: Server::default().into(),
     async fn set_settings(&self, settings: Settings) -> Result<(), Box<dyn Error + Send + Sync>> {
+        //driver = $6,
         sqlx::query(
             r#"
             UPDATE settings 
-            SET toggled_default_buttons = $1,
-                status_type = $2,
-                enabled_rcon = $3,
-                rcon_url = $4,
-                rcon_password = $5,
-                driver = $6,
-                file_system_driver = $7,
+            SET toggled_default_buttons        = $1,
+                status_type                    = $2,
+                enabled_rcon                   = $3,
+                rcon_url                       = $4,
+                rcon_password                  = $5,
+                filter                         = $6,
+                file_system_driver             = $7,
                 enable_statistics_on_home_page = $8,
-                enable_nodes_on_home_page = $9
+                enable_nodes_on_home_page      = $9,
+                console_entry_on_top           = $10,
+                current_server                 = $11,
+                updated_at                     = NOW()
             "#
         )
         .bind(&settings.toggled_default_buttons)
@@ -598,10 +624,12 @@ impl SettingsDatabase for Database {
         .bind(&settings.enabled_rcon)
         .bind(&settings.rcon_url)
         .bind(&settings.rcon_password)
-        .bind(&settings.driver)
+        .bind(&settings.filter)
         .bind(&settings.file_system_driver)
         .bind(&settings.enable_statistics_on_home_page)
         .bind(&settings.enable_nodes_on_home_page)
+        .bind(&settings.console_entry_on_top)
+        .bind(sqlx::types::Json(&settings.current_server))
         .execute(&self.connection)
         .await?;
         

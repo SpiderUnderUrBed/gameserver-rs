@@ -4,10 +4,36 @@
 import { message } from "valibot";
 import { httpClient } from "../utils/http";
 
+    // pub(crate) toggled_default_buttons: bool,
+    // pub(crate) status_type: String,
+    // pub(crate) enabled_rcon: bool,
+    // pub(crate) rcon_url: String,
+    // pub(crate) rcon_password: String,
+    // //pub(crate) driver: String,
+    // pub(crate) filter: Filters,
+    // pub(crate) file_system_driver: FileSystemDrivers,
+    // pub(crate) enable_statistics_on_home_page: bool,
+    // pub(crate) enable_nodes_on_home_page: bool,
+    // pub(crate) console_entry_on_top: bool,
+    // #[cfg_attr(any(feature = "full-stack", feature = "database"), sqlx(json))]
+    // pub(crate) current_server: Server,
+
+
+export type FileSystemDriver = 
+    | { kind: "tcp" }
+    | { kind: "none" }
+
+export type Filters = 
+    | { kind: "alternatingline" }
+    | { kind: "none" }
 export interface Settings {
     enable_statistics_on_home_page: boolean,
     enable_nodes_on_home_page: boolean,
-    console_entry_on_top: boolean
+    console_entry_on_top: boolean,
+    file_system_driver: FileSystemDriver,
+    filters: Filters,
+    rcon_url: string,
+    rcon_password: string
 }
 
 
