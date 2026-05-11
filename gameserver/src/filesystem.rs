@@ -24,8 +24,9 @@ use tokio::io::AsyncSeekExt;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::broadcast;
 use tokio::time::timeout;
-
 use tokio::sync::mpsc;
+
+use base64::Engine;
 
 use std::io::SeekFrom;
 
@@ -42,6 +43,10 @@ pub trait FsType: Clone + Send + Sync {
         &mut self,
         file_chunk: FileChunk,
     ) -> std::io::Result<IncomingMessage>;
+    async fn get_files_content_raw(
+        &mut self,
+        file_chunk: FileChunk,
+    ) -> std::io::Result<Vec<u8>>;
     async fn get_metadata(&mut self, path: &str) -> std::io::Result<FsMetadata>;
     async fn list_directory(&mut self, path: &str) -> std::io::Result<Vec<FsEntry>>;
     async fn list_directory_within_range(
@@ -747,7 +752,35 @@ impl FsType for TcpFs {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
+    async fn get_files_content_raw(
+        &mut self,
+        file_chunk: FileChunk,
+    ) -> std::io::Result<Vec<u8>> {
+        let id = self
+            .send_request(FileRequestPayload::FileChunk(file_chunk))
+            .await?;
 
+        let response_chunks = self.recv_response(id).await?;
+
+        for chunk in response_chunks.iter() {
+            if let Ok(val) = serde_json::from_slice::<Value>(chunk) {
+                if let Some(data_val) = val.get("data") {
+                    if let Ok(bytes) = serde_json::from_value::<Vec<u8>>(data_val.clone()) {
+                        return Ok(bytes);
+                    }
+                    if let Some(s) = data_val.as_str() {
+                        if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(s) {
+                            return Ok(decoded);
+                        }
+                        return Ok(s.as_bytes().to_vec());
+                    }
+                }
+            }
+            return Ok(chunk.clone());
+        }
+
+        Ok(vec![])
+    }
     async fn get_files_content(
         &mut self,
         file_chunk: FileChunk,
@@ -1224,7 +1257,7 @@ pub async fn get_files_content(file_chunk: FileChunk) -> std::io::Result<Message
 
     let mut buffer = vec![0; chunk_size];
     let bytes_read = file.read(&mut buffer).await?;
-    let content = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+    let content = base64::engine::general_purpose::STANDARD.encode(&buffer[..bytes_read]);
 
     Ok(MessagePayload {
         r#type: "file_content".to_string(),

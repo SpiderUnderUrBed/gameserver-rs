@@ -36,6 +36,8 @@ use futures_util::Stream;
 use futures_util::task::Context;
 use futures_util::task::Poll;
 
+use base64::Engine;
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(tag = "kind", content = "data")]
 pub enum FsItem {
@@ -49,6 +51,10 @@ pub trait FsType: Clone + Send + Sync {
         &mut self,
         file_chunk: FileChunk,
     ) -> std::io::Result<IncomingMessage>;
+    async fn get_files_content_raw(
+        &mut self,
+        file_chunk: FileChunk,
+    ) -> std::io::Result<Vec<u8>>;
     async fn get_metadata(&mut self, path: &str) -> std::io::Result<FsMetadata>;
     async fn list_directory(&mut self, path: &str) -> std::io::Result<Vec<FsEntry>>;
     async fn list_directory_within_range(
@@ -790,6 +796,37 @@ impl FsType for TcpFs {
         self
     }
 
+    async fn get_files_content_raw(
+        &mut self,
+        file_chunk: FileChunk,
+    ) -> std::io::Result<Vec<u8>> {
+        let id = self
+            .send_request(FileRequestPayload::FileChunk(file_chunk))
+            .await?;
+
+        let response_chunks = self.recv_response(id).await?;
+
+        for chunk in response_chunks.iter() {
+            if let Ok(val) = serde_json::from_slice::<Value>(chunk) {
+                if let Some(data_val) = val.get("data") {
+                    if let Ok(bytes) = serde_json::from_value::<Vec<u8>>(data_val.clone()) {
+                        return Ok(bytes);
+                    }
+                    if let Some(s) = data_val.as_str() {
+                        use base64::Engine;
+                        if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(s) {
+                            return Ok(decoded);
+                        }
+                        return Ok(s.as_bytes().to_vec());
+                    }
+                }
+            }
+            return Ok(chunk.clone());
+        }
+
+        Ok(vec![])
+    }
+
     async fn get_files_content(
         &mut self,
         file_chunk: FileChunk,
@@ -1255,7 +1292,7 @@ pub async fn get_files_content(file_chunk: FileChunk) -> std::io::Result<Message
 
     let mut buffer = vec![0; chunk_size];
     let bytes_read = file.read(&mut buffer).await?;
-    let content = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+    let content = base64::engine::general_purpose::STANDARD.encode(&buffer[..bytes_read]);
 
     Ok(MessagePayload {
         r#type: "file_content".to_string(),
@@ -1558,11 +1595,10 @@ impl Stream for TcpFileStream {
                     file_chunk_size: actual_chunk_size.to_string(),
                 };
 
-                let result = fs.get_files_content(file_chunk).await?;
-                let data = Bytes::from(result.message.into_bytes());
-                let is_eof = data.is_empty() || (data.len() as u64) < actual_chunk_size;
-
-                Ok::<(Bytes, bool), std::io::Error>((data, is_eof))
+            let result = fs.get_files_content_raw(file_chunk).await?;
+            let is_eof = result.is_empty() || (result.len() as u64) < actual_chunk_size;
+            let data = Bytes::from(result);
+            Ok::<(Bytes, bool), std::io::Error>((data, is_eof))
             };
 
             self.pending_fut = Some(Box::pin(fut));
