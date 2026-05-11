@@ -21,6 +21,16 @@ export class FileBrowserStore {
 		return [];
 	}
 
+	public async returnFiles(path: string = this.path): Promise<FileEntry[]> {
+		const response = await httpClient
+			.post('/api/getfiles', {
+				json: { type: 'command', message: path, authcode: '0' }
+			})
+			.json<any>();
+
+		const data = await this.processResponse(response);
+		return data;
+	}
 	public async fetchFiles(path: string = this.path) {
 		this.loading = true;
 		this.error = null;
@@ -28,13 +38,7 @@ export class FileBrowserStore {
 		this.modifiedFileContent = '';
 		this.selectedFile = '';
 		try {
-			const response = await httpClient
-				.post('/api/getfiles', {
-					json: { type: 'command', message: path, authcode: '0' }
-				})
-				.json<any>();
-
-			const data = await this.processResponse(response);
+			const data = await this.returnFiles(path);
 			if (path && path !== '') {
 				this.items = [{ kind: 'Folder', data: '..' }, ...data];
 			} else {

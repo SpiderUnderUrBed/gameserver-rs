@@ -46,7 +46,7 @@ pub enum Element {
     User {
         password: String,
         user: String,
-        user_perms: Vec<String>,
+        user_perms: Vec<UserPerm>,
     },
     Node(Node),
     Button(Button),
@@ -61,6 +61,37 @@ pub struct ModifyElementData {
     pub require_auth: bool,
 }
 
+#[cfg_attr(
+    any(feature = "full-stack", feature = "database"),
+    derive(sqlx::Type)
+)]
+#[cfg_attr(
+    any(feature = "full-stack", feature = "database"),
+    sqlx(type_name = "TEXT", rename_all = "PascalCase")
+)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "data")]
+pub enum Filters {
+    AlternatingLine,
+    None,
+}
+
+
+#[cfg_attr(
+    any(feature = "full-stack", feature = "database"),
+    derive(sqlx::Type)
+)]
+#[cfg_attr(
+    any(feature = "full-stack", feature = "database"),
+    sqlx(type_name = "TEXT", rename_all = "PascalCase")
+)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "data")]
+pub enum FileSystemDrivers {
+    Tcp,
+    None,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[cfg_attr(
     any(feature = "full-stack", feature = "database"),
@@ -72,10 +103,12 @@ pub struct Settings {
     pub(crate) enabled_rcon: bool,
     pub(crate) rcon_url: String,
     pub(crate) rcon_password: String,
-    pub(crate) driver: String,
-    pub(crate) file_system_driver: String,
+    //pub(crate) driver: String,
+    pub(crate) filter: Filters,
+    pub(crate) file_system_driver: FileSystemDrivers,
     pub(crate) enable_statistics_on_home_page: bool,
     pub(crate) enable_nodes_on_home_page: bool,
+    pub(crate) console_entry_on_top: bool,
     #[cfg_attr(any(feature = "full-stack", feature = "database"), sqlx(json))]
     pub(crate) current_server: Server,
 }
@@ -88,10 +121,12 @@ impl Default for Settings {
             enabled_rcon: true,
             rcon_url: "localhost:25575".to_string(),
             rcon_password: "testing".to_string(),
-            driver: "".to_string(),
+            filter: Filters::None,
+            //driver: "".to_string(),
             enable_statistics_on_home_page: false,
             enable_nodes_on_home_page: false,
-            file_system_driver: "".to_string(),
+            console_entry_on_top: true,
+            file_system_driver: FileSystemDrivers::None,
             current_server: Server::default().into(),
         }
     }
@@ -303,15 +338,47 @@ impl ToString for Intergrations {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+// TODO: consider if in the future instead of encoding json into a string i use jsonb instead
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 #[cfg_attr(
     any(feature = "full-stack", feature = "database"),
     derive(sqlx::FromRow)
 )]
+pub struct UserPerm {
+    pub(crate) perm: String,
+    pub(crate) scope: String
+}
+
+impl fmt::Display for UserPerm {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.perm, self.scope)
+    }
+}
+
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct User {
     pub username: String,
     pub password_hash: Option<String>,
-    pub user_perms: Vec<String>,
+    pub user_perms: Vec<UserPerm>,
+}
+
+#[cfg(any(feature = "full-stack", feature = "database"))]
+impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for User {
+    fn from_row(row: &'r sqlx::postgres::PgRow) -> Result<Self, sqlx::Error> {
+        use sqlx::Row;
+
+        let username: String = row.try_get("username")?;
+        let password_hash: Option<String> = row.try_get("password_hash")?;
+        let raw_perms: Vec<String> = row.try_get("user_perms")?;
+
+        let user_perms = raw_perms
+            .iter()
+            .filter_map(|s| serde_json::from_str::<UserPerm>(s).ok())
+            .collect();
+
+        Ok(User { username, password_hash, user_perms })
+    }
 }
 
 #[cfg(not(any(feature = "full-stack", feature = "database")))]
@@ -330,11 +397,7 @@ impl From<Node> for Json<Node> {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 #[cfg_attr(
     any(feature = "full-stack", feature = "database"),
-    derive(sqlx::FromRow)
-)]
-#[cfg_attr(
-    any(feature = "full-stack", feature = "database"),
-    derive(sqlx::Encode)
+    derive(sqlx::FromRow, Decode, Encode)
 )]
 pub struct Node {
     pub nodename: String,
@@ -420,7 +483,7 @@ pub struct ServerMetadata {
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
 #[cfg_attr(
     any(feature = "full-stack", feature = "database"),
-    derive(sqlx::FromRow)
+    derive(sqlx::FromRow, Decode, Encode)
 )]
 pub struct Server {
     #[serde(default)]
@@ -440,6 +503,14 @@ pub struct Server {
     #[serde(default)]
     pub server_metadata: ServerMetadata,
 }
+
+#[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
+impl Type<Postgres> for Server {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        <String as Type<Postgres>>::type_info()
+    }
+}
+
 pub trait IntoServer {
     fn into_server(self) -> Server;
 }

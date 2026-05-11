@@ -24,8 +24,9 @@ use tokio::io::AsyncSeekExt;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::broadcast;
 use tokio::time::timeout;
-
 use tokio::sync::mpsc;
+
+use base64::Engine;
 
 use std::io::SeekFrom;
 
@@ -42,6 +43,10 @@ pub trait FsType: Clone + Send + Sync {
         &mut self,
         file_chunk: FileChunk,
     ) -> std::io::Result<IncomingMessage>;
+    async fn get_files_content_raw(
+        &mut self,
+        file_chunk: FileChunk,
+    ) -> std::io::Result<Vec<u8>>;
     async fn get_metadata(&mut self, path: &str) -> std::io::Result<FsMetadata>;
     async fn list_directory(&mut self, path: &str) -> std::io::Result<Vec<FsEntry>>;
     async fn list_directory_within_range(
@@ -59,6 +64,7 @@ pub trait FsType: Clone + Send + Sync {
 pub struct FsMetadata {
     pub is_file: bool,
     pub is_dir: bool,
+    pub file_size: Option<u64>,
     pub optional_folder_children: Option<u64>,
     pub canonical_path: String,
 }
@@ -170,7 +176,6 @@ impl TcpFs {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::ConnectionAborted, e))?;
         Ok(id)
     }
-
     pub async fn recv_response(&mut self, id: u64) -> std::io::Result<Vec<Vec<u8>>> {
         use tokio::time::{Duration, Instant};
 
@@ -197,61 +202,44 @@ impl TcpFs {
                 continue;
             }
 
-            let response_str = String::from_utf8_lossy(&response);
+            let Ok(val) = serde_json::from_slice::<serde_json::Value>(&response) else {
+                continue;
+            };
 
-            if expecting_fragments {
-            } else {
-                if response_str.contains("\"type\":\"Metadata\"")
-                    || response_str.contains("\"type\":\"ListDir\"")
-                    || response_str.contains("\"type\":\"FileChunk\"")
-                {
+            if !expecting_fragments {
+                if val.get("in_response_to").is_none() {
                     continue;
                 }
 
-                if !response_str.contains("\"in_response_to\"") {
+                let Some(response_id) = val.get("in_response_to").and_then(|v| v.as_u64()) else {
+                    continue;
+                };
+
+                if response_id != id {
                     continue;
                 }
 
-                if !response_str.contains(&format!("\"in_response_to\":{}", id)) {
-                    continue;
-                }
-
-                if response_str.starts_with("{\"in_response_to\"") {
+                if val.get("data").is_some() {
                     expecting_fragments = true;
                 }
             }
 
-            let preview_snippet: &str = if response_str.len() > 512 {
-                &response_str[..512]
-            } else {
-                &response_str
-            };
-            let before_len = assembler.buffer.len();
+            let response_str = String::from_utf8_lossy(&response);
 
             let completed = assembler.feed_chunk(&response_str, id).await;
-
-            let after_len = assembler.buffer.len();
 
             if !completed.is_empty() {
                 expecting_fragments = false;
                 return Ok(completed);
             }
 
-            if expecting_fragments && assembler.buffer.len() > 0 {
+            if expecting_fragments && !assembler.buffer.is_empty() {
                 continue;
             }
 
             if let Some(result) = assembler.check_timeout(id) {
-                match &result {
-                    Ok(bytes) => {
-                        let s = String::from_utf8_lossy(bytes);
-                    }
-                    Err(e) => {
-                        println!(
-                            "[recv_response:{}] assembler.check_timeout error: {}",
-                            id, e
-                        );
-                    }
+                if let Err(e) = &result {
+                    println!("[recv_response:{}] assembler.check_timeout error: {}", id, e);
                 }
                 expecting_fragments = false;
                 return result.map(|v| vec![v]);
@@ -764,7 +752,35 @@ impl FsType for TcpFs {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
+    async fn get_files_content_raw(
+        &mut self,
+        file_chunk: FileChunk,
+    ) -> std::io::Result<Vec<u8>> {
+        let id = self
+            .send_request(FileRequestPayload::FileChunk(file_chunk))
+            .await?;
 
+        let response_chunks = self.recv_response(id).await?;
+
+        for chunk in response_chunks.iter() {
+            if let Ok(val) = serde_json::from_slice::<Value>(chunk) {
+                if let Some(data_val) = val.get("data") {
+                    if let Ok(bytes) = serde_json::from_value::<Vec<u8>>(data_val.clone()) {
+                        return Ok(bytes);
+                    }
+                    if let Some(s) = data_val.as_str() {
+                        if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(s) {
+                            return Ok(decoded);
+                        }
+                        return Ok(s.as_bytes().to_vec());
+                    }
+                }
+            }
+            return Ok(chunk.clone());
+        }
+
+        Ok(vec![])
+    }
     async fn get_files_content(
         &mut self,
         file_chunk: FileChunk,
@@ -916,11 +932,6 @@ impl FsType for TcpFs {
                 }
             }
         }
-
-        println!(
-            "[get_metadata:{}] final parse error: missing field `is_file` at line 1 column 58",
-            id
-        );
 
         Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -1175,6 +1186,7 @@ pub async fn get_metadata(path: &str) -> std::io::Result<FsMetadata> {
     Ok(FsMetadata {
         is_file: metadata.is_file(),
         is_dir: metadata.is_dir(),
+        file_size: if metadata.is_file() { Some(metadata.len()) } else { None },
         optional_folder_children,
         canonical_path: canonical.to_string_lossy().to_string(),
     })
@@ -1245,7 +1257,7 @@ pub async fn get_files_content(file_chunk: FileChunk) -> std::io::Result<Message
 
     let mut buffer = vec![0; chunk_size];
     let bytes_read = file.read(&mut buffer).await?;
-    let content = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+    let content = base64::engine::general_purpose::STANDARD.encode(&buffer[..bytes_read]);
 
     Ok(MessagePayload {
         r#type: "file_content".to_string(),
@@ -1291,7 +1303,8 @@ pub async fn handle_multipart_message(
     Ok(())
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[serde(tag = "kind", content = "data")]
 pub enum FileOperations {
     FileDownloadOperation(String),
     FileMoveOperation(String),
@@ -1339,8 +1352,20 @@ pub fn execute_file_operation(
     let src = encoded_src
         .as_inner_str()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid source"))?;
-    let src_path = PathBuf::from(&dir).join(src);
-    let dest_path = PathBuf::from(&dir).join(dest);
+    let src_path = { 
+        if dir.is_empty() {
+            PathBuf::from(src)
+        } else {
+            PathBuf::from(&dir).join(src)
+        }
+    };
+    let dest_path = {
+        if dir.is_empty() {
+            PathBuf::from(dest)
+        } else {
+            PathBuf::from(&dir).join(dest)
+        }
+    };
 
     match &encoded_src {
         FileOperations::FileCopyOperation(_) => {

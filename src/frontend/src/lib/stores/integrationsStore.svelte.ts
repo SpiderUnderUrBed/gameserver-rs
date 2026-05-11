@@ -1,9 +1,10 @@
+import type { EnumTypeSimple } from '../utils/common';
 import { httpClient } from '../utils/http';
 
 export interface Integration {
-	type: string;
+	type: Record<string, any>;
 	status: string;
-	settings: Record<string, any>;
+	settings: Record<string, EnumTypeSimple>;
 }
 
 export class IntegrationsStore {
@@ -27,7 +28,7 @@ export class IntegrationsStore {
 		}
 	}
 
-	public async createIntegration(type: string, status: string, settings: Record<string, any> = {}) {
+	public async createIntegration(type: EnumTypeSimple, status: string, settings: Record<string, any> = {}) {
 		this.error = null;
 		try {
 			const payload = {
@@ -38,6 +39,7 @@ export class IntegrationsStore {
 				jwt: '',
 				require_auth: false
 			};
+			console.log(payload);
 			await httpClient.post('/api/createintergrations', { json: payload });
 			await this.fetchIntegrations();
 		} catch (err) {
@@ -46,7 +48,7 @@ export class IntegrationsStore {
 		}
 	}
 
-	public async modifyIntegration(type: string, status: string, settings: Record<string, any> = {}) {
+	public async modifyIntegration(type: EnumTypeSimple, status: string, settings: Record<string, any> = {}) {
 		this.error = null;
 		try {
 			const payload = {
@@ -57,6 +59,7 @@ export class IntegrationsStore {
 				jwt: '',
 				require_auth: false
 			};
+			console.log(payload);
 			await httpClient.post('/api/modifyintergrations', { json: payload });
 			await this.fetchIntegrations();
 		} catch (err) {
@@ -68,7 +71,15 @@ export class IntegrationsStore {
 	public async deleteIntegration(name: string) {
 		this.error = null;
 		try {
-			await httpClient.post('/api/deleteintergration', { json: name });
+			const payload = {
+				element: {
+					kind: 'Intergration',
+					data: { status: "disabled", type: { kind: name }, settings: {} }
+				},
+				jwt: '',
+				require_auth: false
+			};
+			await httpClient.post('/api/deleteintergrations', { json: payload });
 			await this.fetchIntegrations();
 		} catch (err) {
 			this.error = 'Failed to delete integration';

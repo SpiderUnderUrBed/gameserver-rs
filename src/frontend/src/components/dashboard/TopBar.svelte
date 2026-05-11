@@ -1,17 +1,10 @@
 <script lang="ts">
 	import { serverConsole } from '../../lib/stores/serverConsoleStore.svelte';
+	// import { showNodeDialog } from '../../pages/dashboard/home/dialogs';
 	// import { serversStore } from '../../lib/stores/serversStore.svelte';
 	import Status from './Status.svelte';
 	// import StatusStore from './Status.svelte';
-	import { SlashIcon } from '@lucide/svelte';
 
-	let commandInput = $state('');
-
-	function sendCommand() {
-		if (!commandInput.trim()) return;
-		serverConsole.sendConsoleCommand(commandInput);
-		commandInput = '';
-	}
 
 	
 </script>
@@ -40,17 +33,9 @@
 			Raw Output: {serverConsole.rawOutputEnabled ? 'ON' : 'OFF'}
 		</button> -->
 		<button class="btn" commandfor="add-node-dialog" command="show-modal">Add Node</button>
-		<button class="btn" commandfor="switch-node-dialog" command="show-modal">Switch node ({serverConsole.selectedNode ?? 'None'})</button>
+		<button class="btn"  commandfor="switch-node-dialog" command="show-modal">Switch node ({serverConsole.selectedNode ?? 'None'})</button>
 		<button class="btn" commandfor="delete-node-dialog" command="show-modal">Delete node</button>
 	</div>
 
-	<label class="input w-full">
-		<SlashIcon class="w-3 text-base-content/70" />
-		<input
-			class="grow"
-			placeholder="Type command and Enter"
-			bind:value={commandInput}
-			onkeyup={(event) => event.key === 'Enter' && sendCommand()}
-		/>
-	</label>
+
 </div>

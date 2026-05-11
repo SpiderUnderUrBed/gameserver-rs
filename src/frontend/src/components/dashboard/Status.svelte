@@ -55,21 +55,25 @@
 
 <dialog id="change-status" bind:this={changeStatusDialog} class="modal">
 	<form onsubmit={changeStatus} method="dialog">
-		<div class="modal-action">
-			<div class="p-4 fieldset">
-					<label for="selected_status">Selected Status:</label>
-					<select id="selected_status" bind:value={selectedStatusType}>
-						<option value="node-status">Node status</option>
-						<option value="server-keyword">Server keyword</option>
-						<option value="server-process">Server process</option>
-						<option value="manual-click">Clicked manually</option>
-					</select>
+		<div class="bg-base-100 rounded">
+			<div class="modal-action">
+				<div class="p-4 fieldset">
+						<label for="selected_status">Selected Status:</label>
+						<select id="selected_status" bind:value={selectedStatusType}>
+							<option value="node-status">Node status</option>
+							<option value="server-keyword">Server keyword</option>
+							<option value="server-process">Server process</option>
+							<option value="manual-click">Clicked manually</option>
+						</select>
+				</div>
+			</div>
+			<br>
+			<div class="py-4 p-2">
+				<button class="btn btn-ghost btn-error" type="submit" value="cancel" formnovalidate>
+					Cancel
+				</button>
+				<button class="btn btn-primary" type="submit">Save</button>
 			</div>
 		</div>
-		<br>
-		<button class="btn btn-ghost btn-error" type="submit" value="cancel" formnovalidate>
-			Cancel
-		</button>
-		<button class="btn btn-primary" type="submit">Save</button>
 	</form>
 </dialog>

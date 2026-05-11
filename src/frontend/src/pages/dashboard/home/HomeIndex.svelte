@@ -6,17 +6,24 @@
 	import StatisticsBar from '../../../components/dashboard/StatisticsBar.svelte';
 	import { NodesStore } from '../../../lib/stores/nodesStore.svelte';
 	import { onMount } from 'svelte';
+	import { writable } from 'svelte/store';
+	import { showNodeDialog, showServerDialog } from './dialogs';
+	import { integrationsStore, type Integration } from '../../../lib/stores/integrationsStore.svelte';
+	import Minecraft from './integrations/Minecraft.svelte';
+	import ConsoleInput from '../../../components/dashboard/ConsoleInput.svelte';
 
 	let store = new SettingsStore();
 	let settings = $state<Settings | undefined>({
 		enable_statistics_on_home_page: false,
-    	enable_nodes_on_home_page: false
+		enable_nodes_on_home_page: false,
+		console_entry_on_top: true
 	})
 
 	onMount(async () => {
 		settings = await store.getSettings();
 		await fetchServers();
 		await fetchNodes();
+		await integrationsStore.fetchIntegrations();
 	});
 
 
@@ -83,10 +90,6 @@
 	const configureServer = async (event: SubmitEvent) => {
 		if ((<HTMLButtonElement | null>event.submitter)?.value === 'cancel') return;
 			await serverConsole.setServer(selectedServerName);
-		// serverConsole.addConsoleEntry({
-		// 	type: 'output',
-		// 	text: 'Configure server placeholder'
-		// });
 	}
 	const deleteNode = async (event: SubmitEvent) => {
 		if ((<HTMLButtonElement | null>event.submitter)?.value !== 'cancel') {
@@ -110,13 +113,25 @@
 </script>
 
 <TopBar />
-{#if settings?.enable_statistics_on_home_page == true}
+{#if settings?.enable_nodes_on_home_page == true}
 {@render nodesBar()}
 {/if}
+{#each integrationsStore.integrations as intergration}
+	<div class="bg-base-100 flex flex-col rounded p-2 gap-2">
+		{@render intergrationsBar(intergration)}
+	</div>
+{/each}
+{#if settings?.console_entry_on_top == true}
+<ConsoleInput></ConsoleInput>
+{/if}
 <ConsolePanel />
-{#if settings?.enable_nodes_on_home_page == true}
+{#if settings?.console_entry_on_top == false}
+<ConsoleInput></ConsoleInput>
+{/if}
+{#if settings?.enable_statistics_on_home_page == true}
 {@render statisticsBar()}
 {/if}
+
 {#snippet nodesBar()}
 	<!-- <h1>test1</h1> -->
 	 <div class="card bg-base-100 shadow-md p-4 flex flex-row gap-2">
@@ -128,28 +143,33 @@
 {#snippet statisticsBar()}
 	<StatisticsBar></StatisticsBar>
 {/snippet}
-{#snippet intergrationsBar()}
-	<h1>test3</h1>
+
+{#snippet intergrationsBar(intergration: Integration)}
+	{#if intergration.type.kind == "minecraft"}
+		<Minecraft integration={intergration} ></Minecraft>
+	{/if}
 {/snippet}
 
 <dialog id="delete-node-dialog" class="modal">
 	<form onsubmit={deleteNode} method="dialog">
-		<div class="p-4 fieldset">
-			<label for="selected_node">Select node</label>
-			<select bind:value={selectedNodeName} id="selected_node" class="select">
-				<option selected value={nodeName}>{nodeName}</option>
-				{#each nodes as node}
-					{#if (node.nodename != nodeName)}
-						<option value={node.nodename}>{node.nodename}</option>
-					{/if}
-				{/each}	
-			</select>
-		</div>
-		<div class="modal-action">
-			<button class="btn btn-ghost btn-error" type="submit" value="cancel" formnovalidate>
-				Cancel
-			</button>
-			<button class="btn btn-primary" type="submit">Delete</button>
+		<div class="bg-base-100 rounded">
+			<div class="p-4 fieldset">
+				<label for="selected_node">Select node</label>
+				<select bind:value={selectedNodeName} id="selected_node" class="select">
+					<option selected value={nodeName}>{nodeName}</option>
+					{#each nodes as node}
+						{#if (node.nodename != nodeName)}
+							<option value={node.nodename}>{node.nodename}</option>
+						{/if}
+					{/each}	
+				</select>
+			</div>
+			<div class="modal-action">
+				<button class="btn btn-ghost btn-error" type="submit" value="cancel" formnovalidate>
+					Cancel
+				</button>
+				<button class="btn btn-primary" type="submit">Delete</button>
+			</div>
 		</div>
 	</form>
 </dialog>
@@ -196,7 +216,7 @@
 	</form>
 </dialog>
 
-<dialog id="configure-server-dialog" class="modal">
+<dialog open={$showServerDialog} id="configure-server-dialog" class="modal">
 	<form
 		onsubmit={configureServer}
 		method="dialog"
@@ -280,8 +300,7 @@
 	</form>
 </dialog>
 
-
-<dialog id="switch-node-dialog" class="modal">
+<dialog open={$showNodeDialog} id="switch-node-dialog" class="modal">
 	<form 
 		onsubmit={(event) => {
 			if ((<HTMLButtonElement | null>event.submitter)?.value === 'cancel') return;

@@ -547,7 +547,7 @@ impl IntergrationsDatabase for Database {
                 db_intergration.status = status;
             }   
 
-            self.write_database(database).await;
+            let _ = self.write_database(database).await;
             Ok(StatusCode::CREATED)
         } else {
             Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))

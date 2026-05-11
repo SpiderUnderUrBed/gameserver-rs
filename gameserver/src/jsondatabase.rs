@@ -5,6 +5,17 @@ use crate::databasespec::Database;
 
 const DB_PATH: &str = "db.json";
 
+pub struct DbConn {
+    
+}
+impl DbConn {
+    pub async fn first_connection() -> Self {
+        Self {
+            
+        }
+    }
+}
+
 pub fn ensure_db() -> Result<(), ()> {
     if !Path::new(DB_PATH).exists() {
         let db = Database::default();

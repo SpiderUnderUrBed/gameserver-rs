@@ -1,4 +1,4 @@
-# --- Stage 1: Frontend Build ---
+# Stage 1: Frontend Build
 FROM node:24-slim AS frontend-builder
 WORKDIR /app
 # Copy only package files first to leverage Docker cache
@@ -8,7 +8,7 @@ RUN npm install && mkdir build
 COPY src/frontend/ ./
 RUN npm run build
 
-# --- Stage 2: Rust Build ---
+# Rust Build 
 FROM rust:1.76-slim AS rust-builder
 WORKDIR /app
 # Install build dependencies (linker, etc.)
@@ -20,7 +20,7 @@ COPY --from=frontend-builder /app/build ./src/frontend/build
 # Build the production binary
 RUN cargo build --release --features full-stack
 
-# --- Stage 3: Final Runtime ---
+# Final Runntime
 FROM debian:bookworm-slim
 WORKDIR /app
 # Install minimal runtime dependencies (SSL is usually needed for web servers)

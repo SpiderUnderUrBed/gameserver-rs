@@ -1,4 +1,4 @@
-# --- Stage 1: Rust Build ---
+# Rust Build 
 FROM rust:1.94-bookworm AS rust-builder
 WORKDIR /app
 # Install build dependencies
@@ -11,7 +11,7 @@ COPY gameserver/Cargo.toml gameserver/Cargo.lock ./
 COPY gameserver/src ./src
 # Build the production binary with full-stack feature
 RUN cargo build --release --features full-stack
-# --- Stage 2: Final Runtime ---
+# Final Runtime
 FROM debian:bookworm-slim
 WORKDIR /app
 # Install minimal runtime dependencies

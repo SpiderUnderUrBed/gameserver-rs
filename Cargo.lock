@@ -1193,6 +1193,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "env",
  "file-transfer-system",
@@ -1204,6 +1205,7 @@ dependencies = [
  "reqwest 0.11.27",
  "serde",
  "serde_json",
+ "sqlx",
  "tokio",
  "use",
  "uuid",
