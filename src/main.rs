@@ -47,7 +47,6 @@ use axum_login::AuthManagerLayer;
 use axum_login::AuthUser;
 use axum_login::tower_sessions::{MemoryStore, SessionManagerLayer};
 use axum_login::{AuthManagerLayerBuilder, AuthnBackend};
-use axum_oidc::EmptyAdditionalClaims;
 use axum_oidc::OidcAuthLayer;
 use axum_oidc::OidcClaims;
 use axum_oidc::OidcClient;
@@ -468,6 +467,16 @@ struct SrcAndDest {
     dest: ApiCalls,
     metadata: String,
 }
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct OidcAdditionalClaims {
+    #[serde(default)]
+    user_perms: Option<Vec<UserPerm>>
+}
+
+impl axum_oidc::openidconnect::AdditionalClaims for OidcAdditionalClaims {}
+impl axum_oidc::AdditionalClaims for OidcAdditionalClaims {}
+
 
 // Some common api calls which is just what might get exchanged between the frontend and backend via api
 // this is needed rather than a bunch of structs or however else I might do it because in some cases I might not know what api call to expect
@@ -1977,26 +1986,26 @@ async fn refresh_status(
     headers: HeaderMap
 ) {
     let mut state = arc_state.write().await;
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
+    // let mut authorized = false;
+    // if let Some(user) = auth_session.user {
+    //     if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+    //         authorized = true;
+    //     }
+    // }
+    // if let Some(token) = get_auth_bearer(headers) {
+    //     if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+    //         authorized = true;
+    //     }
+    // }
+    // if !authorized {
+    state.tcp_conn_status = {
+        if check_channel_health(&state.tcp_tx, state.tcp_rx.resubscribe()).await {
+            Status::Up
+        } else {
+            Status::Down
         }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if !authorized {
-        state.tcp_conn_status = {
-            if check_channel_health(&state.tcp_tx, state.tcp_rx.resubscribe()).await {
-                Status::Up
-            } else {
-                Status::Down
-            }
-        };
-    }
+    };
+    //}
 }
 
 async fn fetch_current_node(
@@ -2173,9 +2182,28 @@ async fn edit_buttons(
 }
 async fn button_reset(
     State(arc_state): State<Arc<RwLock<AppState>>>,
+    auth_session: AuthSession,
+    headers: HeaderMap,
     Json(request): Json<IncomingMessage>,
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
+
+    let mut authorized = false;
+    if let Some(user) = auth_session.user {
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if let Some(token) = get_auth_bearer(headers) {
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if !authorized {
+        return StatusCode::UNAUTHORIZED
+    }
+
+
     if request.message == "toggle" {
         let result = state.database.toggle_default_buttons().await;
         if result.is_ok() {
@@ -2297,8 +2325,28 @@ async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
 async fn ws_handler(
     ws: WebSocketUpgrade,
     State(arc_state): State<Arc<RwLock<AppState>>>,
+    auth_session: AuthSession,
     headers: HeaderMap,
 ) -> impl IntoResponse {
+
+    let state = arc_state.write().await;
+    let mut authorized = false;
+    if let Some(user) = auth_session.user {
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if let Some(token) = get_auth_bearer(headers) {
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if !authorized {
+        return StatusCode::UNAUTHORIZED.into_response()
+    }
+    drop(state);
+
+
     ws.max_frame_size(1024 * 1024)
         .max_message_size(1024 * 1024)
         .on_failed_upgrade(|e| {
@@ -2323,7 +2371,7 @@ async fn routes_static(
     auth_layer: AuthManagerLayer<Backend, MemoryStore>,
 ) -> (
     Router<Arc<RwLock<AppState>>>,
-    Option<OidcAuthLayer<EmptyAdditionalClaims>>,
+    Option<OidcAuthLayer<OidcAdditionalClaims>>,
 ) {
     let base_path = std::env::var("SITE_URL")
         .map(|mut s| {
@@ -2367,14 +2415,14 @@ async fn routes_static(
 
     // OIDC layers and routes will not be constructed if there is an issue with creating the layer
     // and routes, and will just merge and empty router
-    let mut maybe_oidc_layer: Option<OidcAuthLayer<EmptyAdditionalClaims>> = None;
+    let mut maybe_oidc_layer: Option<OidcAuthLayer<OidcAdditionalClaims>> = None;
     let mut oidc_routes: Router<Arc<RwLock<AppState>>> = Router::new();
 
     if let Ok((raw_oidc_layer, _)) = get_oidc_layer().await {
         // adds the callback and the oidc route to actually start the login initiation (includes fallback for /oidc/ if the user adds a path, maybe not nessesary?)
         let callback_router: Router<Arc<RwLock<AppState>>> = Router::new().route(
             "/oidc/callback",
-            any(handle_oidc_redirect::<EmptyAdditionalClaims>),
+            any(handle_oidc_redirect::<OidcAdditionalClaims>),
         );
 
         let login_router: Router<Arc<RwLock<AppState>>> = Router::new()
@@ -2388,7 +2436,7 @@ async fn routes_static(
                         eprintln!("OIDC login layer error: {e:#?}");
                         e.into_response()
                     }))
-                    .layer(OidcLoginLayer::<EmptyAdditionalClaims>::new()),
+                    .layer(OidcLoginLayer::<OidcAdditionalClaims>::new()),
             );
 
         oidc_routes = Router::new().merge(callback_router).merge(login_router);
@@ -2420,8 +2468,8 @@ async fn routes_static(
 // client ids and secrets
 async fn get_oidc_layer() -> Result<
     (
-        OidcAuthLayer<EmptyAdditionalClaims>,
-        OidcClient<EmptyAdditionalClaims>,
+        OidcAuthLayer<OidcAdditionalClaims>,
+        OidcClient<OidcAdditionalClaims>,
     ),
     Box<dyn Error + Send + Sync>,
 > {
@@ -2442,7 +2490,7 @@ async fn get_oidc_layer() -> Result<
         get_env_var_or_arg("OIDC_SECRET", Some("axum-app-secret".into())).unwrap();
     let oidc_id: String = get_env_var_or_arg("OIDC_ID", Some("axum-app".into())).unwrap();
 
-    let client = OidcClient::<EmptyAdditionalClaims>::builder()
+    let client = OidcClient::<OidcAdditionalClaims>::builder()
         .with_default_http_client()
         .with_redirect_url(oidc_callback.parse()?)
         .with_client_id(ClientId::new(oidc_id))
@@ -2460,14 +2508,14 @@ async fn get_oidc_layer() -> Result<
 #[axum::debug_handler]
 async fn oidc_login_initiate(
     mut auth_session: AuthSession,
-    claims: Option<OidcClaims<EmptyAdditionalClaims>>,
+    claims: Option<OidcClaims<OidcAdditionalClaims>>,
 ) -> impl IntoResponse {
     if auth_session.user.is_some() {
         return Redirect::to("/").into_response();
     }
     if let Some(claims) = claims {
         let mut decoded_user = String::new();
-
+        let mut user_perms = Vec::new();
         // Code for decoding the claims itself
         // if let Ok(decoded_user_bytes) = STANDARD.decode(local_claim_name.to_string()){
         //     if let Ok(inner_decoded_user) = String::from_utf8(decoded_user_bytes){
@@ -2480,6 +2528,9 @@ async fn oidc_login_initiate(
         //     println!("C");
         //     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         // }
+        if let Some(user_perms_claim) = &claims.additional_claims().user_perms {
+            user_perms = user_perms_claim.to_vec();
+        }
 
         if let Some(claim_name) = claims.name() {
             if let Some(local_claim_name) = claim_name.get(None) {
@@ -2497,7 +2548,7 @@ async fn oidc_login_initiate(
         let user = User {
             username: decoded_user,
             password_hash: None,
-            user_perms: vec![],
+            user_perms,
         };
         match auth_session.login(&user).await {
             Ok(_) => eprintln!("login succeeded"),
@@ -3899,9 +3950,28 @@ async fn get_servers(
 // TODO:, REMOVE THIS
 async fn receive_message(
     State(arc_state): State<Arc<RwLock<AppState>>>,
+    auth_session: AuthSession,
+    headers: HeaderMap,
     Json(res): Json<ApiCalls>,
 ) -> Result<Json<ResponseMessage>, (StatusCode, String)> {
     let state = arc_state.write().await;
+
+    let mut authorized = false;
+    if let Some(user) = auth_session.user {
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if let Some(token) = get_auth_bearer(headers) {
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if !authorized {
+        return Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string()))
+    }
+
+
     if let ApiCalls::IncomingMessage(payload) = res {
         let json_payload = MessagePayload {
             r#type: payload.message_type.clone(),
@@ -4207,11 +4277,30 @@ async fn handle_static_request(
 // it will ensure it is not a path escape
 // then return the file content
 async fn get_files_content(
-    State(state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    auth_session: AuthSession,
+    headers: HeaderMap,
     Json(request): Json<FileChunk>,
 ) -> Result<impl IntoResponse, impl IntoResponse> {
+    let state = arc_state.read().await;
+    let mut authorized = false;
+    if let Some(user) = auth_session.user {
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if let Some(token) = get_auth_bearer(headers) {
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if !authorized {
+        return Err(StatusCode::UNAUTHORIZED.into_response())
+    }
+
+
     let (tcp_tx, tcp_rx) = {
-        let state = state.read().await;
+        let state = arc_state.read().await;
         (state.tcp_tx.clone(), state.tcp_tx.subscribe())
     };
 
@@ -4411,8 +4500,27 @@ async fn authenticate_route_with_jwt(
 // TODO: think about removing this
 async fn get_message(
     State(arc_state): State<Arc<RwLock<AppState>>>,
+    auth_session: AuthSession,
+    headers: HeaderMap
 ) -> Result<Json<MessagePayload>, (StatusCode, String)> {
     let mut state = arc_state.write().await;
+
+    let mut authorized = false;
+    if let Some(user) = auth_session.user {
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if let Some(token) = get_auth_bearer(headers) {
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if !authorized {
+        return Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string()))
+    }
+
+
     let request = MessagePayload {
         r#type: "request".to_string(),
         message: "get_message".to_string(),
@@ -4466,11 +4574,31 @@ async fn get_message(
 }
 
 pub async fn stream_file_download(
-    State(state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    auth_session: AuthSession,
+    headers: HeaderMap,
     axum::extract::Path(file_path): axum::extract::Path<String>,
 ) -> Result<Response<Body>, StatusCode> {
+    let state = arc_state.read().await;
+    let mut authorized = false;
+    if let Some(user) = auth_session.user {
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if let Some(token) = get_auth_bearer(headers) {
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if !authorized {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    drop(state);
+
+
     let tcp_fs = {
-        let state = state.read().await;
+        let state = arc_state.read().await;
         let (tcp_tx, tcp_rx) = (state.tcp_tx.clone(), state.tcp_tx.subscribe());
         Arc::new(Mutex::new(TcpFs::new(tcp_tx, tcp_rx)))
     };
