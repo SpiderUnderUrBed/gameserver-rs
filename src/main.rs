@@ -1453,7 +1453,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         ws_tx: ws_tx.clone(),
         base_path: base_path.clone(),
         current_node: NodeAndTCP::default(),
-        database,
+        database: database.clone(),
         client,
         additonal_node_tcp: nodes,
         tcp_conn_status: Status::Unknown,
@@ -1491,8 +1491,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .with_path("/")
         .with_name("gameserver_session");
 
-    let backend = Backend::default();
-    let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer.clone()).build();
+    let backend = Backend::new(database);
+    let auth_layer: AuthManagerLayer<Backend, MemoryStore> = AuthManagerLayerBuilder::new(backend, session_layer.clone()).build();
 
     let (fallback_router, maybe_oidc_layer) =
         routes_static(multifaceted_state.clone(), auth_layer.clone()).await;
@@ -1730,12 +1730,12 @@ pub async fn start_server(
 
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -1764,12 +1764,12 @@ pub async fn stop_server(
 
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -1801,12 +1801,12 @@ pub async fn rcon_command(
 
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -1880,12 +1880,12 @@ async fn file_operations(
 
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -1913,12 +1913,12 @@ async fn upload(
 
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -1945,12 +1945,12 @@ async fn migrate(
 
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -1979,16 +1979,16 @@ async fn refresh_status(
     let mut state = arc_state.write().await;
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
-    if authorized {
+    if !authorized {
         state.tcp_conn_status = {
             if check_channel_health(&state.tcp_tx, state.tcp_rx.resubscribe()).await {
                 Status::Up
@@ -2007,12 +2007,12 @@ async fn fetch_current_node(
     let mut state = arc_state.write().await;
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -2044,12 +2044,12 @@ async fn get_status(
 
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -2088,12 +2088,12 @@ async fn get_settings(
     let state = arc_state.read().await;
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -2116,12 +2116,12 @@ async fn get_buttons(
 
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -2151,12 +2151,12 @@ async fn edit_buttons(
 
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -2545,12 +2545,12 @@ async fn set_settings(
 
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -2602,7 +2602,7 @@ async fn statistics(
 
     // let mut authorized = false;
     // if let Some(user) = auth_session.user {
-    //     if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+    //     if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
     //         authorized = true;
     //     }
     // }
@@ -2664,7 +2664,7 @@ async fn ongoing_server_status(
 
     // let mut authorized = false;
     // if let Some(user) = auth_session.user {
-    //     if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+    //     if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
     //         authorized = true;
     //     }
     // }
@@ -2726,12 +2726,12 @@ async fn delete_node(
     let state = arc_state.write().await;
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -2792,12 +2792,12 @@ async fn add_node(
 
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -2822,12 +2822,12 @@ async fn delete_server(
 
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -2867,12 +2867,12 @@ async fn add_server(
 
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -2951,12 +2951,12 @@ async fn get_integrations(
 
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -2994,12 +2994,12 @@ async fn modify_intergration(
 
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -3116,12 +3116,12 @@ async fn delete_intergration(
 
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -3149,12 +3149,12 @@ async fn create_intergration(
 
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -3210,12 +3210,12 @@ async fn create_user(
 
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -3240,12 +3240,12 @@ async fn edit_user(
     let state = arc_state.write().await;
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -3271,12 +3271,12 @@ async fn set_server(
     let mut state = arc_state.write().await;
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -3354,12 +3354,12 @@ async fn get_server(
 
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -3393,12 +3393,12 @@ async fn get_user(
     let state = arc_state.write().await;
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -3426,12 +3426,12 @@ async fn delete_user(
 
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -3469,12 +3469,12 @@ async fn process_general(
 
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -3542,12 +3542,12 @@ async fn process_general_with_metadata(
     let mut state = arc_state.write().await;
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -3720,12 +3720,12 @@ async fn users(
 
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -3762,12 +3762,12 @@ async fn change_node(
 
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -3815,12 +3815,12 @@ async fn get_nodes(
 
     let mut authorized = false;
     if let Some(user) = auth_session.user {
-        if !user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if !resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
             authorized = true;
         }
     }
@@ -3956,9 +3956,18 @@ pub struct Claims {
 }
 
 // Our custom backend, which only hash a list of users
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Backend {
     pub users: HashMap<String, User>,
+    pub database: Database
+}
+
+impl Backend {
+    fn new(database: Database) -> Backend {
+        Backend { users: HashMap::new(), database }
+    }
+    // fn get_user() -> {
+    // }
 }
 
 // Impliment the AuthBackend trait provided by axum_login for Backend, so it knows how to use it to authenticate and get users
@@ -3980,14 +3989,8 @@ impl AuthnBackend for Backend {
         Ok(user)
     }
 
-    // I dont even use this function so its fine if I dont add user perms or even do it correctly
-    // it was just required by the trait
     async fn get_user(&self, user_id: &String) -> Result<Option<Self::User>, Self::Error> {
-        Ok(Some(User {
-            username: user_id.clone(),
-            password_hash: None,
-            user_perms: vec![],
-        }))
+        Ok(self.database.retrieve_user(user_id.to_string()).await)
     }
 }
 
@@ -4103,7 +4106,7 @@ async fn sign_in(
     let user = User {
         username: user.username,
         password_hash: None,
-        user_perms: vec![],
+        user_perms: user.user_perms,
     };
 
     if let Err(e) = auth_session.login(&user).await {
