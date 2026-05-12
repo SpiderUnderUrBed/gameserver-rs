@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# note to developer, no need to have the postgres db script ran within here, as only json is avalible atm
+# note to developers working on this, no need to have the postgres db script ran within here, as only json is avalible atm
 set -e
 
 REPO_URL="https://github.com/SpiderUnderUrBed/gameserver-rs"
@@ -8,11 +8,14 @@ NODE_SERVICE_NAME="gameserver-rs-node"
 LOCAL_RUST="$PWD/.rust"
 REQUIRED_RUST_VERSION="1.88.0"
 
-if [ ! -d "gameserver-rs" ]; then
+#if [ ! -d "gameserver-rs" ]; then
+if [ ! -d "gameserver-rs" ] && [ "$(basename "$PWD")" != "gameserver-rs" ]; then
     git clone "$REPO_URL"
 fi
 
-cd gameserver-rs
+if [ "$(basename "$PWD")" != "gameserver-rs" ]; then
+    cd gameserver-rs
+fi
 git checkout testing
 
 if ! command -v cargo &> /dev/null; then
@@ -76,6 +79,8 @@ rm "$MAIN_SERVICE_FILE"
 cd gameserver
 
 cargo build --release
+
+cd ..
 
 NODE_SERVICE_FILE=$(mktemp)
 cat <<EOF > "$NODE_SERVICE_FILE"

@@ -39,6 +39,7 @@ export interface GetCurrentNodeResponse {
 export class ServerConsoleState {
 	public basePath = '';
 
+	public currentWsEntry = writable('');
 	public consoleHistory = $state<ConsoleEntry[]>([]);
 	public nodes = $state<NodeData[]>([]);
 	public servers = $state<ServerData[]>([]);
@@ -101,13 +102,6 @@ export class ServerConsoleState {
 	}
 
 	public addConsoleEntry(entry: ConsoleEntry) {
-		// this.consoleHistory = [...this.consoleHistory, entry];
-		// const consoleHistoryElem = document.getElementById('consoleHistory');
-		// if (consoleHistoryElem) {
-		// 	setTimeout(() => {
-		// 		consoleHistoryElem.scrollTop = consoleHistoryElem.scrollHeight;
-		// 	}, 1);
-		// }
 	    this.pendingEntries.push(entry);
 		if (this.flushTimer) clearTimeout(this.flushTimer);
 		this.flushTimer = setTimeout(() => {
@@ -155,6 +149,7 @@ export class ServerConsoleState {
 				const payload = event.data;
 				const out = typeof payload === 'string' ? payload : JSON.stringify(payload);
 				console.log("message: " + out);
+				this.currentWsEntry.set(out);
 				if (this.correctMessage(out)) {
 					this.addConsoleEntry({ type: 'output', text: this.cleanOutput(this.cleanJson(out)) });
 				}

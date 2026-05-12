@@ -319,18 +319,49 @@ struct MessagePayloadWithMetadata {
     authcode: String,
 }
 
-pub enum StreamResult {
-    Done,
-    Reconnect(String, String),
+// For very simple messages like pings that need no added complexity
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct SimpleMessage {
+    message: String
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct SimpleMesagePayload {
+    message: String,
+    authcode: String,
+}
+
+// A simple response message, no authorization needed, alhough the equivalent would be setting the authcode to 0 and making a custom type for this
+#[derive(Debug, Serialize)]
+struct ResponseMessage {
+    response: String,
+}
+
+// more modern version of incoming message, i only keep incomingMessage for now as it will take a bit of effort to change it all to support the new types
+// TODO: replace IncomingMessage with IncomingMessageWithMetadata
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct IncomingMessageWithMetadata {
+    message: String,
+    #[serde(rename = "type")]
+    message_type: String,
+    metadata: MetadataTypes,
+    authcode: String,
+}
 
 // TODO: Is this truely nessesary for the RCON response?
+// Could I use SimpleMessage instead?
 #[derive(Debug, Serialize, Deserialize)]
 struct UnauthenticatedMessagePayload {
     r#type: String,
     message: String,
 }
+
+
+pub enum StreamResult {
+    Done,
+    Reconnect(String, String),
+}
+
 
 // #[derive(PartialEq)]
 #[derive(Default)]
@@ -357,17 +388,6 @@ impl Clone for NodeAndTCP {
             k8s_type: self.k8s_type.clone(),
         }
     }
-}
-
-// more modern version of incoming message, i only keep incomingMessage for now as it will take a bit of effort to change it all to support the new types
-// TODO: replace IncomingMessage with IncomingMessageWithMetadata
-#[derive(Debug, Deserialize, Serialize, Clone)]
-struct IncomingMessageWithMetadata {
-    message: String,
-    #[serde(rename = "type")]
-    message_type: String,
-    metadata: MetadataTypes,
-    authcode: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -408,11 +428,7 @@ struct InnerData {
     authcode: String,
 }
 
-// A simple response message, no authorization needed, alhough the equivalent would be setting the authcode to 0 and making a custom type for this
-#[derive(Debug, Serialize)]
-struct ResponseMessage {
-    response: String,
-}
+
 
 #[derive(Debug, Serialize)]
 struct SignInResponse {
@@ -432,11 +448,6 @@ struct List {
     list: ApiCalls,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct SimpleMesagePayload {
-    message: String,
-    authcode: String,
-}
 
 // May be redundant, but this is a struct for incoming messages
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -734,6 +745,21 @@ async fn get_all_stream_data_parsed(line_content: &str) -> Result<Vec<Value>, se
     }
     final_data.extend(src_and_dest_values);
 
+    let simple_messages_parsed: Vec<Result<SimpleMessage, serde_json::Error>> =
+        value_from_line::<SimpleMessage, _>(line_content, |line| line.contains("\"message\"")).await;
+
+    let mut simple_messages_values: Vec<Value> = vec![];
+    for item in simple_messages_parsed {
+        if let Ok(data) = item {
+            if let Ok(serialized_value) = serde_json::to_value(data) {
+                if !simple_messages_values.contains(&serialized_value) {
+                    simple_messages_values.push(serialized_value);
+                }
+            }   
+        }
+    };
+    final_data.extend(simple_messages_values);
+
     let integration_parsed: Vec<Result<IntegrationCommands, serde_json::Error>> =
         value_from_line::<IntegrationCommands, _>(line_content, |line| line.contains("\"kind\""))
             .await;
@@ -748,6 +774,7 @@ async fn get_all_stream_data_parsed(line_content: &str) -> Result<Vec<Value>, se
             }
         }
     }
+
     final_data.extend(integration_values);
     return Ok(final_data);
 }
@@ -787,6 +814,18 @@ async fn handle_all_stream_values(
                 true => Status::Up,
                 false => Status::Down,
             };
+        }
+    }
+
+    if let Ok(data_clone) = serde_json::from_value::<SimpleMessage>(value.clone()) {
+        if data_clone.message == "pong" {
+            let state_guard: tokio::sync::RwLockWriteGuard<'_, AppState> = arc_state.write().await;
+            let ping_message = MessagePayload {
+                r#type: "status".to_string(),
+                message: "ping_ok".to_string(),
+                authcode: "0".to_string(),
+            };
+            let _ = state_guard.ws_tx.send(serde_json::to_string(&ping_message).unwrap());
         }
     }
 
@@ -1502,7 +1541,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // the main route, this serves all the api stuff that wont be behind a login, but I handle the main routes in routes_static for better control
     // over the authentication flow, if the api could be publically accessible in the future, you would need a diffrent way to authenticate with a api
     let inner = Router::new()
-        .route("/api/message", get(get_message))
         .route("/api/nodes", get(get_nodes))
         .route("/api/buttons", get(get_buttons))
         .route("/api/servers", get(get_servers))
@@ -1516,6 +1554,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/awaitserverstatus", get(ongoing_server_status))
         .route("/api/intergrations", get(get_integrations))
         .route("/api/getcurrentnode", get(fetch_current_node))
+        .route("/api/ping", post(ping))
         .route("/api/createintergrations", post(create_intergration))
         .route("/api/modifyintergrations", post(modify_intergration))
         .route("/api/deleteintergrations", post(delete_intergration))
@@ -1539,12 +1578,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/getserver", post(get_server))
         .route("/api/edituser", post(edit_user))
         .route("/api/getuser", post(get_user))
-        .route("/api/send", post(receive_message))
-        .route("/api/general", post(process_general))
-        .route(
-            "/api/generalwithmetadata",
-            post(process_general_with_metadata),
-        )
         .route("/api/signin", post(sign_in))
         .route("/api/signout", delete(sign_out))
         .route("/api/user/me", get(user_me))
@@ -2879,6 +2912,18 @@ async fn delete_server(
         return Err(StatusCode::UNAUTHORIZED)
     }
 
+    if let Some(server) = &state.current_server {
+        let res = state.database.remove_server_in_db(
+            ModifyElementData { element: Element::Server(server.clone()), jwt: "".to_string(), require_auth: false }
+        ).await;
+        if res.is_err() {
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    }
+    // state.database.simple_remove_server_in_db(
+        
+    // )
+
     let msg = MessagePayload {
         r#type: "command".to_string(),
         message: "delete_current_server".to_string(),
@@ -3024,6 +3069,50 @@ async fn get_integrations(
             .into_response()),
 
         Err(status) => Ok(status.into_response()),
+    }
+}
+
+// Pings the current or specified node
+// the status code itself does not determine if a ping was successful rather if the ping 
+// went through
+async fn ping(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    auth_session: AuthSession,
+    headers: HeaderMap,
+    Json(request): Json<MessagePayload>
+) -> StatusCode {
+    let state = arc_state.write().await;
+    let mut authorized = false;
+    if let Some(user) = auth_session.user {
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if let Some(token) = get_auth_bearer(headers) {
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if !authorized {
+        return StatusCode::UNAUTHORIZED;
+    }
+
+    if request.message.is_empty() {
+        let ping = SimpleMessage {
+            message: "ping".to_string()
+        };
+        if let Some(internal_tx) = &state.internal_tx {
+            let res = internal_tx.send(serde_json::to_vec(&ping).unwrap());
+            if res.is_ok() {
+                return StatusCode::OK
+            } else {
+                return StatusCode::INTERNAL_SERVER_ERROR
+            }
+        } else {
+            return StatusCode::INTERNAL_SERVER_ERROR
+        }
+    } else {
+        return StatusCode::NOT_IMPLEMENTED
     }
 }
 
@@ -3500,259 +3589,7 @@ async fn capabilities(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl In
     Json({ capabilities }).into_response()
 }
 
-// For general messages, in alot if not most cases this is for development purposes
-// there are many cases where this can fail, if it does, it can simply return INTERNAL_SERVER_ERROR
-// it forwards the messages to the channel which forwards it to the gameserver
-async fn process_general(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
-    auth_session: AuthSession,
-    headers: HeaderMap,
-    Json(res): Json<ApiCalls>,
-) -> Result<Json<ResponseMessage>, (StatusCode, String)> {
-    let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if !authorized {
-        return Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string()))
-    }
-
-    if let ApiCalls::IncomingMessage(payload) = res {
-        println!("Processing general message: {:?}", payload);
-
-        let json_payload = MessagePayload {
-            r#type: payload.message_type.clone(),
-            message: payload.message.clone(),
-            authcode: payload.authcode.clone(),
-        };
-
-        match serde_json::to_vec(&json_payload) {
-            Ok(mut json_bytes) => {
-                json_bytes.push(b'\n');
-
-                let tx = state.tcp_tx.clone();
-                let tx_guard = tx;
-
-                match tx_guard.send(json_bytes) {
-                    Ok(_) => {
-                        println!("Successfully forwarded message to TCP server");
-                        Ok(Json(ResponseMessage {
-                            response: format!("Processed: {}", payload.message),
-                        }))
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to send message to TCP channel: {}", e);
-                        Err((
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "Failed to forward message to server".to_string(),
-                        ))
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("Serialization error: {}", e);
-                Err((
-                    StatusCode::BAD_REQUEST,
-                    "Invalid message format".to_string(),
-                ))
-            }
-        }
-    } else {
-        Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to forward message to server".to_string(),
-        ))
-    }
-}
-
-// as I said in main, this is temporary, because IncomingMessageWithMetadata is supposed to replace IncomingMessage
-// but for now I will have it as a seprate route for new routes which need a metadata feild until a replace everything
-// or ill remove both in favor of individual routes
-async fn process_general_with_metadata(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
-    auth_session: AuthSession,
-    headers: HeaderMap,
-    Json(res): Json<ApiCalls>,
-) -> Result<Json<ResponseMessage>, (StatusCode, String)> {
-    let mut state = arc_state.write().await;
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if !authorized {
-        return Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string()))
-    }
-
-    if let ApiCalls::IncomingMessageWithMetadata(payload) = res {
-        println!("Processing general message: {:?}", payload);
-
-        let json_payload = IncomingMessageWithMetadata {
-            message_type: payload.message_type.clone(),
-            message: payload.message.clone(),
-            authcode: payload.authcode.clone(),
-            metadata: payload.metadata.clone(),
-        };
-
-        if payload.message == "create_server" {
-            if let MetadataTypes::Server {
-                servername,
-                provider,
-                providertype,
-                location,
-                sandbox,
-                server_metadata
-            } = payload.metadata.clone()
-            {
-                // Sets the server on the local server when creating a new game server
-                // TODO: maybe in the future have a tickbox to ask if the user wants to change the current server
-                state.current_server = Some(Server {
-                    servername: servername.clone(),
-                    provider,
-                    providertype,
-                    location,
-                    sandbox,
-                    node: Node {
-                        nodename: state.current_node.name.clone(),
-                        ip: state.current_node.ip.clone(),
-                        nodestatus: NodeStatus::Unknown,
-                        nodetype: state.current_node.nodetype.clone(),
-                        k8s_type: state.current_node.k8s_type.clone(),
-                    },
-                    server_metadata: ServerMetadata::default()
-                    .into(),
-                });
-                let database = &state.database;
-                let db_result = database
-                    .get_from_servers_database(&servername)
-                    .await
-                    .map_err(|_| {
-                        (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "Error connecting to database".to_string(),
-                        )
-                    });
-                if db_result?.is_none() {
-                    if let MetadataTypes::Server {
-                        providertype,
-                        location,
-                        provider,
-                        servername,
-                        sandbox,
-                        server_metadata
-                    } = payload.metadata.clone()
-                    {
-                        let _ = database
-                            .create_server_in_db(ModifyElementData {
-                                element: Element::Server(Server {
-                                    servername: servername.clone(),
-                                    provider,
-                                    providertype,
-                                    location,
-                                    sandbox,
-                                    node: Node {
-                                        nodename: state.current_node.name.clone(),
-                                        ip: state.current_node.ip.clone(),
-                                        nodestatus: NodeStatus::Unknown,
-                                        nodetype: state.current_node.nodetype.clone(),
-                                        k8s_type: state.current_node.k8s_type.clone(),
-                                    }
-                                    .into(),
-                                    server_metadata,
-                                }),
-                                jwt: payload.authcode,
-                                require_auth: false,
-                            })
-                            .await;
-                        // Sets the server on the remote node when creating a new server
-                        // TODO: maybe in the future have a tickbox to ask if the user wants to change the current game server
-                        let retrieved_server = state.current_server.clone().ok_or((
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "Error setting server".to_string(),
-                        ))?;
-                        let msg = MessagePayloadWithMetadata {
-                            r#type: "command".to_string(),
-                            message: "set_server".to_string(),
-                            metadata: MetadataTypes::Server {
-                                servername: retrieved_server.servername,
-                                provider: retrieved_server.provider,
-                                providertype: retrieved_server.providertype,
-                                location: retrieved_server.location,
-                                sandbox: retrieved_server.sandbox,
-                                server_metadata: retrieved_server.server_metadata
-                            },
-                            authcode: "0".to_string(),
-                        };
-                        let mut bytes = serde_json::to_vec(&msg).map_err(|_| {
-                            (
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                "Error setting server".to_string(),
-                            )
-                        })?;
-                        bytes.push(b'\n');
-                        state.tcp_tx.send(bytes).map_err(|_| {
-                            (
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                "Error setting server".to_string(),
-                            )
-                        })?;
-                    }
-                }
-            }
-        }
-        match serde_json::to_vec(&json_payload) {
-            Ok(mut json_bytes) => {
-                json_bytes.push(b'\n');
-
-                let tx = state.tcp_tx.clone();
-                let tx_guard = tx;
-
-                match tx_guard.send(json_bytes) {
-                    Ok(_) => {
-                        println!("Successfully forwarded message to TCP server");
-                        Ok(Json(ResponseMessage {
-                            response: format!("Processed: {}", payload.message),
-                        }))
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to send message to TCP channel: {}", e);
-                        Err((
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "Failed to forward message to server".to_string(),
-                        ))
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("Serialization error: {}", e);
-                Err((
-                    StatusCode::BAD_REQUEST,
-                    "Invalid message format".to_string(),
-                ))
-            }
-        }
-    } else {
-        Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to forward message to server".to_string(),
-        ))
-    }
-}
 // a list of users is returned, like alot of other routes, I need to add permissions, and check against those permissions to see if a user
 // can see all the other users, it will delegate the retrival to the database and pass it in as a ApiCalls
 async fn users(
@@ -3940,71 +3777,7 @@ async fn get_servers(
     };
     result
 }
-// TODO:, REMOVE THIS
-async fn receive_message(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
-    auth_session: AuthSession,
-    headers: HeaderMap,
-    Json(res): Json<ApiCalls>,
-) -> Result<Json<ResponseMessage>, (StatusCode, String)> {
-    let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if !authorized {
-        return Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string()))
-    }
-
-
-    if let ApiCalls::IncomingMessage(payload) = res {
-        let json_payload = MessagePayload {
-            r#type: payload.message_type.clone(),
-            message: payload.message.clone(),
-            authcode: payload.authcode.clone(),
-        };
-
-        match serde_json::to_vec(&json_payload) {
-            Ok(mut json_bytes) => {
-                json_bytes.push(b'\n');
-
-                let tx_guard = &state.tcp_tx;
-                match tx_guard.send(json_bytes) {
-                    Ok(_) => Ok(Json(ResponseMessage {
-                        response: format!("Successfully sent message: {}", payload.message),
-                    })),
-                    Err(e) => {
-                        eprintln!("Failed to send message to TCP channel: {}", e);
-                        Err((
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "Failed to forward message to server".to_string(),
-                        ))
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("Serialization error: {}", e);
-                Err((
-                    StatusCode::BAD_REQUEST,
-                    "Invalid message format".to_string(),
-                ))
-            }
-        }
-    } else {
-        Err((
-            StatusCode::BAD_REQUEST,
-            "Invalid message format".to_string(),
-        ))
-    }
-}
 
 // Creates a new type for authsession with our custom backend
 pub type AuthSession = axum_login::AuthSession<Backend>;
@@ -4486,83 +4259,6 @@ async fn authenticate_route_with_jwt(
             }
         }
         Err(_) => (StatusCode::UNAUTHORIZED, "Invalid token").into_response(),
-    }
-}
-
-// Gets a message from the server
-// TODO: think about removing this
-async fn get_message(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
-    auth_session: AuthSession,
-    headers: HeaderMap
-) -> Result<Json<MessagePayload>, (StatusCode, String)> {
-    let mut state = arc_state.write().await;
-
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if !authorized {
-        return Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string()))
-    }
-
-
-    let request = MessagePayload {
-        r#type: "request".to_string(),
-        message: "get_message".to_string(),
-        authcode: "0".to_owned(),
-    };
-
-    let mut json_bytes = match serde_json::to_vec(&request) {
-        Ok(mut v) => {
-            v.push(b'\n');
-            v
-        }
-        Err(e) => {
-            eprintln!("Serialization error: {}", e);
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to serialize request".into(),
-            ));
-        }
-    };
-
-    let tx_guard = &state.tcp_tx;
-    if let Err(e) = tx_guard.send(json_bytes) {
-        eprintln!("Failed to send request: {}", e);
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to send request to server".into(),
-        ));
-    }
-    drop(tx_guard);
-
-    let mut rx_guard = &mut state.tcp_rx;
-    match rx_guard.recv().await {
-        Ok(response_bytes) => match serde_json::from_slice::<MessagePayload>(&response_bytes) {
-            Ok(msg) => Ok(Json(msg)),
-            Err(e) => {
-                eprintln!("Deserialization error: {}", e);
-                Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to parse server response".into(),
-                ))
-            }
-        },
-        Err(e) => {
-            eprintln!("Failed to receive from broadcast: {e}");
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "No response from server".into(),
-            ))
-        }
     }
 }
 

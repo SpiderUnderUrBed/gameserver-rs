@@ -444,7 +444,18 @@ impl ServerDatabase for Database {
             Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
         }
     }
-    
+    async fn simple_remove_server_in_db(&self, servername: String) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+            let result = sqlx::query("DELETE FROM servers WHERE servername = $1")
+                .bind(&servername)
+                .execute(&self.connection)
+                .await?;
+
+            if result.rows_affected() > 0 {
+                Ok(StatusCode::CREATED)
+            } else {
+                Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+            }
+    }
     async fn remove_server_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         if let Element::Server(server) = element.element {
             let result = sqlx::query("DELETE FROM servers WHERE servername = $1")
