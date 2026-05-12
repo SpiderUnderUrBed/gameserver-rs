@@ -83,6 +83,7 @@ impl Database {
                 location     VARCHAR NOT NULL,
                 sandbox      BOOLEAN NOT NULL DEFAULT true,
                 node         JSONB NOT NULL DEFAULT '{}'::jsonb,
+                server_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
                 created_at   TIMESTAMPTZ DEFAULT now(),
                 updated_at   TIMESTAMPTZ DEFAULT now()
             );
@@ -114,8 +115,8 @@ impl Database {
                 enabled_rcon                   BOOLEAN NOT NULL DEFAULT true,
                 rcon_url                       VARCHAR DEFAULT 'localhost:25575',
                 rcon_password                  VARCHAR DEFAULT 'testing',
-                filter                         VARCHAR DEFAULT 'None',
-                file_system_driver             VARCHAR DEFAULT 'None',
+                filter                         TEXT DEFAULT 'None',
+                file_system_driver             TEXT DEFAULT 'None',
                 enable_statistics_on_home_page BOOLEAN NOT NULL DEFAULT false,
                 enable_nodes_on_home_page      BOOLEAN NOT NULL DEFAULT false,
                 console_entry_on_top           BOOLEAN NOT NULL DEFAULT true,
@@ -418,7 +419,7 @@ impl ServerDatabase for Database {
     
     async fn create_server_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         if let Element::Server(server) = element.element {
-            if server.servername.clone().is_empty(){
+            if server.servername.is_empty() {
                 return Err("Need to have specified a server name".into());
             }
             let existing = self.get_from_servers_database(&server.servername).await?;
@@ -426,7 +427,7 @@ impl ServerDatabase for Database {
                 return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
             }
 
-            let _result = sqlx::query_as::<_, Server>(
+            sqlx::query_as::<_, Server>(
                 "INSERT INTO servers (servername, provider, providertype, location, sandbox, node) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *"
             )
             .bind(&server.servername)
@@ -434,8 +435,7 @@ impl ServerDatabase for Database {
             .bind(&server.providertype)
             .bind(&server.location)
             .bind(&server.sandbox)
-            //.bind(&server.node.nodename)
-            .bind(&server.node)
+            .bind(sqlx::types::Json(&server.node)) 
             .fetch_one(&self.connection)
             .await?;
 

@@ -6,6 +6,9 @@ COPY src/frontend/package*.json ./
 RUN npm install && mkdir build
 # Copy the rest of the frontend source and build
 COPY src/frontend/ ./
+
+RUN npm install tsx
+ENV NODE_OPTIONS='--import tsx/esm'
 RUN npm run build
 
 # Rust Build 

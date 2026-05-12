@@ -22,6 +22,7 @@ spec:
         - name: gameserver
           image: localhost:5000/gameserver:latest
           imagePullPolicy: Always
+          workingDir: /usr/src/app
           ports:
             - containerPort: 8080
           volumeMounts:

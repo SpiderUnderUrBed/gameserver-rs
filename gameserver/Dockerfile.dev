@@ -16,4 +16,4 @@ VOLUME ["/usr/src/app/server"]
 
 EXPOSE 8080
 
-CMD ["cargo", "watch", "--ignore", "server/*", "-x", "run --features full-stack"]
+CMD ["cargo", "watch", "--ignore", "server/*", "--ignore", "db.json", "-x", "run --features full-stack"]
