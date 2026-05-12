@@ -42,7 +42,7 @@
 	//const statusStore = writable<'up' | 'down' | 'unknown'>('unknown');
 </script>
 
-<button onclick={() => changeStatusDialog.show()} class={['inline-grid *:[grid-area:1/1]', props.class]}>
+<button onclick={() => changeStatusDialog.show()} class={['inline-grid *:[grid-area:1/1]', 'pointer-cursor', props.class]}>
 	{#if $statusStore == 'up'}
 		<div class="status status-lg status-success animate-bounce"></div>
 	{:else if $statusStore === 'down'}

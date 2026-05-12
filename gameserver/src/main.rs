@@ -95,6 +95,12 @@ struct IncomingMessageWithMetadata {
     authcode: String,
 }
 
+// For very simple messages like pings that need no added complexity
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct SimpleMessage {
+    message: String
+}
+
 // Metadata types, currently i primarially use it to transmit server data
 // but it can be not set or set as a string too, there will probably be more metadata types in the future
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -1032,7 +1038,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                         }
 
 
-                                        if let Ok(request) =
+                                        if let Ok(request) = serde_json::from_value::<SimpleMessage>(json_value.clone()) {
+                                            if request.message == "ping" {
+                                                //let out_tx_clone = out_tx.clone();
+                                                let pong = SimpleMessage {
+                                                    message: "pong".to_string()
+                                                };
+                                                let _ = out_tx.send(serde_json::to_string(&pong).unwrap()).await;
+                                            }
+                                        } if let Ok(request) =
                                             serde_json::from_value::<FileRequestMessage>(
                                                 json_value.clone(),
                                             )
@@ -1405,6 +1419,16 @@ async fn sort_command_type_or_console(
     let node_password: String =
         get_env_var_or_arg("NODE_PASSWORD", Some(String::default())).unwrap();
 
+    let auth_payload_result: Result<AuthTcpMessage, serde_json::Error> =
+        serde_json::from_value(payload.clone());
+    if let Ok(auth_payload) = auth_payload_result {
+        if node_password != auth_payload.password {
+            println!("Authentication failed");
+            return Err(Box::new(CommandOrConsoleErrors::AuthDisconnect));
+        }
+    }
+
+
     let standard_command_payload_result: Result<MessagePayload, serde_json::Error> =
         serde_json::from_value(payload.clone());
     if let Ok(standard_command_payload) = standard_command_payload_result {
@@ -1483,15 +1507,6 @@ async fn sort_command_type_or_console(
         }
     }
 
-    let auth_payload_result: Result<AuthTcpMessage, serde_json::Error> =
-        serde_json::from_value(payload.clone());
-    if let Ok(auth_payload) = auth_payload_result {
-        if node_password != auth_payload.password {
-            println!("Authentication failed");
-            return Err(Box::new(CommandOrConsoleErrors::AuthDisconnect));
-        }
-    }
-
     let intergration_command_payload_result: Result<IntergrationCommands, serde_json::Error> =
         serde_json::from_value(payload.clone());
     if let Ok(intergration_command_payload) = intergration_command_payload_result {
@@ -1554,6 +1569,13 @@ async fn handle_typical_command_or_console(
                     .await
                     .clone()
                     .ok_or("there is no current server")?;
+                
+                *state.current_server.lock().await = None;
+                let mut db = state.db.lock().await;
+                db.current_server = String::new();
+                db.server_index.remove(&current_server);
+                save_db(&db);
+
                 let option_path = {
                     if let Some(ProviderTypes::Path(path)) = convert_provider(
                         state.clone(),

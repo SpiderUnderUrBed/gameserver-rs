@@ -7,16 +7,27 @@
 	import { NodesStore } from '../../../lib/stores/nodesStore.svelte';
 	import { onMount } from 'svelte';
 	import { writable } from 'svelte/store';
-	import { showNodeDialog, showServerDialog } from './dialogs';
+	import { showNodeDialog, showServerDialog, showNodeHealthDialog } from './dialogs';
 	import { integrationsStore, type Integration } from '../../../lib/stores/integrationsStore.svelte';
 	import Minecraft from './integrations/Minecraft.svelte';
 	import ConsoleInput from '../../../components/dashboard/ConsoleInput.svelte';
+	import { httpClient } from '../../../lib/utils/http';
+	import * as v from 'valibot';
+	import { parse } from 'svelte/compiler';
 
 	let store = new SettingsStore();
 	let settings = $state<Settings | undefined>({
 		enable_statistics_on_home_page: false,
 		enable_nodes_on_home_page: false,
-		console_entry_on_top: true
+		console_entry_on_top: true,
+		file_system_driver: {
+			kind: 'tcp'
+		},
+		filters: {
+			kind: 'alternatingline'
+		},
+		rcon_url: '',
+		rcon_password: ''
 	})
 
 	onMount(async () => {
@@ -43,6 +54,10 @@
 		sandbox: boolean
 	}
 
+	const SimpleMessage = v.object({
+		message: v.string(),
+	});
+
 	let servers: ServerData[] = $state([]);
 
 	let serverName = $state('');
@@ -59,6 +74,8 @@
 	let nodeIp = $state('');
 	let nodeType = $state('Custom');
 	let switchNodeId = $state('');
+
+	let nodeStatus = $state('');
 
 	const fetchNodes = async () => {
 		serverConsole.fetchNodes().then((node_list) => {
@@ -110,6 +127,61 @@
 		nodeType = 'Custom';
 		fetchNodes();
 	};
+
+	// For modals I want to override everything i use showModal rather than trying to set one to false and the other to true
+	// which causes issues with the DOM
+	$effect(() => {
+		if ($showNodeDialog) {
+			document.querySelector<HTMLDialogElement>("#switch-node-dialog")?.showModal();
+		} else {
+			document.querySelector<HTMLDialogElement>("#switch-node-dialog")?.close();
+		}
+	});
+
+	$effect(() => {
+		if ($showNodeHealthDialog) {
+			setTimeout(() => {
+				document.querySelector<HTMLDialogElement>("#node-health-dialog")?.showModal();
+			}, 0);
+		} else {
+			document.querySelector<HTMLDialogElement>("#node-health-dialog")?.close();
+		}
+	});
+
+	serverConsole.currentWsEntry.subscribe((entry) => {
+		try {
+			const parsed_entry = JSON.parse(entry);
+			const parse_result = v.safeParse(SimpleMessage, parsed_entry)
+			if (parse_result.success){
+				if (parse_result.output.message == "pong"){
+					setTimeout(() => 
+					nodeStatus = "Respoded with: " + parse_result.output.message
+					, 0)
+				}
+			}
+		} catch (e) {
+
+		}
+	})
+	
+	// Use regular functions here because I am not passing in a event 
+	// also I will use a fetch here instead of a dedicated store because a dedicated store is just not needed
+	async function pingCurrentNode(){
+		try {
+			let res = await httpClient.post("/api/ping", {
+				json: {
+					type: "",
+					message: "",
+					authcode: "0"
+				}
+			});
+			if (res.ok){
+				nodeStatus = "Sent ping successfully, awaiting response.."
+			}
+		} catch (e) {
+			console.error(e);
+		}
+	}
 </script>
 
 <TopBar />
@@ -150,6 +222,9 @@
 	{/if}
 {/snippet}
 
+<!-- I dont properly use forms to make the json object, maybe consider using forms as intended or dont use it?? -->
+<!-- Form is used because its easy to cancel -->
+<!-- Also as intended only use it when the user modifies data, not for statuses obviously -->
 <dialog id="delete-node-dialog" class="modal">
 	<form onsubmit={deleteNode} method="dialog">
 		<div class="bg-base-100 rounded">
@@ -172,6 +247,21 @@
 			</div>
 		</div>
 	</form>
+</dialog>
+<dialog id="node-health-dialog" class="modal" onclose={() => showNodeHealthDialog.set(false)}>
+  <div class="modal-box">
+    <button class="btn cursor-pointer" onclick={pingCurrentNode}>Ping current node?</button>
+    {#if nodeStatus != ''}
+      <div class="bg-base-100 mt-4">
+        {nodeStatus}
+      </div>
+    {/if}
+    <div class="modal-action">
+      <form method="dialog">
+        <button class="btn btn-ghost btn-error">Cancel</button>
+      </form>
+    </div>
+  </div>
 </dialog>
 <dialog id="create-server-dialog" class="modal">
 	<form onsubmit={submitCreateServer} method="dialog" class="modal-box">
@@ -300,7 +390,7 @@
 	</form>
 </dialog>
 
-<dialog open={$showNodeDialog} id="switch-node-dialog" class="modal">
+<dialog id="switch-node-dialog" class="modal" onclose={() => showNodeDialog.set(false)}>
 	<form 
 		onsubmit={(event) => {
 			if ((<HTMLButtonElement | null>event.submitter)?.value === 'cancel') return;
@@ -324,6 +414,15 @@
 				<p class="italic px-2">No nodes</p>
 			{/if}
 		</div>
+
+		<!-- I think i need to set the type button so that it is not treated like a form element -->
+		<!-- incase i want to use it diffrently, should verify -->
+		<button class="cursor-pointer btn" type="button" onclick={() => {
+			showNodeHealthDialog.set(true)
+			showNodeDialog.set(false);
+		}}>
+			Show node health menu
+		</button>
 
 		<div class="modal-action">
 			<button class="btn btn-ghost btn-error" type="submit" value="cancel" formnovalidate>

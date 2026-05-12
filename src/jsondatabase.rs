@@ -256,6 +256,12 @@ impl ServerDatabase for Database {
             Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
         }
     }
+    async fn simple_remove_server_in_db(&self, servername: String) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+        let mut database = self.get_database().await?;
+        database.servers.retain(|db_server| db_server.servername != servername);
+        let _ = self.write_database(database).await;
+        Ok(StatusCode::CREATED)
+    }
     async fn remove_server_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         let mut database = self.get_database().await?;
         if let Element::Server(Server {servername, provider, providertype, location, node, sandbox, server_metadata }) = element.element {

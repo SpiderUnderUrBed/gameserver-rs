@@ -571,6 +571,10 @@ pub trait ServerDatabase {
         &self,
         server: ModifyElementData,
     ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+    async fn simple_remove_server_in_db(
+        &self, 
+        servername: String
+    ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
     async fn edit_server_in_db(
         &self,
         server: ModifyElementData,
