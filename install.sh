@@ -80,6 +80,8 @@ cd gameserver
 
 cargo build --release
 
+cd ..
+
 NODE_SERVICE_FILE=$(mktemp)
 cat <<EOF > "$NODE_SERVICE_FILE"
 [Unit]
