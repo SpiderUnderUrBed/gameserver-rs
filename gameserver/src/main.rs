@@ -309,7 +309,8 @@ fn process_hook(
     cmd: &mut TokioCommand,
 ) {
     let uid = unsafe { libc::getuid() };
-    if sandbox && uid == 0 {
+    let sandbox_override: bool = get_env_var_or_arg("DISABLE_SANDBOX", Some(false)).unwrap();
+    if sandbox && uid == 0 && !sandbox_override {
         #[cfg(target_os = "linux")]
         {
             let cwd = std::env::current_dir().unwrap_or_default();

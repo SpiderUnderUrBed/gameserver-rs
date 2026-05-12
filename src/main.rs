@@ -769,25 +769,18 @@ async fn handle_all_stream_values(
             let mut state_guard = arc_state.write().await;
             state_guard.tcp_conn_status = Status::Down;
             return Ok(true);
-        } else if payload.r#type == "change_conn" {
-            let node = {
-                let mut state_guard = arc_state.write().await;
-                let node = state_guard
-                    .database
-                    .retrieve_nodes(payload.message)
-                    .await
-                    .unwrap();
-                let (new_tcp_tx, new_tcp_rx) = broadcast::channel::<Vec<u8>>(100);
-                let (internal_tx, internal_rx) = broadcast::channel::<Vec<u8>>(100);
-                state_guard.tcp_tx = new_tcp_tx;
-                state_guard.tcp_rx = new_tcp_rx.resubscribe();
-                state_guard.internal_tx = Some(internal_tx);
-                state_guard.internal_rx = Some(internal_rx.resubscribe());
-                node
-            };
-            *reconnect_target = Some((node.ip, node.nodename));
-            return Ok(true);
-        } else if payload.r#type == "server_state" {
+    } else if payload.r#type == "change_conn" {
+        let node = {
+            let state_guard = arc_state.read().await;  
+            state_guard
+                .database
+                .retrieve_nodes(payload.message)
+                .await
+                .unwrap()
+        };
+        *reconnect_target = Some((node.ip, node.nodename));
+        return Ok(true);  
+    } else if payload.r#type == "server_state" {
             let mut state_guard = arc_state.write().await;
             let sent_status = payload.message.parse().unwrap_or(false);
             state_guard.current_node.status = match sent_status {

@@ -374,7 +374,13 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for User {
 
         let user_perms = raw_perms
             .iter()
-            .filter_map(|s| serde_json::from_str::<UserPerm>(s).ok())
+            .filter_map(|s| {
+                let (perm, scope) = s.split_once(':')?;
+                Some(UserPerm {
+                    perm: perm.to_string(),
+                    scope: scope.to_string(),
+                })
+            })
             .collect();
 
         Ok(User { username, password_hash, user_perms })

@@ -34,7 +34,9 @@ linker = "musl-gcc"
 
 [features]
 default = []
-postgres = []
+postgres = [
+    "sqlx"
+]
 full-stack = [
     "sqlx"
 ]

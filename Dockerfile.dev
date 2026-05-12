@@ -4,14 +4,18 @@ WORKDIR /app/frontend
 
 COPY src/frontend/package*.json ./
 COPY src/frontend/tsconfig.json ./
-COPY src/frontend/svelte.config.js ./
+COPY src/frontend/svelte.config.ts ./
+#COPY src/frontend/svelte.config.js ./
 COPY src/frontend/vite.config.ts ./
+#COPY src/frontend/vite.config.js ./
 COPY src/frontend/src ./src
 COPY src/frontend/static ./static
-COPY src/frontend/extra-assets ./extra-assets 
-
+COPY src/frontend/tsconfig*.json ./
+COPY src/frontend/index.html ./
 RUN mkdir -p build
 
+RUN npm install tsx
+ENV NODE_OPTIONS='--import tsx/esm'
 RUN npm install && npm run build
 
 FROM rust:latest
