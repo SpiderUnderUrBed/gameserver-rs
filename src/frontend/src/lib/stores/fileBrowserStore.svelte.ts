@@ -1,5 +1,5 @@
 import { httpClient } from '../utils/http';
-
+import * as v from 'valibot';
 export interface FileEntry {
 	kind: 'Folder' | 'File' | string;
 	data: string;
@@ -54,6 +54,12 @@ export class FileBrowserStore {
 	}
 
 	public async fetchFileContent(filename: string) {
+		const Base64Schema = v.pipe(
+			v.string(),
+			v.base64(),
+			v.transform((val) => atob(val))
+		);
+
 		this.loading = true;
 		this.error = null;
 		this.fileContent = '';
@@ -88,9 +94,14 @@ export class FileBrowserStore {
 				}
 				return '';
 			};
-
-			this.fileContent = extractMessage(response) ?? '';
-			this.modifiedFileContent = extractMessage(response) ?? '';
+			const ensureDecoded = (input: string): string => {
+				const result = v.safeParse(Base64Schema, input);
+				return result.success ? result.output : input;
+			};
+			const raw = extractMessage(response);
+			const decoded = ensureDecoded(raw);
+			this.fileContent = decoded;
+			this.modifiedFileContent = decoded;
 		} catch (err) {
 			this.error = 'Failed to fetch file content';
 			console.error(err);
