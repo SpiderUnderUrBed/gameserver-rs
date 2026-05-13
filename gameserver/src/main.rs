@@ -1990,7 +1990,7 @@ async fn start_server_with_broadcast(
         *output_tx_lock = None;
     }
 
-    let (broadcast_tx, _) = broadcast::channel(1000);
+    let (broadcast_tx, _) = broadcast::channel(10_000);
 
     println!("Adjusted path to: server/");
     let current_server = state
