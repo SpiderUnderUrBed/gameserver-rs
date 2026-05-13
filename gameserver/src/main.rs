@@ -2352,15 +2352,29 @@ async fn handle_commands_with_metadata(
             "set_server" => {
                 if let MetadataTypes::Server {
                     servername,
-                    provider: _,
-                    location: _,
-                    providertype: _,
-                    sandbox: _,
-                    server_metadata: _,
+                    provider,
+                    location,
+                    providertype,
+                    sandbox,
+                    server_metadata,
                 } = &payload.metadata
                 {
                     let mut db = state.db.lock().await;
                     db.current_server = servername.clone();
+                    // Ensures the current info is up to date in the server index
+                    db.server_index.entry(servername.clone()).or_insert_with(|| ServerIndex {
+                        location: if location.is_empty() {
+                            format!("server/{}", servername)
+                        } else if location.starts_with("server/") {
+                            location.clone()
+                        } else {
+                            format!("server/{}", location)
+                        },
+                        provider: provider.clone(),
+                        providertype: providertype.clone(),
+                        sandbox: *sandbox,
+                        server_metadata: server_metadata.clone(),
+                    });
                     save_db(&db);
                     let mut mutable_server = state.current_server.lock().await;
                     *mutable_server = Some(servername.to_string());
