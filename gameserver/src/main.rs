@@ -1253,6 +1253,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                             }
                                                         };
 
+                                                        println!("start_server: option_path = {:?}, sandbox = {}", option_path, sandbox);
                                                         if let Err(e) = start_server_with_broadcast(
                                                             &arc_state_clone,
                                                             &stdin_ref,
@@ -2008,22 +2009,17 @@ async fn start_server_with_broadcast(
     //     }
     // };
 
-    let option_path = {
-        if let Some(ProviderTypes::Path(path)) =
-            convert_provider(
-                state.clone(),
-                vec![ProviderTypes::Name(
-                    current_server
-                        .clone()
-                )],
-                ProviderReturnTypes::Path,
-            )
-            .await
-        {
-            Some(path)
-        } else {
-            None
-        }
+    let resolved_location = if location.is_empty() {
+        convert_provider(
+            state.clone(),
+            vec![ProviderTypes::Name(current_server.clone())],
+            ProviderReturnTypes::Path,
+        )
+        .await
+        .and_then(|p| if let ProviderTypes::Path(path) = p { Some(path) } else { None })
+        .unwrap_or_default()
+    } else {
+        location
     };
     let provider = {
         if let Some(ProviderTypes::Provider(provider)) = convert_provider(state.clone(), vec![ProviderTypes::Name(current_server.clone())], ProviderReturnTypes::Provider).await{
@@ -2035,7 +2031,7 @@ async fn start_server_with_broadcast(
     let provider_object = {
         if let Some(ProviderTypes::Object(object)) = convert_provider(
             state.clone(),
-            vec![ProviderTypes::Path(option_path.unwrap_or(String::new())), ProviderTypes::Provider(provider.unwrap_or(String::new()))],
+            vec![ProviderTypes::Path(resolved_location), ProviderTypes::Provider(provider.unwrap_or(String::new()))],
             ProviderReturnTypes::Object,
         )
         .await
