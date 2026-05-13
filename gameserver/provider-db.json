@@ -27,6 +27,62 @@
         "needed_commands": ["java", "wget"],
         "sandbox": false
       }
+    },
+    "spigot": {
+      "linux": {
+        "default_name": "spigot",
+        "location": "",
+        "pre_hook": "cd {{SERVERLOCATION}} && apt-get install -y git || true",
+        "install": "cd {{SERVERLOCATION}} && which java || (echo 'Java not found, please install JRE 21 manually')",
+        "post_hook": "cd {{SERVERLOCATION}} && wget -O BuildTools.jar https://hub.spigotmc.org/jenkins/job/BuildTools/lastSuccessfulBuild/artifact/target/BuildTools.jar && java -jar BuildTools.jar --rev 1.21.4 && find . -maxdepth 1 -name 'spigot-*.jar' | head -1 | xargs -I{} cp {} server.jar && echo 'eula=true' > eula.txt",
+        "start": "cd {{SERVERLOCATION}} && java -Xmx1024M -Xms1024M -jar server.jar nogui",
+        "start_keyword": "help",
+        "stop_keyword": "All dimensions are saved",
+        "needed_paths": ["/usr/lib/jvm", "/opt/java", "/usr/java"],
+        "needed_commands": ["java", "wget", "git"],
+        "sandbox": false
+      },
+      "windows": {
+        "default_name": "spigot",
+        "location": "",
+        "pre_hook": "cd {{SERVERLOCATION}}; choco install -y git wget",
+        "install": "cd {{SERVERLOCATION}}; choco install -y openjdk21",
+        "post_hook": "cd {{SERVERLOCATION}}; Invoke-WebRequest -Uri https://hub.spigotmc.org/jenkins/job/BuildTools/lastSuccessfulBuild/artifact/target/BuildTools.jar -OutFile BuildTools.jar; java -jar BuildTools.jar --rev latest; Copy-Item spigot-*.jar server.jar; 'eula=true' | Out-File -Encoding ASCII eula.txt",
+        "start": "cd {{SERVERLOCATION}}; java -Xmx1024M -Xms1024M -jar server.jar nogui",
+        "start_keyword": "help",
+        "stop_keyword": "All dimensions are saved",
+        "needed_paths": ["/usr/lib/jvm", "/opt/java", "/usr/java"],
+        "needed_commands": ["java", "wget", "git"],
+        "sandbox": false
+      }
+    },
+    "neoforge": {
+      "linux": {
+        "default_name": "neoforge",
+        "location": "",
+        "pre_hook": "cd {{SERVERLOCATION}} && apt-get install -y curl || true",
+        "install": "cd {{SERVERLOCATION}} && which java || (echo 'Java not found, please install JRE 21 manually')",
+        "post_hook": "cd {{SERVERLOCATION}} && NEOFORGE_VERSION=$(curl -s https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml | grep -oP '(?<=<release>)[^<]+') && wget -O neoforge-installer.jar \"https://maven.neoforged.net/releases/net/neoforged/neoforge/${NEOFORGE_VERSION}/neoforge-${NEOFORGE_VERSION}-installer.jar\" && java -jar neoforge-installer.jar --installServer && echo 'eula=true' > eula.txt",
+        "start": "cd {{SERVERLOCATION}} && bash run.sh",
+        "start_keyword": "help",
+        "stop_keyword": "All dimensions are saved",
+        "needed_paths": ["/usr/lib/jvm", "/opt/java", "/usr/java"],
+        "needed_commands": ["java", "wget", "curl"],
+        "sandbox": false
+      },
+      "windows": {
+        "default_name": "neoforge",
+        "location": "",
+        "pre_hook": "cd {{SERVERLOCATION}}; choco install -y wget curl",
+        "install": "cd {{SERVERLOCATION}}; choco install -y openjdk21",
+        "post_hook": "cd {{SERVERLOCATION}}; $xml = [xml](Invoke-WebRequest 'https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml').Content; $ver = $xml.metadata.versioning.release; Invoke-WebRequest -Uri \"https://maven.neoforged.net/releases/net/neoforged/neoforge/$ver/neoforge-$ver-installer.jar\" -OutFile neoforge-installer.jar; java -jar neoforge-installer.jar --installServer; 'eula=true' | Out-File -Encoding ASCII eula.txt",
+        "start": "cd {{SERVERLOCATION}}; .\\run.bat",
+        "start_keyword": "help",
+        "stop_keyword": "All dimensions are saved",
+        "needed_paths": ["/usr/lib/jvm", "/opt/java", "/usr/java"],
+        "needed_commands": ["java", "wget", "curl"],
+        "sandbox": false
+      }
     }
   }
 }
