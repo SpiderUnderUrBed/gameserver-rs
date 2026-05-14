@@ -1,4 +1,4 @@
-import { object, unknown } from 'valibot';
+import { metadata, object, unknown } from 'valibot';
 import { httpClient } from '../utils/http';
 import { get, writable } from 'svelte/store';
 
@@ -352,10 +352,20 @@ export class ServerConsoleState {
 		this.addConsoleEntry({ type: 'output', text: 'Stop server called' });
 	}
 
-	public async deleteServer(servername: string = '', authcode: string = '0') {
+	public async deleteServer(servername: string = '', authcode: string = '0', delete_server_files: boolean = false) {
 		console.log("deleting current server");
 		try {
-			await httpClient.post('/api/deleteserver', { json: { message: servername, authcode } });
+			await httpClient.post('/api/deleteserver', { 
+				json: { 
+					type: 'command', 
+					message: servername, 
+					authcode, 
+					metadata: {
+						kind: "DeleteServerFiles",
+						data: delete_server_files
+					} 
+				} 
+			});
 			console.log("Success");
 		} catch (err) {
 			console.error(err);

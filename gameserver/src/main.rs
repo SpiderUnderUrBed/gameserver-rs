@@ -116,6 +116,9 @@ enum MetadataTypes {
         server_metadata: ServerMetadata,
     },
     Filter(Filters),
+    DeleteServerFiles(bool),
+    // TODO: replace this with EXPLICIT metadata types per action
+    Boolean(bool),
     String(String),
 }
 
@@ -1310,6 +1313,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                     CommandOrConsoleErrors::AuthDisconnect,
                                                 ) = e.downcast_ref::<CommandOrConsoleErrors>()
                                                 {
+                                                    println!("Killing connection");
                                                     kill_socket = true;
                                                 }
                                             }
@@ -1467,44 +1471,42 @@ async fn sort_command_type_or_console(
             }
         };
 
-        let (converted_src, converted_dest): (FileOperations, FileOperations) = (
-            src.unwrap(),
-            dest.unwrap()
-        );
+        if let (Some(converted_src), Some(converted_dest)) = (src, dest) {
 
-        let state = Arc::clone(arc_state);
+            let state = Arc::clone(arc_state);
 
-        let current_server = state
-            .current_server
-            .lock()
-            .await
-            .clone()
-            .ok_or("there is no current server")?;
+            let current_server = state
+                .current_server
+                .lock()
+                .await
+                .clone()
+                .ok_or("there is no current server")?;
 
-        let option_path = {
-            if let Some(ProviderTypes::Path(path)) = convert_provider(
-                state.clone(),
-                vec![ProviderTypes::Name(current_server.clone())],
-                ProviderReturnTypes::Path,
-            )
-            .await
-            {
-                Some(path)
-            } else {
-                None
-            }
-        };
-
-        if let Some(mut path) = option_path {
-            let new_path = Path::new(&path);
-            path = new_path.parent().unwrap_or(new_path).to_str().unwrap().to_string();
-            if !path.starts_with("server") {
-                path = format!("server/{}", path);
-            }
-            println!("Executing file operation");
-            if let Err(e) = execute_file_operation(converted_src, converted_dest, path){
-                println!("{:#?}", e);  
+            let option_path = {
+                if let Some(ProviderTypes::Path(path)) = convert_provider(
+                    state.clone(),
+                    vec![ProviderTypes::Name(current_server.clone())],
+                    ProviderReturnTypes::Path,
+                )
+                .await
+                {
+                    Some(path)
+                } else {
+                    None
+                }
             };
+
+            if let Some(mut path) = option_path {
+                let new_path = Path::new(&path);
+                path = new_path.parent().unwrap_or(new_path).to_str().unwrap().to_string();
+                if !path.starts_with("server") {
+                    path = format!("server/{}", path);
+                }
+                println!("Executing file operation");
+                if let Err(e) = execute_file_operation(converted_src, converted_dest, path){
+                    println!("{:#?}", e);  
+                };
+            }
         }
     }
 
@@ -1560,60 +1562,6 @@ async fn handle_typical_command_or_console(
     if typ == "command" {
         let cmd_str = payload.message.clone();
         match cmd_str.as_str() {
-            "delete_current_server" => {
-                // let current = state.current_server.lock().await.clone();
-                // println!("delete_current_server: current_server = {:?}", current);
-                // let current = current.ok_or("there is no current server")?;
-                let current_server = state
-                    .current_server
-                    .lock()
-                    .await
-                    .clone()
-                    .ok_or("there is no current server")?;
-                
-                *state.current_server.lock().await = None;
-                let mut db = state.db.lock().await;
-                db.current_server = String::new();
-                db.server_index.remove(&current_server);
-                save_db(&db);
-
-                let option_path = {
-                    if let Some(ProviderTypes::Path(path)) = convert_provider(
-                        state.clone(),
-                        vec![ProviderTypes::Name(current_server.clone())],
-                        ProviderReturnTypes::Path,
-                    )
-                    .await
-                    {
-                        Some(path)
-                    } else {
-                        None
-                    }
-                };
-
-                // println!("{:#?}", option_path);
-                if let Some(mut path) = option_path {
-                    //println!("{path}");
-                    if !path.trim().starts_with("server") && !path.trim().starts_with("server/") {
-                        path = format!("server/{}", path);
-                    }
-                    //println!("{path}");
-                    if let Err(errro) = fs::remove_dir_all(&path).await {
-                        eprintln!("Failed to delete directory {}: {}", path, errro);
-                        Ok(())
-                    } else {
-                        if let Err(errro) = fs::create_dir(&path).await {
-                            eprintln!("Failed to recreate directory {}: {}", path, errro);
-                            Ok(())
-                        } else {
-                            println!("Successfully cleared directory: {}", path);
-                            Ok(())
-                        }
-                    }
-                } else {
-                    Ok(())
-                }
-            }
             "server_state" => {
                 //println!("Sending back state");
                 let status = &state.server_running.lock().await;
@@ -2031,7 +1979,7 @@ async fn start_server_with_broadcast(
     let provider_object = {
         if let Some(ProviderTypes::Object(object)) = convert_provider(
             state.clone(),
-            vec![ProviderTypes::Path(resolved_location), ProviderTypes::Provider(provider.unwrap_or(String::new()))],
+            vec![ProviderTypes::Name(current_server.clone()), ProviderTypes::Path(resolved_location), ProviderTypes::Provider(provider.unwrap_or(String::new()))],
             ProviderReturnTypes::Object,
         )
         .await
@@ -2041,6 +1989,7 @@ async fn start_server_with_broadcast(
             None
         }
     };
+    println!("{:#?}", provider_object);
 
     if let Some(provider_type) = provider_object {
         let provider_config = pick_platform(provider_type.1);
@@ -2061,6 +2010,7 @@ async fn start_server_with_broadcast(
                 None
             }
         };
+        println!("DEBUG start_server_with_broadcast: current_server={:?}, location={:?}", current_server, location);
         if let Some(ref loc) = location {
             let _ = provider_game_commands.set_location(loc.to_owned());
         }
@@ -2333,6 +2283,63 @@ async fn handle_commands_with_metadata(
                     return Ok(());
                 } else {
                     return Err("Did not get filter in metadata feilds".into())
+                }
+            }
+            "delete_current_server" => {
+                // let current = state.current_server.lock().await.clone();
+                // println!("delete_current_server: current_server = {:?}", current);
+                // let current = current.ok_or("there is no current server")?;
+                let current_server = state
+                    .current_server
+                    .lock()
+                    .await
+                    .clone()
+                    .ok_or("there is no current server")?;
+                
+                *state.current_server.lock().await = None;
+                let mut db = state.db.lock().await;
+                db.current_server = String::new();
+                db.server_index.remove(&current_server);
+                save_db(&db);
+                drop(db);
+
+                let option_path = {
+                    if let Some(ProviderTypes::Path(path)) = convert_provider(
+                        state.clone(),
+                        vec![ProviderTypes::Name(current_server.clone())],
+                        ProviderReturnTypes::Path,
+                    )
+                    .await
+                    {
+                        Some(path)
+                    } else {
+                        None
+                    }
+                };
+
+                // println!("{:#?}", option_path);
+                if let MetadataTypes::DeleteServerFiles(delete_server_files) = payload.metadata {
+                    if delete_server_files {
+                        if let Some(mut path) = option_path {
+                            //println!("{path}");
+                            if !path.trim().starts_with("server") && !path.trim().starts_with("server/") {
+                                path = format!("server/{}", path);
+                            }
+                            //println!("{path}");
+                            if let Err(errro) = fs::remove_dir_all(&path).await {
+                                eprintln!("Failed to delete directory {}: {}", path, errro);
+                                Ok(())
+                            } else {
+                                Ok(())
+                            }
+                        } else {
+                            Ok(())
+                        }
+                    } else {
+                        Ok(())
+                    }
+                } else {
+                    Ok(())
                 }
             }
             "create_server" => {

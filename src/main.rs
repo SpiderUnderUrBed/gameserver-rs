@@ -402,7 +402,10 @@ enum MetadataTypes {
         sandbox: bool,
         server_metadata: ServerMetadata
     },
+    DeleteServerFiles(bool),
+    // TODO: remove these types in favor of explicit handling
     String(String),
+    Boolean(bool)
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -2893,7 +2896,7 @@ async fn delete_server(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
-    Json(request): Json<SimpleMesagePayload>,
+    Json(request): Json<IncomingMessageWithMetadata>,
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
@@ -2924,10 +2927,11 @@ async fn delete_server(
         
     // )
 
-    let msg = MessagePayload {
+    let msg = MessagePayloadWithMetadata {
         r#type: "command".to_string(),
         message: "delete_current_server".to_string(),
         authcode: "0".to_string(),
+        metadata: request.metadata,
     };
 
     let mut bytes = match serde_json::to_vec(&msg) {
