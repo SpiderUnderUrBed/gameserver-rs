@@ -64,6 +64,7 @@
 	let serverLocation = $state('');
 	let serverProvider = $state('minecraft');
 	let serverSandbox = $state(true);
+	let deleteServerFiles = $state(false);
 
 	let nodes: NodeData[] = $state([]);
 	
@@ -371,7 +372,7 @@
 				type: 'output',
 				text: 'Delete server request executed'
 			});	
-			await serverConsole.deleteServer();
+			await serverConsole.deleteServer('', '0', deleteServerFiles);
 			(<HTMLFormElement>event.target).reset();
 		}}
 		method="dialog"
@@ -380,11 +381,12 @@
 		<h3 class="font-semibold text-lg">Delete Server</h3>
 
 		<div class="p-4">
-			<p>WARNING: This will remove all server files</p>
+			<p>WARNING: This action is irreversable</p>
 		</div>
+		<input type="checkbox" class="checkbox" bind:checked={deleteServerFiles} /> Delete server files?
 
 		<div class="modal-action">
-			<button class="btn btn-ghost btn-error" type="submit" value="cancel" formnovalidate>
+			<button onclick={() => deleteServerFiles = false} class="btn btn-ghost btn-error" type="submit" value="cancel" formnovalidate>
 				Cancel
 			</button>
 			<button class="btn btn-primary" type="submit">I am sure</button>
