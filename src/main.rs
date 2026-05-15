@@ -3835,12 +3835,20 @@ impl AuthnBackend for Backend {
 }
 
 fn resolve_token_perms(state: AppState, token: String) -> Vec<UserPerm> {
-    vec![
-        UserPerm {
-            perm: "admin".to_string(),
-            scope: "all".to_string()
-        }
-    ]
+    let mut tokens = Vec::new();
+    if let Some(env_token) = get_env_var_or_arg::<String>("HEADER_TOKEN", Some(String::new())){
+        tokens.push(env_token.to_string());
+    }
+    if tokens.iter().any(|authorized_token| token == *authorized_token){
+        vec![
+            UserPerm {
+                perm: "admin".to_string(),
+                scope: "all".to_string()
+            }
+        ]
+    } else {
+        vec![]
+    }
 }
 
 // Using the secret which MUST be set, it will attempt to decode the claim, which means that it if fails to decode it, its not authorized and did not come from the secret
