@@ -5,9 +5,10 @@
 	import { auth } from '../../lib/auth/auth.svelte';
 	import { get, writable } from 'svelte/store';
 	import { statusStore, statusType } from '../../lib/stores/serverConsoleStore.svelte';
+	import { onMount } from 'svelte';
 	let changeStatusDialog: HTMLDialogElement;
 
-	let selectedStatusType: 'node-status' | 'server-keyword' | 'server-process' | 'manual-click' = $state('manual-click');
+	let selectedStatusType: 'node-status' | 'server-keyword' | 'server-process' | 'manual-click' = $state('server-keyword');
 	//let StatusType = $state('manual-click');
 
 	let changeStatus = async () => {
@@ -28,6 +29,9 @@
 			console.error(e);
 		}
 	}
+	onMount(() => {
+		changeStatus();
+	})
 	//let status = $state('unknown');
 	// statusStore.subscribe((new_status) => {
 	// 	console.log(new_status);
