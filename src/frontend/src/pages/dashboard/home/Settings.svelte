@@ -15,6 +15,8 @@
 		enabledNodesOnHomepage = settingsStore.currentSettings?.enable_nodes_on_home_page;
 		enabledStatsOnHomepage = settingsStore.currentSettings?.enable_statistics_on_home_page;
 		consoleEntryOnTop = settingsStore.currentSettings?.console_entry_on_top;
+		rconUrl = settingsStore.currentSettings?.rcon_url;
+		rconPassword = settingsStore.currentSettings?.rcon_password;
 	})();
 
 	let trySettings = async () => {
@@ -62,6 +64,13 @@
 		<div class="flex items-center w-32">
 			<button class="btn btn-primary" class:btn-ghost={!consoleEntryOnTop} onclick={() => consoleEntryOnTop = true}>Top</button>
 			<button class="btn btn-error" class:btn-ghost={consoleEntryOnTop} onclick={() => consoleEntryOnTop = false}>Bottom</button>
+		</div>
+		<div>Rcon settings</div>
+		<div>
+		<div class="flex items-center w-96">
+			<input bind:value={rconUrl} type="text" placeholder="RCON Url" class="input" />
+			<input bind:value={rconPassword} type="text" placeholder="RCON password" class="input" />
+		</div>
 		</div>
 	</div>
 	<div class="card flex flex-row items-center w-32 gap-2 bg-base-100 shadow-md p-4">
