@@ -24,14 +24,16 @@ export type FileSystemDriver =
     | { kind: "none" }
 
 export type Filters = 
-    | { kind: "alternatingline" }
+    | { kind: "alternating_line" }
     | { kind: "none" }
+
+export type FilterModifyStructure = { name: string } & Filters
 export interface Settings {
     enable_statistics_on_home_page: boolean,
     enable_nodes_on_home_page: boolean,
     console_entry_on_top: boolean,
     file_system_driver: FileSystemDriver,
-    filters: Filters,
+    filter: Filters,
     rcon_url: string,
     rcon_password: string
 }

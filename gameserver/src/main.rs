@@ -280,26 +280,35 @@ struct GetState {
 
 // At the moment of writing this, some form of filter is required, because if too many logs
 // are sent, then the data pipeline halts
-// TODO: first have the filter be customizable
 // secondly, remove the need for a filter entirely by keeping a message queue with throttling
-fn filter(line: String) -> bool {
-    if line.contains('%') {
-        if let Some(pct_str) = line
-            .split('%')
-            .next()
-            .and_then(|s| s.split_whitespace().last())
-            .and_then(|s| s.parse::<u32>().ok())
-        {
-            if pct_str % 5 != 0 {
-                true
+fn filter(filter: Filters, line: String) -> bool {
+    // let mut db = state.db.lock().await;
+    // db.filter = filter.clone();
+    // save_db(&db);
+    match filter {
+        Filters::AlternatingLine => {
+            if line.contains('%') {
+                if let Some(pct_str) = line
+                    .split('%')
+                    .next()
+                    .and_then(|s| s.split_whitespace().last())
+                    .and_then(|s| s.parse::<u32>().ok())
+                {
+                    if pct_str % 5 != 0 {
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    true
+                }
             } else {
                 false
             }
-        } else {
-            true
         }
-    } else {
-        false
+        Filters::None => {
+            false
+        }
     }
 }
 
@@ -456,6 +465,11 @@ async fn run_command_live_output(
     sender: Option<mpsc::Sender<String>>,
     stdin_arc: Option<Arc<Mutex<Option<ChildStdin>>>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let db = state.db.lock().await;
+    let current_filter = db.filter.clone();
+    save_db(&db);
+    drop(db);
+
     let mut tokio_cmd = TokioCommand::from(cmd);
     let cwd = std::env::current_dir().unwrap_or_default();
     let location_stripped = location.trim_start_matches("server/");
@@ -477,13 +491,14 @@ async fn run_command_live_output(
         *stdin_slot.lock().await = child_stdin;
     }
 
+    let current_filter_clone = current_filter.clone();
     let stdout_handle = if let Some(stdout) = child.stdout.take() {
         let tx = sender.clone();
         let lbl = label.clone();
         Some(tokio::spawn(async move {
             let mut reader = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = reader.next_line().await {
-                if filter(line.clone()) {
+                if filter(current_filter_clone.clone(), line.clone()) {
                     continue;
                 }
                 if let Some(tx) = &tx {
@@ -503,19 +518,8 @@ async fn run_command_live_output(
         Some(tokio::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = reader.next_line().await {
-                if line.contains('%') {
-                    if let Some(pct_str) = line
-                        .split('%')
-                        .next()
-                        .and_then(|s| s.split_whitespace().last())
-                        .and_then(|s| s.parse::<u32>().ok())
-                    {
-                        if pct_str % 5 != 0 {
-                            continue;
-                        }
-                    } else {
-                        continue;
-                    }
+                if filter(current_filter.clone(), line.clone()) {
+                    continue;
                 }
                 if let Some(tx) = &tx {
                     let msg =
@@ -1432,7 +1436,21 @@ async fn sort_command_type_or_console(
             return Err(Box::new(CommandOrConsoleErrors::AuthDisconnect));
         }
     }
-
+    let with_metadata_result: Result<IncomingMessageWithMetadata, serde_json::Error> =
+        serde_json::from_value(payload.clone());
+    if let Ok(with_metadata_payload) = with_metadata_result {
+       // if !matches!(with_metadata_payload.metadata, MetadataTypes::None) {
+            let _ = handle_commands_with_metadata(
+                Arc::clone(arc_state),
+                &with_metadata_payload,
+                cmd_tx,
+                stdin_ref,
+                hostname,
+            )
+            .await;
+            return Ok(());
+       // }
+    }
 
     let standard_command_payload_result: Result<MessagePayload, serde_json::Error> =
         serde_json::from_value(payload.clone());

@@ -11,7 +11,7 @@ use crate::database::Database;
 // Axum is the routing framework, and the backbone to this project helping intergrate the backend with the frontend
 // and the general api, redirections, it will take form data and queries and make it easily accessible
 // I also use axum_login to take off alot of effort that would be required for authentication
-use crate::database::databasespec::{IntoServer, ServerMetadata};
+use crate::database::databasespec::{Filters, IntoServer, ServerMetadata};
 use crate::database::{DatabaseError, Element};
 use crate::filesystem::{execute_file_operation, FileOperations, TcpFileStream};
 use crate::filesystem::{FsType, send_multipart_over_broadcast};
@@ -402,6 +402,7 @@ enum MetadataTypes {
         sandbox: bool,
         server_metadata: ServerMetadata
     },
+    Filter(Filters),
     DeleteServerFiles(bool),
     // TODO: remove these types in favor of explicit handling
     String(String),
@@ -808,6 +809,7 @@ async fn handle_all_stream_values(
                 .await
                 .unwrap()
         };
+        println!("reconnecting to {:#?}", node);
         *reconnect_target = Some((node.ip, node.nodename));
         return Ok(true);  
     } else if payload.r#type == "server_state" {
@@ -1042,6 +1044,7 @@ pub async fn handle_stream(
 
         if let Ok(text) = std::str::from_utf8(raw_data) {
             let line_content = text.trim();
+            println!("{:#?}", line_content);
             if line_content.is_empty() {
                 return Ok(false);
             }
@@ -1082,8 +1085,12 @@ pub async fn handle_stream(
                                 break;
                             }
                         }
-                        Ok(None) => break,
-                        Err(e) => return Err(e.into()),
+                        Ok(None) => {
+                            break
+                        },
+                        Err(e) => {
+                            return Err(e.into())
+                        },
                     }
                 }
                 internal_result = internal_rx.recv() => {
@@ -1140,9 +1147,10 @@ pub async fn handle_stream(
         }
     }
 
-    if let Some((ip, name)) = reconnect_target {
-        return Ok(StreamResult::Reconnect(ip, name));
-    }
+    // if let Some((ip, name)) = reconnect_target {
+    //     println!("Returning good stream result");
+    //     return Ok(StreamResult::Reconnect(ip, name));
+    // }
     Ok(StreamResult::Done)
 }
 
@@ -2644,7 +2652,7 @@ async fn set_settings(
         Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
     };
 
-    let mut settings_value = match serde_json::to_value(settings) {
+    let mut settings_value = match serde_json::to_value(settings.clone()) {
         Ok(v) => v,
         Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
     };
@@ -2667,11 +2675,35 @@ async fn set_settings(
         _ => {}
     };
     drop(state);
-    let _ = load_settings(arc_state).await;
+    let _ = load_settings(arc_state.clone()).await;
     if has_created {
+        let _ = notify_node_of_settings(arc_state, Some(settings)).await;
         Ok(StatusCode::CREATED.into_response())
     } else {
         Err(StatusCode::INTERNAL_SERVER_ERROR)
+    }
+}
+async fn notify_node_of_settings(arc_state: Arc<RwLock<AppState>>, old_settings_option: Option<Settings>) -> Result<(),  Box<dyn Error + Send + Sync>>{
+    let state = arc_state.write().await;
+    let database = &state.database;
+    let settings = database.get_settings().await?;
+    if let Some(internal_tx) = &state.internal_tx {
+        if let Some(old_settings) = old_settings_option {
+            if !(old_settings.filter == settings.filter){
+                let filter_request = MessagePayloadWithMetadata {
+                    r#type: "command".to_string(),
+                    message: "set_filter".to_string(),
+                    metadata: MetadataTypes::Filter(settings.filter),
+                    authcode: "0".to_string(),
+                };
+                internal_tx.send(serde_json::to_vec(&filter_request).unwrap());
+            }
+            Ok(())
+        } else {
+            Ok(())
+        }
+    } else {
+        Err("No internal tx".into())
     }
 }
 
@@ -3644,6 +3676,7 @@ async fn change_node(
 ) -> Result<StatusCode, StatusCode> {
     println!("Changing node");
     let state = arc_state.read().await;
+   // println!("C");
 
     let mut authorized = false;
     if let Some(user) = auth_session.user {
@@ -3656,31 +3689,41 @@ async fn change_node(
             authorized = true;
         }
     }
-    drop(state);
+    //drop(state);
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
 
-    
+    let ws_tx = state.ws_tx.clone();
     let option_node = {
-        let state = arc_state.read().await;
+        let state = state.clone();
         state.database.retrieve_nodes(request.node_id.clone()).await
     };
+    
+    drop(state);
 
     if let Some(node) = option_node {
         {
             let termination_payload = MessagePayload {
-                r#type: "change_conn".to_string(),
-                message: request.node_id,
+                r#type: "end_conn".to_string(),
+                message: "".to_string(),
                 authcode: "0".to_string(),
             };
 
             let termination_bytes = serde_json::to_vec(&termination_payload).unwrap_or_default();
 
-            if let Some(tx) = &arc_state.read().await.internal_tx {
-                println!("Sending termination bytes");
+            if let Some(tx) = &arc_state.write().await.internal_tx {
                 let _ = tx.send(termination_bytes);
             }
+
+            let _ = connect_to_server(arc_state.clone(), node.ip.clone(), ws_tx.clone(), true, false).await;
+            
+            let mut state = arc_state.write().await;
+            state.current_node = NodeAndTCP {
+                                name: node.nodename,
+                                ip: node.ip,
+                                ..Default::default()
+                            };
         }
 
         Ok(StatusCode::OK)

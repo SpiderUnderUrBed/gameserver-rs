@@ -69,7 +69,7 @@ pub struct ModifyElementData {
     any(feature = "full-stack", feature = "database"),
     sqlx(type_name = "TEXT", rename_all = "PascalCase")
 )]
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
 pub enum Filters {
     AlternatingLine,
