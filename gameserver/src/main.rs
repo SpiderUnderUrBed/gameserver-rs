@@ -116,7 +116,11 @@ enum MetadataTypes {
         server_metadata: ServerMetadata,
     },
     Filter(Filters),
-    DeleteServerFiles(bool),
+    DeleteServer {
+        delete_server_name: String, 
+        delete_server_files: bool
+    },
+    //DeleteServerFiles(bool),
     // TODO: replace this with EXPLICIT metadata types per action
     Boolean(bool),
     String(String),
@@ -220,25 +224,7 @@ enum ApiCalls {
     IncomingMessage(MessagePayload),
     Node(Node),
     FileOperations(FileOperations)
-    // FileDownloadOperation(String),
-    // FileMoveOperation(String),
-    // FileZipOperation(String),
-    // FileUnzipOperation(String),
-    // FileCopyOperation(String),
 }
-
-// impl From<ApiCalls> for FileOperations {
-//     fn from(api_call: ApiCalls) -> Self {
-//         match api_call {
-//             ApiCalls::FileDownloadOperation(s) => FileOperations::FileDownloadOperation(s),
-//             ApiCalls::FileMoveOperation(s) => FileOperations::FileMoveOperation(s),
-//             ApiCalls::FileZipOperation(s) => FileOperations::FileZipOperation(s),
-//             ApiCalls::FileUnzipOperation(s) => FileOperations::FileUnzipOperation(s),
-//             ApiCalls::FileCopyOperation(s) => FileOperations::FileCopyOperation(s),
-//             _ => FileOperations::Unknown,
-//         }
-//     }
-// }
 
 // I tried to convert from a Value, as in undefined data type, to a List, as its a data type created only
 // here and its used sometimes, maybe it would be better to just do the conversion when its needed
@@ -280,26 +266,35 @@ struct GetState {
 
 // At the moment of writing this, some form of filter is required, because if too many logs
 // are sent, then the data pipeline halts
-// TODO: first have the filter be customizable
 // secondly, remove the need for a filter entirely by keeping a message queue with throttling
-fn filter(line: String) -> bool {
-    if line.contains('%') {
-        if let Some(pct_str) = line
-            .split('%')
-            .next()
-            .and_then(|s| s.split_whitespace().last())
-            .and_then(|s| s.parse::<u32>().ok())
-        {
-            if pct_str % 5 != 0 {
-                true
+fn filter(filter: Filters, line: String) -> bool {
+    // let mut db = state.db.lock().await;
+    // db.filter = filter.clone();
+    // save_db(&db);
+    match filter {
+        Filters::AlternatingLine => {
+            if line.contains('%') {
+                if let Some(pct_str) = line
+                    .split('%')
+                    .next()
+                    .and_then(|s| s.split_whitespace().last())
+                    .and_then(|s| s.parse::<u32>().ok())
+                {
+                    if pct_str % 5 != 0 {
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    true
+                }
             } else {
                 false
             }
-        } else {
-            true
         }
-    } else {
-        false
+        Filters::None => {
+            false
+        }
     }
 }
 
@@ -456,6 +451,11 @@ async fn run_command_live_output(
     sender: Option<mpsc::Sender<String>>,
     stdin_arc: Option<Arc<Mutex<Option<ChildStdin>>>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let db = state.db.lock().await;
+    let current_filter = db.filter.clone();
+    save_db(&db);
+    drop(db);
+
     let mut tokio_cmd = TokioCommand::from(cmd);
     let cwd = std::env::current_dir().unwrap_or_default();
     let location_stripped = location.trim_start_matches("server/");
@@ -477,13 +477,14 @@ async fn run_command_live_output(
         *stdin_slot.lock().await = child_stdin;
     }
 
+    let current_filter_clone = current_filter.clone();
     let stdout_handle = if let Some(stdout) = child.stdout.take() {
         let tx = sender.clone();
         let lbl = label.clone();
         Some(tokio::spawn(async move {
             let mut reader = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = reader.next_line().await {
-                if filter(line.clone()) {
+                if filter(current_filter_clone.clone(), line.clone()) {
                     continue;
                 }
                 if let Some(tx) = &tx {
@@ -503,19 +504,8 @@ async fn run_command_live_output(
         Some(tokio::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = reader.next_line().await {
-                if line.contains('%') {
-                    if let Some(pct_str) = line
-                        .split('%')
-                        .next()
-                        .and_then(|s| s.split_whitespace().last())
-                        .and_then(|s| s.parse::<u32>().ok())
-                    {
-                        if pct_str % 5 != 0 {
-                            continue;
-                        }
-                    } else {
-                        continue;
-                    }
+                if filter(current_filter.clone(), line.clone()) {
+                    continue;
                 }
                 if let Some(tx) = &tx {
                     let msg =
@@ -606,6 +596,7 @@ struct AppState {
     current_server: Arc<Mutex<Option<String>>>,
     //server_index: HashMap<String, ServerIndex>,
     jailed_user: String,
+    authenticated_origins: Arc<Mutex<Vec<String>>>,
     server_running: Arc<Mutex<bool>>,
     server_output_tx: Arc<Mutex<Option<broadcast::Sender<String>>>>,
     server_process: Arc<Mutex<Option<Child>>>,
@@ -746,6 +737,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let state = AppState {
         current_server: Arc::new(Mutex::new(None)),
         jailed_user: "server".to_string(),
+        authenticated_origins: Arc::new(Mutex::new(Vec::new())),
         server_running: Arc::new(Mutex::new(false)),
         server_output_tx: Arc::new(Mutex::new(None)),
         server_process: Arc::new(Mutex::new(None)),
@@ -767,6 +759,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut kill_socket = false;
     const FILE_DELIMITER: &[u8] = b"<|END_OF_FILE|>";
+
+    // TODO: sometimes i use kill_socket and sometimes i just break the loop, be consistent
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
         loop {
@@ -965,7 +959,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let mut tick = tokio::time::interval(tokio::time::Duration::from_secs(1));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-            loop {
+            'outer: loop {
                 if kill_socket == true {
                     println!("Shutting down");
                     //write_half.shutdown();
@@ -1031,13 +1025,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 if line_str.trim().starts_with('{')
                                     && line_str.trim().ends_with('}')
                                 {
-                                    
                                     if let Ok(json_value) = serde_json::from_slice::<Value>(line) {
+                                        // This is for logging all json values EXCEPT anything to do with filecontent
+                                        // as if your transfering file content and log that, depending on how big the file it
+                                        // it could crash if that was not filtered
                                         let is_response = json_value.get("in_response_to").is_some() 
                                             && json_value.get("data").is_some()
                                             && json_value.as_object().map(|o| o.len() == 2).unwrap_or(false);
                                         if !is_response {
                                             println!("[{}] Received JSON here line: {}", addr, line_str.trim());
+                                        }
+                                        
+                                        let auth_payload_result: Result<AuthTcpMessage, serde_json::Error> =
+                                            serde_json::from_value(json_value.clone());
+                                        let authenticated_origins = &mut arc_state_clone.authenticated_origins.lock().await;
+                                        if let Ok(auth_payload) = auth_payload_result {
+                                            let node_password: String =
+                                                get_env_var_or_arg("NODE_PASSWORD", Some(String::default())).unwrap();
+
+                                            if node_password.clone() == auth_payload.password {
+                                                authenticated_origins.push(addr.to_string());
+                                            }
+                                        }
+                                        if !authenticated_origins.iter().any(|origin| *origin == addr.to_string()){
+                                            let node_password: String =
+                                                get_env_var_or_arg("NODE_PASSWORD", Some(String::default())).unwrap();
+                                            if !node_password.is_empty(){
+                                                //kill_socket = true;
+                                                break 'outer;
+                                            }
                                         }
 
 
@@ -1421,18 +1437,22 @@ async fn sort_command_type_or_console(
     stdin_ref: &Arc<Mutex<Option<ChildStdin>>>,
     hostname: &Arc<Result<OsString, String>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let node_password: String =
-        get_env_var_or_arg("NODE_PASSWORD", Some(String::default())).unwrap();
 
-    let auth_payload_result: Result<AuthTcpMessage, serde_json::Error> =
+    let with_metadata_result: Result<IncomingMessageWithMetadata, serde_json::Error> =
         serde_json::from_value(payload.clone());
-    if let Ok(auth_payload) = auth_payload_result {
-        if node_password != auth_payload.password {
-            println!("Authentication failed");
-            return Err(Box::new(CommandOrConsoleErrors::AuthDisconnect));
-        }
+    if let Ok(with_metadata_payload) = with_metadata_result {
+       // if !matches!(with_metadata_payload.metadata, MetadataTypes::None) {
+            let _ = handle_commands_with_metadata(
+                Arc::clone(arc_state),
+                &with_metadata_payload,
+                cmd_tx,
+                stdin_ref,
+                hostname,
+            )
+            .await;
+            return Ok(());
+       // }
     }
-
 
     let standard_command_payload_result: Result<MessagePayload, serde_json::Error> =
         serde_json::from_value(payload.clone());
@@ -1890,7 +1910,7 @@ async fn handle_typical_command_or_console(
                 //create_server(state, cmd_tx, stdin_ref, serde_json::to_value(payload)?).await
             }
             other => {
-                println!("{other}");
+                println!("Unknown command {other}");
                 let _ = cmd_tx.send(format!("Unknown command: {}", other)).await;
                 Ok(())
             }
@@ -2285,21 +2305,22 @@ async fn handle_commands_with_metadata(
                     return Err("Did not get filter in metadata feilds".into())
                 }
             }
-            "delete_current_server" => {
-                // let current = state.current_server.lock().await.clone();
-                // println!("delete_current_server: current_server = {:?}", current);
-                // let current = current.ok_or("there is no current server")?;
+            "delete_server" => {
+                // println!("{:#?}", option_path);
+                if let MetadataTypes::DeleteServer { delete_server_name, delete_server_files  } = &payload.metadata {
                 let current_server = state
                     .current_server
                     .lock()
                     .await
                     .clone()
                     .ok_or("there is no current server")?;
-                
-                *state.current_server.lock().await = None;
+
                 let mut db = state.db.lock().await;
-                db.current_server = String::new();
-                db.server_index.remove(&current_server);
+                if *delete_server_name == current_server {
+                    *state.current_server.lock().await = None;
+                    db.current_server = String::new();
+                }
+                db.server_index.remove(delete_server_name);
                 save_db(&db);
                 drop(db);
 
@@ -2317,9 +2338,7 @@ async fn handle_commands_with_metadata(
                     }
                 };
 
-                // println!("{:#?}", option_path);
-                if let MetadataTypes::DeleteServerFiles(delete_server_files) = payload.metadata {
-                    if delete_server_files {
+                    if *delete_server_files {
                         if let Some(mut path) = option_path {
                             //println!("{path}");
                             if !path.trim().starts_with("server") && !path.trim().starts_with("server/") {

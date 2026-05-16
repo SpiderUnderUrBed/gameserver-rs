@@ -60,14 +60,22 @@ export class ServersStore {
 		}
 	}
 
-	public async deleteServer(servername: string = '', authcode: string = '0') {
+	public async deleteServer(servername: string = '', authcode: string = '0', delete_server_files: boolean = false) {
 		console.log("deleting current server");
-		this.error = null;
 		try {
-			await httpClient.post('/api/deleteserver', { json: { message: servername, authcode } });
-			await this.fetchServers();
+			await httpClient.post('/api/deleteserver', { 
+				json: { 
+					type: 'command', 
+					message: servername, 
+					authcode, 
+					metadata: {
+						kind: "DeleteServer",
+						data: delete_server_files
+					} 
+				} 
+			});
+			console.log("Success");
 		} catch (err) {
-			this.error = 'Failed to delete server';
 			console.error(err);
 		}
 	}

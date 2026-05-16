@@ -11,6 +11,7 @@ pub struct Database {
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "data")]
 pub enum Filters {
     AlternatingLine,
     #[default]

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { type Settings, type FileSystemDriver, type Filters, SettingsStore } from '../../../lib/stores/settingsStore.svelte';
+	import { type Settings, type FileSystemDriver, type Filters, SettingsStore, type FilterModifyStructure } from '../../../lib/stores/settingsStore.svelte';
 	let settingsStore = new SettingsStore();
 	let enabledNodesOnHomepage = $state<boolean | undefined> (false);
 	let enabledStatsOnHomepage = $state<boolean | undefined>(false);
@@ -9,12 +9,26 @@
 	let currentFilter = $state<Filters | undefined>();
 	let fileSystemDriver = $state<FileSystemDriver | undefined>();
 
+	let filters: FilterModifyStructure[] = [
+		{
+			name: "alternating line",
+			kind: "alternating_line"
+		},
+		{
+			name: "none",
+			kind: "none"
+		}
+	];
+
 
 	(async () => {
 		await settingsStore.refreshSettings();
 		enabledNodesOnHomepage = settingsStore.currentSettings?.enable_nodes_on_home_page;
 		enabledStatsOnHomepage = settingsStore.currentSettings?.enable_statistics_on_home_page;
 		consoleEntryOnTop = settingsStore.currentSettings?.console_entry_on_top;
+		rconUrl = settingsStore.currentSettings?.rcon_url;
+		rconPassword = settingsStore.currentSettings?.rcon_password;
+		currentFilter = settingsStore.currentSettings?.filter;
 	})();
 
 	let trySettings = async () => {
@@ -23,7 +37,7 @@
 			enable_statistics_on_home_page: enabledStatsOnHomepage ?? false,
 			console_entry_on_top: consoleEntryOnTop ?? false,
 			file_system_driver: fileSystemDriver ?? { kind: "none" },
-			filters: currentFilter ?? { kind: "none" },
+			filter: currentFilter ?? { kind: "none" },
 			rcon_url: rconUrl ?? '',
 			rcon_password: rconPassword ?? ''
 		}
@@ -35,7 +49,7 @@
 			enable_statistics_on_home_page: enabledStatsOnHomepage ?? false,
 			console_entry_on_top: consoleEntryOnTop ?? false,
 			file_system_driver: fileSystemDriver ?? { kind: "none" },
-			filters: currentFilter ?? { kind: "none" },
+			filter: currentFilter ?? { kind: "none" },
 			rcon_url: rconUrl ?? '',
 			rcon_password: rconPassword ?? ''
 		}
@@ -62,6 +76,22 @@
 		<div class="flex items-center w-32">
 			<button class="btn btn-primary" class:btn-ghost={!consoleEntryOnTop} onclick={() => consoleEntryOnTop = true}>Top</button>
 			<button class="btn btn-error" class:btn-ghost={consoleEntryOnTop} onclick={() => consoleEntryOnTop = false}>Bottom</button>
+		</div>
+		<div>Rcon settings</div>
+		<div>
+		<div class="flex items-center w-96">
+			<input bind:value={rconUrl} type="text" placeholder="RCON Url" class="input" />
+			<input bind:value={rconPassword} type="text" placeholder="RCON password" class="input" />
+		</div>
+		</div>
+		<div>Filters</div>
+		<div>
+			{#each filters as filter}
+				<button onclick={() => currentFilter = { kind: filter.kind }} 
+				class="btn"
+				class:btn-primary={currentFilter?.kind === filter.kind}
+				class:btn-ghost={currentFilter?.kind !== filter.kind}>{filter.name}</button>
+			{/each}
 		</div>
 	</div>
 	<div class="card flex flex-row items-center w-32 gap-2 bg-base-100 shadow-md p-4">

@@ -11,7 +11,7 @@ use crate::database::Database;
 // Axum is the routing framework, and the backbone to this project helping intergrate the backend with the frontend
 // and the general api, redirections, it will take form data and queries and make it easily accessible
 // I also use axum_login to take off alot of effort that would be required for authentication
-use crate::database::databasespec::{IntoServer, ServerMetadata};
+use crate::database::databasespec::{Filters, IntoServer, ServerMetadata};
 use crate::database::{DatabaseError, Element};
 use crate::filesystem::{execute_file_operation, FileOperations, TcpFileStream};
 use crate::filesystem::{FsType, send_multipart_over_broadcast};
@@ -402,7 +402,12 @@ enum MetadataTypes {
         sandbox: bool,
         server_metadata: ServerMetadata
     },
+    Filter(Filters),
     DeleteServerFiles(bool),
+    DeleteServer {
+        delete_server_name: String, 
+        delete_server_files: bool
+    },
     // TODO: remove these types in favor of explicit handling
     String(String),
     Boolean(bool)
@@ -791,7 +796,6 @@ async fn handle_all_stream_values(
     ip: &str,
     server_start_keyword: &mut String,
     server_stop_keyword: &mut String,
-    reconnect_target: &mut Option<(String, String)>,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     if let Ok(payload) = serde_json::from_value::<MessagePayload>(value.clone()) {
         if payload.message == "end_conn" {
@@ -799,17 +803,6 @@ async fn handle_all_stream_values(
             let mut state_guard = arc_state.write().await;
             state_guard.tcp_conn_status = Status::Down;
             return Ok(true);
-    } else if payload.r#type == "change_conn" {
-        let node = {
-            let state_guard = arc_state.read().await;  
-            state_guard
-                .database
-                .retrieve_nodes(payload.message)
-                .await
-                .unwrap()
-        };
-        *reconnect_target = Some((node.ip, node.nodename));
-        return Ok(true);  
     } else if payload.r#type == "server_state" {
             let mut state_guard = arc_state.write().await;
             let sent_status = payload.message.parse().unwrap_or(false);
@@ -1003,7 +996,6 @@ pub async fn handle_stream(
 
     let mut server_start_keyword = String::new();
     let mut server_stop_keyword = String::new();
-    let mut reconnect_target: Option<(String, String)> = None;
 
     let initial_node_password: String =
         get_env_var_or_arg("INITIAL_NODE_PASSWORD", Some(String::default())).unwrap();
@@ -1033,7 +1025,6 @@ pub async fn handle_stream(
         ip: &str,
         server_start_keyword: &mut String,
         server_stop_keyword: &mut String,
-        reconnect_target: &mut Option<(String, String)>,
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         {
             let state_guard = arc_state.read().await;
@@ -1056,7 +1047,6 @@ pub async fn handle_stream(
                     ip,
                     server_start_keyword,
                     server_stop_keyword,
-                    reconnect_target,
                 )
                 .await?;
                 if should_break {
@@ -1077,13 +1067,16 @@ pub async fn handle_stream(
                             if process_stream_data(
                                 raw, &arc_state, &ws_tx, &ip,
                                 &mut server_start_keyword, &mut server_stop_keyword,
-                                &mut reconnect_target,
                             ).await? {
                                 break;
                             }
                         }
-                        Ok(None) => break,
-                        Err(e) => return Err(e.into()),
+                        Ok(None) => {
+                            break
+                        },
+                        Err(e) => {
+                            return Err(e.into())
+                        },
                     }
                 }
                 internal_result = internal_rx.recv() => {
@@ -1091,7 +1084,6 @@ pub async fn handle_stream(
                         if process_stream_data(
                             &raw_data, &arc_state, &ws_tx, &ip,
                             &mut server_start_keyword, &mut server_stop_keyword,
-                            &mut reconnect_target,
                         ).await? {
                             break;
                         }
@@ -1117,7 +1109,6 @@ pub async fn handle_stream(
                             if process_stream_data(
                                 raw, &arc_state, &ws_tx, &ip,
                                 &mut server_start_keyword, &mut server_stop_keyword,
-                                &mut reconnect_target,
                             ).await? {
                                 break;
                             }
@@ -1140,9 +1131,6 @@ pub async fn handle_stream(
         }
     }
 
-    if let Some((ip, name)) = reconnect_target {
-        return Ok(StreamResult::Reconnect(ip, name));
-    }
     Ok(StreamResult::Done)
 }
 
@@ -2058,8 +2046,6 @@ async fn fetch_current_node(
         return Err(StatusCode::UNAUTHORIZED)
     }
 
-
-    println!("current node: {}", state.current_node.name.clone());
     let option_node = state
         .database
         .retrieve_nodes(state.current_node.name.clone())
@@ -2644,7 +2630,7 @@ async fn set_settings(
         Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
     };
 
-    let mut settings_value = match serde_json::to_value(settings) {
+    let mut settings_value = match serde_json::to_value(settings.clone()) {
         Ok(v) => v,
         Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
     };
@@ -2667,11 +2653,35 @@ async fn set_settings(
         _ => {}
     };
     drop(state);
-    let _ = load_settings(arc_state).await;
+    let _ = load_settings(arc_state.clone()).await;
     if has_created {
+        let _ = notify_node_of_settings(arc_state, Some(settings)).await;
         Ok(StatusCode::CREATED.into_response())
     } else {
         Err(StatusCode::INTERNAL_SERVER_ERROR)
+    }
+}
+async fn notify_node_of_settings(arc_state: Arc<RwLock<AppState>>, old_settings_option: Option<Settings>) -> Result<(),  Box<dyn Error + Send + Sync>>{
+    let state = arc_state.write().await;
+    let database = &state.database;
+    let settings = database.get_settings().await?;
+    if let Some(internal_tx) = &state.internal_tx {
+        if let Some(old_settings) = old_settings_option {
+            if !(old_settings.filter == settings.filter){
+                let filter_request = MessagePayloadWithMetadata {
+                    r#type: "command".to_string(),
+                    message: "set_filter".to_string(),
+                    metadata: MetadataTypes::Filter(settings.filter),
+                    authcode: "0".to_string(),
+                };
+                internal_tx.send(serde_json::to_vec(&filter_request).unwrap());
+            }
+            Ok(())
+        } else {
+            Ok(())
+        }
+    } else {
+        Err("No internal tx".into())
     }
 }
 
@@ -2915,21 +2925,18 @@ async fn delete_server(
         return Err(StatusCode::UNAUTHORIZED)
     }
 
-    if let Some(server) = &state.current_server {
+    if let MetadataTypes::DeleteServer { delete_server_name, delete_server_files: _ } = request.metadata.clone() {
         let res = state.database.remove_server_in_db(
-            ModifyElementData { element: Element::Server(server.clone()), jwt: "".to_string(), require_auth: false }
+            ModifyElementData { element: Element::Server(Server { servername: delete_server_name, ..Default::default() }), jwt: "".to_string(), require_auth: false }
         ).await;
         if res.is_err() {
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     }
-    // state.database.simple_remove_server_in_db(
-        
-    // )
 
     let msg = MessagePayloadWithMetadata {
         r#type: "command".to_string(),
-        message: "delete_current_server".to_string(),
+        message: "delete_server".to_string(),
         authcode: "0".to_string(),
         metadata: request.metadata,
     };
@@ -3644,6 +3651,7 @@ async fn change_node(
 ) -> Result<StatusCode, StatusCode> {
     println!("Changing node");
     let state = arc_state.read().await;
+   // println!("C");
 
     let mut authorized = false;
     if let Some(user) = auth_session.user {
@@ -3656,31 +3664,46 @@ async fn change_node(
             authorized = true;
         }
     }
-    drop(state);
+    //drop(state);
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
 
-    
+    let ws_tx = state.ws_tx.clone();
     let option_node = {
-        let state = arc_state.read().await;
+        let state = state.clone();
         state.database.retrieve_nodes(request.node_id.clone()).await
     };
+    
+    drop(state);
 
     if let Some(node) = option_node {
         {
             let termination_payload = MessagePayload {
-                r#type: "change_conn".to_string(),
-                message: request.node_id,
+                r#type: "end_conn".to_string(),
+                message: "".to_string(),
                 authcode: "0".to_string(),
             };
 
             let termination_bytes = serde_json::to_vec(&termination_payload).unwrap_or_default();
 
-            if let Some(tx) = &arc_state.read().await.internal_tx {
-                println!("Sending termination bytes");
+            if let Some(tx) = &arc_state.write().await.internal_tx {
                 let _ = tx.send(termination_bytes);
             }
+
+            {
+                let mut state = arc_state.write().await;
+                state.current_node = NodeAndTCP {
+                    name: node.nodename.clone(),
+                    ip: node.ip.clone(),
+                    ..Default::default()
+                };
+            }
+
+            tokio::spawn(async move {
+                let _ = connect_to_server(arc_state.clone(), node.ip.clone(), ws_tx.clone(), false, false).await;
+            });
+
         }
 
         Ok(StatusCode::OK)

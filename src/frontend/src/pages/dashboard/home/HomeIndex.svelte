@@ -23,8 +23,8 @@
 		file_system_driver: {
 			kind: 'tcp'
 		},
-		filters: {
-			kind: 'alternatingline'
+		filter: {
+			kind: 'alternating_line'
 		},
 		rcon_url: '',
 		rcon_password: ''
@@ -69,7 +69,7 @@
 	let nodes: NodeData[] = $state([]);
 	
 	let selectedNodeName = $state('');
-	let selectedServerName = $state('');
+	let selectedServerName = $state(serverConsole.selectedServer ?? '');
 
 	let nodeName = $state('');
 	let nodeIp = $state('');
@@ -372,7 +372,8 @@
 				type: 'output',
 				text: 'Delete server request executed'
 			});	
-			await serverConsole.deleteServer('', '0', deleteServerFiles);
+			await serverConsole.deleteServer(selectedServerName, '0', deleteServerFiles);
+			await fetchServers();
 			(<HTMLFormElement>event.target).reset();
 		}}
 		method="dialog"
@@ -382,8 +383,17 @@
 
 		<div class="p-4">
 			<p>WARNING: This action is irreversable</p>
-		</div>
+		
+		<label for="servers_selection"><p>Select server:</p></label>
+		<select id="servers_selection" bind:value={selectedServerName}>
+			{#each servers as server}
+				<option value={server.servername}>{server.servername}</option>
+			{/each}
+		</select>
+		<br>
+		<br>
 		<input type="checkbox" class="checkbox" bind:checked={deleteServerFiles} /> Delete server files?
+		</div>
 
 		<div class="modal-action">
 			<button onclick={() => deleteServerFiles = false} class="btn btn-ghost btn-error" type="submit" value="cancel" formnovalidate>

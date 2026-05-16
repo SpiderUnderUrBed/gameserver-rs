@@ -21,7 +21,7 @@
 		<button class="btn" commandfor="create-server-dialog" command="show-modal">Create Server</button
 		>
 		<button class="btn" commandfor="delete-server-dialog" command="show-modal">
-			Delete current server
+			Delete Server
 		</button>
 		<button class="btn" onclick={() => serverConsole.startServer()}>Start Server</button>
 		<button class="btn" onclick={() => serverConsole.stopServer()}>Stop Server</button>
