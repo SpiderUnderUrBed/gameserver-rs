@@ -271,10 +271,12 @@
 		<div class="p-4 fieldset">
 			<label for="server_type" class="label">Server Type</label>
 			<select id="server_type" bind:value={serverProvider} class="select">
-				<option value="custom">Custom</option>
-				<option value="minecraft">Vanilla Minecraft</option>
-				<option value="spigot">Spigot Minecraft</option>
-				<option value="neoforge">Neoforge Minecraft</option>
+                 <option value="custom">Custom</option>
+					<option value="minecraft">Vanilla Minecraft</option>
+					<option value="spigot">Spigot Minecraft</option>
+					<option value="neoforge">Neoforge Minecraft</option>
+					<option value="purpur">Purpur Minecraft</option>
+					<option value="velocity">Velocity Minecraft</option>
 			</select>
 
 			<label for="server_name" class="label">Server Name</label>

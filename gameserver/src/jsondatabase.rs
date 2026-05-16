@@ -5,14 +5,10 @@ use crate::databasespec::Database;
 
 const DB_PATH: &str = "db.json";
 
-pub struct DbConn {
-    
-}
+pub struct DbConn {}
 impl DbConn {
     pub async fn first_connection() -> Self {
-        Self {
-            
-        }
+        Self {}
     }
 }
 

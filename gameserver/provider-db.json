@@ -83,6 +83,62 @@
         "needed_commands": ["java", "wget", "curl"],
         "sandbox": false
       }
+    },
+    "velocity": {
+      "linux": {
+        "default_name": "velocity",
+        "location": "",
+        "pre_hook": "cd {{SERVERLOCATION}} && apt-get install -y curl || true",
+        "install": "cd {{SERVERLOCATION}} && which java || (echo 'Java not found, please install JRE 21 manually')",
+        "post_hook": "cd {{SERVERLOCATION}} && VELOCITY_VERSION=$(curl -s https://api.papermc.io/v2/projects/velocity | grep -oP '(?<=\"versions\":\\[)[^\\]]+' | tr ',' '\\n' | tr -d '\" ' | tail -1) && BUILD=$(curl -s \"https://api.papermc.io/v2/projects/velocity/versions/${VELOCITY_VERSION}/builds\" | grep -oP '(?<=\"build\":)\\d+' | tail -1) && wget -O server.jar \"https://api.papermc.io/v2/projects/velocity/versions/${VELOCITY_VERSION}/builds/${BUILD}/downloads/velocity-${VELOCITY_VERSION}-${BUILD}.jar\"",
+        "start": "cd {{SERVERLOCATION}} && java -Xms512M -Xmx512M -XX:+UseG1GC -XX:G1HeapRegionSize=4M -XX:+UnlockExperimentalVMOptions -XX:+ParallelRefProcEnabled -XX:+AlwaysPreTouch -XX:MaxInlineLevel=15 -jar server.jar",
+        "start_keyword": "Listening on",
+        "stop_keyword": "Shutting down the proxy...",
+        "needed_paths": ["/usr/lib/jvm", "/opt/java", "/usr/java"],
+        "needed_commands": ["java", "wget", "curl"],
+        "sandbox": false
+      },
+      "windows": {
+        "default_name": "velocity",
+        "location": "",
+        "pre_hook": "cd {{SERVERLOCATION}}; choco install -y wget curl",
+        "install": "cd {{SERVERLOCATION}}; choco install -y openjdk21",
+        "post_hook": "cd {{SERVERLOCATION}}; $proj = (Invoke-WebRequest 'https://api.papermc.io/v2/projects/velocity').Content | ConvertFrom-Json; $ver = $proj.versions[-1]; $builds = (Invoke-WebRequest \"https://api.papermc.io/v2/projects/velocity/versions/$ver/builds\").Content | ConvertFrom-Json; $build = $builds.builds[-1].build; Invoke-WebRequest -Uri \"https://api.papermc.io/v2/projects/velocity/versions/$ver/builds/$build/downloads/velocity-$ver-$build.jar\" -OutFile server.jar",
+        "start": "cd {{SERVERLOCATION}}; java -Xms512M -Xmx512M -XX:+UseG1GC -XX:G1HeapRegionSize=4M -XX:+UnlockExperimentalVMOptions -XX:+ParallelRefProcEnabled -XX:+AlwaysPreTouch -XX:MaxInlineLevel=15 -jar server.jar",
+        "start_keyword": "Listening on",
+        "stop_keyword": "Shutting down the proxy...",
+        "needed_paths": ["/usr/lib/jvm", "/opt/java", "/usr/java"],
+        "needed_commands": ["java", "wget", "curl"],
+        "sandbox": false
+      }
+    },
+    "purpur": {
+      "linux": {
+        "default_name": "purpur",
+        "location": "",
+        "pre_hook": "cd {{SERVERLOCATION}} && apt-get install -y curl || true",
+        "install": "cd {{SERVERLOCATION}} && which java || (echo 'Java not found, please install JRE 21 manually')",
+        "post_hook": "cd {{SERVERLOCATION}} && PURPUR_VERSION=$(curl -s https://api.purpurmc.org/v2/purpur | grep -oP '(?<=\"versions\":\\[)[^\\]]+' | tr ',' '\\n' | tr -d '\" ' | tail -1) && BUILD=$(curl -s \"https://api.purpurmc.org/v2/purpur/${PURPUR_VERSION}\" | grep -oP '(?<=\"latest\":\")\\d+') && wget -O server.jar \"https://api.purpurmc.org/v2/purpur/${PURPUR_VERSION}/${BUILD}/download\" && echo 'eula=true' > eula.txt",
+        "start": "cd {{SERVERLOCATION}} && java -Xmx1024M -Xms1024M -jar server.jar nogui",
+        "start_keyword": "help",
+        "stop_keyword": "All dimensions are saved",
+        "needed_paths": ["/usr/lib/jvm", "/opt/java", "/usr/java"],
+        "needed_commands": ["java", "wget", "curl"],
+        "sandbox": false
+      },
+      "windows": {
+        "default_name": "purpur",
+        "location": "",
+        "pre_hook": "cd {{SERVERLOCATION}}; choco install -y wget curl",
+        "install": "cd {{SERVERLOCATION}}; choco install -y openjdk21",
+        "post_hook": "cd {{SERVERLOCATION}}; $proj = (Invoke-WebRequest 'https://api.purpurmc.org/v2/purpur').Content | ConvertFrom-Json; $ver = $proj.versions[-1]; $build = ((Invoke-WebRequest \"https://api.purpurmc.org/v2/purpur/$ver\").Content | ConvertFrom-Json).builds.latest; Invoke-WebRequest -Uri \"https://api.purpurmc.org/v2/purpur/$ver/$build/download\" -OutFile server.jar; 'eula=true' | Out-File -Encoding ASCII eula.txt",
+        "start": "cd {{SERVERLOCATION}}; java -Xmx1024M -Xms1024M -jar server.jar nogui",
+        "start_keyword": "help",
+        "stop_keyword": "All dimensions are saved",
+        "needed_paths": ["/usr/lib/jvm", "/opt/java", "/usr/java"],
+        "needed_commands": ["java", "wget", "curl"],
+        "sandbox": false
+      }
     }
   }
 }
