@@ -2780,18 +2780,18 @@ async fn convert_provider(
 
     if known_provider.is_none() {
         if let Some(name) = &known_name {
-            if let Some(p) = get_provider_from_servername(&state, Some(name.clone())).await {
-                known_provider = Some(p);
+            if let Some(provider) = get_provider_from_servername(&state, Some(name.clone())).await {
+                known_provider = Some(provider);
             }
         }
     }
 
     if known_sandbox.is_none() {
         if let Some(name) = &known_name {
-            if let Some(s) =
+            if let Some(sandbox) =
                 get_providers_sandbox(&state, Some(name.clone()), known_path.clone()).await
             {
-                known_sandbox = Some(s);
+                known_sandbox = Some(sandbox);
             }
         }
     }
