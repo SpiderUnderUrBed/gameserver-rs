@@ -116,7 +116,11 @@ enum MetadataTypes {
         server_metadata: ServerMetadata,
     },
     Filter(Filters),
-    DeleteServerFiles(bool),
+    DeleteServer {
+        delete_server_name: String, 
+        delete_server_files: bool
+    },
+    //DeleteServerFiles(bool),
     // TODO: replace this with EXPLICIT metadata types per action
     Boolean(bool),
     String(String),
@@ -220,25 +224,7 @@ enum ApiCalls {
     IncomingMessage(MessagePayload),
     Node(Node),
     FileOperations(FileOperations)
-    // FileDownloadOperation(String),
-    // FileMoveOperation(String),
-    // FileZipOperation(String),
-    // FileUnzipOperation(String),
-    // FileCopyOperation(String),
 }
-
-// impl From<ApiCalls> for FileOperations {
-//     fn from(api_call: ApiCalls) -> Self {
-//         match api_call {
-//             ApiCalls::FileDownloadOperation(s) => FileOperations::FileDownloadOperation(s),
-//             ApiCalls::FileMoveOperation(s) => FileOperations::FileMoveOperation(s),
-//             ApiCalls::FileZipOperation(s) => FileOperations::FileZipOperation(s),
-//             ApiCalls::FileUnzipOperation(s) => FileOperations::FileUnzipOperation(s),
-//             ApiCalls::FileCopyOperation(s) => FileOperations::FileCopyOperation(s),
-//             _ => FileOperations::Unknown,
-//         }
-//     }
-// }
 
 // I tried to convert from a Value, as in undefined data type, to a List, as its a data type created only
 // here and its used sometimes, maybe it would be better to just do the conversion when its needed
@@ -1035,7 +1021,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 if line_str.trim().starts_with('{')
                                     && line_str.trim().ends_with('}')
                                 {
-                                    
+                                    // This is for logging all json values EXCEPT anything to do with filecontent
+                                    // as if your transfering file content and log that, depending on how big the file it
+                                    // it could crash if that was not filtered
                                     if let Ok(json_value) = serde_json::from_slice::<Value>(line) {
                                         let is_response = json_value.get("in_response_to").is_some() 
                                             && json_value.get("data").is_some()
@@ -1908,7 +1896,7 @@ async fn handle_typical_command_or_console(
                 //create_server(state, cmd_tx, stdin_ref, serde_json::to_value(payload)?).await
             }
             other => {
-                println!("{other}");
+                println!("Unknown command {other}");
                 let _ = cmd_tx.send(format!("Unknown command: {}", other)).await;
                 Ok(())
             }
@@ -2303,21 +2291,22 @@ async fn handle_commands_with_metadata(
                     return Err("Did not get filter in metadata feilds".into())
                 }
             }
-            "delete_current_server" => {
-                // let current = state.current_server.lock().await.clone();
-                // println!("delete_current_server: current_server = {:?}", current);
-                // let current = current.ok_or("there is no current server")?;
+            "delete_server" => {
+                // println!("{:#?}", option_path);
+                if let MetadataTypes::DeleteServer { delete_server_name, delete_server_files  } = &payload.metadata {
                 let current_server = state
                     .current_server
                     .lock()
                     .await
                     .clone()
                     .ok_or("there is no current server")?;
-                
-                *state.current_server.lock().await = None;
+
                 let mut db = state.db.lock().await;
-                db.current_server = String::new();
-                db.server_index.remove(&current_server);
+                if *delete_server_name == current_server {
+                    *state.current_server.lock().await = None;
+                    db.current_server = String::new();
+                }
+                db.server_index.remove(delete_server_name);
                 save_db(&db);
                 drop(db);
 
@@ -2335,9 +2324,7 @@ async fn handle_commands_with_metadata(
                     }
                 };
 
-                // println!("{:#?}", option_path);
-                if let MetadataTypes::DeleteServerFiles(delete_server_files) = payload.metadata {
-                    if delete_server_files {
+                    if *delete_server_files {
                         if let Some(mut path) = option_path {
                             //println!("{path}");
                             if !path.trim().starts_with("server") && !path.trim().starts_with("server/") {

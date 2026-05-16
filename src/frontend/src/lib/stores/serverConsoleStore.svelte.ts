@@ -358,11 +358,14 @@ export class ServerConsoleState {
 			await httpClient.post('/api/deleteserver', { 
 				json: { 
 					type: 'command', 
-					message: servername, 
+					message: '', 
 					authcode, 
 					metadata: {
-						kind: "DeleteServerFiles",
-						data: delete_server_files
+						kind: "DeleteServer",
+						data: {
+							delete_server_name: servername, 
+        					delete_server_files
+						}
 					} 
 				} 
 			});

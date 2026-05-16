@@ -404,6 +404,10 @@ enum MetadataTypes {
     },
     Filter(Filters),
     DeleteServerFiles(bool),
+    DeleteServer {
+        delete_server_name: String, 
+        delete_server_files: bool
+    },
     // TODO: remove these types in favor of explicit handling
     String(String),
     Boolean(bool)
@@ -792,7 +796,6 @@ async fn handle_all_stream_values(
     ip: &str,
     server_start_keyword: &mut String,
     server_stop_keyword: &mut String,
-    reconnect_target: &mut Option<(String, String)>,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     if let Ok(payload) = serde_json::from_value::<MessagePayload>(value.clone()) {
         if payload.message == "end_conn" {
@@ -800,18 +803,6 @@ async fn handle_all_stream_values(
             let mut state_guard = arc_state.write().await;
             state_guard.tcp_conn_status = Status::Down;
             return Ok(true);
-    } else if payload.r#type == "change_conn" {
-        let node = {
-            let state_guard = arc_state.read().await;  
-            state_guard
-                .database
-                .retrieve_nodes(payload.message)
-                .await
-                .unwrap()
-        };
-        println!("reconnecting to {:#?}", node);
-        *reconnect_target = Some((node.ip, node.nodename));
-        return Ok(true);  
     } else if payload.r#type == "server_state" {
             let mut state_guard = arc_state.write().await;
             let sent_status = payload.message.parse().unwrap_or(false);
@@ -1005,7 +996,6 @@ pub async fn handle_stream(
 
     let mut server_start_keyword = String::new();
     let mut server_stop_keyword = String::new();
-    let mut reconnect_target: Option<(String, String)> = None;
 
     let initial_node_password: String =
         get_env_var_or_arg("INITIAL_NODE_PASSWORD", Some(String::default())).unwrap();
@@ -1035,7 +1025,6 @@ pub async fn handle_stream(
         ip: &str,
         server_start_keyword: &mut String,
         server_stop_keyword: &mut String,
-        reconnect_target: &mut Option<(String, String)>,
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         {
             let state_guard = arc_state.read().await;
@@ -1044,7 +1033,6 @@ pub async fn handle_stream(
 
         if let Ok(text) = std::str::from_utf8(raw_data) {
             let line_content = text.trim();
-            println!("{:#?}", line_content);
             if line_content.is_empty() {
                 return Ok(false);
             }
@@ -1059,7 +1047,6 @@ pub async fn handle_stream(
                     ip,
                     server_start_keyword,
                     server_stop_keyword,
-                    reconnect_target,
                 )
                 .await?;
                 if should_break {
@@ -1080,7 +1067,6 @@ pub async fn handle_stream(
                             if process_stream_data(
                                 raw, &arc_state, &ws_tx, &ip,
                                 &mut server_start_keyword, &mut server_stop_keyword,
-                                &mut reconnect_target,
                             ).await? {
                                 break;
                             }
@@ -1098,7 +1084,6 @@ pub async fn handle_stream(
                         if process_stream_data(
                             &raw_data, &arc_state, &ws_tx, &ip,
                             &mut server_start_keyword, &mut server_stop_keyword,
-                            &mut reconnect_target,
                         ).await? {
                             break;
                         }
@@ -1124,7 +1109,6 @@ pub async fn handle_stream(
                             if process_stream_data(
                                 raw, &arc_state, &ws_tx, &ip,
                                 &mut server_start_keyword, &mut server_stop_keyword,
-                                &mut reconnect_target,
                             ).await? {
                                 break;
                             }
@@ -1147,10 +1131,6 @@ pub async fn handle_stream(
         }
     }
 
-    // if let Some((ip, name)) = reconnect_target {
-    //     println!("Returning good stream result");
-    //     return Ok(StreamResult::Reconnect(ip, name));
-    // }
     Ok(StreamResult::Done)
 }
 
@@ -2066,8 +2046,6 @@ async fn fetch_current_node(
         return Err(StatusCode::UNAUTHORIZED)
     }
 
-
-    println!("current node: {}", state.current_node.name.clone());
     let option_node = state
         .database
         .retrieve_nodes(state.current_node.name.clone())
@@ -2947,21 +2925,18 @@ async fn delete_server(
         return Err(StatusCode::UNAUTHORIZED)
     }
 
-    if let Some(server) = &state.current_server {
+    if let MetadataTypes::DeleteServer { delete_server_name, delete_server_files: _ } = request.metadata.clone() {
         let res = state.database.remove_server_in_db(
-            ModifyElementData { element: Element::Server(server.clone()), jwt: "".to_string(), require_auth: false }
+            ModifyElementData { element: Element::Server(Server { servername: delete_server_name, ..Default::default() }), jwt: "".to_string(), require_auth: false }
         ).await;
         if res.is_err() {
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     }
-    // state.database.simple_remove_server_in_db(
-        
-    // )
 
     let msg = MessagePayloadWithMetadata {
         r#type: "command".to_string(),
-        message: "delete_current_server".to_string(),
+        message: "delete_server".to_string(),
         authcode: "0".to_string(),
         metadata: request.metadata,
     };
@@ -3716,14 +3691,19 @@ async fn change_node(
                 let _ = tx.send(termination_bytes);
             }
 
-            let _ = connect_to_server(arc_state.clone(), node.ip.clone(), ws_tx.clone(), true, false).await;
-            
-            let mut state = arc_state.write().await;
-            state.current_node = NodeAndTCP {
-                                name: node.nodename,
-                                ip: node.ip,
-                                ..Default::default()
-                            };
+            {
+                let mut state = arc_state.write().await;
+                state.current_node = NodeAndTCP {
+                    name: node.nodename.clone(),
+                    ip: node.ip.clone(),
+                    ..Default::default()
+                };
+            }
+
+            tokio::spawn(async move {
+                let _ = connect_to_server(arc_state.clone(), node.ip.clone(), ws_tx.clone(), false, false).await;
+            });
+
         }
 
         Ok(StatusCode::OK)
