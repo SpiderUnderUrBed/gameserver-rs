@@ -596,6 +596,7 @@ struct AppState {
     current_server: Arc<Mutex<Option<String>>>,
     //server_index: HashMap<String, ServerIndex>,
     jailed_user: String,
+    authenticated_origins: Arc<Mutex<Vec<String>>>,
     server_running: Arc<Mutex<bool>>,
     server_output_tx: Arc<Mutex<Option<broadcast::Sender<String>>>>,
     server_process: Arc<Mutex<Option<Child>>>,
@@ -736,6 +737,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let state = AppState {
         current_server: Arc::new(Mutex::new(None)),
         jailed_user: "server".to_string(),
+        authenticated_origins: Arc::new(Mutex::new(Vec::new())),
         server_running: Arc::new(Mutex::new(false)),
         server_output_tx: Arc::new(Mutex::new(None)),
         server_process: Arc::new(Mutex::new(None)),
@@ -757,6 +759,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut kill_socket = false;
     const FILE_DELIMITER: &[u8] = b"<|END_OF_FILE|>";
+
+    // TODO: sometimes i use kill_socket and sometimes i just break the loop, be consistent
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
         loop {
@@ -955,7 +959,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let mut tick = tokio::time::interval(tokio::time::Duration::from_secs(1));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-            loop {
+            'outer: loop {
                 if kill_socket == true {
                     println!("Shutting down");
                     //write_half.shutdown();
@@ -1021,15 +1025,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 if line_str.trim().starts_with('{')
                                     && line_str.trim().ends_with('}')
                                 {
-                                    // This is for logging all json values EXCEPT anything to do with filecontent
-                                    // as if your transfering file content and log that, depending on how big the file it
-                                    // it could crash if that was not filtered
                                     if let Ok(json_value) = serde_json::from_slice::<Value>(line) {
+                                        // This is for logging all json values EXCEPT anything to do with filecontent
+                                        // as if your transfering file content and log that, depending on how big the file it
+                                        // it could crash if that was not filtered
                                         let is_response = json_value.get("in_response_to").is_some() 
                                             && json_value.get("data").is_some()
                                             && json_value.as_object().map(|o| o.len() == 2).unwrap_or(false);
                                         if !is_response {
                                             println!("[{}] Received JSON here line: {}", addr, line_str.trim());
+                                        }
+                                        
+                                        let auth_payload_result: Result<AuthTcpMessage, serde_json::Error> =
+                                            serde_json::from_value(json_value.clone());
+                                        let authenticated_origins = &mut arc_state_clone.authenticated_origins.lock().await;
+                                        if let Ok(auth_payload) = auth_payload_result {
+                                            let node_password: String =
+                                                get_env_var_or_arg("NODE_PASSWORD", Some(String::default())).unwrap();
+
+                                            if node_password.clone() == auth_payload.password {
+                                                authenticated_origins.push(addr.to_string());
+                                            }
+                                        }
+                                        if !authenticated_origins.iter().any(|origin| *origin == addr.to_string()){
+                                            let node_password: String =
+                                                get_env_var_or_arg("NODE_PASSWORD", Some(String::default())).unwrap();
+                                            if !node_password.is_empty(){
+                                                //kill_socket = true;
+                                                break 'outer;
+                                            }
                                         }
 
 
@@ -1413,17 +1437,7 @@ async fn sort_command_type_or_console(
     stdin_ref: &Arc<Mutex<Option<ChildStdin>>>,
     hostname: &Arc<Result<OsString, String>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let node_password: String =
-        get_env_var_or_arg("NODE_PASSWORD", Some(String::default())).unwrap();
 
-    let auth_payload_result: Result<AuthTcpMessage, serde_json::Error> =
-        serde_json::from_value(payload.clone());
-    if let Ok(auth_payload) = auth_payload_result {
-        if node_password != auth_payload.password {
-            println!("Authentication failed");
-            return Err(Box::new(CommandOrConsoleErrors::AuthDisconnect));
-        }
-    }
     let with_metadata_result: Result<IncomingMessageWithMetadata, serde_json::Error> =
         serde_json::from_value(payload.clone());
     if let Ok(with_metadata_payload) = with_metadata_result {
