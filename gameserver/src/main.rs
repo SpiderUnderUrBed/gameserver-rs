@@ -1952,18 +1952,6 @@ async fn handle_typical_command_or_console(
                     .await;
                 Ok(())
             }
-            "create_server" => {
-                //println!("{:#?}", serde_json::to_value(payload)?);
-                println!("This should not be running");
-                let request = MessagePayload {
-                    r#type: "command".to_owned(),
-                    message: "request_server_metadata".to_owned(),
-                    authcode: "0".to_owned(),
-                };
-                let _ = cmd_tx.send(serde_json::to_string(&request)? + "\n").await;
-                Ok(())
-                //create_server(state, cmd_tx, stdin_ref, serde_json::to_value(payload)?).await
-            }
             other => {
                 println!("Unknown command {other}");
                 let _ = cmd_tx.send(format!("Unknown command: {}", other)).await;
@@ -2112,11 +2100,18 @@ async fn start_server_with_broadcast(
             .start()
             .ok_or("Provider does not support starting servers")?;
 
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let location_val = location.as_deref().unwrap_or("");
+        let location_stripped = location_val.trim_start_matches("server/");
+        let resolved = cwd.join("server").join(location_stripped);
+
         let mut child_cmd = tokio::process::Command::from(start_command);
         child_cmd
+            .current_dir(&resolved)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        
         // At this point I already throw an error if there is no associated provider config
         // So i might aswell directly unwrap at this point
         process_hook(

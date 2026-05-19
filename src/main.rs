@@ -2779,7 +2779,13 @@ async fn ongoing_server_status(
                 {
                     state.current_node.status.clone()
                 } else if state.cached_status_type == "server-process" {
-                    Status::Unknown
+                    let msg = serde_json::to_vec(&MessagePayload {
+                        r#type: "command".to_string(),
+                        message: "server_state".to_string(),
+                        authcode: "0".to_string(),
+                    }).unwrap();
+                    let _ = state.tcp_tx.send(msg);
+                    state.current_node.status.clone()
                 } else if state.cached_status_type == "node" {
                     state.tcp_conn_status.clone()
                 } else if state.cached_status_type == "manual-click" {
