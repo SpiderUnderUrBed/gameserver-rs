@@ -378,7 +378,8 @@
 			if ((<HTMLButtonElement | null>event.submitter)?.value === 'cancel') return;
 			serverConsole.addConsoleEntry({
 				type: 'output',
-				text: 'Delete server request executed'
+				text: 'Delete server request executed',
+				count: 0
 			});	
 			await serverConsole.deleteServer(selectedServerName, '0', deleteServerFiles);
 			await fetchServers();
