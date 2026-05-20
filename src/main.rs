@@ -1758,17 +1758,7 @@ pub async fn set_lock(
 ) -> impl IntoResponse {
     let mut state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED
     }
@@ -1789,17 +1779,7 @@ pub async fn start_server(
     println!("Called start server");
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED.into_response()
     }
@@ -1823,17 +1803,7 @@ pub async fn stop_server(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED.into_response()
     }
@@ -1860,17 +1830,7 @@ pub async fn rcon_command(
 
     let state = arc_state.read().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED.into_response()
     }
@@ -1939,17 +1899,7 @@ async fn file_operations(
 ) -> StatusCode {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED
     }
@@ -1972,17 +1922,7 @@ async fn upload(
 ) -> StatusCode {
     let state = arc_state.read().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED;
     }
@@ -2004,17 +1944,7 @@ async fn migrate(
 ) -> impl IntoResponse {
     let state = arc_state.read().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return "unauthorized";
     }
@@ -2066,17 +1996,7 @@ async fn fetch_current_node(
     headers: HeaderMap
 ) -> Result<Json<Node>, StatusCode> {
     let mut state = arc_state.write().await;
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -2101,17 +2021,7 @@ async fn get_status(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -2145,17 +2055,7 @@ async fn get_settings(
     headers: HeaderMap
 ) -> impl IntoResponse {
     let state = arc_state.read().await;
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -2173,17 +2073,7 @@ async fn get_buttons(
 ) -> impl IntoResponse {
     let state = arc_state.read().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -2208,17 +2098,7 @@ async fn edit_buttons(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -2238,17 +2118,7 @@ async fn button_reset(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED
     }
@@ -2383,6 +2253,25 @@ async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
     println!("[Conn {}] DISCONNECTED", conn_id);
 }
 
+async fn authorize(
+    state: &AppState,
+    auth_session: AuthSession,
+    headers: HeaderMap,
+    perms: Vec<String>
+) -> bool {
+    if let Some(user) = auth_session.user {
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+            return true;
+        }
+    }
+    if let Some(token) = get_auth_bearer(headers) {
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+            return true;
+        }
+    }
+    false
+}
+
 async fn ws_handler(
     ws: WebSocketUpgrade,
     State(arc_state): State<Arc<RwLock<AppState>>>,
@@ -2391,17 +2280,8 @@ async fn ws_handler(
 ) -> impl IntoResponse {
 
     let state = arc_state.write().await;
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    
     if !authorized {
         return StatusCode::UNAUTHORIZED.into_response()
     }
@@ -2507,7 +2387,6 @@ async fn routes_static(
 
     let public = Router::new()
         .route("/", get(handle_static_request))
-        .route("/authenticate", get(authenticate_route_with_jwt))
         .route("/index.html", get(handle_static_request))
         .route("/assets/{*wildcard}", get(handle_static_request));
 
@@ -2577,18 +2456,7 @@ async fn oidc_login_initiate(
     if let Some(claims) = claims {
         let mut decoded_user = String::new();
         let mut user_perms = Vec::new();
-        // Code for decoding the claims itself
-        // if let Ok(decoded_user_bytes) = STANDARD.decode(local_claim_name.to_string()){
-        //     if let Ok(inner_decoded_user) = String::from_utf8(decoded_user_bytes){
-        //         decoded_user = inner_decoded_user;
-        //     } else {
-        //         println!("D");
-        //         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        //     }
-        // } else {
-        //     println!("C");
-        //     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        // }
+
         if let Some(user_perms_claim) = &claims.additional_claims().user_perms {
             user_perms = user_perms_claim.to_vec();
         }
@@ -2655,17 +2523,7 @@ async fn set_settings(
     let inner_value = request.message;
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
 
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
@@ -2866,17 +2724,7 @@ async fn delete_node(
 ) -> impl IntoResponse {
 
     let state = arc_state.write().await;
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -2933,16 +2781,7 @@ async fn add_node(
     let state = arc_state.write().await;
 
     let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -2962,17 +2801,7 @@ async fn delete_server(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -3017,17 +2846,7 @@ async fn add_server(
     let mut state = arc_state.write().await;
     println!("Got create server request");
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -3101,17 +2920,7 @@ async fn get_integrations(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -3145,17 +2954,7 @@ async fn ping(
     Json(request): Json<MessagePayload>
 ) -> StatusCode {
     let state = arc_state.write().await;
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED;
     }
@@ -3188,17 +2987,7 @@ async fn modify_intergration(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -3310,17 +3099,7 @@ async fn delete_intergration(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -3343,17 +3122,7 @@ async fn create_intergration(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -3404,17 +3173,7 @@ async fn create_user(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -3434,17 +3193,7 @@ async fn edit_user(
     Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED.into_response())
     }
@@ -3465,17 +3214,7 @@ async fn set_server(
     Json(request): Json<ModifyElementData>,
 ) -> Result<StatusCode, StatusCode> {
     let mut state = arc_state.write().await;
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -3548,17 +3287,7 @@ async fn get_server(
 ) -> Result<Json<Server>, StatusCode> {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -3587,17 +3316,7 @@ async fn get_user(
     Json(request): Json<RetrieveElement>,
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED.into_response())
     }
@@ -3620,17 +3339,7 @@ async fn delete_user(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED.into_response())
     }
@@ -3662,17 +3371,7 @@ async fn users(
 ) -> Result<impl IntoResponse, StatusCode> {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -3705,17 +3404,7 @@ async fn change_node(
     let state = arc_state.read().await;
    // println!("C");
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     //drop(state);
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
@@ -3773,17 +3462,7 @@ async fn get_nodes(
 ) -> impl IntoResponse {
     let mut state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED.into_response())
     }
@@ -3846,8 +3525,14 @@ async fn get_nodes(
 
 async fn get_servers(
     State(arc_state): State<Arc<RwLock<AppState>>>,
+    auth_session: AuthSession,
+    headers: HeaderMap
 ) -> Result<Json<List>, StatusCode> {
     let state = arc_state.write().await;
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    if !authorized {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
     let result = match state.database.fetch_all_servers().await {
         Ok(servers) => Ok(Json(List {
             list: ApiCalls::ServerDataList(servers),
@@ -3940,41 +3625,12 @@ fn resolve_jwt(token: &str) -> Result<TokenData<Claims>, StatusCode> {
     .map_err(|_| StatusCode::UNAUTHORIZED)
 }
 
-// Creates a claim with respect to the secret, and gives it a expirery
-fn encode_token(user: String, user_perms: Vec<UserPerm>) -> Result<String, StatusCode> {
-    let now = Utc::now();
-    let exp = (now + chrono::Duration::hours(24)).timestamp() as usize;
-    let iat = now.timestamp() as usize;
-    let claims = Claims {
-        exp,
-        iat,
-        user,
-        user_perms,
-    };
-
-    let secret = std::env::var("SECRET").unwrap_or_else(|_| {
-        panic!("Need to specify a secret");
-    });
-
-    encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(secret.as_bytes()),
-    )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
-}
 
 // LoginData arrives as just a user and password
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct LoginData {
     pub user: String,
     pub password: String,
-}
-
-// When a JWT arrives from the frontend, it simply arrives with the token argument
-#[derive(Deserialize)]
-pub struct JwtTokenForm {
-    pub token: String,
 }
 
 // Impliment AuthUser for User for axum login so it knows how to identify the user and get the hash
@@ -4136,17 +3792,7 @@ async fn get_files_content(
     Json(request): Json<FileChunk>,
 ) -> Result<impl IntoResponse, impl IntoResponse> {
     let state = arc_state.read().await;
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED.into_response())
     }
@@ -4196,13 +3842,18 @@ async fn get_files_content(
 
 // Gets a list of files and return to to things like the filebrowser
 pub async fn get_files(
-    State(state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    headers: HeaderMap,
+    auth_session: AuthSession,
     Json(request): Json<IncomingMessage>,
 ) -> impl IntoResponse {
     let (tcp_tx, tcp_rx) = {
-        let state = state.read().await;
+        let state = arc_state.read().await;
         (state.tcp_tx.clone(), state.tcp_tx.subscribe())
     };
+    let state = arc_state.read().await;
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    drop(state);
 
     let tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
 
@@ -4309,46 +3960,6 @@ pub struct AuthenticateParams {
     jwk: String,
 }
 
-async fn authenticate_route_with_jwt(
-    State(_state): State<Arc<RwLock<AppState>>>,
-    Query(params): Query<AuthenticateParams>,
-    mut auth_session: AuthSession,
-) -> impl IntoResponse {
-    match resolve_jwt(&params.jwk) {
-        Ok(token_data) => {
-            let user = User {
-                username: token_data.claims.user,
-                password_hash: None,
-                user_perms: vec![],
-            };
-
-            if let Err(e) = auth_session.login(&user).await {
-                eprintln!("Failed to log in user: {:?}", e);
-                return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to log in").into_response();
-            }
-
-            if params.next.starts_with('/') {
-                if let Ok(uri) = params.next.parse::<Uri>() {
-                    return Redirect::to(&uri.to_string()).into_response();
-                } else {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        "Invalid next parameter: unable to parse URI",
-                    )
-                        .into_response();
-                }
-            } else {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    "Invalid next parameter: must start with '/'",
-                )
-                    .into_response();
-            }
-        }
-        Err(_) => (StatusCode::UNAUTHORIZED, "Invalid token").into_response(),
-    }
-}
-
 pub async fn stream_file_download(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     auth_session: AuthSession,
@@ -4356,17 +3967,7 @@ pub async fn stream_file_download(
     axum::extract::Path(file_path): axum::extract::Path<String>,
 ) -> Result<Response<Body>, StatusCode> {
     let state = arc_state.read().await;
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED);
     }

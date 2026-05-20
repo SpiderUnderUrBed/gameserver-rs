@@ -1,6 +1,8 @@
 import { metadata, object, unknown } from 'valibot';
 import { httpClient } from '../utils/http';
 import { get, writable } from 'svelte/store';
+import type { Filters } from './settingsStore.svelte';
+import type { Filter } from '@lucide/svelte';
 
 //export const statusStore = writable<('manual', 'server'), ('up' | 'down' | 'unknown')>(('manual'), ('unknown'));
 export const statusStore = writable<'up' | 'down' | 'unknown'>('unknown');
@@ -46,6 +48,7 @@ export class ServerConsoleState {
 	public integrations = $state<any[]>([]);
 	public selectedNode = $state<string | null>(null);
 	public selectedServer = $state<string | null>(null);
+	public filters = $state<Filters[] | undefined>();
 	//public statusIndicator = $state<'up' | 'down' | 'unknown'>('unknown');
 	public rawOutputEnabled = $state(false);
 	public pendingStatus = $state<ServerStatusMode>('node');
@@ -151,7 +154,7 @@ export class ServerConsoleState {
 				console.log("message: " + out);
 				this.currentWsEntry.set(out);
 				if (this.correctMessage(out)) {
-					this.addConsoleEntry({ type: 'output', text: this.cleanOutput(this.cleanJson(out)) });
+					this.addConsoleEntry({ type: 'output', text: this.filterMessage(this.filters, this.cleanOutput(this.cleanJson(out))) });
 				}
 			});
 
@@ -169,27 +172,21 @@ export class ServerConsoleState {
 			console.error('connectWebSocket error', err);
 		}
 	}
+	public filterMessage(filters: Filters[] | undefined, message: string): string {
+		if (filters) {
+			let final_message = message;
+			for (const filter of filters){
+				if (filter.kind == "terminal"){
+					final_message = final_message.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><~]/g, '');
+				}
+			}
+			return final_message;
+		} else {
+			return message
+		}
+	}
 	public correctMessage(input: unknown): boolean {
 		let output: unknown = input;
-		// if (typeof output == "string"){
-		// 	return true
-		// } else {
-		// 	return false
-		// }
-		// while (
-		// 	output !== null &&
-		// 	(typeof output === "object" &&
-		// 	"data" in output) 
-		// ) {
-		// }
-
-		// if (output !== null &&
-		// 	typeof output === "object" &&
-		// 	"data" in output) {
-		// 		return false;
-		// 	} else {
-		// 		return true;
-		// 	}
 
 		if (typeof input !== 'string') return true;
 		

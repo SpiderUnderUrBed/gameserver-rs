@@ -24,14 +24,20 @@
 			kind: 'tcp'
 		},
 		filter: {
-			kind: 'alternating_line'
+			kind: 'none'
 		},
 		rcon_url: '',
-		rcon_password: ''
+		rcon_password: '',
+		lock: false,
+		client_filter: [{
+			kind: 'none'
+		}]
 	})
 
 	onMount(async () => {
+		await store.refreshSettings();
 		settings = await store.getSettings();
+		serverConsole.filters = settings?.client_filter;
 		await fetchServers();
 		await fetchNodes();
 		await integrationsStore.fetchIntegrations();

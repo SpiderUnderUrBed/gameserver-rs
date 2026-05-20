@@ -18,6 +18,7 @@ import { httpClient } from "../utils/http";
     // #[cfg_attr(any(feature = "full-stack", feature = "database"), sqlx(json))]
     // pub(crate) current_server: Server,
 
+export type FilterTypes = "client" | "server" | "any";
 
 export type FileSystemDriver = 
     | { kind: "tcp" }
@@ -26,9 +27,10 @@ export type FileSystemDriver =
 export type Filters = 
     | { kind: "alternating_line" }
     | { kind: "none" }
+    | { kind: "terminal" }
 
 export type FilterModifyStructure = { name: string } & Filters
-export interface Settings {
+export interface GlobalSettings {
     enable_statistics_on_home_page: boolean,
     enable_nodes_on_home_page: boolean,
     console_entry_on_top: boolean,
@@ -37,44 +39,74 @@ export interface Settings {
     rcon_url: string,
     rcon_password: string
 }
+export interface EphemeralSettings {
+    lock: boolean,
+}
 
+export interface UserSettings {
+    client_filter: Filters[]
+}
+
+export interface Settings extends GlobalSettings, EphemeralSettings, UserSettings {}
 
 export class SettingsStore {
-    public currentSettings = $state<Settings | undefined>(undefined)
+    public currentSettings = $state<Settings>();
 
     async init(){
         
     }
-
-    public async refreshSettings() {
-        await this.getSettings().then((settings) => {
-            this.currentSettings = settings;
-        })
-    }
-
-    public async changeSettings(settings: Settings){
-        this.currentSettings = settings;
-
-        
-    }
-    public async getSettings(): Promise<Settings | undefined> {
+    private async getGlobalSettings(): Promise<GlobalSettings | undefined> {
         try {
             const response = await httpClient
                 .get('/api/getsettings')
-                .json<Settings>();
+                .json<GlobalSettings>();
             return response;
         } catch (e) {
             console.error(e);
         }
     }
+
+    public async refreshSettings() {
+        await this.getSettings().then((settings) => {
+            this.currentSettings = { ...this.currentSettings, ...settings } as Settings;
+            this.loadUserSettings(); 
+        })
+    }
+
+    public async changeSettings(settings: Settings){
+        this.currentSettings = settings;
+    }
+
+    private toGlobalSettings({ lock, client_filter, ...global }: Settings): GlobalSettings {
+        return global;
+    }
+
+
+
+    public async getSettings(): Promise<Settings | undefined> {
+        return this.getGlobalSettings().then((global_settings) => {
+            return { ...this.currentSettings, ...global_settings } as Settings;
+        });
+    }
+    private loadUserSettings() {
+        if (this.currentSettings != null) {
+            const stored = localStorage.getItem('client_filter');
+            this.currentSettings.client_filter = stored ? JSON.parse(stored) : [{ kind: "none" }];
+        }
+    }
+    private storeUserSettings(){
+        localStorage.setItem('client_filter', JSON.stringify(this.currentSettings?.client_filter));
+    }
     public async syncSettings(){
         if (this.currentSettings) {
             try {
+                this.storeUserSettings();
+                let global_settings = this.toGlobalSettings(this.currentSettings);
                 const response = await httpClient
                     .post('/api/setsettings', {
                         json: {
                             message: {
-                                ...this.currentSettings
+                                ...global_settings
                             },
                             type: "",
                             authcode: ""
@@ -88,6 +120,13 @@ export class SettingsStore {
             } catch (err) {
                 console.error(err);
             } 
+        }
+    }
+    public filterType(filter: Filters): FilterTypes {
+        if (filter.kind != "terminal"){
+            return "server"
+        } else {
+            return "client"
         }
     }
 }
