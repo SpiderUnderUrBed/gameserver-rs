@@ -1027,14 +1027,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                         // This is for logging all json values EXCEPT anything to do with filecontent
                                         // as if your transfering file content and log that, depending on how big the file it
                                         // it could crash if that was not filtered
-                                        let is_response =
-                                            json_value.get("in_response_to").is_some()
-                                                && json_value.get("data").is_some()
-                                                && json_value
-                                                    .as_object()
-                                                    .map(|o| o.len() == 2)
-                                                    .unwrap_or(false);
-                                        if !is_response {
+                                        // it also checks for status messages to filter
+                                        let mut cant_log = false;
+
+                                        // TODO: serialize these into objects instead of getting from values?
+                                        cant_log = json_value.get("in_response_to").is_some()
+                                            && json_value.get("data").is_some()
+                                            && json_value
+                                                .as_object()
+                                                .map(|o| o.len() == 2)
+                                                .unwrap_or(cant_log);
+
+                                        if let Ok(payload) = serde_json::from_value::<MessagePayload>(json_value.clone()){
+                                            if payload.r#type == "server_state" || payload.message == "server_state" {
+                                                cant_log = true;
+                                            }
+                                        }
+                                        
+                                        if !cant_log {
                                             println!(
                                                 "[{}] Received JSON here line: {}",
                                                 addr,
@@ -1246,7 +1256,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                     continue;
                                                 }
                                                 "command" => {
-                                                    println!("{} {}", addr, msg_payload.message);
                                                     let current_server_lock = arc_state_clone
                                                         .current_server
                                                         .lock()
@@ -1449,8 +1458,7 @@ struct AuthTcpMessage {
 // commands are handled properly and serialized properly, as well as other commands be forwarded to
 // the relevent function.
 // This now also handles auth messages
-// TODO: Merge alot of the functionality back into main at some point
-// TODO: remove excessive Ok's and have proper error handling for cases which should not return OK
+// TODO: remove excessive Ok's and have proper error handling for cases which should not return OK?
 async fn sort_command_type_or_console(
     arc_state: &Arc<AppState>,
     payload: &serde_json::Value,

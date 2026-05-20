@@ -429,7 +429,7 @@ enum Clients {
 
 // console output is sometimes contained within the data feild of json, but this also might be redundant
 #[derive(Debug, Deserialize, Serialize)]
-struct InnerData {
+pub struct InnerData {
     data: String,
     #[serde(rename = "type")]
     message_type: String,
@@ -439,7 +439,7 @@ struct InnerData {
 
 
 #[derive(Debug, Serialize)]
-struct SignInResponse {
+pub struct SignInResponse {
     username: String,
 }
 
@@ -452,14 +452,14 @@ struct Statistics {
 }
 // a list for things like nodes, capabilities, etc
 #[derive(Debug, Serialize, Deserialize)]
-struct List {
+pub struct List {
     list: ApiCalls,
 }
 
 
 // May be redundant, but this is a struct for incoming messages
 #[derive(Debug, Deserialize, Serialize, Clone)]
-struct IncomingMessage {
+pub struct IncomingMessage {
     message: String,
     #[serde(rename = "type")]
     message_type: String,
@@ -467,7 +467,7 @@ struct IncomingMessage {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-struct AuthTcpMessage {
+pub struct AuthTcpMessage {
     password: String,
 }
 
@@ -581,6 +581,7 @@ pub struct AppState {
     cached_status_type: String,
     rcon_connection: Option<Arc<Mutex<Connection<TcpStream>>>>,
     current_server: Option<Server>,
+    lock: bool
 }
 impl Default for AppState {
     fn default() -> Self {
@@ -602,6 +603,7 @@ impl Default for AppState {
             cached_status_type: Default::default(),
             rcon_connection: Default::default(),
             current_server: Default::default(),
+            lock: false,
         }
     }
 }
@@ -642,6 +644,7 @@ impl Clone for AppState {
             cached_status_type: String::new(),
             rcon_connection: self.rcon_connection.clone(),
             current_server: self.current_server.clone(),
+            lock: self.lock.clone(),
         }
     }
 }
@@ -1492,6 +1495,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         cached_status_type: String::new(),
         rcon_connection,
         current_server,
+        lock: false
     };
     state.tcp_conn_status = {
         if check_channel_health(&state.tcp_tx, state.tcp_rx.resubscribe()).await {
@@ -1574,6 +1578,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/user/me", get(user_me))
         .route("/api/createuser", post(create_user))
         .route("/api/deleteuser", post(delete_user))
+        .route("/api/setlock", post(set_lock))
         .merge(fallback_router)
         .with_state(multifaceted_state.clone());
 
@@ -1745,6 +1750,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
+pub async fn set_lock(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    auth_session: AuthSession,
+    headers: HeaderMap,
+    Json(request): Json<IncomingMessage>,
+) -> impl IntoResponse {
+    let mut state = arc_state.write().await;
+
+    let mut authorized = false;
+    if let Some(user) = auth_session.user {
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if let Some(token) = get_auth_bearer(headers) {
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+            authorized = true;
+        }
+    }
+    if !authorized {
+        return StatusCode::UNAUTHORIZED
+    }
+
+    if let Ok(lock) =  request.message.parse::<bool>() {
+        state.lock = lock;
+        StatusCode::CREATED
+    } else {
+        StatusCode::UNPROCESSABLE_ENTITY
+    }
+}
 
 pub async fn start_server(
     State(arc_state): State<Arc<RwLock<AppState>>>,
@@ -1777,7 +1812,7 @@ pub async fn start_server(
     if let Err(e) = msg {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-    let result = state.tcp_tx.send(msg.unwrap());
+    let _ = state.tcp_tx.send(msg.unwrap());
     StatusCode::CREATED.into_response()
 }
 
@@ -2248,7 +2283,6 @@ struct ConsoleData {
 async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
     // Acquire lock just to get needed data
     let conn_id = {
-        let state = arc_state.read().await;
         CONNECTION_COUNTER.fetch_add(1, Ordering::SeqCst)
     };
 
@@ -2265,35 +2299,41 @@ async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
 
     let broadcast_sender = sender.clone();
 
+    let cloned_arc_state = arc_state.clone();
+
     // Spawn task forwarding broadcast messages to this client
     tokio::spawn(async move {
         let mut broadcast_rx = broadcast_rx;
         while let Ok(mut msg) = broadcast_rx.recv().await {
-            // msg is a String here
+            let locked = {
+                let state = cloned_arc_state.read().await;
+                state.lock 
+            };
+            if !locked {
+                // Trying to parse msg as JSON Value
+                if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&msg) {
+                    if let Some(data_val) = v.get_mut("data") {
+                        if data_val.is_array() {
+                            let arr = data_val.as_array().unwrap();
+                            if arr.iter().all(|item| item.is_u64()) {
+                                let bytes: Vec<u8> = arr
+                                    .iter()
+                                    .map(|item| item.as_u64().unwrap() as u8)
+                                    .collect();
 
-            // Try to parse msg as JSON Value
-            if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&msg) {
-                if let Some(data_val) = v.get_mut("data") {
-                    if data_val.is_array() {
-                        let arr = data_val.as_array().unwrap();
-                        if arr.iter().all(|item| item.is_u64()) {
-                            let bytes: Vec<u8> = arr
-                                .iter()
-                                .map(|item| item.as_u64().unwrap() as u8)
-                                .collect();
+                                if let Ok(decoded_str) = std::str::from_utf8(&bytes) {
+                                    if let Ok(decoded_json) =
+                                        serde_json::from_str::<serde_json::Value>(decoded_str)
+                                    {
+                                        *data_val = decoded_json;
 
-                            if let Ok(decoded_str) = std::str::from_utf8(&bytes) {
-                                if let Ok(decoded_json) =
-                                    serde_json::from_str::<serde_json::Value>(decoded_str)
-                                {
-                                    *data_val = decoded_json;
-
-                                    if let Ok(new_msg) = serde_json::to_string(&v) {
-                                        println!(
-                                            "[Conn {}] Forwarding raw message: {:#?}",
-                                            conn_id, new_msg
-                                        );
-                                        msg = new_msg;
+                                        if let Ok(new_msg) = serde_json::to_string(&v) {
+                                            println!(
+                                                "[Conn {}] Forwarding raw message: {:#?}",
+                                                conn_id, new_msg
+                                            );
+                                            msg = new_msg;
+                                        }
                                     }
                                 }
                             }
@@ -2311,25 +2351,31 @@ async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
 
     // Main receive loop
     while let Some(Ok(message)) = receiver.next().await {
-        if let Message::Text(text) = message {
-            println!("[Conn {}] Got from client: {}", conn_id, text);
-            let payload = serde_json::from_str::<MessagePayload>(&text).unwrap_or(MessagePayload {
-                r#type: "console".into(),
-                message: text.to_string(),
-                authcode: "0".into(),
-            });
+        let locked = {
+            let state = arc_state.read().await;
+            state.lock 
+        };
+        if !locked {
+            if let Message::Text(text) = message {
+                println!("[Conn {}] Got from client: {}", conn_id, text);
+                let payload = serde_json::from_str::<MessagePayload>(&text).unwrap_or(MessagePayload {
+                    r#type: "console".into(),
+                    message: text.to_string(),
+                    authcode: "0".into(),
+                });
 
-            if let Ok(mut bytes) = serde_json::to_vec(&payload) {
-                bytes.push(b'\n');
+                if let Ok(mut bytes) = serde_json::to_vec(&payload) {
+                    bytes.push(b'\n');
 
-                // Acquire lock briefly only to send TCP message
-                let tcp_tx = {
-                    let state = arc_state.read().await;
-                    state.tcp_tx.clone()
-                };
+                    // Acquire lock briefly only to send TCP message
+                    let tcp_tx = {
+                        let state = arc_state.read().await;
+                        state.tcp_tx.clone()
+                    };
 
-                let lock = tcp_tx;
-                let _ = lock.send(bytes);
+                    let lock = tcp_tx;
+                    let _ = lock.send(bytes);
+                }
             }
         }
     }
@@ -2383,7 +2429,7 @@ async fn ws_handler(
 // the fix mainly worked in the router in main, I am just covering future cases
 async fn routes_static(
     state: Arc<RwLock<AppState>>,
-    auth_layer: AuthManagerLayer<Backend, MemoryStore>,
+    _auth_layer: AuthManagerLayer<Backend, MemoryStore>,
 ) -> (
     Router<Arc<RwLock<AppState>>>,
     Option<OidcAuthLayer<OidcAdditionalClaims>>,
@@ -2674,7 +2720,7 @@ async fn notify_node_of_settings(arc_state: Arc<RwLock<AppState>>, old_settings_
                     metadata: MetadataTypes::Filter(settings.filter),
                     authcode: "0".to_string(),
                 };
-                internal_tx.send(serde_json::to_vec(&filter_request).unwrap());
+                let _ = internal_tx.send(serde_json::to_vec(&filter_request).unwrap());
             }
             Ok(())
         } else {
