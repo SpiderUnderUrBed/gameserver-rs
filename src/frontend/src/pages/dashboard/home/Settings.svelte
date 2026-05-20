@@ -37,6 +37,10 @@
 		{
 			name: "terminal",
 			kind: "terminal"
+		},
+		{
+			name: "duplicates",
+			kind: "duplicates"
 		}
 	]);
 

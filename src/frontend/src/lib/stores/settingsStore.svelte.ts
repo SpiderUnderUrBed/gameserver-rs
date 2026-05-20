@@ -28,6 +28,7 @@ export type Filters =
     | { kind: "alternating_line" }
     | { kind: "none" }
     | { kind: "terminal" }
+    | { kind: "duplicates" }
 
 export type FilterModifyStructure = { name: string } & Filters
 export interface GlobalSettings {
@@ -123,7 +124,7 @@ export class SettingsStore {
         }
     }
     public filterType(filter: Filters): FilterTypes {
-        if (filter.kind != "terminal"){
+        if (filter.kind != "terminal" && filter.kind != "duplicates"){
             return "server"
         } else {
             return "client"

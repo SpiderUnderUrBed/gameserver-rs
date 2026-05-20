@@ -54,6 +54,8 @@ export class ServerConsoleState {
 	public pendingStatus = $state<ServerStatusMode>('node');
 	public finalStatus = $state<ServerStatusMode>('node');
 	public isConnected = $state(false);
+	public duplicateAmount = writable(0);
+	private oldMessage = $state('');
 	private pendingEntries: ConsoleEntry[] = [];
 	private flushTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -179,7 +181,15 @@ export class ServerConsoleState {
 				if (filter.kind == "terminal"){
 					final_message = final_message.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><~]/g, '');
 				}
+				if (filter.kind == "duplicates"){
+					if (this.oldMessage == final_message){
+						this.duplicateAmount.update(amount => amount + 1);
+					} else {
+						this.duplicateAmount.set(0);
+					}
+				}
 			}
+			this.oldMessage = final_message;
 			return final_message;
 		} else {
 			return message
