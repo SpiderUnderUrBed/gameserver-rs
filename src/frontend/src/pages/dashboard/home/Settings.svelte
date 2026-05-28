@@ -9,6 +9,7 @@
 	let rconPassword = $state<string | undefined>();
 	let currentGlobalFilter = $state<Filters | undefined>();
 	let fileSystemDriver = $state<FileSystemDriver | undefined>();
+	let forceSandbox = $state<boolean>();
 
 	let lock = $state<boolean | undefined> (false);
 	let currentClientFilters = $state<Filters[]>(
@@ -54,6 +55,7 @@
 		rconPassword = settingsStore.currentSettings?.rcon_password;
 		currentGlobalFilter = settingsStore.currentSettings?.filter;
 		currentClientFilters = settingsStore.currentSettings?.client_filter ?? [currentClientFilters[0]];
+		forceSandbox = settingsStore.currentSettings?.force_sandbox;
 	})();
 
 	let trySettings = async () => {
@@ -61,6 +63,7 @@
 			enable_nodes_on_home_page: enabledNodesOnHomepage ?? false,
 			enable_statistics_on_home_page: enabledStatsOnHomepage ?? false,
 			console_entry_on_top: consoleEntryOnTop ?? false,
+			force_sandbox: forceSandbox ?? false,
 			file_system_driver: fileSystemDriver ?? { kind: "none" },
 			filter: currentGlobalFilter ?? { kind: "none" },
 			rcon_url: rconUrl ?? '',
@@ -77,6 +80,7 @@
 			enable_nodes_on_home_page: enabledNodesOnHomepage ?? false,
 			enable_statistics_on_home_page: enabledStatsOnHomepage ?? false,
 			console_entry_on_top: consoleEntryOnTop ?? false,
+			force_sandbox: forceSandbox ?? false,
 			file_system_driver: fileSystemDriver ?? { kind: "none" },
 			filter: currentGlobalFilter ?? { kind: "none" },
 			rcon_url: rconUrl ?? '',
@@ -121,6 +125,11 @@
 		<div class="flex items-center w-32">
 			<button class="btn btn-primary" class:btn-ghost={!consoleEntryOnTop} onclick={() => consoleEntryOnTop = true}>Top</button>
 			<button class="btn btn-error" class:btn-ghost={consoleEntryOnTop} onclick={() => consoleEntryOnTop = false}>Bottom</button>
+		</div>
+		<div>Force the sandbox:</div>
+		<div class="flex items-center w-32">
+			<button class="btn btn-primary" class:btn-ghost={!forceSandbox} onclick={() => forceSandbox = true}>Enable</button>
+			<button class="btn btn-error" class:btn-ghost={forceSandbox} onclick={() => forceSandbox = false}>Disable</button>
 		</div>
 		<div>Rcon settings</div>
 		<div>

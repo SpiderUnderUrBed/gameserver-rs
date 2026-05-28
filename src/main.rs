@@ -2879,6 +2879,15 @@ async fn add_server(
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
+    let settings = state.database.get_settings().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let sandbox = {
+        if settings.force_sandbox == true {
+            true
+        } else {
+            server.sandbox.clone()
+        }
+    };
+
     for message in ["create_server", "set_server", "server_data"] {
         let msg = MessagePayloadWithMetadata {
             r#type: "command".to_string(),
@@ -2888,7 +2897,7 @@ async fn add_server(
                 provider: server.provider.clone(),
                 providertype: server.providertype.clone(),
                 location: server.location.clone(),
-                sandbox: server.sandbox.clone(),
+                sandbox,
                 server_metadata: server.server_metadata.clone()
             },
             authcode: "0".to_string(),
