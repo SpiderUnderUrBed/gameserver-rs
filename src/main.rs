@@ -1779,7 +1779,7 @@ pub async fn start_server(
     println!("Called start server");
     let state = arc_state.write().await;
 
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED.into_response()
     }
@@ -1803,7 +1803,7 @@ pub async fn stop_server(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED.into_response()
     }
@@ -1830,7 +1830,7 @@ pub async fn rcon_command(
 
     let state = arc_state.read().await;
 
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED.into_response()
     }
@@ -1899,7 +1899,7 @@ async fn file_operations(
 ) -> StatusCode {
     let state = arc_state.write().await;
 
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED
     }
@@ -1922,7 +1922,7 @@ async fn upload(
 ) -> StatusCode {
     let state = arc_state.read().await;
 
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED;
     }
@@ -1944,7 +1944,7 @@ async fn migrate(
 ) -> impl IntoResponse {
     let state = arc_state.read().await;
 
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return "unauthorized";
     }
@@ -1996,7 +1996,7 @@ async fn fetch_current_node(
     headers: HeaderMap
 ) -> Result<Json<Node>, StatusCode> {
     let mut state = arc_state.write().await;
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -2021,7 +2021,7 @@ async fn get_status(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -2055,7 +2055,7 @@ async fn get_settings(
     headers: HeaderMap
 ) -> impl IntoResponse {
     let state = arc_state.read().await;
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -2073,7 +2073,7 @@ async fn get_buttons(
 ) -> impl IntoResponse {
     let state = arc_state.read().await;
 
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -2098,7 +2098,7 @@ async fn edit_buttons(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -2118,7 +2118,7 @@ async fn button_reset(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED
     }
@@ -2724,7 +2724,7 @@ async fn delete_node(
 ) -> impl IntoResponse {
 
     let state = arc_state.write().await;
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -2781,7 +2781,7 @@ async fn add_node(
     let state = arc_state.write().await;
 
     let mut authorized = false;
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -2801,7 +2801,7 @@ async fn delete_server(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -2846,7 +2846,7 @@ async fn add_server(
     let mut state = arc_state.write().await;
     println!("Got create server request");
 
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -2929,7 +2929,7 @@ async fn get_integrations(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -2963,7 +2963,7 @@ async fn ping(
     Json(request): Json<MessagePayload>
 ) -> StatusCode {
     let state = arc_state.write().await;
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED;
     }
@@ -2996,7 +2996,7 @@ async fn modify_intergration(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -3108,7 +3108,7 @@ async fn delete_intergration(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -3131,7 +3131,7 @@ async fn create_intergration(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -3223,7 +3223,7 @@ async fn set_server(
     Json(request): Json<ModifyElementData>,
 ) -> Result<StatusCode, StatusCode> {
     let mut state = arc_state.write().await;
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -3296,7 +3296,7 @@ async fn get_server(
 ) -> Result<Json<Server>, StatusCode> {
     let state = arc_state.write().await;
 
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -3325,7 +3325,7 @@ async fn get_user(
     Json(request): Json<RetrieveElement>,
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED.into_response())
     }
@@ -3380,7 +3380,7 @@ async fn users(
 ) -> Result<impl IntoResponse, StatusCode> {
     let state = arc_state.write().await;
 
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -3413,7 +3413,7 @@ async fn change_node(
     let state = arc_state.read().await;
    // println!("C");
 
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     //drop(state);
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
@@ -3471,7 +3471,7 @@ async fn get_nodes(
 ) -> impl IntoResponse {
     let mut state = arc_state.write().await;
 
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED.into_response())
     }
@@ -3538,7 +3538,7 @@ async fn get_servers(
     headers: HeaderMap
 ) -> Result<Json<List>, StatusCode> {
     let state = arc_state.write().await;
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED);
     }
@@ -3801,7 +3801,7 @@ async fn get_files_content(
     Json(request): Json<FileChunk>,
 ) -> Result<impl IntoResponse, impl IntoResponse> {
     let state = arc_state.read().await;
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED.into_response())
     }
@@ -3861,7 +3861,7 @@ pub async fn get_files(
         (state.tcp_tx.clone(), state.tcp_tx.subscribe())
     };
     let state = arc_state.read().await;
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     drop(state);
 
     let tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
@@ -3976,7 +3976,7 @@ pub async fn stream_file_download(
     axum::extract::Path(file_path): axum::extract::Path<String>,
 ) -> Result<Response<Body>, StatusCode> {
     let state = arc_state.read().await;
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED);
     }
