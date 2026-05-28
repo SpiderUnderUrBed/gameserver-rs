@@ -2260,12 +2260,12 @@ async fn authorize(
     perms: Vec<String>
 ) -> bool {
     if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin" || perms.iter().any(|authorized_perm| *authorized_perm == user_perm.perm)){
             return true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin" || perms.iter().any(|authorized_perm| *authorized_perm == user_perm.perm)){
             return true;
         }
     }
