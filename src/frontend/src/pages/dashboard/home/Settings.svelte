@@ -10,6 +10,7 @@
 	let currentGlobalFilter = $state<Filters | undefined>();
 	let fileSystemDriver = $state<FileSystemDriver | undefined>();
 	let forceSandbox = $state<boolean>();
+	let disableCustomServers = $state<boolean>();
 
 	let lock = $state<boolean | undefined> (false);
 	let currentClientFilters = $state<Filters[]>(
@@ -56,6 +57,7 @@
 		currentGlobalFilter = settingsStore.currentSettings?.filter;
 		currentClientFilters = settingsStore.currentSettings?.client_filter ?? [currentClientFilters[0]];
 		forceSandbox = settingsStore.currentSettings?.force_sandbox;
+		disableCustomServers = settingsStore.currentSettings?.disable_custom_servers;
 	})();
 
 	let trySettings = async () => {
@@ -71,7 +73,8 @@
 			lock: false,
 			client_filter: currentClientFilters ?? {
 				kind: 'none'
-			}
+			},
+			disable_custom_servers: disableCustomServers ?? false
 		}
 		settingsStore.changeSettings(newSettings)
 	}
@@ -88,7 +91,8 @@
 			lock: false,
 			client_filter: currentClientFilters ?? [{
 				kind: 'none'
-			}]
+			}],
+			disable_custom_servers: disableCustomServers ?? false
 		}
 
 		settingsStore.changeSettings(newSettings)
@@ -126,10 +130,18 @@
 			<button class="btn btn-primary" class:btn-ghost={!consoleEntryOnTop} onclick={() => consoleEntryOnTop = true}>Top</button>
 			<button class="btn btn-error" class:btn-ghost={consoleEntryOnTop} onclick={() => consoleEntryOnTop = false}>Bottom</button>
 		</div>
+		<span class="h-2"></span>
+		<h5><b>Policy:</b></h5>
+		<span class="h-2"></span>
 		<div>Force the sandbox:</div>
 		<div class="flex items-center w-32">
 			<button class="btn btn-primary" class:btn-ghost={!forceSandbox} onclick={() => forceSandbox = true}>Enable</button>
 			<button class="btn btn-error" class:btn-ghost={forceSandbox} onclick={() => forceSandbox = false}>Disable</button>
+		</div>
+		<div>Custom servers:</div>
+		<div class="flex items-center w-32">
+			<button class="btn btn-error" class:btn-ghost={!disableCustomServers} onclick={() => disableCustomServers = true}>Disable</button>
+			<button class="btn btn-primary" class:btn-ghost={disableCustomServers} onclick={() => disableCustomServers = false}>Enable</button>
 		</div>
 		<div>Rcon settings</div>
 		<div>

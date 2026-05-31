@@ -121,6 +121,7 @@ impl Database {
                 enable_nodes_on_home_page      BOOLEAN NOT NULL DEFAULT false,
                 console_entry_on_top           BOOLEAN NOT NULL DEFAULT true,
                 force_sandbox                  BOOLEAN NOT NULL DEFAULT false,
+                disable_custom_servers         BOOLEAN NOT NULL DEFAULT false,
                 current_server                 JSONB DEFAULT '{}'::jsonb,
                 created_at                     TIMESTAMPTZ DEFAULT now(),
                 updated_at                     TIMESTAMPTZ DEFAULT now()
@@ -628,7 +629,8 @@ impl SettingsDatabase for Database {
                 enable_nodes_on_home_page      = $9,
                 console_entry_on_top           = $10,
                 force_sandbox                  = $11,
-                current_server                 = $12,
+                disable_custom_servers         = $12,
+                current_server                 = $13,
                 updated_at                     = NOW()
             "#
         )
@@ -643,6 +645,7 @@ impl SettingsDatabase for Database {
         .bind(&settings.enable_nodes_on_home_page)
         .bind(&settings.console_entry_on_top)
         .bind(&settings.force_sandbox)
+        .bind(&settings.disable_custom_servers)
         .bind(sqlx::types::Json(&settings.current_server))
         .execute(&self.connection)
         .await?;

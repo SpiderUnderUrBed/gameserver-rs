@@ -2280,7 +2280,7 @@ async fn ws_handler(
 ) -> impl IntoResponse {
 
     let state = arc_state.write().await;
-    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     
     if !authorized {
         return StatusCode::UNAUTHORIZED.into_response()
@@ -2855,6 +2855,14 @@ async fn add_server(
         Element::Server(s) => s.clone(),
         _ => return Ok(StatusCode::BAD_REQUEST),
     };
+
+    if let Ok(settings) = state.database.get_settings().await {
+        if settings.disable_custom_servers && server.provider == "custom" {
+            return Err(StatusCode::UNAUTHORIZED)
+        }
+    } else {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR)
+    }
 
     state.current_server = Some(server.clone());
 

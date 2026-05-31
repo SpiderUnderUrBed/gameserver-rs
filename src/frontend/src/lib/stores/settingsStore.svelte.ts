@@ -36,6 +36,7 @@ export interface GlobalSettings {
     enable_nodes_on_home_page: boolean,
     console_entry_on_top: boolean,
     force_sandbox: boolean,
+    disable_custom_servers: boolean,
     file_system_driver: FileSystemDriver,
     filter: Filters,
     rcon_url: string,
