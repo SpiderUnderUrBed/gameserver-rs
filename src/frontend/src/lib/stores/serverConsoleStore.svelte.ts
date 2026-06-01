@@ -160,7 +160,9 @@ export class ServerConsoleState {
 				this.currentWsEntry.set(out);
 				if (this.correctMessage(out)) {
 					const filtered = this.filterMessage(this.filters, this.cleanOutput(this.cleanJson(out)));
-					if (filtered !== "" && filtered !== undefined) {
+					// TODO: consider if i want to keep the hardcoded filter for undefined, or fix wherever it
+					// might be coming from
+					if (filtered !== "" && filtered !== undefined && filtered !== "undefined") {
 						this.addConsoleEntry({ type: 'output', text: filtered, count: 0 });
 					}
 				}
