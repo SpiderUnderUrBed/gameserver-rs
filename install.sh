@@ -65,6 +65,11 @@ fi
 
 git checkout testing
 
+read -rp "Pull latest updates? [y/N]: " PULL_UPDATE
+if [[ "$PULL_UPDATE" =~ ^[Yy]$ ]]; then
+    git pull
+fi
+
 if ! command -v cargo &> /dev/null; then
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
         sh -s -- -y --no-modify-path --default-toolchain "$REQUIRED_RUST_VERSION" --profile minimal
@@ -76,16 +81,14 @@ command -v cargo >/dev/null 2>&1 || { echo "Cargo installation failed"; exit 1; 
 rustup override set "$REQUIRED_RUST_VERSION"
 
 if $INSTALL_PANEL; then
-    if [ -d "src/svelte" ]; then
-        cd src/svelte
-        mkdir -p build
+    if [ -d "src/frontend" ]; then
+        cd src/frontend
         if ! command -v npm &> /dev/null; then
             curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
             sudo apt-get install -y nodejs
         fi
         npm install
         npm run build
-        cp -r .svelte-kit/output/client/* build/
         cd ../..
     fi
 
@@ -157,3 +160,5 @@ WantedBy=multi-user.target" >> "$NODE_SERVICE_FILE"
     rm "$NODE_SERVICE_FILE"
     echo "Node service '$NODE_SERVICE_NAME' started and enabled."
 fi
+
+echo "Done."
