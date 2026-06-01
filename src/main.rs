@@ -2336,7 +2336,7 @@ async fn routes_static(
     // need to check to make sure that doesnt break anything
     // during OIDC implimentation i tried several things and have not fully determined the bare configuration
     // needed for OIDC
-    let login_url_base = Arc::new(format!("{}/oidc", base_path));
+    let login_url_base = Arc::new(format!("{}", base_path));
     let login_required_middleware = from_fn(
         move |auth_session: AuthSession, req: Request<Body>, next: Next| {
             let login_url = login_url_base.clone();
