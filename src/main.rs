@@ -68,6 +68,7 @@ use tokio::sync::{RwLock, mpsc};
 
 use rcon::Connection;
 use tokio_util::io::ReaderStream;
+use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
 
 use crate::database::Node;
@@ -569,6 +570,7 @@ enum Status {
 pub struct AppState {
     tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
     tcp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
+    cancel_current_conn: CancellationToken,
     tcp_conn_status: Status,
     internal_rx: Option<broadcast::Receiver<Vec<u8>>>,
     internal_tx: Option<broadcast::Sender<Vec<u8>>>,
@@ -591,6 +593,7 @@ impl Default for AppState {
         Self {
             tcp_tx,
             tcp_rx,
+            cancel_current_conn: Default::default(),
             tcp_conn_status: Default::default(),
             internal_rx: Default::default(),
             internal_tx: Default::default(),
@@ -613,6 +616,7 @@ impl Clone for AppState {
         AppState {
             tcp_tx: self.tcp_tx.clone(),
             tcp_rx: self.tcp_rx.resubscribe(),
+            cancel_current_conn: self.cancel_current_conn.clone(),
             internal_rx: self.internal_rx.as_ref().map(|r| r.resubscribe()),
             internal_tx: self.internal_tx.clone(),
             ws_tx: self.ws_tx.clone(),
@@ -801,12 +805,13 @@ async fn handle_all_stream_values(
     server_stop_keyword: &mut String,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     if let Ok(payload) = serde_json::from_value::<MessagePayload>(value.clone()) {
-        if payload.message == "end_conn" {
-            println!("Ending current connection");
-            let mut state_guard = arc_state.write().await;
-            state_guard.tcp_conn_status = Status::Down;
-            return Ok(true);
-    } else if payload.r#type == "server_state" {
+    //     if payload.message == "end_conn" {
+    //         println!("Ending current connection");
+    //         let mut state_guard = arc_state.write().await;
+    //         state_guard.tcp_conn_status = Status::Down;
+    //         return Ok(true);
+    // } else 
+    if payload.r#type == "server_state" {
             let mut state_guard = arc_state.write().await;
             let sent_status = payload.message.parse().unwrap_or(false);
             state_guard.current_node.status = match sent_status {
@@ -1060,6 +1065,10 @@ pub async fn handle_stream(
         Ok(false)
     }
 
+    let state = arc_state.write().await;
+    let cloned_token = state.cancel_current_conn.clone();
+    drop(state);
+
     loop {
         if let Some(ref mut internal_rx) = internal_stream {
             tokio::select! {
@@ -1081,6 +1090,10 @@ pub async fn handle_stream(
                             return Err(e.into())
                         },
                     }
+                },
+                _ = cloned_token.cancelled() => {
+                    let _ = writer.shutdown().await;
+                    break;
                 }
                 internal_result = internal_rx.recv() => {
                     if let Ok(raw_data) = internal_result {
@@ -1170,9 +1183,10 @@ pub async fn connect_to_server(
 
                 {
                     let mut state_guard = arc_state.write().await;
+                    state_guard.cancel_current_conn = CancellationToken::new();
                     state_guard.tcp_conn_status = Status::Up;
                 }
-
+                
                 let result = if !block_with_stream {
                     handle_stream(
                         Arc::clone(&arc_state),
@@ -1483,6 +1497,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut state: AppState = AppState {
         tcp_tx: tcp_tx,
         tcp_rx: tcp_rx,
+        cancel_current_conn: CancellationToken::new(),
         internal_rx: Some(internal_rx.resubscribe()),
         internal_tx: Some(internal_tx),
         ws_tx: ws_tx.clone(),
@@ -3437,17 +3452,18 @@ async fn change_node(
 
     if let Some(node) = option_node {
         {
-            let termination_payload = MessagePayload {
-                r#type: "end_conn".to_string(),
-                message: "".to_string(),
-                authcode: "0".to_string(),
-            };
+            // let termination_payload = MessagePayload {
+            //     r#type: "end_conn".to_string(),
+            //     message: "".to_string(),
+            //     authcode: "0".to_string(),
+            // };
 
-            let termination_bytes = serde_json::to_vec(&termination_payload).unwrap_or_default();
+            // let termination_bytes = serde_json::to_vec(&termination_payload).unwrap_or_default();
 
-            if let Some(tx) = &arc_state.write().await.internal_tx {
-                let _ = tx.send(termination_bytes);
-            }
+            // if let Some(tx) = &arc_state.write().await.internal_tx {
+            //     let _ = tx.send(termination_bytes);
+            // }
+            arc_state.write().await.cancel_current_conn.cancel();
 
             {
                 let mut state = arc_state.write().await;
