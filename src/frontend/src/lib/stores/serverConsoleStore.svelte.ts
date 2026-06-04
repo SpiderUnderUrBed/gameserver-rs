@@ -1,6 +1,8 @@
 import { metadata, object, unknown } from 'valibot';
 import { httpClient } from '../utils/http';
 import { get, writable } from 'svelte/store';
+import type { Filters } from './settingsStore.svelte';
+import type { Filter } from '@lucide/svelte';
 
 //export const statusStore = writable<('manual', 'server'), ('up' | 'down' | 'unknown')>(('manual'), ('unknown'));
 export const statusStore = writable<'up' | 'down' | 'unknown'>('unknown');
@@ -8,7 +10,7 @@ export const statusType = writable<'node-status' | 'server-keyword' | 'server-pr
 
 export type ServerStatusMode = 'node' | 'server-keyword' | 'server-process';
 
-type ConsoleEntry = { type: 'input' | 'output'; text: string };
+type ConsoleEntry = { type: 'input' | 'output'; text: string; count: number };
 
 type NodeData = {
 	nodename: string;
@@ -46,11 +48,14 @@ export class ServerConsoleState {
 	public integrations = $state<any[]>([]);
 	public selectedNode = $state<string | null>(null);
 	public selectedServer = $state<string | null>(null);
+	public filters = $state<Filters[] | undefined>();
 	//public statusIndicator = $state<'up' | 'down' | 'unknown'>('unknown');
 	public rawOutputEnabled = $state(false);
 	public pendingStatus = $state<ServerStatusMode>('node');
 	public finalStatus = $state<ServerStatusMode>('node');
 	public isConnected = $state(false);
+	public duplicateAmount = writable(0);
+	private oldMessage = $state('');
 	private pendingEntries: ConsoleEntry[] = [];
 	private flushTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -142,7 +147,10 @@ export class ServerConsoleState {
 			this.ws = new WebSocket(`/api/ws`);
 			this.ws.addEventListener('open', () => {
 				this.isConnected = true;
-				this.addConsoleEntry({ type: 'output', text: '[WS] connected' });
+				this.addConsoleEntry({
+					type: 'output', text: '[WS] connected',
+					count: 0
+				});
 			});
 
 			this.ws.addEventListener('message', (event) => {
@@ -151,45 +159,67 @@ export class ServerConsoleState {
 				console.log("message: " + out);
 				this.currentWsEntry.set(out);
 				if (this.correctMessage(out)) {
-					this.addConsoleEntry({ type: 'output', text: this.cleanOutput(this.cleanJson(out)) });
+					const filtered = this.filterMessage(this.filters, this.cleanOutput(this.cleanJson(out)));
+					// TODO: consider if i want to keep the hardcoded filter for undefined, or fix wherever it
+					// might be coming from
+					if (filtered !== "" && filtered !== undefined && filtered !== "undefined") {
+						this.addConsoleEntry({ type: 'output', text: filtered, count: 0 });
+					}
 				}
 			});
 
 			this.ws.addEventListener('close', () => {
 				this.isConnected = false;
-				this.addConsoleEntry({ type: 'output', text: '[WS] disconnected' });
+				this.addConsoleEntry({
+					type: 'output', text: '[WS] disconnected',
+					count: 0
+				});
 				setTimeout(() => this.connectWebSocket(), 2000);
 			});
 
 			this.ws.addEventListener('error', (err) => {
 				console.error('WebSocket error', err);
-				this.addConsoleEntry({ type: 'output', text: '[WS] error' });
+				this.addConsoleEntry({
+					type: 'output', text: '[WS] error',
+					count: 0
+				});
 			});
 		} catch (err) {
 			console.error('connectWebSocket error', err);
 		}
 	}
+	public filterMessage(filters: Filters[] | undefined, message: string): string {
+		if (filters) {
+			let final_message = message;
+			for (const filter of filters) {
+				if (filter.kind == "terminal") {
+					final_message = final_message.replace(/(\x1b|\u009b)?\[[0-9;?]*[a-zA-Z]/g, '');
+				}
+				if (filter.kind == "duplicates") {
+					if (this.oldMessage === final_message) {
+						const lastPending = this.pendingEntries.at(-1);
+						if (lastPending) {
+							lastPending.count++;
+						} else {
+							const lastHistory = this.consoleHistory.at(-1);
+							if (lastHistory) {
+								lastHistory.count++;
+								this.consoleHistory = [...this.consoleHistory];
+							}
+						}
+						this.oldMessage = final_message;
+						return "";
+					}
+				}
+			}
+			this.oldMessage = final_message;
+			return final_message;
+		} else {
+			return message;
+		}
+	}
 	public correctMessage(input: unknown): boolean {
 		let output: unknown = input;
-		// if (typeof output == "string"){
-		// 	return true
-		// } else {
-		// 	return false
-		// }
-		// while (
-		// 	output !== null &&
-		// 	(typeof output === "object" &&
-		// 	"data" in output) 
-		// ) {
-		// }
-
-		// if (output !== null &&
-		// 	typeof output === "object" &&
-		// 	"data" in output) {
-		// 		return false;
-		// 	} else {
-		// 		return true;
-		// 	}
 
 		if (typeof input !== 'string') return true;
 		
@@ -267,21 +297,28 @@ export class ServerConsoleState {
 
 	public async sendConsoleCommand(command: string) {
 		if (!command.trim()) return;
-		this.addConsoleEntry({ type: 'input', text: command });
+		this.addConsoleEntry({
+			type: 'input', text: command,
+			count: 0
+		});
 
 		if (this.ws && this.ws.readyState === WebSocket.OPEN) {
 			this.ws.send(command);
 			return;
 		}
 
-		this.addConsoleEntry({ type: 'output', text: '[WS] not connected' });
+		this.addConsoleEntry({
+			type: 'output', text: '[WS] not connected',
+			count: 0
+		});
 	}
 
 	public toggleRaw() {
 		this.rawOutputEnabled = !this.rawOutputEnabled;
 		this.addConsoleEntry({
 			type: 'output',
-			text: `Raw output ${this.rawOutputEnabled ? 'enabled' : 'disabled'}`
+			text: `Raw output ${this.rawOutputEnabled ? 'enabled' : 'disabled'}`,
+			count: 0
 		});
 	}
 
@@ -337,7 +374,10 @@ export class ServerConsoleState {
 		} catch (e) {
 			console.error(e);
 		}
-		this.addConsoleEntry({ type: 'output', text: 'Start server called' });
+		this.addConsoleEntry({
+			type: 'output', text: 'Start server called',
+			count: 0
+		});
 	}
 
 	public async stopServer() {
@@ -349,7 +389,10 @@ export class ServerConsoleState {
 		} catch (e) {
 			console.error(e);
 		}
-		this.addConsoleEntry({ type: 'output', text: 'Stop server called' });
+		this.addConsoleEntry({
+			type: 'output', text: 'Stop server called',
+			count: 0
+		});
 	}
 
 	public async deleteServer(servername: string = '', authcode: string = '0', delete_server_files: boolean = false) {
@@ -404,9 +447,15 @@ export class ServerConsoleState {
 					}
 				})
 				.json();
-			this.addConsoleEntry({ type: 'output', text: `Created server ${servername}` });
+			this.addConsoleEntry({
+				type: 'output', text: `Created server ${servername}`,
+				count: 0
+			});
 		} catch (err) {
-			this.addConsoleEntry({ type: 'output', text: `Create server error: ${err}` });
+			this.addConsoleEntry({
+				type: 'output', text: `Create server error: ${err}`,
+				count: 0
+			});
 		}
 	}
 
@@ -427,10 +476,16 @@ export class ServerConsoleState {
 				require_auth: true
 			};
 			await httpClient.post(`/api/addnode`, { json: payload }).json();
-			this.addConsoleEntry({ type: 'output', text: `Node added: ${nodename}` });
+			this.addConsoleEntry({
+				type: 'output', text: `Node added: ${nodename}`,
+				count: 0
+			});
 			this.fetchNodes();
 		} catch (err) {
-			this.addConsoleEntry({ type: 'output', text: `Add node error: ${err}` });
+			this.addConsoleEntry({
+				type: 'output', text: `Add node error: ${err}`,
+				count: 0
+			});
 		}
 	}
 	public async deleteNode(nodename: string, ip: string, nodetype: string) {
@@ -450,11 +505,17 @@ export class ServerConsoleState {
 				require_auth: true
 			};
 			await httpClient.post(`/api/deletenode`, { json: payload }).json();
-			this.addConsoleEntry({ type: 'output', text: `Node deleted: ${nodename}` });
+			this.addConsoleEntry({
+				type: 'output', text: `Node deleted: ${nodename}`,
+				count: 0
+			});
 			this.fetchNodes();
 		} catch (err) {
 			console.log(err);
-			this.addConsoleEntry({ type: 'output', text: `Add node error: ${err}` });
+			this.addConsoleEntry({
+				type: 'output', text: `Add node error: ${err}`,
+				count: 0
+			});
 		}
 	}
 
@@ -476,7 +537,10 @@ export class ServerConsoleState {
 
 	public async loadTopmostButtons() {
 		// In legacy app this reads from settings API; fallback defaults.
-		this.addConsoleEntry({ type: 'output', text: 'Loaded topmost buttons' });
+		this.addConsoleEntry({
+			type: 'output', text: 'Loaded topmost buttons',
+			count: 0
+		});
 	}
 }
 // scrollHeight.subscribe((value) => {

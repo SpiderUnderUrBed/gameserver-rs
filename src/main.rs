@@ -68,6 +68,7 @@ use tokio::sync::{RwLock, mpsc};
 
 use rcon::Connection;
 use tokio_util::io::ReaderStream;
+use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
 
 use crate::database::Node;
@@ -429,7 +430,7 @@ enum Clients {
 
 // console output is sometimes contained within the data feild of json, but this also might be redundant
 #[derive(Debug, Deserialize, Serialize)]
-struct InnerData {
+pub struct InnerData {
     data: String,
     #[serde(rename = "type")]
     message_type: String,
@@ -439,7 +440,7 @@ struct InnerData {
 
 
 #[derive(Debug, Serialize)]
-struct SignInResponse {
+pub struct SignInResponse {
     username: String,
 }
 
@@ -452,14 +453,14 @@ struct Statistics {
 }
 // a list for things like nodes, capabilities, etc
 #[derive(Debug, Serialize, Deserialize)]
-struct List {
+pub struct List {
     list: ApiCalls,
 }
 
 
 // May be redundant, but this is a struct for incoming messages
 #[derive(Debug, Deserialize, Serialize, Clone)]
-struct IncomingMessage {
+pub struct IncomingMessage {
     message: String,
     #[serde(rename = "type")]
     message_type: String,
@@ -467,7 +468,7 @@ struct IncomingMessage {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-struct AuthTcpMessage {
+pub struct AuthTcpMessage {
     password: String,
 }
 
@@ -569,6 +570,7 @@ enum Status {
 pub struct AppState {
     tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
     tcp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
+    cancel_current_conn: CancellationToken,
     tcp_conn_status: Status,
     internal_rx: Option<broadcast::Receiver<Vec<u8>>>,
     internal_tx: Option<broadcast::Sender<Vec<u8>>>,
@@ -581,6 +583,7 @@ pub struct AppState {
     cached_status_type: String,
     rcon_connection: Option<Arc<Mutex<Connection<TcpStream>>>>,
     current_server: Option<Server>,
+    lock: bool
 }
 impl Default for AppState {
     fn default() -> Self {
@@ -590,6 +593,7 @@ impl Default for AppState {
         Self {
             tcp_tx,
             tcp_rx,
+            cancel_current_conn: Default::default(),
             tcp_conn_status: Default::default(),
             internal_rx: Default::default(),
             internal_tx: Default::default(),
@@ -602,6 +606,7 @@ impl Default for AppState {
             cached_status_type: Default::default(),
             rcon_connection: Default::default(),
             current_server: Default::default(),
+            lock: false,
         }
     }
 }
@@ -611,6 +616,7 @@ impl Clone for AppState {
         AppState {
             tcp_tx: self.tcp_tx.clone(),
             tcp_rx: self.tcp_rx.resubscribe(),
+            cancel_current_conn: self.cancel_current_conn.clone(),
             internal_rx: self.internal_rx.as_ref().map(|r| r.resubscribe()),
             internal_tx: self.internal_tx.clone(),
             ws_tx: self.ws_tx.clone(),
@@ -642,6 +648,7 @@ impl Clone for AppState {
             cached_status_type: String::new(),
             rcon_connection: self.rcon_connection.clone(),
             current_server: self.current_server.clone(),
+            lock: self.lock.clone(),
         }
     }
 }
@@ -798,12 +805,13 @@ async fn handle_all_stream_values(
     server_stop_keyword: &mut String,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     if let Ok(payload) = serde_json::from_value::<MessagePayload>(value.clone()) {
-        if payload.message == "end_conn" {
-            println!("Ending current connection");
-            let mut state_guard = arc_state.write().await;
-            state_guard.tcp_conn_status = Status::Down;
-            return Ok(true);
-    } else if payload.r#type == "server_state" {
+    //     if payload.message == "end_conn" {
+    //         println!("Ending current connection");
+    //         let mut state_guard = arc_state.write().await;
+    //         state_guard.tcp_conn_status = Status::Down;
+    //         return Ok(true);
+    // } else 
+    if payload.r#type == "server_state" {
             let mut state_guard = arc_state.write().await;
             let sent_status = payload.message.parse().unwrap_or(false);
             state_guard.current_node.status = match sent_status {
@@ -1057,6 +1065,10 @@ pub async fn handle_stream(
         Ok(false)
     }
 
+    let state = arc_state.write().await;
+    let cloned_token = state.cancel_current_conn.clone();
+    drop(state);
+
     loop {
         if let Some(ref mut internal_rx) = internal_stream {
             tokio::select! {
@@ -1078,6 +1090,10 @@ pub async fn handle_stream(
                             return Err(e.into())
                         },
                     }
+                },
+                _ = cloned_token.cancelled() => {
+                    let _ = writer.shutdown().await;
+                    break;
                 }
                 internal_result = internal_rx.recv() => {
                     if let Ok(raw_data) = internal_result {
@@ -1167,9 +1183,10 @@ pub async fn connect_to_server(
 
                 {
                     let mut state_guard = arc_state.write().await;
+                    state_guard.cancel_current_conn = CancellationToken::new();
                     state_guard.tcp_conn_status = Status::Up;
                 }
-
+                
                 let result = if !block_with_stream {
                     handle_stream(
                         Arc::clone(&arc_state),
@@ -1480,6 +1497,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut state: AppState = AppState {
         tcp_tx: tcp_tx,
         tcp_rx: tcp_rx,
+        cancel_current_conn: CancellationToken::new(),
         internal_rx: Some(internal_rx.resubscribe()),
         internal_tx: Some(internal_tx),
         ws_tx: ws_tx.clone(),
@@ -1492,6 +1510,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         cached_status_type: String::new(),
         rcon_connection,
         current_server,
+        lock: false
     };
     state.tcp_conn_status = {
         if check_channel_health(&state.tcp_tx, state.tcp_rx.resubscribe()).await {
@@ -1574,6 +1593,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/user/me", get(user_me))
         .route("/api/createuser", post(create_user))
         .route("/api/deleteuser", post(delete_user))
+        .route("/api/setlock", post(set_lock))
         .merge(fallback_router)
         .with_state(multifaceted_state.clone());
 
@@ -1745,6 +1765,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
+pub async fn set_lock(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    auth_session: AuthSession,
+    headers: HeaderMap,
+    Json(request): Json<IncomingMessage>,
+) -> impl IntoResponse {
+    let mut state = arc_state.write().await;
+
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
+    if !authorized {
+        return StatusCode::UNAUTHORIZED
+    }
+
+    if let Ok(lock) =  request.message.parse::<bool>() {
+        state.lock = lock;
+        StatusCode::CREATED
+    } else {
+        StatusCode::UNPROCESSABLE_ENTITY
+    }
+}
 
 pub async fn start_server(
     State(arc_state): State<Arc<RwLock<AppState>>>,
@@ -1754,17 +1794,7 @@ pub async fn start_server(
     println!("Called start server");
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED.into_response()
     }
@@ -1777,7 +1807,7 @@ pub async fn start_server(
     if let Err(e) = msg {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-    let result = state.tcp_tx.send(msg.unwrap());
+    let _ = state.tcp_tx.send(msg.unwrap());
     StatusCode::CREATED.into_response()
 }
 
@@ -1788,17 +1818,7 @@ pub async fn stop_server(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED.into_response()
     }
@@ -1825,17 +1845,7 @@ pub async fn rcon_command(
 
     let state = arc_state.read().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED.into_response()
     }
@@ -1904,17 +1914,7 @@ async fn file_operations(
 ) -> StatusCode {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED
     }
@@ -1937,17 +1937,7 @@ async fn upload(
 ) -> StatusCode {
     let state = arc_state.read().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED;
     }
@@ -1969,17 +1959,7 @@ async fn migrate(
 ) -> impl IntoResponse {
     let state = arc_state.read().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return "unauthorized";
     }
@@ -2031,17 +2011,7 @@ async fn fetch_current_node(
     headers: HeaderMap
 ) -> Result<Json<Node>, StatusCode> {
     let mut state = arc_state.write().await;
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -2066,17 +2036,7 @@ async fn get_status(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -2110,17 +2070,7 @@ async fn get_settings(
     headers: HeaderMap
 ) -> impl IntoResponse {
     let state = arc_state.read().await;
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -2138,17 +2088,7 @@ async fn get_buttons(
 ) -> impl IntoResponse {
     let state = arc_state.read().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -2173,17 +2113,7 @@ async fn edit_buttons(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -2203,17 +2133,7 @@ async fn button_reset(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED
     }
@@ -2248,7 +2168,6 @@ struct ConsoleData {
 async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
     // Acquire lock just to get needed data
     let conn_id = {
-        let state = arc_state.read().await;
         CONNECTION_COUNTER.fetch_add(1, Ordering::SeqCst)
     };
 
@@ -2265,35 +2184,41 @@ async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
 
     let broadcast_sender = sender.clone();
 
+    let cloned_arc_state = arc_state.clone();
+
     // Spawn task forwarding broadcast messages to this client
     tokio::spawn(async move {
         let mut broadcast_rx = broadcast_rx;
         while let Ok(mut msg) = broadcast_rx.recv().await {
-            // msg is a String here
+            let locked = {
+                let state = cloned_arc_state.read().await;
+                state.lock 
+            };
+            if !locked {
+                // Trying to parse msg as JSON Value
+                if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&msg) {
+                    if let Some(data_val) = v.get_mut("data") {
+                        if data_val.is_array() {
+                            let arr = data_val.as_array().unwrap();
+                            if arr.iter().all(|item| item.is_u64()) {
+                                let bytes: Vec<u8> = arr
+                                    .iter()
+                                    .map(|item| item.as_u64().unwrap() as u8)
+                                    .collect();
 
-            // Try to parse msg as JSON Value
-            if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&msg) {
-                if let Some(data_val) = v.get_mut("data") {
-                    if data_val.is_array() {
-                        let arr = data_val.as_array().unwrap();
-                        if arr.iter().all(|item| item.is_u64()) {
-                            let bytes: Vec<u8> = arr
-                                .iter()
-                                .map(|item| item.as_u64().unwrap() as u8)
-                                .collect();
+                                if let Ok(decoded_str) = std::str::from_utf8(&bytes) {
+                                    if let Ok(decoded_json) =
+                                        serde_json::from_str::<serde_json::Value>(decoded_str)
+                                    {
+                                        *data_val = decoded_json;
 
-                            if let Ok(decoded_str) = std::str::from_utf8(&bytes) {
-                                if let Ok(decoded_json) =
-                                    serde_json::from_str::<serde_json::Value>(decoded_str)
-                                {
-                                    *data_val = decoded_json;
-
-                                    if let Ok(new_msg) = serde_json::to_string(&v) {
-                                        println!(
-                                            "[Conn {}] Forwarding raw message: {:#?}",
-                                            conn_id, new_msg
-                                        );
-                                        msg = new_msg;
+                                        if let Ok(new_msg) = serde_json::to_string(&v) {
+                                            println!(
+                                                "[Conn {}] Forwarding raw message: {:#?}",
+                                                conn_id, new_msg
+                                            );
+                                            msg = new_msg;
+                                        }
                                     }
                                 }
                             }
@@ -2311,30 +2236,55 @@ async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
 
     // Main receive loop
     while let Some(Ok(message)) = receiver.next().await {
-        if let Message::Text(text) = message {
-            println!("[Conn {}] Got from client: {}", conn_id, text);
-            let payload = serde_json::from_str::<MessagePayload>(&text).unwrap_or(MessagePayload {
-                r#type: "console".into(),
-                message: text.to_string(),
-                authcode: "0".into(),
-            });
+        let locked = {
+            let state = arc_state.read().await;
+            state.lock 
+        };
+        if !locked {
+            if let Message::Text(text) = message {
+                println!("[Conn {}] Got from client: {}", conn_id, text);
+                let payload = serde_json::from_str::<MessagePayload>(&text).unwrap_or(MessagePayload {
+                    r#type: "console".into(),
+                    message: text.to_string(),
+                    authcode: "0".into(),
+                });
 
-            if let Ok(mut bytes) = serde_json::to_vec(&payload) {
-                bytes.push(b'\n');
+                if let Ok(mut bytes) = serde_json::to_vec(&payload) {
+                    bytes.push(b'\n');
 
-                // Acquire lock briefly only to send TCP message
-                let tcp_tx = {
-                    let state = arc_state.read().await;
-                    state.tcp_tx.clone()
-                };
+                    // Acquire lock briefly only to send TCP message
+                    let tcp_tx = {
+                        let state = arc_state.read().await;
+                        state.tcp_tx.clone()
+                    };
 
-                let lock = tcp_tx;
-                let _ = lock.send(bytes);
+                    let lock = tcp_tx;
+                    let _ = lock.send(bytes);
+                }
             }
         }
     }
 
     println!("[Conn {}] DISCONNECTED", conn_id);
+}
+
+async fn authorize(
+    state: &AppState,
+    auth_session: AuthSession,
+    headers: HeaderMap,
+    perms: Vec<String>
+) -> bool {
+    if let Some(user) = auth_session.user {
+        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin" || perms.iter().any(|authorized_perm| *authorized_perm == user_perm.perm)){
+            return true;
+        }
+    }
+    if let Some(token) = get_auth_bearer(headers) {
+        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin" || perms.iter().any(|authorized_perm| *authorized_perm == user_perm.perm)){
+            return true;
+        }
+    }
+    false
 }
 
 async fn ws_handler(
@@ -2345,17 +2295,8 @@ async fn ws_handler(
 ) -> impl IntoResponse {
 
     let state = arc_state.write().await;
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
+    
     if !authorized {
         return StatusCode::UNAUTHORIZED.into_response()
     }
@@ -2383,7 +2324,7 @@ async fn ws_handler(
 // the fix mainly worked in the router in main, I am just covering future cases
 async fn routes_static(
     state: Arc<RwLock<AppState>>,
-    auth_layer: AuthManagerLayer<Backend, MemoryStore>,
+    _auth_layer: AuthManagerLayer<Backend, MemoryStore>,
 ) -> (
     Router<Arc<RwLock<AppState>>>,
     Option<OidcAuthLayer<OidcAdditionalClaims>>,
@@ -2410,7 +2351,7 @@ async fn routes_static(
     // need to check to make sure that doesnt break anything
     // during OIDC implimentation i tried several things and have not fully determined the bare configuration
     // needed for OIDC
-    let login_url_base = Arc::new(format!("{}/oidc", base_path));
+    let login_url_base = Arc::new(format!("{}", base_path));
     let login_required_middleware = from_fn(
         move |auth_session: AuthSession, req: Request<Body>, next: Next| {
             let login_url = login_url_base.clone();
@@ -2461,7 +2402,6 @@ async fn routes_static(
 
     let public = Router::new()
         .route("/", get(handle_static_request))
-        .route("/authenticate", get(authenticate_route_with_jwt))
         .route("/index.html", get(handle_static_request))
         .route("/assets/{*wildcard}", get(handle_static_request));
 
@@ -2531,18 +2471,7 @@ async fn oidc_login_initiate(
     if let Some(claims) = claims {
         let mut decoded_user = String::new();
         let mut user_perms = Vec::new();
-        // Code for decoding the claims itself
-        // if let Ok(decoded_user_bytes) = STANDARD.decode(local_claim_name.to_string()){
-        //     if let Ok(inner_decoded_user) = String::from_utf8(decoded_user_bytes){
-        //         decoded_user = inner_decoded_user;
-        //     } else {
-        //         println!("D");
-        //         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        //     }
-        // } else {
-        //     println!("C");
-        //     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        // }
+
         if let Some(user_perms_claim) = &claims.additional_claims().user_perms {
             user_perms = user_perms_claim.to_vec();
         }
@@ -2609,17 +2538,7 @@ async fn set_settings(
     let inner_value = request.message;
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
 
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
@@ -2674,7 +2593,7 @@ async fn notify_node_of_settings(arc_state: Arc<RwLock<AppState>>, old_settings_
                     metadata: MetadataTypes::Filter(settings.filter),
                     authcode: "0".to_string(),
                 };
-                internal_tx.send(serde_json::to_vec(&filter_request).unwrap());
+                let _ = internal_tx.send(serde_json::to_vec(&filter_request).unwrap());
             }
             Ok(())
         } else {
@@ -2779,7 +2698,13 @@ async fn ongoing_server_status(
                 {
                     state.current_node.status.clone()
                 } else if state.cached_status_type == "server-process" {
-                    Status::Unknown
+                    let msg = serde_json::to_vec(&MessagePayload {
+                        r#type: "command".to_string(),
+                        message: "server_state".to_string(),
+                        authcode: "0".to_string(),
+                    }).unwrap();
+                    let _ = state.tcp_tx.send(msg);
+                    state.current_node.status.clone()
                 } else if state.cached_status_type == "node" {
                     state.tcp_conn_status.clone()
                 } else if state.cached_status_type == "manual-click" {
@@ -2814,17 +2739,7 @@ async fn delete_node(
 ) -> impl IntoResponse {
 
     let state = arc_state.write().await;
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -2881,16 +2796,7 @@ async fn add_node(
     let state = arc_state.write().await;
 
     let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -2910,17 +2816,7 @@ async fn delete_server(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -2965,17 +2861,7 @@ async fn add_server(
     let mut state = arc_state.write().await;
     println!("Got create server request");
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -2984,6 +2870,14 @@ async fn add_server(
         Element::Server(s) => s.clone(),
         _ => return Ok(StatusCode::BAD_REQUEST),
     };
+
+    if let Ok(settings) = state.database.get_settings().await {
+        if settings.disable_custom_servers && server.provider == "custom" {
+            return Err(StatusCode::UNAUTHORIZED)
+        }
+    } else {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR)
+    }
 
     state.current_server = Some(server.clone());
 
@@ -3008,6 +2902,15 @@ async fn add_server(
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
+    let settings = state.database.get_settings().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let sandbox = {
+        if settings.force_sandbox == true {
+            true
+        } else {
+            server.sandbox.clone()
+        }
+    };
+
     for message in ["create_server", "set_server", "server_data"] {
         let msg = MessagePayloadWithMetadata {
             r#type: "command".to_string(),
@@ -3017,7 +2920,7 @@ async fn add_server(
                 provider: server.provider.clone(),
                 providertype: server.providertype.clone(),
                 location: server.location.clone(),
-                sandbox: server.sandbox.clone(),
+                sandbox,
                 server_metadata: server.server_metadata.clone()
             },
             authcode: "0".to_string(),
@@ -3049,17 +2952,7 @@ async fn get_integrations(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -3093,17 +2986,7 @@ async fn ping(
     Json(request): Json<MessagePayload>
 ) -> StatusCode {
     let state = arc_state.write().await;
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED;
     }
@@ -3136,17 +3019,7 @@ async fn modify_intergration(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -3258,17 +3131,7 @@ async fn delete_intergration(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -3291,17 +3154,7 @@ async fn create_intergration(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -3352,17 +3205,7 @@ async fn create_user(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -3382,17 +3225,7 @@ async fn edit_user(
     Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED.into_response())
     }
@@ -3413,17 +3246,7 @@ async fn set_server(
     Json(request): Json<ModifyElementData>,
 ) -> Result<StatusCode, StatusCode> {
     let mut state = arc_state.write().await;
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -3496,17 +3319,7 @@ async fn get_server(
 ) -> Result<Json<Server>, StatusCode> {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -3535,17 +3348,7 @@ async fn get_user(
     Json(request): Json<RetrieveElement>,
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED.into_response())
     }
@@ -3568,17 +3371,7 @@ async fn delete_user(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED.into_response())
     }
@@ -3610,17 +3403,7 @@ async fn users(
 ) -> Result<impl IntoResponse, StatusCode> {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
@@ -3653,17 +3436,7 @@ async fn change_node(
     let state = arc_state.read().await;
    // println!("C");
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     //drop(state);
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
@@ -3679,17 +3452,18 @@ async fn change_node(
 
     if let Some(node) = option_node {
         {
-            let termination_payload = MessagePayload {
-                r#type: "end_conn".to_string(),
-                message: "".to_string(),
-                authcode: "0".to_string(),
-            };
+            // let termination_payload = MessagePayload {
+            //     r#type: "end_conn".to_string(),
+            //     message: "".to_string(),
+            //     authcode: "0".to_string(),
+            // };
 
-            let termination_bytes = serde_json::to_vec(&termination_payload).unwrap_or_default();
+            // let termination_bytes = serde_json::to_vec(&termination_payload).unwrap_or_default();
 
-            if let Some(tx) = &arc_state.write().await.internal_tx {
-                let _ = tx.send(termination_bytes);
-            }
+            // if let Some(tx) = &arc_state.write().await.internal_tx {
+            //     let _ = tx.send(termination_bytes);
+            // }
+            arc_state.write().await.cancel_current_conn.cancel();
 
             {
                 let mut state = arc_state.write().await;
@@ -3721,17 +3495,7 @@ async fn get_nodes(
 ) -> impl IntoResponse {
     let mut state = arc_state.write().await;
 
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED.into_response())
     }
@@ -3794,8 +3558,14 @@ async fn get_nodes(
 
 async fn get_servers(
     State(arc_state): State<Arc<RwLock<AppState>>>,
+    auth_session: AuthSession,
+    headers: HeaderMap
 ) -> Result<Json<List>, StatusCode> {
     let state = arc_state.write().await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
+    if !authorized {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
     let result = match state.database.fetch_all_servers().await {
         Ok(servers) => Ok(Json(List {
             list: ApiCalls::ServerDataList(servers),
@@ -3888,41 +3658,12 @@ fn resolve_jwt(token: &str) -> Result<TokenData<Claims>, StatusCode> {
     .map_err(|_| StatusCode::UNAUTHORIZED)
 }
 
-// Creates a claim with respect to the secret, and gives it a expirery
-fn encode_token(user: String, user_perms: Vec<UserPerm>) -> Result<String, StatusCode> {
-    let now = Utc::now();
-    let exp = (now + chrono::Duration::hours(24)).timestamp() as usize;
-    let iat = now.timestamp() as usize;
-    let claims = Claims {
-        exp,
-        iat,
-        user,
-        user_perms,
-    };
-
-    let secret = std::env::var("SECRET").unwrap_or_else(|_| {
-        panic!("Need to specify a secret");
-    });
-
-    encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(secret.as_bytes()),
-    )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
-}
 
 // LoginData arrives as just a user and password
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct LoginData {
     pub user: String,
     pub password: String,
-}
-
-// When a JWT arrives from the frontend, it simply arrives with the token argument
-#[derive(Deserialize)]
-pub struct JwtTokenForm {
-    pub token: String,
 }
 
 // Impliment AuthUser for User for axum login so it knows how to identify the user and get the hash
@@ -4084,17 +3825,7 @@ async fn get_files_content(
     Json(request): Json<FileChunk>,
 ) -> Result<impl IntoResponse, impl IntoResponse> {
     let state = arc_state.read().await;
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED.into_response())
     }
@@ -4144,13 +3875,18 @@ async fn get_files_content(
 
 // Gets a list of files and return to to things like the filebrowser
 pub async fn get_files(
-    State(state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    headers: HeaderMap,
+    auth_session: AuthSession,
     Json(request): Json<IncomingMessage>,
 ) -> impl IntoResponse {
     let (tcp_tx, tcp_rx) = {
-        let state = state.read().await;
+        let state = arc_state.read().await;
         (state.tcp_tx.clone(), state.tcp_tx.subscribe())
     };
+    let state = arc_state.read().await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
+    drop(state);
 
     let tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
 
@@ -4257,46 +3993,6 @@ pub struct AuthenticateParams {
     jwk: String,
 }
 
-async fn authenticate_route_with_jwt(
-    State(_state): State<Arc<RwLock<AppState>>>,
-    Query(params): Query<AuthenticateParams>,
-    mut auth_session: AuthSession,
-) -> impl IntoResponse {
-    match resolve_jwt(&params.jwk) {
-        Ok(token_data) => {
-            let user = User {
-                username: token_data.claims.user,
-                password_hash: None,
-                user_perms: vec![],
-            };
-
-            if let Err(e) = auth_session.login(&user).await {
-                eprintln!("Failed to log in user: {:?}", e);
-                return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to log in").into_response();
-            }
-
-            if params.next.starts_with('/') {
-                if let Ok(uri) = params.next.parse::<Uri>() {
-                    return Redirect::to(&uri.to_string()).into_response();
-                } else {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        "Invalid next parameter: unable to parse URI",
-                    )
-                        .into_response();
-                }
-            } else {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    "Invalid next parameter: must start with '/'",
-                )
-                    .into_response();
-            }
-        }
-        Err(_) => (StatusCode::UNAUTHORIZED, "Invalid token").into_response(),
-    }
-}
-
 pub async fn stream_file_download(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     auth_session: AuthSession,
@@ -4304,17 +4000,7 @@ pub async fn stream_file_download(
     axum::extract::Path(file_path): axum::extract::Path<String>,
 ) -> Result<Response<Body>, StatusCode> {
     let state = arc_state.read().await;
-    let mut authorized = false;
-    if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
-    if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-            authorized = true;
-        }
-    }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED);
     }

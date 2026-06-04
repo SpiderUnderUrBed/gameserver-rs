@@ -99,6 +99,7 @@ impl Default for JsonBackend {
         }
     }
 }
+
 impl JsonBackend {
     pub fn new(mut file: Option<PathBuf>) -> Self {
         if let Some(path) = &file {

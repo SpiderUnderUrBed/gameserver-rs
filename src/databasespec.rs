@@ -109,6 +109,8 @@ pub struct Settings {
     pub(crate) enable_statistics_on_home_page: bool,
     pub(crate) enable_nodes_on_home_page: bool,
     pub(crate) console_entry_on_top: bool,
+    pub(crate) force_sandbox: bool,
+    pub(crate) disable_custom_servers: bool,
     #[cfg_attr(any(feature = "full-stack", feature = "database"), sqlx(json))]
     pub(crate) current_server: Server,
 }
@@ -126,6 +128,8 @@ impl Default for Settings {
             enable_statistics_on_home_page: false,
             enable_nodes_on_home_page: false,
             console_entry_on_top: true,
+            force_sandbox: false,
+            disable_custom_servers: false,
             file_system_driver: FileSystemDrivers::None,
             current_server: Server::default().into(),
         }

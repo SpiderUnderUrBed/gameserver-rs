@@ -24,14 +24,20 @@
 			kind: 'tcp'
 		},
 		filter: {
-			kind: 'alternating_line'
+			kind: 'none'
 		},
 		rcon_url: '',
-		rcon_password: ''
+		rcon_password: '',
+		lock: false,
+		client_filter: [{
+			kind: 'none'
+		}]
 	})
 
 	onMount(async () => {
+		await store.refreshSettings();
 		settings = await store.getSettings();
+		serverConsole.filters = settings?.client_filter;
 		await fetchServers();
 		await fetchNodes();
 		await integrationsStore.fetchIntegrations();
@@ -271,10 +277,12 @@
 		<div class="p-4 fieldset">
 			<label for="server_type" class="label">Server Type</label>
 			<select id="server_type" bind:value={serverProvider} class="select">
-				<option value="custom">Custom</option>
-				<option value="minecraft">Vanilla Minecraft</option>
-				<option value="spigot">Spigot Minecraft</option>
-				<option value="neoforge">Neoforge Minecraft</option>
+                 <option value="custom">Custom</option>
+					<option value="minecraft">Vanilla Minecraft</option>
+					<option value="spigot">Spigot Minecraft</option>
+					<option value="neoforge">Neoforge Minecraft</option>
+					<option value="purpur">Purpur Minecraft</option>
+					<option value="velocity">Velocity Minecraft</option>
 			</select>
 
 			<label for="server_name" class="label">Server Name</label>
@@ -370,7 +378,8 @@
 			if ((<HTMLButtonElement | null>event.submitter)?.value === 'cancel') return;
 			serverConsole.addConsoleEntry({
 				type: 'output',
-				text: 'Delete server request executed'
+				text: 'Delete server request executed',
+				count: 0
 			});	
 			await serverConsole.deleteServer(selectedServerName, '0', deleteServerFiles);
 			await fetchServers();

@@ -23,8 +23,8 @@ use tokio::io::AsyncReadExt;
 use tokio::io::AsyncSeekExt;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::broadcast;
-use tokio::time::timeout;
 use tokio::sync::mpsc;
+use tokio::time::timeout;
 
 use base64::Engine;
 
@@ -43,10 +43,7 @@ pub trait FsType: Clone + Send + Sync {
         &mut self,
         file_chunk: FileChunk,
     ) -> std::io::Result<IncomingMessage>;
-    async fn get_files_content_raw(
-        &mut self,
-        file_chunk: FileChunk,
-    ) -> std::io::Result<Vec<u8>>;
+    async fn get_files_content_raw(&mut self, file_chunk: FileChunk) -> std::io::Result<Vec<u8>>;
     async fn get_metadata(&mut self, path: &str) -> std::io::Result<FsMetadata>;
     async fn list_directory(&mut self, path: &str) -> std::io::Result<Vec<FsEntry>>;
     async fn list_directory_within_range(
@@ -239,7 +236,10 @@ impl TcpFs {
 
             if let Some(result) = assembler.check_timeout(id) {
                 if let Err(e) = &result {
-                    println!("[recv_response:{}] assembler.check_timeout error: {}", id, e);
+                    println!(
+                        "[recv_response:{}] assembler.check_timeout error: {}",
+                        id, e
+                    );
                 }
                 expecting_fragments = false;
                 return result.map(|v| vec![v]);
@@ -752,10 +752,7 @@ impl FsType for TcpFs {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
-    async fn get_files_content_raw(
-        &mut self,
-        file_chunk: FileChunk,
-    ) -> std::io::Result<Vec<u8>> {
+    async fn get_files_content_raw(&mut self, file_chunk: FileChunk) -> std::io::Result<Vec<u8>> {
         let id = self
             .send_request(FileRequestPayload::FileChunk(file_chunk))
             .await?;
@@ -1186,7 +1183,11 @@ pub async fn get_metadata(path: &str) -> std::io::Result<FsMetadata> {
     Ok(FsMetadata {
         is_file: metadata.is_file(),
         is_dir: metadata.is_dir(),
-        file_size: if metadata.is_file() { Some(metadata.len()) } else { None },
+        file_size: if metadata.is_file() {
+            Some(metadata.len())
+        } else {
+            None
+        },
         optional_folder_children,
         canonical_path: canonical.to_string_lossy().to_string(),
     })
@@ -1352,7 +1353,7 @@ pub fn execute_file_operation(
     let src = encoded_src
         .as_inner_str()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid source"))?;
-    let src_path = { 
+    let src_path = {
         if dir.is_empty() {
             PathBuf::from(src)
         } else {

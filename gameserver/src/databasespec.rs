@@ -15,7 +15,7 @@ pub struct Database {
 pub enum Filters {
     AlternatingLine,
     #[default]
-    None
+    None,
 }
 
 #[derive(Clone, Default, Debug, Deserialize, Serialize)]
@@ -50,7 +50,6 @@ impl ServerIndex {
         }
     }
 }
-
 
 pub fn parse_filter(s: &str) -> Filters {
     match s {

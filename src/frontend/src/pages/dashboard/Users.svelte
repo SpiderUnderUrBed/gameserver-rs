@@ -16,7 +16,7 @@
 	let editUsername = $state('');
 	let editPassword = $state('');
 
-	let availablePerms = $state(['admin', 'server', 'createusers']);
+	let availablePerms = $state(['admin', 'manager']);
 	let availableScopes = $state(['all']);
 
 	onMount(() => {
