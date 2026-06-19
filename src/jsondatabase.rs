@@ -130,7 +130,7 @@ impl JsonBackend {
                 JsonBackendContent::default()
             });
         if rewrite_file {
-            open_file.write_all(serde_json::to_string_pretty(&database).unwrap().as_bytes());
+            let _ = open_file.write_all(serde_json::to_string_pretty(&database).unwrap().as_bytes());
         }
         if file.is_some() {
             JsonBackend {
@@ -283,7 +283,7 @@ impl ServerDatabase for Database {
                 // db_server.username = user.clone();
             }
 
-            self.write_database(database).await;
+            let _ = self.write_database(database).await;
             Ok(StatusCode::CREATED)
         } else {
             Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
@@ -332,7 +332,7 @@ impl UserDatabase for Database {
                 database.users.push(final_user.clone());
             }
         
-            self.write_database(database).await;  
+            let _ = self.write_database(database).await;  
             Ok(StatusCode::CREATED)
         } else {
             Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
@@ -361,7 +361,7 @@ impl UserDatabase for Database {
             return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
         }
 
-        self.write_database(database).await;
+        let _ = self.write_database(database).await;
         Ok(StatusCode::CREATED)
     }
     async fn edit_user_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
@@ -375,7 +375,7 @@ impl UserDatabase for Database {
                 db_user.username = user.clone();
             }
 
-            self.write_database(database).await;
+            let _ = self.write_database(database).await;
             Ok(StatusCode::CREATED)
         } else {
             Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
@@ -407,7 +407,7 @@ impl NodesDatabase for Database {
                 database.nodes.push(final_node.clone());
             }
         
-            self.write_database(database).await;  
+            let _ = self.write_database(database).await;  
             Ok(StatusCode::CREATED)
         } else {
             Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
@@ -423,7 +423,7 @@ impl NodesDatabase for Database {
     async fn remove_node_in_db_directly(&self, node_data: Node) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         let mut database = self.get_database().await?;
         database.nodes.retain(|node| node.nodename != node_data.nodename);
-        self.write_database(database).await;
+        let _ = self.write_database(database).await;
         Ok(StatusCode::CREATED)
     }
     async fn edit_node_in_db(&self, node: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
@@ -468,18 +468,14 @@ impl ButtonsDatabase for Database {
 
     async fn edit_button_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>>{
         if let Element::Button(button) = element.element {
-            if let Button { name, link, r#type } = button {
-                let mut database = self.get_database().await?;
-                if let Some(db_button) = database.buttons.iter_mut().find(|db_button| db_button.name.to_lowercase()  == name.to_lowercase() ) {
-                    db_button.link = link.clone();
-                    db_button.r#type = "custom".to_string(); 
-                }
-                self.write_database(database).await?;
-                Ok(StatusCode::CREATED)
-            } else {
-                println!("Error, failed to get the underlying items");
-                Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+            let Button { name, link, r#type } = button;
+            let mut database = self.get_database().await?;
+            if let Some(db_button) = database.buttons.iter_mut().find(|db_button| db_button.name.to_lowercase()  == name.to_lowercase() ) {
+                db_button.link = link.clone();
+                db_button.r#type = "custom".to_string(); 
             }
+            self.write_database(database).await?;
+            Ok(StatusCode::CREATED)
         } else {
             println!("Error, failed to get the button element type");
             Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))

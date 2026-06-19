@@ -163,7 +163,8 @@ impl Database {
 
 impl UserDatabase for Database { 
     async fn retrieve_user(&self, username: String) -> Option<User> {
-        if let Ok(Some(user)) = self.get_from_database(&username.clone()).await {
+        let database_result = self.get_user_from_database(&username.clone()).await;
+        if let Ok(Some(user)) = database_result {
             Some(user)
         } else {
             None
@@ -239,18 +240,18 @@ impl UserDatabase for Database {
 
             Ok(StatusCode::CREATED)
         } else {
-            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+            Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
         }
     }
 
     async fn create_user_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         if let Element::User { password, user, user_perms } = element.element {
-            let already_exists = self.get_from_database(&user).await?;
+            let already_exists = self.get_user_from_database(&user).await?;
             if already_exists.is_some() {
-                return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
+                return Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)));
             }
             if password.is_empty(){
-                return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
+                return Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)));
             }
 
             let hashed = hash(&password, DEFAULT_COST).map_err(|e| {
@@ -272,11 +273,11 @@ impl UserDatabase for Database {
 
             Ok(StatusCode::CREATED)
         } else {
-            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+            Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
         }
     }
 
-    async fn get_from_database(&self, username: &str) -> Result<Option<User>, Box<dyn Error + Send + Sync>> { 
+    async fn get_user_from_database(&self, username: &str) -> Result<Option<User>, Box<dyn Error + Send + Sync>> { 
         let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE username = $1")
             .bind(username)
             .fetch_optional(&self.connection)
@@ -295,10 +296,10 @@ impl UserDatabase for Database {
             if final_user.is_some(){
                 Ok(StatusCode::CREATED)
             } else {
-                Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+                Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
             }
         } else {
-            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+            Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
         }
     }
 }
@@ -330,7 +331,7 @@ impl NodesDatabase for Database {
         if let Element::Node(node_data) = node.element {
             let existing = self.get_from_nodes_database(&node_data.nodename).await?;
             if existing.is_some() {
-                return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
+                return Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)));
             }
 
             let _result = sqlx::query_as::<_, Node>(
@@ -345,7 +346,7 @@ impl NodesDatabase for Database {
 
             Ok(StatusCode::CREATED)
         } else {
-            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+            Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
         }
     }
     
@@ -353,7 +354,7 @@ impl NodesDatabase for Database {
         if let Element::Node(node_data) = node.element {
             return self.remove_node_in_db_directly(node_data).await;
         } else {
-            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+            Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
         }
     }
     async fn remove_node_in_db_directly(&self, node_data: Node) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
@@ -365,7 +366,7 @@ impl NodesDatabase for Database {
         if result.rows_affected() > 0 {
             Ok(StatusCode::CREATED)
         } else {
-            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+            Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
         }
     }
     
@@ -388,10 +389,10 @@ impl NodesDatabase for Database {
             if result.rows_affected() > 0 {
                 Ok(StatusCode::CREATED)
             } else {
-                Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+                Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
             }
         } else {
-            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+            Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
         }
     }
 }
@@ -426,7 +427,7 @@ impl ServerDatabase for Database {
             }
             let existing = self.get_from_servers_database(&server.servername).await?;
             if existing.is_some() {
-                return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
+                return Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)));
             }
 
             sqlx::query_as::<_, Server>(
@@ -443,7 +444,7 @@ impl ServerDatabase for Database {
 
             Ok(StatusCode::CREATED)
         } else {
-            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+            Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
         }
     }
     async fn simple_remove_server_in_db(&self, servername: String) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
@@ -455,7 +456,7 @@ impl ServerDatabase for Database {
             if result.rows_affected() > 0 {
                 Ok(StatusCode::CREATED)
             } else {
-                Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+                Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
             }
     }
     async fn remove_server_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
@@ -468,10 +469,10 @@ impl ServerDatabase for Database {
             if result.rows_affected() > 0 {
                 Ok(StatusCode::CREATED)
             } else {
-                Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+                Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
             }
         } else {
-            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+            Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
         }
     }
     
@@ -494,10 +495,10 @@ impl ServerDatabase for Database {
             if result.rows_affected() > 0 {
                 Ok(StatusCode::CREATED)
             } else {
-                Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+                Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
             }
         } else {
-            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+            Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
         }
     }
 }
@@ -592,10 +593,10 @@ impl ButtonsDatabase for Database {
             if result.rows_affected() > 0 {
                 Ok(StatusCode::CREATED)
             } else {
-                Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+                Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
             }
         } else {
-            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+            Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
         }
     }
 }
@@ -695,7 +696,7 @@ impl IntergrationsDatabase for Database {
                 .await?;
             
             if existing.is_some() {
-                return Err(Box::new(DatabaseError(StatusCode::CONFLICT)));
+                return Err(Box::new(DatabaseError::StatusCode(StatusCode::CONFLICT)));
             }
 
             let _result = sqlx::query_as::<_, Intergration>(
@@ -709,7 +710,7 @@ impl IntergrationsDatabase for Database {
 
             Ok(StatusCode::CREATED)
         } else {
-            Err(Box::new(DatabaseError(StatusCode::BAD_REQUEST)))
+            Err(Box::new(DatabaseError::StatusCode(StatusCode::BAD_REQUEST)))
         }
     }
     
@@ -723,10 +724,10 @@ impl IntergrationsDatabase for Database {
             if result.rows_affected() > 0 {
                 Ok(StatusCode::CREATED)
             } else {
-                Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+                Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
             }
         } else {
-            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+            Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
         }
     }
     
@@ -748,10 +749,10 @@ impl IntergrationsDatabase for Database {
             if result.rows_affected() > 0 {
                 Ok(StatusCode::CREATED)
             } else {
-                Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+                Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
             }
         } else {
-            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+            Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
         }
     }
 }

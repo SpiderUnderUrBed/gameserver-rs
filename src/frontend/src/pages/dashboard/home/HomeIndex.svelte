@@ -31,7 +31,9 @@
 		lock: false,
 		client_filter: [{
 			kind: 'none'
-		}]
+		}],
+		force_sandbox: false,
+		disable_custom_servers: false
 	})
 
 	onMount(async () => {

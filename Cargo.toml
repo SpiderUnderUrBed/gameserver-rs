@@ -44,7 +44,9 @@ base64 = "0.22.1"
 
 [features]
 default = []
-database = []
+database = [
+    "sqlx"
+]
 docker = [
     "bollard",
     "sqlx"

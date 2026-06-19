@@ -1,13 +1,9 @@
 use crate::Deserialize;
 use crate::Serialize;
 use crate::StatusCode;
-use async_trait::async_trait;
-#[cfg(any(feature = "full-stack", feature = "database"))]
-use std::default;
 use std::error::Error;
 use std::fmt;
 
-use serde::Deserializer;
 
 use serde::ser::StdError;
 use serde_json::Value;
@@ -16,20 +12,29 @@ use serde_json::Value;
 use sqlx::{
     Decode, Encode, Postgres, Type,
     postgres::{PgArgumentBuffer, PgValueRef},
-    types::Json,
 };
 
-use futures_util::TryFutureExt;
 use std::str::FromStr;
 
 type BoxDynError = Box<dyn StdError + Send + Sync>;
 
-#[derive(Debug)]
-pub struct DatabaseError(pub StatusCode);
+// #[derive(Debug)]
+// pub struct DatabaseError(pub StatusCode);
+
+#[derive(Debug, Clone)]
+pub enum DatabaseError {
+    StatusCode(StatusCode),
+    String(String)
+}
+
+
 
 impl fmt::Display for DatabaseError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "HTTP error: {}", self.0)
+        match self {
+            DatabaseError::StatusCode(status_code) => write!(f, "HTTP error: {}", status_code),
+            DatabaseError::String(output) => write!(f, "{}", output)
+        }
     }
 }
 
@@ -222,13 +227,6 @@ impl<'de> serde::Deserialize<'de> for NodeType {
     }
 }
 
-// #[cfg(any(feature = "full-stack", feature = "database"))]
-// impl From<Node> for sqlx::types::Json<Node> {
-//     fn from(n: Node) -> Self {
-//         sqlx::types::Json(n)
-//     }
-// }
-
 #[derive(Debug, Default, Serialize, Clone, PartialEq)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
 pub enum NodeType {
@@ -398,12 +396,6 @@ impl From<Node> for Json<Node> {
     }
 }
 
-// #[cfg(any(feature = "full-stack", feature = "database"))]
-// impl From<Node> for sqlx::types::Json<Node> {
-//     fn from(n: Node) -> Self {
-//         sqlx::types::Json(n)
-//     }
-// }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 #[cfg_attr(
     any(feature = "full-stack", feature = "database"),
@@ -469,14 +461,6 @@ impl<T> std::ops::DerefMut for Json<T> {
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
-// #[cfg_attr(
-//     any(feature = "full-stack", feature = "database"),
-//     derive(sqlx::FromRow)
-// )]
-// #[cfg_attr(
-//     any(feature = "full-stack", feature = "database"),
-//     derive(sqlx::Decode)
-// )]
 #[cfg_attr(
     any(feature = "full-stack", feature = "database"),
     derive(sqlx::Type)
@@ -542,7 +526,7 @@ impl IntoServer for sqlx::types::Json<Server> {
 pub trait UserDatabase {
     async fn retrieve_user(&self, username: String) -> Option<User>;
     async fn fetch_all(&self) -> Result<Vec<User>, Box<dyn Error + Send + Sync>>;
-    async fn get_from_database(
+    async fn get_user_from_database(
         &self,
         username: &str,
     ) -> Result<Option<User>, Box<dyn Error + Send + Sync>>;
@@ -607,6 +591,13 @@ pub trait NodesDatabase {
         &self,
         node: ModifyElementData,
     ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
+}
+
+pub fn resolve_database_error_into_statuscode(error: DatabaseError) -> StatusCode {
+    match error {
+        DatabaseError::StatusCode(status_code) => status_code,
+        DatabaseError::String(output) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
 }
 
 pub trait SettingsDatabase {

@@ -11,7 +11,7 @@ use crate::database::Database;
 // Axum is the routing framework, and the backbone to this project helping intergrate the backend with the frontend
 // and the general api, redirections, it will take form data and queries and make it easily accessible
 // I also use axum_login to take off alot of effort that would be required for authentication
-use crate::database::databasespec::{Filters, IntoServer, ServerMetadata};
+use crate::database::databasespec::{resolve_database_error_into_statuscode, Filters, IntoServer, ServerMetadata};
 use crate::database::{DatabaseError, Element};
 use crate::filesystem::{execute_file_operation, FileOperations, TcpFileStream};
 use crate::filesystem::{FsType, send_multipart_over_broadcast};
@@ -224,10 +224,10 @@ mod kubernetes {
 // I like these defaults for testing, and for the moment I doubt anyone would object
 // but at some point this will be removed in favor of testing with ENV varibles
 #[cfg(not(feature = "full-stack"))]
-static StaticTcpUrl: &str = "127.0.0.1:8082";
+static STATIC_TCP_URL: &str = "127.0.0.1:8082";
 
 #[cfg(not(feature = "full-stack"))]
-static StaticLocalUrl: &str = "127.0.0.1:8083";
+static STATIC_LOCAL_URL: &str = "127.0.0.1:8083";
 
 #[cfg(not(feature = "full-stack"))]
 static K8S_WORKS: bool = false;
@@ -237,10 +237,10 @@ static K8S_WORKS: bool = false;
 static DOCKER_WORKS: bool = false;
 
 #[cfg(feature = "full-stack")]
-static StaticTcpUrl: &str = "gameserver-service:8080";
+static STATIC_TCP_URL: &str = "gameserver-service:8080";
 
 #[cfg(feature = "full-stack")]
-static StaticLocalUrl: &str = "127.0.0.1:8080";
+static STATIC_LOCAL_URL: &str = "127.0.0.1:8080";
 
 // K8S_WORKS needs to be true in the case where the full stack is running and not if that is not the case
 // to avoid calling the dummy functions
@@ -589,7 +589,7 @@ impl Default for AppState {
     fn default() -> Self {
         let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
         let (tcp_tx, tcp_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
-        let tcp_url = get_env_var_or_arg("TCPURL", Some(StaticTcpUrl.to_string())).unwrap();
+        let tcp_url = get_env_var_or_arg("TCPURL", Some(STATIC_TCP_URL.to_string())).unwrap();
         Self {
             tcp_tx,
             tcp_rx,
@@ -1017,14 +1017,43 @@ pub async fn handle_stream(
     })? + "\n";
     writer.write_all(capability_msg.as_bytes()).await?;
 
-    for command in &["server_data", "server_name"] {
-        let cmd_msg = serde_json::to_string(&MessagePayload {
+    // TODO: move this because the reciver is not up at this point i dont think
+    // for command in &["server_name", "server_data", "server_name"] {
+    //     let cmd_msg = serde_json::to_string(&MessagePayload {
+    //         r#type: "command".to_string(),
+    //         message: command.to_string(),
+    //         authcode: "0".to_string(),
+    //     })? + "\n";
+    //     writer.write_all(cmd_msg.as_bytes()).await?;
+    // }
+
+       let cmd_msg = serde_json::to_string(&MessagePayload {
             r#type: "command".to_string(),
-            message: command.to_string(),
+            message: "server_name".to_string(),
             authcode: "0".to_string(),
         })? + "\n";
         writer.write_all(cmd_msg.as_bytes()).await?;
+
+    println!("called stream");
+    'name: {
+        let mut state = arc_state.write().await;
+        if let Ok(Ok(Some(payload))) = timeout(Duration::from_millis(1000), lines.next_line()).await {
+            if let Ok(payload) = serde_json::from_str::<IncomingMessage>(&payload) {
+                state.current_node = NodeAndTCP {
+                    name: payload.message,
+                    ip: ip.clone(),
+                    ..Default::default()
+                };
+                break 'name;
+            }
+        } 
+        state.current_node = NodeAndTCP {
+            name: "main".to_string(),
+            ip: ip.clone(),
+            ..Default::default()
+        };
     }
+
 
     async fn process_stream_data(
         raw_data: &[u8],
@@ -1350,7 +1379,7 @@ async fn ensure_admin_user(database: Database){
     let admin_user = std::env::var("ADMIN_USER").unwrap_or_default();
     let admin_password = std::env::var("ADMIN_PASSWORD").unwrap_or_default();
     if enable_admin_user {
-        let _ = database.create_user_in_db(
+        let database_result = database.create_user_in_db(
             ModifyElementData { 
                 element: Element::User { 
                     password: admin_password,
@@ -1403,9 +1432,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         })
         .unwrap_or_default();
 
-    let config_tcp_url = get_env_var_or_arg("TCPURL", Some(StaticTcpUrl.to_string())).unwrap();
+    let config_tcp_url = get_env_var_or_arg("TCPURL", Some(STATIC_TCP_URL.to_string())).unwrap();
     let config_local_url =
-        get_env_var_or_arg("LOCALURL", Some(StaticLocalUrl.to_string())).unwrap();
+        get_env_var_or_arg("LOCALURL", Some(STATIC_LOCAL_URL.to_string())).unwrap();
 
     // Overrides for testing or specific cases where how it works a setup may be diffrent
     let enable_k8s_client: bool = get_env_var_or_arg("ENABLE_K8S_CLIENT", Some(true)).unwrap();
@@ -1464,12 +1493,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         ip: tcp_url.clone(),
         ..Default::default()
     };
-    let current_node = nodes
-        .iter()
-        .find(|node| node.ip == tcp_url)
-        .unwrap_or(backup_node);
     let (internal_tx, internal_rx) = broadcast::channel::<Vec<u8>>(100);
-    let internal_stream = Some(internal_rx.resubscribe());
 
     let mut rcon_connection: Option<Arc<Mutex<Connection<TcpStream>>>> = None;
     if let Ok(retrived_db) = database.get_settings().await {
@@ -2010,21 +2034,35 @@ async fn fetch_current_node(
     auth_session: AuthSession,
     headers: HeaderMap
 ) -> Result<Json<Node>, StatusCode> {
-    let mut state = arc_state.write().await;
+    let state = arc_state.read().await;
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED)
     }
 
-    let option_node = state
-        .database
-        .retrieve_nodes(state.current_node.name.clone())
-        .await;
-    if let Some(node) = option_node {
-        Ok(Json(node))
-    } else {
+    if state.current_node.name.is_empty() {
         Err(StatusCode::INTERNAL_SERVER_ERROR)
+    } else {
+        Ok(Json(
+            Node {
+                nodename: state.current_node.name.clone(),
+                ip: state.current_node.ip.clone(),
+                nodestatus: NodeStatus::Unknown,
+                nodetype: state.current_node.nodetype.clone(),
+                k8s_type: state.current_node.k8s_type.clone(),
+            }
+        ))
     }
+
+    // let option_node = state
+    //     .database
+    //     .retrieve_nodes(state.current_node.name.clone())
+    //     .await;
+    // if let Some(node) = option_node {
+    //     Ok(Json(node))
+    // } else {
+    //     Err(StatusCode::INTERNAL_SERVER_ERROR)
+    // }
 }
 
 // TODO: maybe split this function and route into several routes with statuses for diffrent states/nodes/settings?
@@ -2431,7 +2469,7 @@ async fn get_oidc_layer() -> Result<
     // get_env_var_or_arg("TCPURL", Some(StaticTcpUrl.to_string())).unwrap();
 
     // TODO: maybe make a function which trims the last / in a url
-    let local_url = get_env_var_or_arg("LOCALURL", Some(StaticLocalUrl.to_string())).unwrap();
+    let local_url = get_env_var_or_arg("LOCALURL", Some(STATIC_LOCAL_URL.to_string())).unwrap();
     let oidc_callback = if local_url.starts_with("http") {
         format!("{}/oidc/callback", local_url)
     } else {
@@ -3100,7 +3138,7 @@ async fn modify_intergration(
             .into_response())},
         Err(e) => {
             let status_code = if let Some(db_err) = e.downcast_ref::<DatabaseError>() {
-                db_err.0
+                resolve_database_error_into_statuscode(db_err.clone())
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR
             };
@@ -3173,7 +3211,7 @@ async fn create_intergration(
         },
         Err(e) => {
             let status_code = if let Some(db_err) = e.downcast_ref::<DatabaseError>() {
-                db_err.0
+                resolve_database_error_into_statuscode(db_err.clone())
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR
             };
@@ -3355,7 +3393,7 @@ async fn get_user(
 
     let result = state
         .database
-        .get_from_database(&request.element)
+        .get_user_from_database(&request.element)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
         .unwrap();
@@ -3452,27 +3490,16 @@ async fn change_node(
 
     if let Some(node) = option_node {
         {
-            // let termination_payload = MessagePayload {
-            //     r#type: "end_conn".to_string(),
-            //     message: "".to_string(),
-            //     authcode: "0".to_string(),
-            // };
-
-            // let termination_bytes = serde_json::to_vec(&termination_payload).unwrap_or_default();
-
-            // if let Some(tx) = &arc_state.write().await.internal_tx {
-            //     let _ = tx.send(termination_bytes);
-            // }
             arc_state.write().await.cancel_current_conn.cancel();
 
-            {
-                let mut state = arc_state.write().await;
-                state.current_node = NodeAndTCP {
-                    name: node.nodename.clone(),
-                    ip: node.ip.clone(),
-                    ..Default::default()
-                };
-            }
+            // {
+            //     let mut state = arc_state.write().await;
+            //     state.current_node = NodeAndTCP {
+            //         name: node.nodename.clone(),
+            //         ip: node.ip.clone(),
+            //         ..Default::default()
+            //     };
+            // }
 
             tokio::spawn(async move {
                 let _ = connect_to_server(arc_state.clone(), node.ip.clone(), ws_tx.clone(), false, false).await;
@@ -3705,12 +3732,10 @@ async fn sign_in(
         .retrieve_user(request.user.clone())
         .await
         .ok_or(StatusCode::UNAUTHORIZED)?;
+
     let password_valid = verify_password(request.password, user.password_hash.unwrap())
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    if !password_valid {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
     if !password_valid {
         return Err(StatusCode::UNAUTHORIZED);
     }
@@ -4150,20 +4175,6 @@ mod tests {
             database.ensure_database_conn().await.expect("Failed to ensure db structure");
             Ok(database)
         }
-        // #[cfg(not(any(feature = "full-stack", feature = "docker", feature = "database")))]
-        // async fn create_db_for_tests() -> Result<Database, String> {
-        //     let database = Database::new(None);
-        //     database.ensure_database_conn().await.expect("Failed to ensure db structure");
-        //     Ok(database)
-        // }
-
-        // #[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
-        // async fn create_db_for_tests() -> Result<Database, sqlx::Error> {
-        //     let conn = first_connection().await?;
-        //     let database = database::Database::new(Some(conn));
-        //     database.ensure_database_conn().await.expect("Failed to ensure db structure");
-        //     Ok(database)
-        // }
 
         mod users {
             use super::*;
@@ -4303,7 +4314,7 @@ mod tests {
                 let node = ModifyElementData {
                     element: Element::Node(Node {
                         nodename: "main".to_string(),
-                        ip: StaticLocalUrl.to_string(),
+                        ip: STATIC_LOCAL_URL.to_string(),
                         nodestatus: NodeStatus::Unknown,
                         nodetype: NodeType::Custom,
                         k8s_type: K8sType::Unknown,
@@ -4327,7 +4338,7 @@ mod tests {
     /*
     k8s and sqlx tasks
     */
-    #[cfg(any(feature = "full-stack", feature = "docker", feature = "database"))]
+    #[cfg(any(feature = "full-stack"))]
     mod k8s {
         use super::*;
         use crate::database::Database;

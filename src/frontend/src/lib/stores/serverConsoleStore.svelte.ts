@@ -116,9 +116,24 @@ export class ServerConsoleState {
 		}, 16);
 	}
 
+	public async getCurrentNode() : Promise<NodeData | undefined> {
+		try {
+			const resp = await httpClient.get(`/api/getcurrentnode`).json<NodeData>();
+			this.selectedNode = resp.nodename;
+			return resp;
+		} catch (err) {
+			return undefined;
+		}
+	}
+
 	public async fetchNodes() : Promise<NodeData[]> {
 		try {
 			const resp = await httpClient.get(`/api/nodes`).json<{ list?: { data: NodeData[] } }>();
+			let node_list = resp.list?.data ?? [];
+			let current_node = await this.getCurrentNode();
+			if (current_node !== undefined) {
+				node_list.push(current_node);
+			}
 			this.nodes = resp.list?.data ?? [];
 			return this.nodes;
 		} catch (err) {

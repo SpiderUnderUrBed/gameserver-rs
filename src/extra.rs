@@ -242,222 +242,127 @@ where
     F: Fn(&str) -> bool,
 {
     let mut final_values = vec![];
-
     for line in gameserver_str.lines() {
-        let line = line.trim();
         if line.is_empty() || !filter(line) {
             continue;
         }
-
-        match serde_json::from_str::<Value>(line) {
-            Ok(line_val) => {
-                let mut parsed = false;
-
-                if !parsed {
-                    if let Ok(resp_msg) =
-                        serde_json::from_value::<FileResponseMessage>(line_val.clone())
-                    {
-                        if let Ok(data_str) = String::from_utf8(resp_msg.data.clone()) {
-                            if let Ok(result) = serde_json::from_str::<T>(&data_str) {
-                                final_values.push(Ok(result));
-                            } else {
-                                final_values.push(Err(serde_json::from_str::<T>("").unwrap_err()));
-                            }
-                        }
-                        parsed = true;
-                    }
-                }
-
-                if !parsed {
-                    if let Ok(inner_data) = serde_json::from_value::<InnerData>(line_val.clone()) {
-                        if let Ok(result) = serde_json::from_str::<T>(&inner_data.data) {
-                            final_values.push(Ok(result));
-                        } else if let Ok(result) =
-                            serde_json::from_value::<T>(serde_json::to_value(&inner_data).unwrap())
-                        {
-                            final_values.push(Ok(result));
-                        } else {
-                            final_values.push(Err(serde_json::from_str::<T>("").unwrap_err()));
-                        }
-                        parsed = true;
-                    }
-                }
-
-                if !parsed {
-                    if let Ok(console_data) =
-                        serde_json::from_value::<ConsoleData>(line_val.clone())
-                    {
-                        if let Ok(result) = serde_json::from_str::<T>(&console_data.data) {
-                            final_values.push(Ok(result));
-                        } else if let Ok(result) = serde_json::from_value::<T>(
-                            serde_json::to_value(&console_data).unwrap(),
-                        ) {
-                            final_values.push(Ok(result));
-                        } else {
-                            final_values.push(Err(serde_json::from_str::<T>("").unwrap_err()));
-                        }
-                        parsed = true;
-                    }
-                }
-
-                if !parsed {
-                    if let Ok(list) = serde_json::from_value::<List>(line_val.clone()) {
-                        if let Ok(result) =
-                            serde_json::from_value::<T>(serde_json::to_value(&list).unwrap())
-                        {
-                            final_values.push(Ok(result));
-                        }
-                        parsed = true;
-                    }
-                }
-
-                if !parsed {
-                    match serde_json::from_value::<T>(line_val.clone()) {
-                        Ok(result) => final_values.push(Ok(result)),
-                        Err(e) => {
-                            if let Ok(result) = serde_json::from_value::<T>(line_val) {
-                                final_values.push(Ok(result));
-                            } else {
-                                final_values.push(Err(e));
-                            }
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                let partials = parse_json_objects_in_str::<T>(line);
-                if partials.is_empty() {
-                    if let Ok(val) = serde_json::from_str::<T>(&format!("\"{}\"", line)) {
-                        final_values.push(Ok(val));
-                    }
-                }
-                final_values.extend(partials);
+        let partials = parse_json_objects_in_str::<T>(line);
+        if partials.is_empty() {
+            if let Ok(val) = serde_json::from_str::<T>(&format!("\"{}\"", line)) {
+                final_values.push(Ok(val));
             }
         }
+        final_values.extend(partials);
     }
-
     final_values
 }
 
-async fn ws_debug(
-    conn_id: usize,
-    arc_state: Arc<RwLock<AppState>>,
-    sender: Arc<Mutex<stream::SplitSink<WebSocket, WsMessage>>>,
-    receiver: &mut stream::SplitStream<WebSocket>,
-) {
-    let state = arc_state.write().await;
-    // Ping task with more visible logging
-    let ping_task = {
-        let conn_id = conn_id;
-        let sender = Arc::clone(&sender);
-        let mut interval = interval(Duration::from_secs(30));
+// pub async fn value_from_line<T, F>(
+//     gameserver_str: &str,
+//     filter: F,
+// ) -> Vec<Result<T, serde_json::Error>> 
+// pub async fn value_from_line<T, F>(
+//     gameserver_str: &str,
+//     filter: F,
+// ) -> Vec<Result<T, serde_json::Error>>
+// where
+//     T: DeserializeOwned + Debug,
+//     F: Fn(&str) -> bool,
+// {
+//     let mut final_values = vec![];
 
-        tokio::spawn(async move {
-            println!("[Conn {}] PING TASK STARTED", conn_id);
+//     for line in gameserver_str.lines() {
+//         let line = line.trim();
+//         if line.is_empty() || !filter(line) {
+//             continue;
+//         }
 
-            loop {
-                interval.tick().await;
-                println!("[Conn {}] SENDING PING", conn_id); // <-- Log ping attempts
+//         match serde_json::from_str::<Value>(line) {
+//             Ok(line_val) => {
+//                 let mut parsed = false;
 
-                let mut sender = sender.lock().await;
-                match sender.send(Message::Ping(Bytes::new())).await {
-                    Ok(_) => println!("[Conn {}] PING SENT SUCCESSFULLY", conn_id),
-                    Err(e) => {
-                        println!("[Conn {}] PING FAILED: {}", conn_id, e);
-                        break;
-                    }
-                }
-            }
+//                 if !parsed {
+//                     if let Ok(resp_msg) =
+//                         serde_json::from_value::<FileResponseMessage>(line_val.clone())
+//                     {
+//                         if let Ok(data_str) = String::from_utf8(resp_msg.data.clone()) {
+//                             if let Ok(result) = serde_json::from_str::<T>(&data_str) {
+//                                 final_values.push(Ok(result));
+//                             } else {
+//                                 final_values.push(Err(serde_json::from_str::<T>("").unwrap_err()));
+//                             }
+//                         }
+//                         parsed = true;
+//                     }
+//                 }
 
-            println!("[Conn {}] PING TASK EXITING", conn_id);
-        })
-    };
+//                 if !parsed {
+//                     if let Ok(inner_data) = serde_json::from_value::<InnerData>(line_val.clone()) {
+//                         if let Ok(result) = serde_json::from_str::<T>(&inner_data.data) {
+//                             final_values.push(Ok(result));
+//                         } else if let Ok(result) =
+//                             serde_json::from_value::<T>(serde_json::to_value(&inner_data).unwrap())
+//                         {
+//                             final_values.push(Ok(result));
+//                         } else {
+//                             final_values.push(Err(serde_json::from_str::<T>("").unwrap_err()));
+//                         }
+//                         parsed = true;
+//                     }
+//                 }
 
-    // Broadcast receiver task with more visible logging
-    let broadcast_task = {
-        let conn_id = conn_id;
-        let sender = Arc::clone(&sender);
-        let mut broadcast_rx = state.ws_tx.subscribe();
+//                 if !parsed {
+//                     if let Ok(console_data) =
+//                         serde_json::from_value::<ConsoleData>(line_val.clone())
+//                     {
+//                         if let Ok(result) = serde_json::from_str::<T>(&console_data.data) {
+//                             final_values.push(Ok(result));
+//                         } else if let Ok(result) = serde_json::from_value::<T>(
+//                             serde_json::to_value(&console_data).unwrap(),
+//                         ) {
+//                             final_values.push(Ok(result));
+//                         } else {
+//                             final_values.push(Err(serde_json::from_str::<T>("").unwrap_err()));
+//                         }
+//                         parsed = true;
+//                     }
+//                 }
 
-        tokio::spawn(async move {
-            println!("[Conn {}] BROADCAST TASK STARTED", conn_id);
+//                 if !parsed {
+//                     if let Ok(list) = serde_json::from_value::<List>(line_val.clone()) {
+//                         if let Ok(result) =
+//                             serde_json::from_value::<T>(serde_json::to_value(&list).unwrap())
+//                         {
+//                             final_values.push(Ok(result));
+//                         }
+//                         parsed = true;
+//                     }
+//                 }
 
-            while let Ok(msg) = broadcast_rx.recv().await {
-                println!("[Conn {}] RECEIVED BROADCAST: {}", conn_id, msg);
+//                 if !parsed {
+//                     match serde_json::from_value::<T>(line_val.clone()) {
+//                         Ok(result) => final_values.push(Ok(result)),
+//                         Err(e) => {
+//                             if let Ok(result) = serde_json::from_value::<T>(line_val) {
+//                                 final_values.push(Ok(result));
+//                             } else {
+//                                 final_values.push(Err(e));
+//                             }
+//                         }
+//                     }
+//                 }
+//             }
+//             Err(e) => {
+//                 let partials = parse_json_objects_in_str::<T>(line);
+//                 if partials.is_empty() {
+//                     if let Ok(val) = serde_json::from_str::<T>(&format!("\"{}\"", line)) {
+//                         final_values.push(Ok(val));
+//                     }
+//                 }
+//                 final_values.extend(partials);
+//             }
+//         }
+//     }
 
-                let mut sender = sender.lock().await;
-                match sender.send(Message::Text(msg.into())).await {
-                    Ok(_) => println!("[Conn {}] FORWARDED MESSAGE", conn_id),
-                    Err(e) => {
-                        println!("[Conn {}] FAILED TO FORWARD: {}", conn_id, e);
-                        break;
-                    }
-                }
-            }
-
-            println!("[Conn {}] BROADCAST TASK EXITING", conn_id);
-        })
-    };
-
-    // Main message processing loop with more visible logging
-    println!("[Conn {}] STARTING MESSAGE PROCESSING", conn_id);
-
-    while let Some(result) = receiver.next().await {
-        match result {
-            Ok(Message::Text(text)) => {
-                println!("[Conn {}] RECEIVED TEXT: {}", conn_id, text);
-
-                match serde_json::from_str::<MessagePayload>(&text) {
-                    Ok(payload) => {
-                        println!("[Conn {}] PARSED PAYLOAD: {:?}", conn_id, payload);
-
-                        match serde_json::to_vec(&payload) {
-                            Ok(mut bytes) => {
-                                bytes.push(b'\n');
-                                println!("[Conn {}] SERIALIZED TO {} BYTES", conn_id, bytes.len());
-
-                                match state.tcp_tx.send(bytes) {
-                                    Ok(_) => println!("[Conn {}] SENT TO TCP", conn_id),
-                                    Err(e) => println!("[Conn {}] TCP SEND FAILED: {}", conn_id, e),
-                                }
-                            }
-                            Err(e) => println!("[Conn {}] SERIALIZATION FAILED: {}", conn_id, e),
-                        }
-                    }
-                    Err(e) => println!("[Conn {}] PARSE FAILED: {}", conn_id, e),
-                }
-            }
-            Ok(Message::Binary(bin)) => {
-                println!("[Conn {}] RECEIVED BINARY ({} bytes)", conn_id, bin.len());
-            }
-            Ok(Message::Ping(data)) => {
-                println!("[Conn {}] RECEIVED PING ({} bytes)", conn_id, data.len());
-            }
-            Ok(Message::Pong(data)) => {
-                println!("[Conn {}] RECEIVED PONG ({} bytes)", conn_id, data.len());
-            }
-            Ok(Message::Close(frame)) => {
-                println!("[Conn {}] CLOSE FRAME: {:?}", conn_id, frame);
-                break;
-            }
-            Err(e) => {
-                println!("[Conn {}] WEBSOCKET ERROR: {}", conn_id, e);
-                break;
-            }
-        }
-    }
-
-    println!("[Conn {}] SHUTTING DOWN", conn_id);
-    ping_task.abort();
-    broadcast_task.abort();
-
-    match ping_task.await {
-        Ok(_) => println!("[Conn {}] PING TASK SHUT DOWN", conn_id),
-        Err(e) => println!("[Conn {}] PING TASK ERROR: {:?}", conn_id, e),
-    }
-
-    match broadcast_task.await {
-        Ok(_) => println!("[Conn {}] BROADCAST TASK SHUT DOWN", conn_id),
-        Err(e) => println!("[Conn {}] BROADCAST TASK ERROR: {:?}", conn_id, e),
-    }
-}
+//     final_values
+// }

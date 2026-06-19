@@ -1,14 +1,12 @@
 use crate::MessagePayload;
 use crate::extra::JsonAssembler;
-use crate::{IncomingMessage, extra};
-use async_trait::async_trait;
+use crate::{IncomingMessage};
 use axum::extract::Multipart;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::time::{Duration, Instant};
 use std::{
     any::Any,
     sync::{
@@ -22,7 +20,7 @@ use bytes::Bytes;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::sync::Mutex;
-use tokio::sync::broadcast::{self, Sender};
+use tokio::sync::broadcast::{self};
 //use std::io::ErrorKind;
 use tokio::fs;
 use tokio::fs::OpenOptions;
@@ -30,7 +28,6 @@ use tokio::io::AsyncSeekExt;
 use tokio::io::AsyncWriteExt;
 use tokio::io::SeekFrom;
 use tokio::sync::mpsc;
-use tokio::time::timeout;
 
 use futures_util::Stream;
 use futures_util::task::Context;
@@ -56,6 +53,8 @@ pub trait FsType: Clone + Send + Sync {
         file_chunk: FileChunk,
     ) -> std::io::Result<Vec<u8>>;
     async fn get_metadata(&mut self, path: &str) -> std::io::Result<FsMetadata>;
+
+    #[allow(dead_code)]
     async fn list_directory(&mut self, path: &str) -> std::io::Result<Vec<FsEntry>>;
     async fn list_directory_within_range(
         &mut self,
@@ -63,6 +62,8 @@ pub trait FsType: Clone + Send + Sync {
         start: Option<u64>,
         end: Option<u64>,
     ) -> std::io::Result<Vec<FsEntry>>;
+
+    #[allow(dead_code)]
     async fn get_path_from_tag(&mut self, tag: &str) -> std::io::Result<Vec<String>>;
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
@@ -156,9 +157,6 @@ impl Clone for TcpFs {
     }
 }
 
-use tokio::sync::mpsc::Sender as MpscSender;
-use tokio::time::sleep;
-
 impl TcpFs {
     pub fn new(
         tx: tokio::sync::broadcast::Sender<Vec<u8>>,
@@ -190,7 +188,10 @@ impl TcpFs {
         let timeout_duration = Duration::from_secs(10);
         let start_time = Instant::now();
         let mut assembler = JsonAssembler::new();
-        let mut expecting_fragments = false;
+
+        // Expecting fragments is used within this code
+        // Unsure why the compiler is complaining about it
+        let mut _expecting_fragments = false;
 
         loop {
             if start_time.elapsed() > timeout_duration {
@@ -214,7 +215,7 @@ impl TcpFs {
                 continue;
             };
 
-            if !expecting_fragments {
+            if !_expecting_fragments {
                 if val.get("in_response_to").is_none() {
                     continue;
                 }
@@ -228,7 +229,7 @@ impl TcpFs {
                 }
 
                 if val.get("data").is_some() {
-                    expecting_fragments = true;
+                    _expecting_fragments = true;
                 }
             }
 
@@ -237,11 +238,11 @@ impl TcpFs {
             let completed = assembler.feed_chunk(&response_str, id).await;
 
             if !completed.is_empty() {
-                expecting_fragments = false;
+                _expecting_fragments = false;
                 return Ok(completed);
             }
 
-            if expecting_fragments && !assembler.buffer.is_empty() {
+            if _expecting_fragments && !assembler.buffer.is_empty() {
                 continue;
             }
 
@@ -249,17 +250,17 @@ impl TcpFs {
                 if let Err(e) = &result {
                     println!("[recv_response:{}] assembler.check_timeout error: {}", id, e);
                 }
-                expecting_fragments = false;
+                _expecting_fragments = false;
                 return result.map(|v| vec![v]);
             }
         }
     }
 }
 
-use walkdir::WalkDir;
-
-const ENABLE_BROADCAST_LOGS: bool = true;
-
+// I keep the code from both the gameserver node and gameserver main project for 
+// the tcp filesystem logic the same for simplicity, so i disable warnings for those functions
+// TODO: consider making a library for tcpfs
+#[allow(dead_code)]
 pub async fn send_folder_over_broadcast<P: AsRef<Path>>(
     folder: P,
     writer_tx: mpsc::Sender<Vec<u8>>,
@@ -493,9 +494,9 @@ pub async fn send_multipart_over_broadcast(
     Ok(())
 }
 
+#[allow(dead_code)]
 pub async fn cleanup_end_file_markers(file_path: &str, file_name: &str) -> std::io::Result<()> {
     use tokio::io::AsyncReadExt;
-    use tokio::io::AsyncWriteExt;
 
     let mut file = tokio::fs::OpenOptions::new()
         .read(true)
@@ -533,10 +534,12 @@ pub async fn cleanup_end_file_markers(file_path: &str, file_name: &str) -> std::
     Ok(())
 }
 
+#[allow(dead_code)]
 fn find_last_json_end(data: &[u8]) -> Option<usize> {
     data.iter().rposition(|&b| b == b'}')
 }
 
+#[allow(dead_code)]
 fn find_json_start_before(data: &[u8], end_pos: usize) -> Option<usize> {
     let mut brace_count = 1;
     let mut pos = end_pos;
@@ -558,6 +561,7 @@ fn find_json_start_before(data: &[u8], end_pos: usize) -> Option<usize> {
     None
 }
 
+#[allow(dead_code)]
 fn is_end_file_message(json_value: &Value, expected_filename: &str) -> bool {
     if let (Some(msg_type), Some(message)) = (
         json_value.get("type").and_then(|v| v.as_str()),
@@ -836,10 +840,8 @@ impl FsType for TcpFs {
             .await?;
 
         let response_chunks = self.recv_response(id).await?;
-
-        for (i, chunk) in response_chunks.iter().enumerate() {
-            let preview = String::from_utf8_lossy(chunk);
-
+        
+        for chunk in response_chunks.iter() {
             if let Ok(val) = serde_json::from_slice::<Value>(chunk) {
                 if let Some(msg) = val.get("message").and_then(|v| v.as_str()) {
                     return Ok(IncomingMessage {
@@ -948,6 +950,11 @@ impl FsType for TcpFs {
         let response_chunks = self.recv_response(id).await?;
 
         for chunk in response_chunks.iter() {
+            // if let Ok(meta) = serde_json::from_slice::<Value>(chunk){
+            //     println!("{:#?}", meta);
+            // }
+
+
             if let Ok(meta) = serde_json::from_slice::<FsMetadata>(chunk) {
                 return Ok(meta);
             }
@@ -1041,11 +1048,15 @@ pub struct RemoteFileSystem<S: FsType> {
     cached_entries: Option<Vec<FsEntry>>,
 }
 
+// I keep alot of this code just for general function compatability with STD 
+// so the file operations are the same
 impl<S: FsType> RemoteFileSystem<S> {
+    #[allow(dead_code)]
     pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
         self.state.as_ref()?.as_any().downcast_ref::<T>()
     }
 
+    #[allow(dead_code)]
     pub fn downcast_mut<T: 'static>(&mut self) -> Option<&mut T> {
         self.state.as_mut()?.as_any_mut().downcast_mut::<T>()
     }
@@ -1071,6 +1082,7 @@ impl<S: FsType> RemoteFileSystem<S> {
         Path::new(&self.path).to_path_buf()
     }
 
+    #[allow(dead_code)]
     pub fn as_path(&self) -> &Path {
         Path::new(&self.path)
     }
@@ -1087,6 +1099,7 @@ impl<S: FsType> RemoteFileSystem<S> {
         Self::new(&new_path, self.state.clone())
     }
 
+    #[allow(dead_code)]
     pub fn starts_with<P: AsRef<Path>>(&self, base: P) -> bool {
         let base_path = base.as_ref().to_str().unwrap_or("");
         let starts = self.path.starts_with(base_path);
@@ -1203,6 +1216,7 @@ impl RemoteFileSystem<TcpFs> {
     }
 }
 
+#[allow(dead_code)]
 pub async fn get_metadata(path: &str) -> std::io::Result<FsMetadata> {
     let metadata = fs::metadata(path).await?;
     let canonical = fs::canonicalize(path).await?;
@@ -1210,7 +1224,7 @@ pub async fn get_metadata(path: &str) -> std::io::Result<FsMetadata> {
     let optional_folder_children = if metadata.is_dir() {
         let mut count = 0;
         let mut dir = fs::read_dir(path).await?;
-        while let Some(entry) = dir.next_entry().await? {
+        while let Some(_) = dir.next_entry().await? {
             count += 1;
         }
         Some(count)
@@ -1227,6 +1241,7 @@ pub async fn get_metadata(path: &str) -> std::io::Result<FsMetadata> {
     })
 }
 
+#[allow(dead_code)]
 pub async fn list_directory_with_range(
     path: &str,
     start: Option<u64>,
@@ -1263,10 +1278,12 @@ pub async fn list_directory_with_range(
     Ok(entries)
 }
 
+#[allow(dead_code)]
 pub async fn list_directory(path: &str) -> std::io::Result<Vec<FsEntry>> {
     list_directory_with_range(path, None, None).await
 }
 
+#[allow(dead_code)]
 pub async fn get_files_content(file_chunk: FileChunk) -> std::io::Result<MessagePayload> {
     let metadata = fs::metadata(&file_chunk.file_name).await?;
 
@@ -1301,6 +1318,7 @@ pub async fn get_files_content(file_chunk: FileChunk) -> std::io::Result<Message
     })
 }
 
+#[allow(dead_code)]
 pub async fn handle_multipart_message(
     payload: &MessagePayload,
     current_file: &mut Option<File>,
@@ -1376,6 +1394,10 @@ impl fmt::Display for FileOperations {
     }
 }
 
+// I keep the code from both the gameserver node and gameserver main project for 
+// the tcp filesystem logic the same for simplicity, so i disable warnings for those functions
+// TODO: consider making a library for tcpfs
+#[allow(dead_code)]
 pub fn execute_file_operation(
     encoded_src: FileOperations,
     encoded_dest: FileOperations,
