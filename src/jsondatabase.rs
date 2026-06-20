@@ -306,7 +306,7 @@ impl UserDatabase for Database {
         
         Ok(database.users)
     }
-    async fn get_from_database(&self, username: &str) -> Result<Option<User>, Box<dyn Error + Send + Sync>> { 
+    async fn get_user_from_database(&self, username: &str) -> Result<Option<User>, Box<dyn Error + Send + Sync>> { 
         let database = self.get_database().await?;
         if let Some(user) = database.users.iter().find(|user| user.username == username){
             Ok(Some(user.clone()))
