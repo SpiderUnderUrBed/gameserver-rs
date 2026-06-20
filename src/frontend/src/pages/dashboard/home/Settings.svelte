@@ -131,18 +131,6 @@
 			<button class="btn btn-error" class:btn-ghost={consoleEntryOnTop} onclick={() => consoleEntryOnTop = false}>Bottom</button>
 		</div>
 		<span class="h-2"></span>
-		<h5><b>Policy:</b></h5>
-		<span class="h-2"></span>
-		<div>Force the sandbox:</div>
-		<div class="flex items-center w-32">
-			<button class="btn btn-primary" class:btn-ghost={!forceSandbox} onclick={() => forceSandbox = true}>Enable</button>
-			<button class="btn btn-error" class:btn-ghost={forceSandbox} onclick={() => forceSandbox = false}>Disable</button>
-		</div>
-		<div>Custom servers:</div>
-		<div class="flex items-center w-32">
-			<button class="btn btn-error" class:btn-ghost={!disableCustomServers} onclick={() => disableCustomServers = true}>Disable</button>
-			<button class="btn btn-primary" class:btn-ghost={disableCustomServers} onclick={() => disableCustomServers = false}>Enable</button>
-		</div>
 		<div>Rcon settings</div>
 		<div>
 		<div class="flex items-center w-96">
@@ -158,6 +146,18 @@
 				class:btn-primary={currentGlobalFilter?.kind === filter.kind}
 				class:btn-ghost={currentGlobalFilter?.kind !== filter.kind}>{filter.name}</button>
 			{/each}
+		</div>
+		<h5><b>Policy:</b></h5>
+		<span class="h-2"></span>
+		<div>Force the sandbox:</div>
+		<div class="flex items-center w-32">
+			<button class="btn btn-primary" class:btn-ghost={!forceSandbox} onclick={() => forceSandbox = true}>Enable</button>
+			<button class="btn btn-error" class:btn-ghost={forceSandbox} onclick={() => forceSandbox = false}>Disable</button>
+		</div>
+		<div>Custom servers:</div>
+		<div class="flex items-center w-32">
+			<button class="btn btn-error" class:btn-ghost={!disableCustomServers} onclick={() => disableCustomServers = true}>Disable</button>
+			<button class="btn btn-primary" class:btn-ghost={disableCustomServers} onclick={() => disableCustomServers = false}>Enable</button>
 		</div>
 	</div>
 	<div class="card bg-base-100 shadow-md p-4">
