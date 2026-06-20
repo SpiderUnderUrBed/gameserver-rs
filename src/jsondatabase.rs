@@ -245,7 +245,7 @@ impl ServerDatabase for Database {
             let mut database = self.get_database().await?;
     
             if database.servers.iter().any(|server| server.servername == servername){
-                return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
+                return Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)));
             } else {
                 let server = Server { servername, provider, providertype, location, node, sandbox, server_metadata };
                 database.servers.push(server.clone());
@@ -254,7 +254,7 @@ impl ServerDatabase for Database {
             let _ = self.write_database(database).await;  
             Ok(StatusCode::CREATED)
         } else {
-            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+            Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
         }
     }
     async fn simple_remove_server_in_db(&self, servername: String) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
@@ -268,7 +268,7 @@ impl ServerDatabase for Database {
         if let Element::Server(Server {servername, provider, providertype, location, node, sandbox, server_metadata }) = element.element {
             database.servers.retain(|db_server| db_server.servername != servername);
         } else {
-            return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
+            return Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)));
         }
 
         let _ = self.write_database(database).await;
@@ -286,14 +286,14 @@ impl ServerDatabase for Database {
             let _ = self.write_database(database).await;
             Ok(StatusCode::CREATED)
         } else {
-            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+            Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
         }
     }
 }
 
 impl UserDatabase for Database {
     async fn retrieve_user(&self, username: String) -> Option<User> {
-        if let Ok(Some(user)) = self.get_from_database(&username.clone()).await {
+        if let Ok(Some(user)) = self.get_user_from_database(&username.clone()).await {
             Some(user)
         } else {
             None
@@ -322,7 +322,7 @@ impl UserDatabase for Database {
             let mut database = self.get_database().await?;
     
             if password.is_empty() || database.users.iter().any(|db_user| db_user.username == user){
-                return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
+                return Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)));
             } else {
                 let final_user = User {
                     username: user,
@@ -335,7 +335,7 @@ impl UserDatabase for Database {
             let _ = self.write_database(database).await;  
             Ok(StatusCode::CREATED)
         } else {
-            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+            Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
         }
     }
     
@@ -358,7 +358,7 @@ impl UserDatabase for Database {
         if let Element::User { user, user_perms: _, password: _ } = user.element {
             database.users.retain(|db_user| db_user.username != user);
         } else {
-            return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
+            return Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)));
         }
 
         let _ = self.write_database(database).await;
@@ -378,7 +378,7 @@ impl UserDatabase for Database {
             let _ = self.write_database(database).await;
             Ok(StatusCode::CREATED)
         } else {
-            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+            Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
         }
     }
 }
@@ -401,7 +401,7 @@ impl NodesDatabase for Database {
             let mut database = self.get_database().await?;
     
             if database.nodes.iter().any(|node| node.nodename == nodename) || (nodetype == NodeType::Custom && ip.is_empty()){
-                return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
+                return Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)));
             } else {
                 let final_node = Node {nodename,ip,nodetype, nodestatus, k8s_type };
                 database.nodes.push(final_node.clone());
@@ -410,14 +410,14 @@ impl NodesDatabase for Database {
             let _ = self.write_database(database).await;  
             Ok(StatusCode::CREATED)
         } else {
-            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+            Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
         }
     }
     async fn remove_node_in_db(&self, node: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         if let Element::Node(node_data) = node.element {
             self.remove_node_in_db_directly(node_data).await
         } else {
-            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+            Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
         }
     }
     async fn remove_node_in_db_directly(&self, node_data: Node) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
@@ -478,7 +478,7 @@ impl ButtonsDatabase for Database {
             Ok(StatusCode::CREATED)
         } else {
             println!("Error, failed to get the button element type");
-            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+            Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
         }
     }
 }
@@ -516,7 +516,7 @@ impl IntergrationsDatabase for Database {
             let mut database = self.get_database().await?;
             
             if database.intergrations.iter().any(|intergration| intergration.r#type == r#type) {
-                return Err(Box::new(DatabaseError(StatusCode::CONFLICT)));
+                return Err(Box::new(DatabaseError::StatusCode(StatusCode::CONFLICT)));
             } else {
                 let intergration = Intergration { r#type, status, settings };
                 database.intergrations.push(intergration.clone());
@@ -525,7 +525,7 @@ impl IntergrationsDatabase for Database {
             let _ = self.write_database(database).await;  
             Ok(StatusCode::CREATED)
         } else {
-            Err(Box::new(DatabaseError(StatusCode::BAD_REQUEST)))
+            Err(Box::new(DatabaseError::StatusCode(StatusCode::BAD_REQUEST)))
         }
     }
     async fn remove_intergrations_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
@@ -533,7 +533,7 @@ impl IntergrationsDatabase for Database {
         if let Element::Intergration(Intergration { status, r#type, settings }) = element.element {
             database.intergrations.retain(|db_intergration| db_intergration.r#type != r#type);
         } else {
-            return Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)));
+            return Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)));
         }
 
         let _ = self.write_database(database).await;
@@ -553,7 +553,7 @@ impl IntergrationsDatabase for Database {
             let _ = self.write_database(database).await;
             Ok(StatusCode::CREATED)
         } else {
-            Err(Box::new(DatabaseError(StatusCode::INTERNAL_SERVER_ERROR)))
+            Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
         }
     }
 }
