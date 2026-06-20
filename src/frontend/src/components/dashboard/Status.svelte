@@ -8,7 +8,7 @@
 	import { onMount } from 'svelte';
 	let changeStatusDialog: HTMLDialogElement;
 
-	let selectedStatusType: 'node-status' | 'server-keyword' | 'server-process' | 'manual-click' = $state('server-keyword');
+	let selectedStatusType: 'node-status' | 'server-keyword' | 'server-process' | 'manual-click' = $state('server-process');
 	//let StatusType = $state('manual-click');
 
 	let changeStatus = async () => {
