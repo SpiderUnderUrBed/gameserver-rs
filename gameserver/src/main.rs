@@ -1,3 +1,5 @@
+use chrono::DateTime;
+use chrono::Local;
 use libc::stat;
 use serde_json::{json, Value};
 use std::convert::TryFrom;
@@ -448,6 +450,7 @@ async fn run_command_live_output(
     label: String,
     sender: Option<mpsc::Sender<String>>,
     stdin_arc: Option<Arc<Mutex<Option<ChildStdin>>>>,
+    timeout: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let db = state.db.lock().await;
     let current_filter = db.filter.clone();
@@ -476,12 +479,16 @@ async fn run_command_live_output(
     }
 
     let current_filter_clone = current_filter.clone();
+    let stdout_last_updated_clone = state.last_updated.clone();
     let stdout_handle = if let Some(stdout) = child.stdout.take() {
         let tx = sender.clone();
         let lbl = label.clone();
         Some(tokio::spawn(async move {
             let mut reader = BufReader::new(stdout).lines();
+            let stdout_last_updated_loop_clone = stdout_last_updated_clone.clone();
             while let Ok(Some(line)) = reader.next_line().await {
+                let mut stdout_last_updated_clone_guard = stdout_last_updated_loop_clone.lock().await;
+                *stdout_last_updated_clone_guard = Some(Local::now());
                 if filter(current_filter_clone.clone(), line.clone()) {
                     continue;
                 }
@@ -496,12 +503,16 @@ async fn run_command_live_output(
         None
     };
 
+    let stderr_last_updated_clone = state.last_updated.clone();
     let stderr_handle = if let Some(stderr) = child.stderr.take() {
         let tx = sender.clone();
         let lbl = label.clone();
         Some(tokio::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
+            let stderr_last_updated_loop_clone = stderr_last_updated_clone.clone();
             while let Ok(Some(line)) = reader.next_line().await {
+                let mut stderr_last_updated_clone = stderr_last_updated_loop_clone.lock().await;
+                *stderr_last_updated_clone = Some(Local::now());
                 if filter(current_filter.clone(), line.clone()) {
                     continue;
                 }
@@ -516,7 +527,24 @@ async fn run_command_live_output(
         None
     };
 
-    child.wait().await?;
+    if let Some(timeout_number) = timeout {
+        match tokio::time::timeout(tokio::time::Duration::from_millis(timeout_number), child.wait()).await {
+            Err(_) => {
+                println!("Command timed out, killing process");
+                let _ = child.kill().await;
+                return Err(Box::new(Error::new(ErrorKind::TimedOut, "Command timed out")));
+            }
+            Ok(wait_result) => {
+                if let Err(e) = wait_result {
+                    println!("Error waiting for process: {}", e);
+                    return Err(e.into());
+                }
+            }
+        }
+    } else {
+        child.wait().await?;
+    }
+
     println!("Post-hook process exited");
     // TODO: have it tell the main server that it exited
     if let Some(h) = stdout_handle {
@@ -598,6 +626,7 @@ struct AppState {
     server_running: Arc<Mutex<bool>>,
     server_output_tx: Arc<Mutex<Option<broadcast::Sender<String>>>>,
     server_process: Arc<Mutex<Option<Child>>>,
+    last_updated: Arc<Mutex<Option<DateTime<Local>>>>,
     // Consider if i want to store the db at all, previously I was wondering whether or not to have an arc mutex, (arc not needed; the app state has a arc, so I just need to add a mutex
     // so now any changes will still be in sync so you never have a case of a longer operation based on older data writting to the db overwriting the newer one).
     // now I am considering if I need db at all, ill keep it here for now to consider parity with the main gameserver node based on design choices.
@@ -739,6 +768,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         server_running: Arc::new(Mutex::new(false)),
         server_output_tx: Arc::new(Mutex::new(None)),
         server_process: Arc::new(Mutex::new(None)),
+        last_updated: Arc::new(Mutex::new(None)),
         db_conn: Arc::new(Mutex::new(Some(DbConn::first_connection().await))),
         db: Arc::clone(&arc_db),
     };
@@ -1843,6 +1873,7 @@ async fn handle_typical_command_or_console(
                                 "Server".into(),
                                 Some(tx.clone()),
                                 Some(stdin_clone.clone()),
+                                None
                             )
                             .await;
                             {
@@ -2631,6 +2662,7 @@ async fn create_server(
                         "Pre-hook".into(),
                         Some(cmd_tx.clone()),
                         None,
+                        Some(60000),
                     )
                     .await
                     .ok();
@@ -2668,6 +2700,7 @@ async fn create_server(
                         "Install".into(),
                         Some(cmd_tx.clone()),
                         None,
+                        Some(60000),
                     )
                     .await
                     .ok();
@@ -2705,6 +2738,7 @@ async fn create_server(
                         "Post-hook".into(),
                         Some(cmd_tx.clone()),
                         None,
+                        Some(60000),
                     )
                     .await
                     .ok();
@@ -3005,14 +3039,14 @@ async fn get_definite_path_from_name(state: &AppState, name: Option<String>) -> 
             .find(|(server_name, _)| name.clone().unwrap() == **server_name);
         if server_path.is_some() {
             if let Some((_, server_index)) = server_path {
-                Some(server_index.location.clone())
+                return Some(server_index.location.clone())
             } else {
-                None
+                return None
             }
         } else {
-            None
+            return None
         }
     } else {
-        None
+        return None
     }
 }
