@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct Database {
+    pub settings: Settings,
     pub current_server: String,
     pub filter: Filters,
     pub server_index: HashMap<String, ServerIndex>,
@@ -16,6 +17,12 @@ pub enum Filters {
     AlternatingLine,
     #[default]
     None,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+pub struct Settings {
+    pub hook_timeout: u64,
+    pub process_timeout: u64
 }
 
 #[derive(Clone, Default, Debug, Deserialize, Serialize)]
