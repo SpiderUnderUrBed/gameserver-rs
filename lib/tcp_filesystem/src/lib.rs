@@ -1,39 +1,58 @@
-use crate::MessagePayload;
-use crate::extra::JsonAssembler;
-use crate::{IncomingMessage};
-use axum::extract::Multipart;
+mod extra;
+use extra::JsonAssembler;
+// use crate::MessagePayload;
+// use crate::Sender;
+// use crate::{IncomingMessage};
+use async_trait::async_trait;
+use futures::Stream;
+use multer::Multipart;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::sync::Mutex;
 use std::fmt;
+use bytes::Bytes;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::task::Poll;
+use std::time::{Duration, Instant};
 use std::{
     any::Any,
     sync::{
-        Arc,
         atomic::{AtomicU64, Ordering},
+        Arc,
     },
 };
-
-use bytes::Bytes;
-
-use tokio::fs::File;
-use tokio::io::AsyncReadExt;
-use tokio::sync::Mutex;
-use tokio::sync::broadcast::{self};
-//use std::io::ErrorKind;
 use tokio::fs;
+use tokio::fs::File;
 use tokio::fs::OpenOptions;
+use tokio::io::AsyncReadExt;
 use tokio::io::AsyncSeekExt;
 use tokio::io::AsyncWriteExt;
-use tokio::io::SeekFrom;
+use tokio::sync::broadcast;
 use tokio::sync::mpsc;
+use tokio::time::timeout;
 
-use futures_util::Stream;
 use futures_util::task::Context;
-use futures_util::task::Poll;
 
 use base64::Engine;
+
+use std::io::SeekFrom;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MessagePayload {
+    r#type: String,
+    pub message: String,
+    authcode: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct IncomingMessage {
+    message: String,
+    #[serde(rename = "type")]
+    message_type: String,
+    authcode: String,
+}
+
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(tag = "kind", content = "data")]
@@ -48,13 +67,8 @@ pub trait FsType: Clone + Send + Sync {
         &mut self,
         file_chunk: FileChunk,
     ) -> std::io::Result<IncomingMessage>;
-    async fn get_files_content_raw(
-        &mut self,
-        file_chunk: FileChunk,
-    ) -> std::io::Result<Vec<u8>>;
+    async fn get_files_content_raw(&mut self, file_chunk: FileChunk) -> std::io::Result<Vec<u8>>;
     async fn get_metadata(&mut self, path: &str) -> std::io::Result<FsMetadata>;
-
-    #[allow(dead_code)]
     async fn list_directory(&mut self, path: &str) -> std::io::Result<Vec<FsEntry>>;
     async fn list_directory_within_range(
         &mut self,
@@ -62,8 +76,6 @@ pub trait FsType: Clone + Send + Sync {
         start: Option<u64>,
         end: Option<u64>,
     ) -> std::io::Result<Vec<FsEntry>>;
-
-    #[allow(dead_code)]
     async fn get_path_from_tag(&mut self, tag: &str) -> std::io::Result<Vec<String>>;
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
@@ -102,9 +114,9 @@ pub struct FileRequestMessage {
 // and size for defining when the size of the buffer, to ensure nothing unexpected happens (might be used to help determine when the chunk is done)
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct FileChunk {
-    pub(crate) file_name: String,
-    pub(crate) file_chunk_offet: String,
-    pub(crate) file_chunk_size: String,
+    pub file_name: String,
+    pub file_chunk_offet: String,
+    pub file_chunk_size: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -157,6 +169,9 @@ impl Clone for TcpFs {
     }
 }
 
+use tokio::sync::mpsc::Sender as MpscSender;
+use tokio::time::sleep;
+
 impl TcpFs {
     pub fn new(
         tx: tokio::sync::broadcast::Sender<Vec<u8>>,
@@ -188,10 +203,7 @@ impl TcpFs {
         let timeout_duration = Duration::from_secs(10);
         let start_time = Instant::now();
         let mut assembler = JsonAssembler::new();
-
-        // Expecting fragments is used within this code
-        // Unsure why the compiler is complaining about it
-        let mut _expecting_fragments = false;
+        let mut expecting_fragments = false;
 
         loop {
             if start_time.elapsed() > timeout_duration {
@@ -215,7 +227,7 @@ impl TcpFs {
                 continue;
             };
 
-            if !_expecting_fragments {
+            if !expecting_fragments {
                 if val.get("in_response_to").is_none() {
                     continue;
                 }
@@ -229,7 +241,7 @@ impl TcpFs {
                 }
 
                 if val.get("data").is_some() {
-                    _expecting_fragments = true;
+                    expecting_fragments = true;
                 }
             }
 
@@ -238,29 +250,28 @@ impl TcpFs {
             let completed = assembler.feed_chunk(&response_str, id).await;
 
             if !completed.is_empty() {
-                _expecting_fragments = false;
+                expecting_fragments = false;
                 return Ok(completed);
             }
 
-            if _expecting_fragments && !assembler.buffer.is_empty() {
+            if expecting_fragments && !assembler.buffer.is_empty() {
                 continue;
             }
 
             if let Some(result) = assembler.check_timeout(id) {
                 if let Err(e) = &result {
-                    println!("[recv_response:{}] assembler.check_timeout error: {}", id, e);
+                    println!(
+                        "[recv_response:{}] assembler.check_timeout error: {}",
+                        id, e
+                    );
                 }
-                _expecting_fragments = false;
+                expecting_fragments = false;
                 return result.map(|v| vec![v]);
             }
         }
     }
 }
 
-// I keep the code from both the gameserver node and gameserver main project for 
-// the tcp filesystem logic the same for simplicity, so i disable warnings for those functions
-// TODO: consider making a library for tcpfs
-#[allow(dead_code)]
 pub async fn send_folder_over_broadcast<P: AsRef<Path>>(
     folder: P,
     writer_tx: mpsc::Sender<Vec<u8>>,
@@ -426,7 +437,7 @@ pub async fn send_folder_over_broadcast<P: AsRef<Path>>(
 }
 
 pub async fn send_multipart_over_broadcast(
-    mut multipart: Multipart,
+    mut multipart: Multipart<'_>,
     tx: broadcast::Sender<Vec<u8>>,
 ) -> std::io::Result<()> {
     const FILE_DELIMITER: &[u8] = b"<|END_OF_FILE|>";
@@ -494,9 +505,9 @@ pub async fn send_multipart_over_broadcast(
     Ok(())
 }
 
-#[allow(dead_code)]
 pub async fn cleanup_end_file_markers(file_path: &str, file_name: &str) -> std::io::Result<()> {
     use tokio::io::AsyncReadExt;
+    use tokio::io::AsyncWriteExt;
 
     let mut file = tokio::fs::OpenOptions::new()
         .read(true)
@@ -528,6 +539,30 @@ pub async fn cleanup_end_file_markers(file_path: &str, file_name: &str) -> std::
                     return Ok(());
                 }
             }
+        }
+    }
+
+    Ok(())
+}
+
+fn collect_files(
+    current_dir: &Path,
+    base_dir: &Path,
+    entries: &mut Vec<(String, PathBuf)>,
+) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(current_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            collect_files(&path, base_dir, entries)?;
+        } else if path.is_file() {
+            let relative_path = path
+                .strip_prefix(base_dir)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+                .to_string_lossy()
+                .to_string();
+            entries.push((relative_path, path));
         }
     }
 
@@ -573,30 +608,9 @@ fn is_end_file_message(json_value: &Value, expected_filename: &str) -> bool {
     }
 }
 
-fn collect_files(
-    current_dir: &Path,
-    base_dir: &Path,
-    entries: &mut Vec<(String, PathBuf)>,
-) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(current_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-
-        if path.is_dir() {
-            collect_files(&path, base_dir, entries)?;
-        } else if path.is_file() {
-            let relative_path = path
-                .strip_prefix(base_dir)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
-                .to_string_lossy()
-                .to_string();
-            entries.push((relative_path, path));
-        }
-    }
-
-    Ok(())
-}
-
+// I have no idea why cargo is complaining about this being unused, when its used in a function which is
+// used in a function
+#[allow(dead_code)]
 fn extract_entries_from_value(val: &Value) -> std::io::Result<Option<Vec<FsEntry>>> {
     if val.is_array() {
         if let Ok(entries) = serde_json::from_value::<Vec<FsEntry>>(val.clone()) {
@@ -691,6 +705,8 @@ fn extract_entries_from_value(val: &Value) -> std::io::Result<Option<Vec<FsEntry
     Ok(None)
 }
 
+// I dont know why cargo marks this as unusued, either, i use it in another function
+#[allow(dead_code)]
 fn parse_directory_response(response_chunks: &[Vec<u8>], id: u64) -> std::io::Result<Vec<FsEntry>> {
     for chunk in response_chunks.iter() {
         if let Ok(entries) = serde_json::from_slice::<Vec<FsEntry>>(chunk) {
@@ -799,11 +815,7 @@ impl FsType for TcpFs {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
-
-    async fn get_files_content_raw(
-        &mut self,
-        file_chunk: FileChunk,
-    ) -> std::io::Result<Vec<u8>> {
+    async fn get_files_content_raw(&mut self, file_chunk: FileChunk) -> std::io::Result<Vec<u8>> {
         let id = self
             .send_request(FileRequestPayload::FileChunk(file_chunk))
             .await?;
@@ -817,7 +829,6 @@ impl FsType for TcpFs {
                         return Ok(bytes);
                     }
                     if let Some(s) = data_val.as_str() {
-                        use base64::Engine;
                         if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(s) {
                             return Ok(decoded);
                         }
@@ -830,7 +841,6 @@ impl FsType for TcpFs {
 
         Ok(vec![])
     }
-
     async fn get_files_content(
         &mut self,
         file_chunk: FileChunk,
@@ -840,8 +850,10 @@ impl FsType for TcpFs {
             .await?;
 
         let response_chunks = self.recv_response(id).await?;
-        
-        for chunk in response_chunks.iter() {
+
+        for (i, chunk) in response_chunks.iter().enumerate() {
+            let preview = String::from_utf8_lossy(chunk);
+
             if let Ok(val) = serde_json::from_slice::<Value>(chunk) {
                 if let Some(msg) = val.get("message").and_then(|v| v.as_str()) {
                     return Ok(IncomingMessage {
@@ -950,11 +962,6 @@ impl FsType for TcpFs {
         let response_chunks = self.recv_response(id).await?;
 
         for chunk in response_chunks.iter() {
-            // if let Ok(meta) = serde_json::from_slice::<Value>(chunk){
-            //     println!("{:#?}", meta);
-            // }
-
-
             if let Ok(meta) = serde_json::from_slice::<FsMetadata>(chunk) {
                 return Ok(meta);
             }
@@ -985,11 +992,6 @@ impl FsType for TcpFs {
                 }
             }
         }
-
-        println!(
-            "[get_metadata:{}] final parse error: missing field `is_file` at line 1 column 58",
-            id
-        );
 
         Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -1040,16 +1042,16 @@ impl FsType for TcpFs {
     }
 }
 
+// Dont know why cargo marks this as unused, its constructer
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RemoteFileSystem<S: FsType> {
     path: String,
     state: Option<S>,
-    pub(crate) cached_metadata: Option<FsMetadata>,
+    pub cached_metadata: Option<FsMetadata>,
     cached_entries: Option<Vec<FsEntry>>,
 }
 
-// I keep alot of this code just for general function compatability with STD 
-// so the file operations are the same
 impl<S: FsType> RemoteFileSystem<S> {
     #[allow(dead_code)]
     pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
@@ -1070,6 +1072,7 @@ impl<S: FsType> RemoteFileSystem<S> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn parent(&self) -> Option<Self> {
         let parent_path = Path::new(&self.path).parent()?.to_path_buf();
         Some(Self::new(
@@ -1078,6 +1081,7 @@ impl<S: FsType> RemoteFileSystem<S> {
         ))
     }
 
+    #[allow(dead_code)]
     pub fn to_path_buf(&self) -> std::path::PathBuf {
         Path::new(&self.path).to_path_buf()
     }
@@ -1087,6 +1091,7 @@ impl<S: FsType> RemoteFileSystem<S> {
         Path::new(&self.path)
     }
 
+    #[allow(dead_code)]
     pub fn join<P: AsRef<Path>>(&self, path: P) -> Self {
         let mut new_path = self.path.clone();
         let path_str = path.as_ref().to_str().unwrap_or("");
@@ -1115,6 +1120,7 @@ impl<S: FsType> RemoteFileSystem<S> {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn ensure_entries(&mut self) -> std::io::Result<()> {
         if self.cached_entries.is_none() {
             if let Some(state) = &mut self.state {
@@ -1149,6 +1155,7 @@ impl<S: FsType> RemoteFileSystem<S> {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn is_dir(&mut self) -> std::io::Result<bool> {
         self.ensure_metadata().await?;
         let is_dir = self
@@ -1159,6 +1166,7 @@ impl<S: FsType> RemoteFileSystem<S> {
         Ok(is_dir)
     }
 
+    #[allow(dead_code)]
     pub async fn is_file(&mut self) -> std::io::Result<bool> {
         self.ensure_metadata().await?;
         let is_file = self
@@ -1169,6 +1177,7 @@ impl<S: FsType> RemoteFileSystem<S> {
         Ok(is_file)
     }
 
+    #[allow(dead_code)]
     pub async fn canonicalize(&mut self) -> std::io::Result<Self> {
         self.ensure_metadata().await?;
         let canonical_path = self
@@ -1180,10 +1189,12 @@ impl<S: FsType> RemoteFileSystem<S> {
         Ok(Self::new(&canonical_path, self.state.clone()))
     }
 
+    #[allow(dead_code)]
     pub fn to_string(&self) -> String {
         self.path.clone()
     }
 
+    #[allow(dead_code)]
     pub fn file_name(&self) -> Option<std::ffi::OsString> {
         let name = Path::new(&self.path).file_name().map(|s| s.to_os_string());
         name
@@ -1191,6 +1202,7 @@ impl<S: FsType> RemoteFileSystem<S> {
 }
 
 impl RemoteFileSystem<TcpFs> {
+    #[allow(dead_code)]
     pub async fn read_dir(&self) -> std::io::Result<Vec<RemoteFileSystem<TcpFs>>> {
         let mut fs_clone = self.clone();
         fs_clone.ensure_entries().await?;
@@ -1216,7 +1228,6 @@ impl RemoteFileSystem<TcpFs> {
     }
 }
 
-#[allow(dead_code)]
 pub async fn get_metadata(path: &str) -> std::io::Result<FsMetadata> {
     let metadata = fs::metadata(path).await?;
     let canonical = fs::canonicalize(path).await?;
@@ -1235,13 +1246,16 @@ pub async fn get_metadata(path: &str) -> std::io::Result<FsMetadata> {
     Ok(FsMetadata {
         is_file: metadata.is_file(),
         is_dir: metadata.is_dir(),
+        file_size: if metadata.is_file() {
+            Some(metadata.len())
+        } else {
+            None
+        },
         optional_folder_children,
         canonical_path: canonical.to_string_lossy().to_string(),
-        file_size: if metadata.is_file() { Some(metadata.len()) } else { None },
     })
 }
 
-#[allow(dead_code)]
 pub async fn list_directory_with_range(
     path: &str,
     start: Option<u64>,
@@ -1278,12 +1292,10 @@ pub async fn list_directory_with_range(
     Ok(entries)
 }
 
-#[allow(dead_code)]
 pub async fn list_directory(path: &str) -> std::io::Result<Vec<FsEntry>> {
     list_directory_with_range(path, None, None).await
 }
 
-#[allow(dead_code)]
 pub async fn get_files_content(file_chunk: FileChunk) -> std::io::Result<MessagePayload> {
     let metadata = fs::metadata(&file_chunk.file_name).await?;
 
@@ -1318,7 +1330,6 @@ pub async fn get_files_content(file_chunk: FileChunk) -> std::io::Result<Message
     })
 }
 
-#[allow(dead_code)]
 pub async fn handle_multipart_message(
     payload: &MessagePayload,
     current_file: &mut Option<File>,
@@ -1394,10 +1405,6 @@ impl fmt::Display for FileOperations {
     }
 }
 
-// I keep the code from both the gameserver node and gameserver main project for 
-// the tcp filesystem logic the same for simplicity, so i disable warnings for those functions
-// TODO: consider making a library for tcpfs
-#[allow(dead_code)]
 pub fn execute_file_operation(
     encoded_src: FileOperations,
     encoded_dest: FileOperations,
@@ -1409,7 +1416,7 @@ pub fn execute_file_operation(
     let src = encoded_src
         .as_inner_str()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid source"))?;
-    let src_path = { 
+    let src_path = {
         if dir.is_empty() {
             PathBuf::from(src)
         } else {
@@ -1449,94 +1456,118 @@ pub fn execute_file_operation(
             };
             std::fs::rename(&src_path, &final_dest)?;
         }
-        // TODO: consider if i want file zip and unzip operations
         FileOperations::FileZipOperation(_) => {
-            // let mut final_dest = if dest_path.exists() && dest_path.is_dir() {
-            //     if let Some(filename) = src_path.file_name() {
-            //         dest_path.join(filename)
-            //     } else {
-            //         dest_path
-            //     }
-            // } else {
-            //     dest_path
-            // };
-            // final_dest.set_extension("zip");
+            let mut final_dest = if dest_path.exists() && dest_path.is_dir() {
+                if let Some(filename) = src_path.file_name() {
+                    dest_path.join(filename)
+                } else {
+                    dest_path
+                }
+            } else {
+                dest_path
+            };
+            final_dest.set_extension("zip");
 
-            // let file = std::fs::File::create(&final_dest)?;
-            // let mut zip = zip::ZipWriter::new(file);
-            // let options = zip::write::SimpleFileOptions::default();
+            let file = std::fs::File::create(&final_dest)?;
+            let mut zip = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default();
 
-            // if src_path.is_dir() {
-            //     let dir_name = src_path.file_name()
-            //         .and_then(|n| n.to_str())
-            //         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid directory name"))?;
+            if src_path.is_dir() {
+                let dir_name = src_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "Invalid directory name",
+                        )
+                    })?;
 
-            //     fn zip_directory(zip: &mut zip::ZipWriter<std::fs::File>, path: &Path, prefix: &str, options: zip::write::SimpleFileOptions) -> std::io::Result<()> {
-            //         for entry in std::fs::read_dir(path)? {
-            //             let entry = entry?;
-            //             let entry_path = entry.path();
-            //             let name = entry_path.file_name()
-            //                 .and_then(|n| n.to_str())
-            //                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid filename"))?;
-            //             let zip_path = format!("{}/{}", prefix, name);
+                fn zip_directory(
+                    zip: &mut zip::ZipWriter<std::fs::File>,
+                    path: &Path,
+                    prefix: &str,
+                    options: zip::write::SimpleFileOptions,
+                ) -> std::io::Result<()> {
+                    for entry in std::fs::read_dir(path)? {
+                        let entry = entry?;
+                        let entry_path = entry.path();
+                        let name =
+                            entry_path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .ok_or_else(|| {
+                                    std::io::Error::new(
+                                        std::io::ErrorKind::InvalidInput,
+                                        "Invalid filename",
+                                    )
+                                })?;
+                        let zip_path = format!("{}/{}", prefix, name);
 
-            //             if entry_path.is_dir() {
-            //                 zip.add_directory(&zip_path, options)?;
-            //                 zip_directory(zip, &entry_path, &zip_path, options)?;
-            //             } else {
-            //                 zip.start_file(&zip_path, options)?;
-            //                 let mut f = std::fs::File::open(&entry_path)?;
-            //                 std::io::copy(&mut f, zip)?;
-            //             }
-            //         }
-            //         Ok(())
-            //     }
+                        if entry_path.is_dir() {
+                            zip.add_directory(&zip_path, options)?;
+                            zip_directory(zip, &entry_path, &zip_path, options)?;
+                        } else {
+                            zip.start_file(&zip_path, options)?;
+                            let mut f = std::fs::File::open(&entry_path)?;
+                            std::io::copy(&mut f, zip)?;
+                        }
+                    }
+                    Ok(())
+                }
 
-            //     zip.add_directory(dir_name, options)?;
-            //     zip_directory(&mut zip, &src_path, dir_name, options)?;
-            // } else {
-            //     let filename = src_path.file_name()
-            //         .and_then(|n| n.to_str())
-            //         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid filename"))?;
-            //     zip.start_file(filename, options)?;
-            //     let mut src_file = std::fs::File::open(&src_path)?;
-            //     std::io::copy(&mut src_file, &mut zip)?;
-            // }
+                zip.add_directory(dir_name, options)?;
+                zip_directory(&mut zip, &src_path, dir_name, options)?;
+            } else {
+                let filename = src_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .ok_or_else(|| {
+                        std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid filename")
+                    })?;
+                zip.start_file(filename, options)?;
+                let mut src_file = std::fs::File::open(&src_path)?;
+                std::io::copy(&mut src_file, &mut zip)?;
+            }
 
-            // zip.finish()?;
+            zip.finish()?;
         }
         FileOperations::FileUnzipOperation(_) => {
-            // if !src_path.exists() {
-            //     return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "Source zip file not found"));
-            // }
+            if !src_path.exists() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "Source zip file not found",
+                ));
+            }
 
-            // let file = std::fs::File::open(&src_path)?;
-            // let mut archive = zip::ZipArchive::new(file)?;
+            let file = std::fs::File::open(&src_path)?;
+            let mut archive = zip::ZipArchive::new(file)?;
 
-            // let extract_dir = if dest_path.exists() && dest_path.is_dir() {
-            //     dest_path
-            // } else {
-            //     std::fs::create_dir_all(&dest_path)?;
-            //     dest_path
-            // };
+            let extract_dir = if dest_path.exists() && dest_path.is_dir() {
+                dest_path
+            } else {
+                std::fs::create_dir_all(&dest_path)?;
+                dest_path
+            };
 
-            // for i in 0..archive.len() {
-            //     let mut file = archive.by_index(i)?;
-            //     let outpath = extract_dir.join(file.name());
-            //     let is_directory = file.is_dir() || (file.size() == 0 && !file.name().contains('.'));
+            for i in 0..archive.len() {
+                let mut file = archive.by_index(i)?;
+                let outpath = extract_dir.join(file.name());
+                let is_directory =
+                    file.is_dir() || (file.size() == 0 && !file.name().contains('.'));
 
-            //     if is_directory {
-            //         std::fs::create_dir_all(&outpath)?;
-            //     } else {
-            //         if let Some(p) = outpath.parent() {
-            //             if !p.exists() {
-            //                 std::fs::create_dir_all(p)?;
-            //             }
-            //         }
-            //         let mut outfile = std::fs::File::create(&outpath)?;
-            //         std::io::copy(&mut file, &mut outfile)?;
-            //     }
-            // }
+                if is_directory {
+                    std::fs::create_dir_all(&outpath)?;
+                } else {
+                    if let Some(p) = outpath.parent() {
+                        if !p.exists() {
+                            std::fs::create_dir_all(p)?;
+                        }
+                    }
+                    let mut outfile = std::fs::File::create(&outpath)?;
+                    std::io::copy(&mut file, &mut outfile)?;
+                }
+            }
         }
         _ => {}
     }

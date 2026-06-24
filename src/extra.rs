@@ -7,7 +7,7 @@ use crate::Debug;
 use crate::InnerData;
 use crate::List;
 use crate::MessagePayload;
-use crate::filesystem::FileResponseMessage;
+use tcp_filesystem::FileResponseMessage;
 use futures_util::StreamExt;
 use serde::de::DeserializeOwned;
 use serde_json::Value;

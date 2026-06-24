@@ -24,6 +24,7 @@ nix = { version = "0.31.2", features = ["user"] }
 libc = "0.2.183"
 base64 = "0.22.1"
 sqlx = { version = "0.8.6", optional = true, features = ["postgres", "runtime-tokio", "runtime-tokio-native-tls"] }
+tcp_filesystem = { path = "../lib/tcp_filesystem" }
 
 [[bin]]
 name = "gameserver-rs-node"

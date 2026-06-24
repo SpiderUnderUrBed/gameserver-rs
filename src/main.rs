@@ -13,8 +13,9 @@ use crate::database::Database;
 // I also use axum_login to take off alot of effort that would be required for authentication
 use crate::database::databasespec::{resolve_database_error_into_statuscode, Filters, IntoServer, ServerMetadata};
 use crate::database::{DatabaseError, Element};
-use crate::filesystem::{execute_file_operation, FileOperations, TcpFileStream};
-use crate::filesystem::{FsType, send_multipart_over_broadcast};
+// use crate::filesystem::{execute_file_operation, FileOperations, TcpFileStream};
+// use crate::filesystem::{FsType, send_multipart_over_broadcast};
+use tcp_filesystem::{send_multipart_over_broadcast, FileOperations, FsType, TcpFileStream};
 use crate::http::HeaderMap;
 use crate::kubernetes::verify_is_k8s_gameserver;
 use crate::middleware::from_fn;
@@ -154,8 +155,7 @@ use crate::transport::node_transport::{CreateServerRequest, DeleteServerRequest,
 mod extra;
 use extra::value_from_line;
 
-mod filesystem;
-use filesystem::{
+use tcp_filesystem::{
     FileChunk, FileResponseMessage, FsEntry, FsItem, FsMetadata, RemoteFileSystem, TcpFs,
 };
 
@@ -1950,18 +1950,27 @@ async fn upload(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
-    multipart: Multipart,
+    request: Request,
 ) -> StatusCode {
     let state = arc_state.read().await;
-
-    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
+    let authorized = authorize(&state, auth_session, headers.clone(), vec!["manager".to_string()]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED;
     }
 
+    let boundary = headers
+        .get("content-type")
+        .and_then(|ct| ct.to_str().ok())
+        .and_then(|ct| multer::parse_boundary(ct).ok());
+
+    let Some(boundary) = boundary else {
+        return StatusCode::BAD_REQUEST;
+    };
+
+    let body_stream = request.into_body().into_data_stream();
+    let multipart = multer::Multipart::new(body_stream, boundary);
 
     let tcp_tx = state.tcp_tx.clone();
-
     match send_multipart_over_broadcast(multipart, tcp_tx).await {
         Ok(_) => StatusCode::OK,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
