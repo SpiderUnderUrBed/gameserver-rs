@@ -56,37 +56,6 @@ impl NodeTransportable for CreateServerRequest {
         bytes.push(b'\n');
         let _ = state.tcp_tx.send(bytes);
 
-    // for message in ["create_server", "set_server", "server_data"] {
-    //     let msg = MessagePayloadWithMetadata {
-    //         r#type: "command".to_string(),
-    //         message: message.to_string(),
-    //         metadata: MetadataTypes::Server {
-    //             servername: server.servername.clone(),
-    //             provider: server.provider.clone(),
-    //             providertype: server.providertype.clone(),
-    //             location: server.location.clone(),
-    //             sandbox,
-    //             server_metadata: server.server_metadata.clone()
-    //         },
-    //         authcode: "0".to_string(),
-    //     };
-
-    //     let mut bytes = match serde_json::to_vec(&msg) {
-    //         Ok(b) => b,
-    //         Err(e) => {
-    //             eprintln!("Serialization error: {}", e);
-    //             return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    //         }
-    //     };
-    //     bytes.push(b'\n');
-
-    //     println!("Sending create server message");
-    //     if let Err(e) = state.tcp_tx.send(bytes) {
-    //         eprintln!("Failed to send {} to TCP: {}", message, e);
-    //         return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    //     }
-    // }
-
         Ok(())
     }
 }
@@ -228,37 +197,6 @@ impl NodeTransportable for ServerDataRequest {
         bytes.push(b'\n');
         let _ = state.tcp_tx.send(bytes);
 
-    // for message in ["create_server", "set_server", "server_data"] {
-    //     let msg = MessagePayloadWithMetadata {
-    //         r#type: "command".to_string(),
-    //         message: message.to_string(),
-    //         metadata: MetadataTypes::Server {
-    //             servername: server.servername.clone(),
-    //             provider: server.provider.clone(),
-    //             providertype: server.providertype.clone(),
-    //             location: server.location.clone(),
-    //             sandbox,
-    //             server_metadata: server.server_metadata.clone()
-    //         },
-    //         authcode: "0".to_string(),
-    //     };
-
-    //     let mut bytes = match serde_json::to_vec(&msg) {
-    //         Ok(b) => b,
-    //         Err(e) => {
-    //             eprintln!("Serialization error: {}", e);
-    //             return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    //         }
-    //     };
-    //     bytes.push(b'\n');
-
-    //     println!("Sending create server message");
-    //     if let Err(e) = state.tcp_tx.send(bytes) {
-    //         eprintln!("Failed to send {} to TCP: {}", message, e);
-    //         return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    //     }
-    // }
-
         Ok(())
     }
 }
@@ -335,18 +273,6 @@ impl NodeTransportable for IntegrationKeyRequest {
             Ok(mut bytes) => {
                 // Add newline delimiter for TCP stream parsing
                 bytes.push(b'\n');
-
-                // Send to internal_tx for local processing
-                // This goes to internal_stream in handle_stream
-                
-                // if let Some(ref internal_tx) = state.internal_tx {
-                //     if let Err(err) = internal_tx.send(bytes.clone()) {
-                //         eprintln!(
-                //             "Failed to send to internal stream: {}",
-                //             err
-                //         );
-                //     }
-                // }
 
                 if let Err(err) = state.tcp_tx.send(bytes.clone()) {
                     eprintln!(

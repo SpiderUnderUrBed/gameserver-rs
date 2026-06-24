@@ -1072,7 +1072,6 @@ pub async fn handle_stream(
                 bytes: raw_data.to_vec(),
             };
             let _ = raw_data_request.node_transport(&state_guard).await;
-            //let _ = state_guard.tcp_tx.send(raw_data.to_vec());
         }
 
         if let Ok(text) = std::str::from_utf8(raw_data) {
@@ -1830,16 +1829,6 @@ pub async fn start_server(
         return StatusCode::UNAUTHORIZED.into_response()
     }
 
-    // let msg = serde_json::to_vec(&MessagePayload {
-    //     r#type: "command".to_string(),
-    //     message: "start_server".to_string(),
-    //     authcode: "".to_string(),
-    // });
-    // if let Err(e) = msg {
-    //     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    // };
-    // let _ = state.tcp_tx.send(msg.unwrap());
-
     let start_server_request = StartServerRequest {};
     let _ = start_server_request.node_transport(&state).await;
 
@@ -1857,17 +1846,6 @@ pub async fn stop_server(
     if !authorized {
         return StatusCode::UNAUTHORIZED.into_response()
     }
-
-    // let msg = serde_json::to_vec(&MessagePayload {
-    //     r#type: "command".to_string(),
-    //     message: "stop_server".to_string(),
-    //     authcode: "".to_string(),
-    // })
-    // .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
-    // if let Err(e) = msg {
-    //     return e;
-    // };
-    // let _ = state.tcp_tx.send(msg.unwrap());
 
     let stop_server_request = StopServerRequest {};
     let _ = stop_server_request.node_transport(&state).await;
@@ -2006,17 +1984,6 @@ async fn migrate(
 
     let migrate_request = MigrateRequest { common: request };
     let _ = migrate_request.node_transport(&state).await;
-
-    // match serde_json::to_vec(&request) {
-    //     Ok(bytes) => {
-    //         if let Err(err) = state.tcp_tx.send(bytes) {
-    //             eprintln!("Failed to send request over broadcast: {}", err);
-    //         }
-    //     }
-    //     Err(err) => eprintln!("Failed to serialize request: {}", err),
-    // }
-    //}
-    //"ok"
 
     StatusCode::OK.into_response()
 }
@@ -2644,14 +2611,6 @@ async fn notify_node_of_settings(arc_state: Arc<RwLock<AppState>>, old_settings_
     if let Some(internal_tx) = &state.internal_tx {
         if let Some(old_settings) = old_settings_option {
             if !(old_settings.filter == settings.filter){
-                // let filter_request = MessagePayloadWithMetadata {
-                //     r#type: "command".to_string(),
-                //     message: "set_filter".to_string(),
-                //     metadata: MetadataTypes::Filter(settings.filter),
-                //     authcode: "0".to_string(),
-                // };
-                // let _ = internal_tx.send(serde_json::to_vec(&filter_request).unwrap());
-
                 let filter_request = FilterRequest {
                     filter: settings.filter
                 };
@@ -2772,12 +2731,6 @@ async fn ongoing_server_status(
                 {
                     state.current_node.status.clone()
                 } else if state.cached_status_type == "server-process" {
-                    // let msg = serde_json::to_vec(&MessagePayload {
-                    //     r#type: "command".to_string(),
-                    //     message: "server_state".to_string(),
-                    //     authcode: "0".to_string(),
-                    // }).unwrap();
-                    // let _ = state.tcp_tx.send(msg);
                     let server_state_request = ServerStateRequest {};
                     let _ = server_state_request.node_transport(&state).await;
                     state.current_node.status.clone()
@@ -2906,26 +2859,6 @@ async fn delete_server(
         }
     }
 
-    // let msg = MessagePayloadWithMetadata {
-    //     r#type: "command".to_string(),
-    //     message: "delete_server".to_string(),
-    //     authcode: "0".to_string(),
-    //     metadata: request.metadata,
-    // };
-
-    // let mut bytes = match serde_json::to_vec(&msg) {
-    //     Ok(b) => b,
-    //     Err(e) => {
-    //         eprintln!("Serialization error: {}", e);
-    //         return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    //     }
-    // };
-    // bytes.push(b'\n');
-
-    // if let Err(e) = state.tcp_tx.send(bytes) {
-    //     eprintln!("Failed to send 'delete server' to TCP: {}", e);
-    //     return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    // }
     let delete_server_request = DeleteServerRequest {
         metadata: request.metadata,
     };
@@ -3047,8 +2980,6 @@ async fn add_server(
     };
     let _ = set_server_request.node_transport(&state).await;
 
-    //ServerDataRequest
-
     let server_data_request = ServerDataRequest {
         metadata: MetadataTypes::Server {
                 servername: server.servername.clone(),
@@ -3059,7 +2990,7 @@ async fn add_server(
                 server_metadata: server.server_metadata.clone()
             },
     };
-    let _ = set_server_request.node_transport(&state).await;
+    let _ = server_data_request.node_transport(&state).await;
 
 
     Ok(StatusCode::OK)
@@ -3112,11 +3043,7 @@ async fn ping(
     }
 
     if request.message.is_empty() {
-        // let ping = SimpleMessage {
-        //     message: "ping".to_string()
-        // };
         if let Some(internal_tx) = &state.internal_tx {
-            // let res = internal_tx.send(serde_json::to_vec(&ping).unwrap());
             let ping = Ping {};
             let res = ping.node_transport(&state).await;
             if res.is_ok() {
@@ -3177,31 +3104,6 @@ async fn modify_intergration(
                             if *new_enabled_key == true {
                                 let integration_key_request = IntegrationKeyRequest { key: unwrapped_hook.1.clone() };
                                 let _ = integration_key_request.node_transport(&state).await;
-                                // match serde_json::to_vec(&unwrapped_hook.1) {
-                                //     Ok(mut bytes) => {
-                                //         // Add newline delimiter for TCP stream parsing
-                                //         bytes.push(b'\n');
-
-                                //         // Send to internal_tx for local processing
-                                //         // This goes to internal_stream in handle_stream
-                                //         if let Some(ref internal_tx) = state.internal_tx {
-                                //             if let Err(err) = internal_tx.send(bytes.clone()) {
-                                //                 eprintln!(
-                                //                     "Failed to send to internal stream: {}",
-                                //                     err
-                                //                 );
-                                //             }
-                                //         }
-
-                                //         // Tells the remote server to enable RCON
-                                //         if let Some(internal_tx) = &state.internal_tx {
-                                //             if let Err(err) = internal_tx.send(bytes) {
-                                //                 eprintln!("Failed to send to TCP stream: {}", err);
-                                //             }
-                                //         }
-                                //     }
-                                //     Err(err) => eprintln!("Failed to serialize request: {}", err),
-                                // }
                             }
                         }
                     }
