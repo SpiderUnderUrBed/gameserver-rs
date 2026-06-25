@@ -1,18 +1,14 @@
-use mime_guess::mime::Name;
-use serde::de::value;
 use serde::Deserialize;
 use serde::Serialize;
 use std::error::Error;
-use std::result;
 pub mod databasespec;
-pub use databasespec::{User, Node, Element, ModifyElementData, UserDatabase, NodesDatabase, RetrieveElement, DatabaseError};
+pub use databasespec::{User, Node, Element, ModifyElementData, UserDatabase, NodesDatabase, DatabaseError};
 use std::path::PathBuf;
 use std::path::Path;
 use std::fs::OpenOptions;
 use std::fs::File;
 use std::io::Write;
 use std::io::Read;
-use std::collections::HashMap;
 
 use crate::database::databasespec::Intergration;
 use crate::database::databasespec::Intergrations;
@@ -121,7 +117,7 @@ impl JsonBackend {
             .map_err(|e| format!("Failed to open file: {}", e)).unwrap();
 
         let mut rewrite_file: bool = false;
-        let mut database: JsonBackendContent = 
+        let database: JsonBackendContent = 
             serde_json::from_reader(&open_file).unwrap_or_else(|e| {
                 let mut backup_path = file.clone().unwrap();
                 backup_path.set_extension("old");

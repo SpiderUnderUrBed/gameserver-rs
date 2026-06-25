@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use file_transfer_system::server::Server;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]

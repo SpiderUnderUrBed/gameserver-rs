@@ -2,9 +2,7 @@
 // first imports are std ones
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::fmt;
 use std::fmt::Debug;
-use std::io::ErrorKind;
 use std::{net::SocketAddr, path::Path, sync::Arc};
 
 use crate::database::Database;
@@ -22,10 +20,7 @@ use crate::kubernetes::verify_is_k8s_gameserver;
 use crate::middleware::from_fn;
 use axum::Form;
 use axum::error_handling::HandleErrorLayer;
-use axum::extract::Multipart;
-use axum::extract::Query;
 use axum::extract::ws::Message as WsMessage;
-use axum::http::Uri;
 use axum::middleware::{self, Next};
 use axum::response::Redirect;
 use axum::response::Response;
@@ -53,24 +48,17 @@ use axum_oidc::OidcAuthLayer;
 use axum_oidc::OidcClaims;
 use axum_oidc::OidcClient;
 use axum_oidc::OidcLoginLayer;
-use axum_oidc::builder::RedirectUrl;
 use axum_oidc::error::MiddlewareError;
 use axum_oidc::handle_oidc_redirect;
-use axum_oidc::openidconnect;
 use axum_oidc::openidconnect::ClientId;
 use axum_oidc::openidconnect::ClientSecret;
 use axum_oidc::openidconnect::IssuerUrl;
 use axum_oidc::openidconnect::Scope;
-use base64::{Engine, engine::general_purpose::STANDARD};
 use futures_util::FutureExt;
-use serde::de::{self, DeserializeOwned};
 use tcp_filesystem::{FileOperations, FsType, TcpFileStream, send_multipart_over_broadcast};
-use tokio::fs::File;
-use tokio::net::unix::pipe::Receiver;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::RwLock;
 
 use rcon::Connection;
-use tokio_util::io::ReaderStream;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
 
@@ -157,7 +145,7 @@ mod extra;
 use extra::value_from_line;
 
 use tcp_filesystem::{
-    FileChunk, FileResponseMessage, FsEntry, FsItem, FsMetadata, RemoteFileSystem, TcpFs,
+    FileChunk, FsItem, RemoteFileSystem, TcpFs,
 };
 
 // Docker AND kubernetes would be enabled with a standard deployment
@@ -686,7 +674,7 @@ async fn get_all_stream_data_parsed(line_content: &str) -> Result<Vec<Value>, se
     }
     final_data.extend(list_values.clone());
 
-    let mut list_lines: Vec<String> = list_values
+    let list_lines: Vec<String> = list_values
         .iter()
         .map(|v| {
             serde_json::to_string(v.get("data").clone().unwrap_or(&Value::Null))
@@ -1019,8 +1007,8 @@ pub async fn handle_stream(
 ) -> Result<StreamResult, Box<dyn std::error::Error + Send + Sync>> {
     let ip = stream.peer_addr()?.to_string();
     let (reader, mut writer) = stream.split();
-    let mut buf_reader = BufReader::new(reader);
-    let mut buf = vec![0u8; 4096];
+    let buf_reader = BufReader::new(reader);
+    let buf = vec![0u8; 4096];
     let mut lines = buf_reader.lines();
 
     let mut server_start_keyword = String::new();
@@ -2859,7 +2847,7 @@ async fn add_node(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let mut authorized = false;
+    let authorized = false;
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED);
@@ -3477,7 +3465,7 @@ async fn capabilities(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl In
     let state = arc_state.write().await;
     let mut capabilities: Vec<String> = vec![];
     capabilities.push("all".to_string());
-    Json({ capabilities }).into_response()
+    Json(capabilities).into_response()
 }
 
 // a list of users is returned, like alot of other routes, I need to add permissions, and check against those permissions to see if a user
@@ -3917,7 +3905,7 @@ async fn get_files_content(
     };
 
     let mut tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
-    let mut base_path = RemoteFileSystem::new("server", Some(tcp_fs.clone()));
+    let base_path = RemoteFileSystem::new("server", Some(tcp_fs.clone()));
 
     let user_input = request.file_name.trim_start_matches('/');
 
@@ -4099,7 +4087,7 @@ pub async fn stream_file_download(
     let normalized_path = normalize_and_secure_path(&decoded_path)?;
 
     let metadata = {
-        let mut fs = tcp_fs.lock().await;
+        let fs = tcp_fs.lock().await;
         let mut remote_fs = RemoteFileSystem::new(&normalized_path, Some((*fs).clone()));
 
         let is_file = remote_fs.is_file().await.map_err(|e| {
@@ -4159,7 +4147,7 @@ pub async fn stream_file_download(
     Ok(response)
 }
 fn normalize_and_secure_path(path: &str) -> Result<String, StatusCode> {
-    use std::path::{Component, Path, PathBuf};
+    use std::path::{Component, PathBuf};
 
     let path = path.trim();
 

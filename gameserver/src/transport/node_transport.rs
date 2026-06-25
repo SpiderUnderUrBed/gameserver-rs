@@ -1,7 +1,5 @@
 use std::any::Any;
 
-use file_transfer_system::server::Server;
-use reqwest::Request;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use tcp_filesystem::FileRequestMessage;
