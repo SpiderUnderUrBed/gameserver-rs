@@ -21,8 +21,10 @@ pub enum Filters {
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct Settings {
-    pub hook_timeout: u64,
-    pub process_timeout: u64
+    pub pre_hook_timeout: Option<u64>,
+    pub install_hook_timeout: Option<u64>,
+    pub post_hook_timeout: Option<u64>,
+    pub process_timeout: Option<u64>
 }
 
 #[derive(Clone, Default, Debug, Deserialize, Serialize)]

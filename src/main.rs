@@ -93,30 +93,25 @@ use crate::http::header;
 // jsonwebtokens is standard when working with authentication, and bcrypt so I can use password hashs, I explain the authentication methods later
 use anyhow::anyhow;
 use async_trait::async_trait;
-use chrono::{Duration as OtherDuration, Utc};
 use futures_util::{sink::SinkExt, stream::StreamExt};
-use jsonwebtoken::{DecodingKey, EncodingKey, Header, TokenData, Validation, decode, encode};
+use jsonwebtoken::{DecodingKey, TokenData, Validation, decode};
 use mime_guess::from_path;
 // use serde;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
-use serial_test::serial;
+use serde_json::{Value};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::time::{Instant, interval, sleep};
 use tokio::{
     fs as tokio_fs,
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::{Mutex, broadcast},
     time::{Duration, timeout},
 };
 use tower_http::cors::{Any as CorsAny, CorsLayer};
-
-use futures_util::task::Poll;
-use futures_util::{Stream, TryFutureExt, stream};
+use futures_util::{Stream, stream};
 
 use std::error::Error;
-use std::io::Error as IoError;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use sysinfo::System;
@@ -4186,6 +4181,8 @@ mod tests {
         }
 
         mod users {
+            use serial_test::serial;
+
             use super::*;
 
             #[tokio::test]
@@ -4312,6 +4309,8 @@ mod tests {
         }
 
         mod nodes {
+            use serial_test::serial;
+
             use super::*;
 
             #[tokio::test]
