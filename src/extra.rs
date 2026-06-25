@@ -7,10 +7,10 @@ use crate::Debug;
 use crate::InnerData;
 use crate::List;
 use crate::MessagePayload;
-use tcp_filesystem::FileResponseMessage;
 use futures_util::StreamExt;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use tcp_filesystem::FileResponseMessage;
 use tokio::sync::RwLock;
 use tokio::time::Instant;
 
@@ -180,26 +180,89 @@ impl JsonAssembler {
     }
 }
 
+// pub fn parse_json_objects_in_str<T>(input: &str) -> Vec<Result<T, serde_json::Error>>
+// where
+//     T: DeserializeOwned + Debug,
+// {
+//     let mut results = Vec::new();
+//     let mut remaining = input;
+
+//     while let Some(start) = remaining.find('{') {
+//         let mut open_braces = 0usize;
+//         let mut end_index = None;
+
+//         for (i, c) in remaining[start..].chars().enumerate() {
+//             if c == '{' {
+//                 open_braces += 1;
+//             } else if c == '}' {
+//                 open_braces -= 1;
+//                 if open_braces == 0 {
+//                     end_index = Some(start + i + 1);
+//                     break;
+//                 }
+//             }
+//         }
+
+//         if let Some(end) = end_index {
+//             let candidate = &remaining[start..end];
+//             match serde_json::from_str::<Value>(candidate) {
+//                 Ok(val) => {
+//                     if let Ok(inner_data) = serde_json::from_value::<InnerData>(val.clone()) {
+//                         match serde_json::from_str::<T>(&inner_data.data) {
+//                             Ok(parsed) => results.push(Ok(parsed)),
+//                             Err(e) => results.push(Err(e)),
+//                         }
+//                     } else {
+//                         match serde_json::from_value::<T>(val) {
+//                             Ok(parsed) => results.push(Ok(parsed)),
+//                             Err(e) => results.push(Err(e)),
+//                         }
+//                     }
+//                 }
+//                 Err(e) => {
+//                     results.push(Err(e));
+//                 }
+//             }
+
+//             remaining = &remaining[end..];
+//         } else {
+//             break;
+//         }
+//     }
+
+//     results
+// }
 pub fn parse_json_objects_in_str<T>(input: &str) -> Vec<Result<T, serde_json::Error>>
 where
     T: DeserializeOwned + Debug,
 {
     let mut results = Vec::new();
     let mut remaining = input;
-
+    
     while let Some(start) = remaining.find('{') {
+        let bytes = remaining[start..].as_bytes();
         let mut open_braces = 0usize;
+        let mut in_string = false;
+        let mut escaped = false;
         let mut end_index = None;
 
-        for (i, c) in remaining[start..].chars().enumerate() {
-            if c == '{' {
-                open_braces += 1;
-            } else if c == '}' {
-                open_braces -= 1;
-                if open_braces == 0 {
-                    end_index = Some(start + i + 1);
-                    break;
+        for (i, &b) in bytes.iter().enumerate() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match b {
+                b'\\' if in_string => escaped = true,
+                b'"' => in_string = !in_string,
+                b'{' if !in_string => open_braces += 1,
+                b'}' if !in_string => {
+                    open_braces -= 1;
+                    if open_braces == 0 {
+                        end_index = Some(start + i + 1);
+                        break;
+                    }
                 }
+                _ => {}
             }
         }
 
@@ -207,15 +270,29 @@ where
             let candidate = &remaining[start..end];
             match serde_json::from_str::<Value>(candidate) {
                 Ok(val) => {
-                    if let Ok(inner_data) = serde_json::from_value::<InnerData>(val.clone()) {
-                        match serde_json::from_str::<T>(&inner_data.data) {
-                            Ok(parsed) => results.push(Ok(parsed)),
-                            Err(e) => results.push(Err(e)),
+                    if let Ok(console) = serde_json::from_value::<ConsoleData>(val.clone()) {
+                        if let Ok(inner) = serde_json::from_str::<InnerData>(&console.data) {
+                            // Reconstruct a ConsoleData with inner.data as the payload
+                            let reconstructed = ConsoleData {
+                                authcode: console.authcode.clone(),
+                                data: inner.data,
+                                r#type: console.r#type.clone(),
+                            };
+                            if let Ok(parsed) = serde_json::from_value::<T>(
+                                serde_json::to_value(reconstructed).unwrap(),
+                            ) {
+                                results.push(Ok(parsed));
+                            }
+                        } else if let Ok(parsed) = serde_json::from_str::<T>(&console.data) {
+                            results.push(Ok(parsed));
+                        } else {
                         }
                     } else {
                         match serde_json::from_value::<T>(val) {
                             Ok(parsed) => results.push(Ok(parsed)),
-                            Err(e) => results.push(Err(e)),
+                            Err(e) => {
+                                results.push(Err(e));
+                            }
                         }
                     }
                 }
@@ -223,7 +300,6 @@ where
                     results.push(Err(e));
                 }
             }
-
             remaining = &remaining[end..];
         } else {
             break;
@@ -232,7 +308,6 @@ where
 
     results
 }
-
 pub async fn value_from_line<T, F>(
     gameserver_str: &str,
     filter: F,
@@ -260,7 +335,7 @@ where
 // pub async fn value_from_line<T, F>(
 //     gameserver_str: &str,
 //     filter: F,
-// ) -> Vec<Result<T, serde_json::Error>> 
+// ) -> Vec<Result<T, serde_json::Error>>
 // pub async fn value_from_line<T, F>(
 //     gameserver_str: &str,
 //     filter: F,

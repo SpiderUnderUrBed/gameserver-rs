@@ -1,14 +1,17 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{database::databasespec::Filters, AppState, MessagePayload, MessagePayloadWithMetadata, MetadataTypes, SimpleMessage, SrcAndDest};
+use crate::{
+    AppState, MessagePayload, MessagePayloadWithMetadata, MetadataTypes, SimpleMessage, SrcAndDest,
+    database::databasespec::Filters,
+};
 use std::error::Error;
 
 pub trait NodeTransportable {
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
 pub struct DeleteServerRequest {
-    pub metadata: MetadataTypes
+    pub metadata: MetadataTypes,
 }
 // NodeTransportable
 impl NodeTransportable for DeleteServerRequest {
@@ -36,7 +39,7 @@ impl NodeTransportable for DeleteServerRequest {
 }
 
 pub struct CreateServerRequest {
-    pub metadata: MetadataTypes
+    pub metadata: MetadataTypes,
 }
 impl NodeTransportable for CreateServerRequest {
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -102,7 +105,7 @@ impl NodeTransportable for StopServerRequest {
 #[derive(Serialize, Deserialize)]
 pub struct MigrateRequest {
     #[serde(flatten)]
-    pub common: SrcAndDest
+    pub common: SrcAndDest,
 }
 impl NodeTransportable for MigrateRequest {
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -120,7 +123,7 @@ impl NodeTransportable for MigrateRequest {
 }
 
 pub struct SetServerRequest {
-    pub(crate) metadata: MetadataTypes
+    pub(crate) metadata: MetadataTypes,
 }
 impl NodeTransportable for SetServerRequest {
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -146,7 +149,7 @@ impl NodeTransportable for SetServerRequest {
 // NodeTransportable
 
 pub struct ServerDataRequest {
-    pub(crate) metadata: MetadataTypes
+    pub(crate) metadata: MetadataTypes,
 }
 impl NodeTransportable for ServerDataRequest {
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -174,7 +177,7 @@ impl NodeTransportable for ServerDataRequest {
 // NodeTransportable
 
 pub struct RawBytes {
-    pub(crate) bytes: Vec<u8>
+    pub(crate) bytes: Vec<u8>,
 }
 
 impl NodeTransportable for RawBytes {
@@ -186,11 +189,14 @@ impl NodeTransportable for RawBytes {
 // NodeTransportable
 
 trait InternalTransportable {
-    async fn internal_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>>;
+    async fn internal_transport(
+        &self,
+        state: &AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
 pub struct FilterRequest {
     //pub(crate) //metadata: MetadataTypes
-    pub(crate) filter: Filters
+    pub(crate) filter: Filters,
 }
 //InternalTransportable
 // struct FilterRequest impl NodeTransportable {
@@ -202,25 +208,28 @@ impl NodeTransportable for FilterRequest {
             metadata: MetadataTypes::Filter(self.filter.clone()),
             authcode: "0".to_string(),
         };
-        let _ = state.tcp_tx.send(serde_json::to_vec(&filter_request).unwrap());
+        let _ = state
+            .tcp_tx
+            .send(serde_json::to_vec(&filter_request).unwrap());
 
         Ok(())
     }
 }
 impl InternalTransportable for FilterRequest {
-    async fn internal_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn internal_transport(
+        &self,
+        state: &AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         Ok(())
     }
 }
 
-
 // }
-pub struct Ping {
-}
+pub struct Ping {}
 impl NodeTransportable for Ping {
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
-       let ping = SimpleMessage {
-            message: "ping".to_string()
+        let ping = SimpleMessage {
+            message: "ping".to_string(),
         };
         let res = state.tcp_tx.send(serde_json::to_vec(&ping).unwrap());
 
@@ -228,13 +237,16 @@ impl NodeTransportable for Ping {
     }
 }
 impl InternalTransportable for Ping {
-    async fn internal_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn internal_transport(
+        &self,
+        state: &AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         Ok(())
     }
 }
 //InternalTransportable
 pub struct IntegrationKeyRequest {
-    pub key: Value
+    pub key: Value,
 }
 impl NodeTransportable for IntegrationKeyRequest {
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -244,10 +256,7 @@ impl NodeTransportable for IntegrationKeyRequest {
                 bytes.push(b'\n');
 
                 if let Err(err) = state.tcp_tx.send(bytes.clone()) {
-                    eprintln!(
-                        "Failed to send to internal stream: {}",
-                        err
-                    );
+                    eprintln!("Failed to send to internal stream: {}", err);
                 }
 
                 // Tells the remote server to enable RCON
@@ -259,12 +268,15 @@ impl NodeTransportable for IntegrationKeyRequest {
             }
             Err(err) => eprintln!("Failed to serialize request: {}", err),
         }
-    
+
         Ok(())
     }
 }
 impl InternalTransportable for IntegrationKeyRequest {
-    async fn internal_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn internal_transport(
+        &self,
+        state: &AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         Ok(())
     }
 }
@@ -276,14 +288,18 @@ impl NodeTransportable for ServerStateRequest {
             r#type: "command".to_string(),
             message: "server_state".to_string(),
             authcode: "0".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
         let _ = state.tcp_tx.send(msg);
 
         Ok(())
     }
 }
 impl InternalTransportable for ServerStateRequest {
-    async fn internal_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn internal_transport(
+        &self,
+        state: &AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         Ok(())
     }
 }

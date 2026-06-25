@@ -11,11 +11,12 @@ use crate::database::Database;
 // Axum is the routing framework, and the backbone to this project helping intergrate the backend with the frontend
 // and the general api, redirections, it will take form data and queries and make it easily accessible
 // I also use axum_login to take off alot of effort that would be required for authentication
-use crate::database::databasespec::{resolve_database_error_into_statuscode, Filters, IntoServer, ServerMetadata};
+use crate::database::databasespec::{
+    Filters, IntoServer, ServerMetadata, resolve_database_error_into_statuscode,
+};
 use crate::database::{DatabaseError, Element};
 // use crate::filesystem::{execute_file_operation, FileOperations, TcpFileStream};
 // use crate::filesystem::{FsType, send_multipart_over_broadcast};
-use tcp_filesystem::{send_multipart_over_broadcast, FileOperations, FsType, TcpFileStream};
 use crate::http::HeaderMap;
 use crate::kubernetes::verify_is_k8s_gameserver;
 use crate::middleware::from_fn;
@@ -63,6 +64,7 @@ use axum_oidc::openidconnect::Scope;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use futures_util::FutureExt;
 use serde::de::{self, DeserializeOwned};
+use tcp_filesystem::{FileOperations, FsType, TcpFileStream, send_multipart_over_broadcast};
 use tokio::fs::File;
 use tokio::net::unix::pipe::Receiver;
 use tokio::sync::{RwLock, mpsc};
@@ -77,12 +79,12 @@ use crate::database::databasespec::Intergration;
 use crate::database::databasespec::NodeType;
 use crate::database::databasespec::NodesDatabase;
 use crate::database::databasespec::UserDatabase;
+use crate::database::databasespec::UserPerm;
 use crate::database::databasespec::{Button, NodeStatus};
 use crate::database::databasespec::{
     ButtonsDatabase, IntergrationsDatabase, K8sType, Server, ServerDatabase, Settings,
     SettingsDatabase,
 };
-use crate::database::databasespec::UserPerm;
 
 use crate::http::header;
 // miscellancious imports, future traits are used because alot of the code is asyncronus and cant fully be contained in tokio
@@ -97,19 +99,19 @@ use futures_util::{sink::SinkExt, stream::StreamExt};
 use jsonwebtoken::{DecodingKey, TokenData, Validation, decode};
 use mime_guess::from_path;
 // use serde;
+use futures_util::{Stream, stream};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value};
+use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::time::{Instant, interval, sleep};
 use tokio::{
     fs as tokio_fs,
-    io::{AsyncWriteExt},
+    io::AsyncWriteExt,
     net::{TcpListener, TcpStream},
     sync::{Mutex, broadcast},
     time::{Duration, timeout},
 };
 use tower_http::cors::{Any as CorsAny, CorsLayer};
-use futures_util::{Stream, stream};
 
 use std::error::Error;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -145,7 +147,11 @@ use database::ModifyElementData;
 use database::User;
 
 mod transport;
-use crate::transport::node_transport::{CreateServerRequest, DeleteServerRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, NodeTransportable, Ping, RawBytes, ServerDataRequest, ServerStateRequest, SetServerRequest, StartServerRequest, StopServerRequest};
+use crate::transport::node_transport::{
+    CreateServerRequest, DeleteServerRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest,
+    NodeTransportable, Ping, RawBytes, ServerDataRequest, ServerStateRequest, SetServerRequest,
+    StartServerRequest, StopServerRequest,
+};
 
 mod extra;
 use extra::value_from_line;
@@ -321,7 +327,7 @@ struct MessagePayloadWithMetadata {
 // For very simple messages like pings that need no added complexity
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct SimpleMessage {
-    message: String
+    message: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -355,12 +361,10 @@ struct UnauthenticatedMessagePayload {
     message: String,
 }
 
-
 pub enum StreamResult {
     Done,
     Reconnect(String, String),
 }
-
 
 // #[derive(PartialEq)]
 #[derive(Default)]
@@ -399,17 +403,17 @@ enum MetadataTypes {
         providertype: String,
         location: String,
         sandbox: bool,
-        server_metadata: ServerMetadata
+        server_metadata: ServerMetadata,
     },
     Filter(Filters),
     DeleteServerFiles(bool),
     DeleteServer {
-        delete_server_name: String, 
-        delete_server_files: bool
+        delete_server_name: String,
+        delete_server_files: bool,
     },
     // TODO: remove these types in favor of explicit handling
     String(String),
-    Boolean(bool)
+    Boolean(bool),
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -432,10 +436,7 @@ pub struct InnerData {
     data: String,
     #[serde(rename = "type")]
     message_type: String,
-    authcode: String,
 }
-
-
 
 #[derive(Debug, Serialize)]
 pub struct SignInResponse {
@@ -454,7 +455,6 @@ struct Statistics {
 pub struct List {
     list: ApiCalls,
 }
-
 
 // May be redundant, but this is a struct for incoming messages
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -488,13 +488,12 @@ struct SrcAndDest {
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct OidcAdditionalClaims {
-    #[serde(default)] 
-    user_perms: Option<Vec<UserPerm>>
+    #[serde(default)]
+    user_perms: Option<Vec<UserPerm>>,
 }
 
 impl axum_oidc::openidconnect::AdditionalClaims for OidcAdditionalClaims {}
 impl axum_oidc::AdditionalClaims for OidcAdditionalClaims {}
-
 
 // Some common api calls which is just what might get exchanged between the frontend and backend via api
 // this is needed rather than a bunch of structs or however else I might do it because in some cases I might not know what api call to expect
@@ -518,14 +517,13 @@ enum ApiCalls {
     IncomingMessageWithMetadata(IncomingMessageWithMetadata),
     FileDataList(Vec<FsItem>),
     Node(Node),
-    FileOperations(FileOperations)
-    // FileMoveOperation(String),
-    // FileCopyOperation(String),
-    // FileZipOperation(String),
-    // FileUnzipOperation(String),
-    // FileDownloadOperation(String),
-    // FileDownloadAllOperation(String),
-    // FileUploadAllOperation(String),
+    FileOperations(FileOperations), // FileMoveOperation(String),
+                                    // FileCopyOperation(String),
+                                    // FileZipOperation(String),
+                                    // FileUnzipOperation(String),
+                                    // FileDownloadOperation(String),
+                                    // FileDownloadAllOperation(String),
+                                    // FileUploadAllOperation(String),
 }
 
 // impl fmt::Display for ApiCalls {
@@ -581,7 +579,7 @@ pub struct AppState {
     cached_status_type: String,
     rcon_connection: Option<Arc<Mutex<Connection<TcpStream>>>>,
     current_server: Option<Server>,
-    lock: bool
+    lock: bool,
 }
 impl Default for AppState {
     fn default() -> Self {
@@ -663,7 +661,7 @@ async fn attempt_connection(
 
 // What this does is that it will go over the lines retrived from the TCP stream
 // and try parsing them into serveral objects, then it will put them in ConsoleData for it to be extracted and processed
-// individually again 
+// individually again
 // (Sometimes the data sent is weird so this is why i do this intermediary step rather than directly processing things)
 async fn get_all_stream_data_parsed(line_content: &str) -> Result<Vec<Value>, serde_json::Error> {
     let mut final_data = vec![];
@@ -700,7 +698,7 @@ async fn get_all_stream_data_parsed(line_content: &str) -> Result<Vec<Value>, se
         value_from_line::<ConsoleData, _>(line_content, |line| !line.contains("\"list\"")).await;
 
     let mut console_values: Vec<Value> = vec![];
-    
+
     for item in console_parsed {
         if let Ok(data) = item {
             if !list_lines.contains(&data.data) {
@@ -712,7 +710,20 @@ async fn get_all_stream_data_parsed(line_content: &str) -> Result<Vec<Value>, se
     }
     final_data.extend(console_values);
 
-    if let Ok(value) = serde_json::from_str::<Value>(line_content){
+    let console_parsed: Vec<Result<LogLine, serde_json::Error>> =
+        value_from_line::<LogLine, _>(line_content, |line| !line.contains("\"list\"")).await;
+
+    let mut console_values: Vec<Value> = vec![];
+    for item in console_parsed {
+        if let Ok(log) = item {
+            if !list_lines.contains(&log.data) {
+                console_values.push(serde_json::json!({ "data": log.data }));
+            }
+        }
+    }
+    final_data.extend(console_values);
+
+    if let Ok(value) = serde_json::from_str::<Value>(line_content) {
         if let (Some(_), Some(_), Some(_)) = (
             value.get("start_keyword").and_then(|v| v.as_str()),
             value.get("stop_keyword").and_then(|v| v.as_str()),
@@ -723,7 +734,8 @@ async fn get_all_stream_data_parsed(line_content: &str) -> Result<Vec<Value>, se
                     authcode: "0".to_string(),
                     data: serde_json::to_string(&value).unwrap_or("".to_string()),
                     r#type: "info".to_string(),
-                }).unwrap()
+                })
+                .unwrap(),
             )
         }
     }
@@ -759,7 +771,8 @@ async fn get_all_stream_data_parsed(line_content: &str) -> Result<Vec<Value>, se
     final_data.extend(src_and_dest_values);
 
     let simple_messages_parsed: Vec<Result<SimpleMessage, serde_json::Error>> =
-        value_from_line::<SimpleMessage, _>(line_content, |line| line.contains("\"message\"")).await;
+        value_from_line::<SimpleMessage, _>(line_content, |line| line.contains("\"message\""))
+            .await;
 
     let mut simple_messages_values: Vec<Value> = vec![];
     for item in simple_messages_parsed {
@@ -768,9 +781,9 @@ async fn get_all_stream_data_parsed(line_content: &str) -> Result<Vec<Value>, se
                 if !simple_messages_values.contains(&serialized_value) {
                     simple_messages_values.push(serialized_value);
                 }
-            }   
+            }
         }
-    };
+    }
     final_data.extend(simple_messages_values);
 
     let integration_parsed: Vec<Result<IntegrationCommands, serde_json::Error>> =
@@ -803,13 +816,13 @@ async fn handle_all_stream_values(
     server_stop_keyword: &mut String,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     if let Ok(payload) = serde_json::from_value::<MessagePayload>(value.clone()) {
-    //     if payload.message == "end_conn" {
-    //         println!("Ending current connection");
-    //         let mut state_guard = arc_state.write().await;
-    //         state_guard.tcp_conn_status = Status::Down;
-    //         return Ok(true);
-    // } else 
-    if payload.r#type == "server_state" {
+        //     if payload.message == "end_conn" {
+        //         println!("Ending current connection");
+        //         let mut state_guard = arc_state.write().await;
+        //         state_guard.tcp_conn_status = Status::Down;
+        //         return Ok(true);
+        // } else
+        if payload.r#type == "server_state" {
             let mut state_guard = arc_state.write().await;
             let sent_status = payload.message.parse().unwrap_or(false);
             state_guard.current_node.status = match sent_status {
@@ -827,10 +840,13 @@ async fn handle_all_stream_values(
                 message: "ping_ok".to_string(),
                 authcode: "0".to_string(),
             };
-            let _ = state_guard.ws_tx.send(serde_json::to_string(&ping_message).unwrap());
+            let _ = state_guard
+                .ws_tx
+                .send(serde_json::to_string(&ping_message).unwrap());
         }
     }
 
+    //println!("{:#?} and {:#?} end", serde_json::from_value::<ConsoleData>(value.clone()), value.clone());
     if let Ok(data_clone) = serde_json::from_value::<ConsoleData>(value.clone()) {
         if let Ok(inner_value) = serde_json::from_str::<serde_json::Value>(&data_clone.data) {
             if let (Some(start_kw), Some(stop_kw), Some(name)) = (
@@ -963,6 +979,13 @@ async fn handle_all_stream_values(
                 }
             }
         }
+        if data_clone.data.contains("\"type\":\"stderr\"") {
+            if let Ok(output_msg) = serde_json::from_str::<serde_json::Value>(&data_clone.data) {
+                if let Some(server_output) = output_msg.get("data").and_then(|v| v.as_str()) {
+                    let _ = ws_tx.send(server_output.to_string());
+                }
+            }
+        }
 
         if !data_clone.data.contains("\"type\":\"stdout\"")
             && !data_clone.data.contains("\"type\":\"command\"")
@@ -1025,17 +1048,18 @@ pub async fn handle_stream(
     //     writer.write_all(cmd_msg.as_bytes()).await?;
     // }
 
-       let cmd_msg = serde_json::to_string(&MessagePayload {
-            r#type: "command".to_string(),
-            message: "server_name".to_string(),
-            authcode: "0".to_string(),
-        })? + "\n";
-        writer.write_all(cmd_msg.as_bytes()).await?;
+    let cmd_msg = serde_json::to_string(&MessagePayload {
+        r#type: "command".to_string(),
+        message: "server_name".to_string(),
+        authcode: "0".to_string(),
+    })? + "\n";
+    writer.write_all(cmd_msg.as_bytes()).await?;
 
     println!("called stream");
     'name: {
         let mut state = arc_state.write().await;
-        if let Ok(Ok(Some(payload))) = timeout(Duration::from_millis(1000), lines.next_line()).await {
+        if let Ok(Ok(Some(payload))) = timeout(Duration::from_millis(1000), lines.next_line()).await
+        {
             if let Ok(payload) = serde_json::from_str::<IncomingMessage>(&payload) {
                 state.current_node = NodeAndTCP {
                     name: payload.message,
@@ -1044,14 +1068,13 @@ pub async fn handle_stream(
                 };
                 break 'name;
             }
-        } 
+        }
         state.current_node = NodeAndTCP {
             name: "main".to_string(),
             ip: ip.clone(),
             ..Default::default()
         };
     }
-
 
     async fn process_stream_data(
         raw_data: &[u8],
@@ -1216,7 +1239,7 @@ pub async fn connect_to_server(
                     state_guard.cancel_current_conn = CancellationToken::new();
                     state_guard.tcp_conn_status = Status::Up;
                 }
-                
+
                 let result = if !block_with_stream {
                     handle_stream(
                         Arc::clone(&arc_state),
@@ -1375,28 +1398,26 @@ where
         .or(default)
 }
 
-async fn ensure_admin_user(database: Database){
+async fn ensure_admin_user(database: Database) {
     let enable_admin_user = std::env::var("ENABLE_ADMIN_USER").unwrap_or_default() == "true";
     let admin_user = std::env::var("ADMIN_USER").unwrap_or_default();
     let admin_password = std::env::var("ADMIN_PASSWORD").unwrap_or_default();
     if enable_admin_user {
-        let database_result = database.create_user_in_db(
-            ModifyElementData { 
-                element: Element::User { 
+        let database_result = database
+            .create_user_in_db(ModifyElementData {
+                element: Element::User {
                     password: admin_password,
-                    user: admin_user, 
-                    user_perms: vec![
-                        UserPerm { 
-                            perm: "admin".to_string(), 
-                            scope: "all".to_string()
-                        }
-                    ] 
-                }, 
-                jwt: "0".to_string(), 
-                require_auth: false
-            }
-        ).await;
-    } 
+                    user: admin_user,
+                    user_perms: vec![UserPerm {
+                        perm: "admin".to_string(),
+                        scope: "all".to_string(),
+                    }],
+                },
+                jwt: "0".to_string(),
+                require_auth: false,
+            })
+            .await;
+    }
 }
 // main function handles the initial connection
 // initilizing the database struct, getting and setting the base path as well as alot of defaults in AppState
@@ -1535,7 +1556,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         cached_status_type: String::new(),
         rcon_connection,
         current_server,
-        lock: false
+        lock: false,
     };
     state.tcp_conn_status = {
         if check_channel_health(&state.tcp_tx, state.tcp_rx.resubscribe()).await {
@@ -1568,7 +1589,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .with_name("gameserver_session");
 
     let backend = Backend::new(database);
-    let auth_layer: AuthManagerLayer<Backend, MemoryStore> = AuthManagerLayerBuilder::new(backend, session_layer.clone()).build();
+    let auth_layer: AuthManagerLayer<Backend, MemoryStore> =
+        AuthManagerLayerBuilder::new(backend, session_layer.clone()).build();
 
     let (fallback_router, maybe_oidc_layer) =
         routes_static(multifaceted_state.clone(), auth_layer.clone()).await;
@@ -1800,10 +1822,10 @@ pub async fn set_lock(
 
     let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
-        return StatusCode::UNAUTHORIZED
+        return StatusCode::UNAUTHORIZED;
     }
 
-    if let Ok(lock) =  request.message.parse::<bool>() {
+    if let Ok(lock) = request.message.parse::<bool>() {
         state.lock = lock;
         StatusCode::CREATED
     } else {
@@ -1814,14 +1836,14 @@ pub async fn set_lock(
 pub async fn start_server(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     auth_session: AuthSession,
-    headers: HeaderMap
+    headers: HeaderMap,
 ) -> impl IntoResponse {
     println!("Called start server");
     let state = arc_state.write().await;
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
-        return StatusCode::UNAUTHORIZED.into_response()
+        return StatusCode::UNAUTHORIZED.into_response();
     }
 
     let start_server_request = StartServerRequest {};
@@ -1833,13 +1855,13 @@ pub async fn start_server(
 pub async fn stop_server(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     auth_session: AuthSession,
-    headers: HeaderMap
+    headers: HeaderMap,
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
-        return StatusCode::UNAUTHORIZED.into_response()
+        return StatusCode::UNAUTHORIZED.into_response();
     }
 
     let stop_server_request = StopServerRequest {};
@@ -1854,12 +1876,11 @@ pub async fn rcon_command(
     headers: HeaderMap,
     Json(request): Json<IncomingMessage>,
 ) -> impl IntoResponse {
-
     let state = arc_state.read().await;
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
-        return StatusCode::UNAUTHORIZED.into_response()
+        return StatusCode::UNAUTHORIZED.into_response();
     }
 
     drop(state);
@@ -1892,7 +1913,7 @@ pub async fn rcon_command(
 
 pub async fn ensure_rcon(arc_state: Arc<RwLock<AppState>>) -> Result<(), String> {
     let mut state = arc_state.write().await;
-    
+
     if state.rcon_connection.is_none() {
         if let Ok(retrived_db) = state.database.get_settings().await {
             if retrived_db.enabled_rcon {
@@ -1922,15 +1943,14 @@ async fn file_operations(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
-    Json(request): Json<SrcAndDest>
+    Json(request): Json<SrcAndDest>,
 ) -> StatusCode {
     let state = arc_state.write().await;
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
-        return StatusCode::UNAUTHORIZED
+        return StatusCode::UNAUTHORIZED;
     }
-
 
     let request_bytes = serde_json::to_vec(&request).unwrap_or_default();
 
@@ -1948,7 +1968,13 @@ async fn upload(
     request: Request,
 ) -> StatusCode {
     let state = arc_state.read().await;
-    let authorized = authorize(&state, auth_session, headers.clone(), vec!["manager".to_string()]).await;
+    let authorized = authorize(
+        &state,
+        auth_session,
+        headers.clone(),
+        vec!["manager".to_string()],
+    )
+    .await;
     if !authorized {
         return StatusCode::UNAUTHORIZED;
     }
@@ -1994,7 +2020,7 @@ async fn migrate(
 async fn refresh_status(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     auth_session: AuthSession,
-    headers: HeaderMap
+    headers: HeaderMap,
 ) {
     let mut state = arc_state.write().await;
     // let mut authorized = false;
@@ -2022,26 +2048,24 @@ async fn refresh_status(
 async fn fetch_current_node(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     auth_session: AuthSession,
-    headers: HeaderMap
+    headers: HeaderMap,
 ) -> Result<Json<Node>, StatusCode> {
     let state = arc_state.read().await;
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
-        return Err(StatusCode::UNAUTHORIZED)
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     if state.current_node.name.is_empty() {
         Err(StatusCode::INTERNAL_SERVER_ERROR)
     } else {
-        Ok(Json(
-            Node {
-                nodename: state.current_node.name.clone(),
-                ip: state.current_node.ip.clone(),
-                nodestatus: NodeStatus::Unknown,
-                nodetype: state.current_node.nodetype.clone(),
-                k8s_type: state.current_node.k8s_type.clone(),
-            }
-        ))
+        Ok(Json(Node {
+            nodename: state.current_node.name.clone(),
+            ip: state.current_node.ip.clone(),
+            nodestatus: NodeStatus::Unknown,
+            nodetype: state.current_node.nodetype.clone(),
+            k8s_type: state.current_node.k8s_type.clone(),
+        }))
     }
 
     // let option_node = state
@@ -2066,9 +2090,8 @@ async fn get_status(
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
-        return Err(StatusCode::UNAUTHORIZED)
+        return Err(StatusCode::UNAUTHORIZED);
     }
-
 
     let mut returning_req = IncomingMessage {
         message: String::new(),
@@ -2095,14 +2118,13 @@ async fn get_status(
 async fn get_settings(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     auth_session: AuthSession,
-    headers: HeaderMap
+    headers: HeaderMap,
 ) -> impl IntoResponse {
     let state = arc_state.read().await;
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
-        return Err(StatusCode::UNAUTHORIZED)
+        return Err(StatusCode::UNAUTHORIZED);
     }
-
 
     match state.database.get_settings().await {
         Ok(settings) => Ok(Json(settings).into_response()),
@@ -2112,13 +2134,13 @@ async fn get_settings(
 async fn get_buttons(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     auth_session: AuthSession,
-    headers: HeaderMap
+    headers: HeaderMap,
 ) -> impl IntoResponse {
     let state = arc_state.read().await;
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
-        return Err(StatusCode::UNAUTHORIZED)
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let mut button_list = vec![];
@@ -2143,7 +2165,7 @@ async fn edit_buttons(
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
-        return Err(StatusCode::UNAUTHORIZED)
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let result = state
@@ -2163,9 +2185,8 @@ async fn button_reset(
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
-        return StatusCode::UNAUTHORIZED
+        return StatusCode::UNAUTHORIZED;
     }
-
 
     if request.message == "toggle" {
         let result = state.database.toggle_default_buttons().await;
@@ -2193,11 +2214,14 @@ struct ConsoleData {
     r#type: String,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct LogLine {
+    pub data: String,
+}
+
 async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
     // Acquire lock just to get needed data
-    let conn_id = {
-        CONNECTION_COUNTER.fetch_add(1, Ordering::SeqCst)
-    };
+    let conn_id = { CONNECTION_COUNTER.fetch_add(1, Ordering::SeqCst) };
 
     println!("[Conn {}] NEW WEBSOCKET CONNECTION", conn_id);
 
@@ -2220,7 +2244,7 @@ async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
         while let Ok(mut msg) = broadcast_rx.recv().await {
             let locked = {
                 let state = cloned_arc_state.read().await;
-                state.lock 
+                state.lock
             };
             if !locked {
                 // Trying to parse msg as JSON Value
@@ -2266,16 +2290,17 @@ async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
     while let Some(Ok(message)) = receiver.next().await {
         let locked = {
             let state = arc_state.read().await;
-            state.lock 
+            state.lock
         };
         if !locked {
             if let Message::Text(text) = message {
                 println!("[Conn {}] Got from client: {}", conn_id, text);
-                let payload = serde_json::from_str::<MessagePayload>(&text).unwrap_or(MessagePayload {
-                    r#type: "console".into(),
-                    message: text.to_string(),
-                    authcode: "0".into(),
-                });
+                let payload =
+                    serde_json::from_str::<MessagePayload>(&text).unwrap_or(MessagePayload {
+                        r#type: "console".into(),
+                        message: text.to_string(),
+                        authcode: "0".into(),
+                    });
 
                 if let Ok(mut bytes) = serde_json::to_vec(&payload) {
                     bytes.push(b'\n');
@@ -2300,15 +2325,28 @@ async fn authorize(
     state: &AppState,
     auth_session: AuthSession,
     headers: HeaderMap,
-    perms: Vec<String>
+    perms: Vec<String>,
 ) -> bool {
     if let Some(user) = auth_session.user {
-        if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin" || perms.iter().any(|authorized_perm| *authorized_perm == user_perm.perm)){
+        if user.user_perms.iter().any(|user_perm| {
+            user_perm.perm == "admin"
+                || perms
+                    .iter()
+                    .any(|authorized_perm| *authorized_perm == user_perm.perm)
+        }) {
             return true;
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token).iter().any(|user_perm| user_perm.perm == "admin" || perms.iter().any(|authorized_perm| *authorized_perm == user_perm.perm)){
+        if resolve_token_perms(state.clone(), token)
+            .iter()
+            .any(|user_perm| {
+                user_perm.perm == "admin"
+                    || perms
+                        .iter()
+                        .any(|authorized_perm| *authorized_perm == user_perm.perm)
+            })
+        {
             return true;
         }
     }
@@ -2321,15 +2359,13 @@ async fn ws_handler(
     auth_session: AuthSession,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-
     let state = arc_state.write().await;
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
-    
+
     if !authorized {
-        return StatusCode::UNAUTHORIZED.into_response()
+        return StatusCode::UNAUTHORIZED.into_response();
     }
     drop(state);
-
 
     ws.max_frame_size(1024 * 1024)
         .max_message_size(1024 * 1024)
@@ -2540,7 +2576,7 @@ async fn load_settings(
     arc_state: Arc<RwLock<AppState>>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let mut state = arc_state.write().await;
-    
+
     let settings = match state.database.get_settings().await {
         Ok(s) => s,
         Err(_) => {
@@ -2569,7 +2605,7 @@ async fn set_settings(
     let authorized = authorize(&state, auth_session, headers, vec![]).await;
 
     if !authorized {
-        return Err(StatusCode::UNAUTHORIZED)
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let settings = match state.database.get_settings().await {
@@ -2608,15 +2644,18 @@ async fn set_settings(
         Err(StatusCode::INTERNAL_SERVER_ERROR)
     }
 }
-async fn notify_node_of_settings(arc_state: Arc<RwLock<AppState>>, old_settings_option: Option<Settings>) -> Result<(),  Box<dyn Error + Send + Sync>>{
+async fn notify_node_of_settings(
+    arc_state: Arc<RwLock<AppState>>,
+    old_settings_option: Option<Settings>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     let state = arc_state.write().await;
     let database = &state.database;
     let settings = database.get_settings().await?;
     if let Some(internal_tx) = &state.internal_tx {
         if let Some(old_settings) = old_settings_option {
-            if !(old_settings.filter == settings.filter){
+            if !(old_settings.filter == settings.filter) {
                 let filter_request = FilterRequest {
-                    filter: settings.filter
+                    filter: settings.filter,
                 };
                 let _ = filter_request.node_transport(&state).await;
             }
@@ -2770,20 +2809,19 @@ async fn delete_node(
     headers: HeaderMap,
     Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
-
     let state = arc_state.write().await;
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
-        return Err(StatusCode::UNAUTHORIZED)
+        return Err(StatusCode::UNAUTHORIZED);
     }
     drop(state);
 
     let node_request_name_option = 'node: {
         if let Element::Node(node) = request.element {
             break 'node Some(node.nodename);
-        } 
+        }
         if let Ok(value) = serde_json::to_value(request.element) {
-            if let Some(Value::String(nodename)) = value.get("nodename"){
+            if let Some(Value::String(nodename)) = value.get("nodename") {
                 break 'node Some(nodename.to_string());
             } else {
                 break 'node None;
@@ -2794,22 +2832,15 @@ async fn delete_node(
     };
     if let Some(node_request_name) = node_request_name_option {
         let state = arc_state.write().await;
-        let node_option = state
-            .database
-            .retrieve_nodes(node_request_name)
-            .await;
+        let node_option = state.database.retrieve_nodes(node_request_name).await;
         if let Some(node) = node_option {
-            if matches!(node.k8s_type, K8sType::None) || matches!(node.k8s_type, K8sType::Unknown){
-                let delete_node_result = state
-                    .database
-                    .remove_node_in_db_directly(node)
-                    .await;
+            if matches!(node.k8s_type, K8sType::None) || matches!(node.k8s_type, K8sType::Unknown) {
+                let delete_node_result = state.database.remove_node_in_db_directly(node).await;
                 if let Ok(operation_status) = delete_node_result {
                     return Ok(operation_status.into_response());
                 } else {
                     return Err(StatusCode::INTERNAL_SERVER_ERROR);
                 }
-                
             } else {
                 return Err(StatusCode::SERVICE_UNAVAILABLE);
             }
@@ -2831,7 +2862,7 @@ async fn add_node(
     let mut authorized = false;
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
-        return Err(StatusCode::UNAUTHORIZED)
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let result = state
@@ -2851,13 +2882,25 @@ async fn delete_server(
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
-        return Err(StatusCode::UNAUTHORIZED)
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
-    if let MetadataTypes::DeleteServer { delete_server_name, delete_server_files: _ } = request.metadata.clone() {
-        let res = state.database.remove_server_in_db(
-            ModifyElementData { element: Element::Server(Server { servername: delete_server_name, ..Default::default() }), jwt: "".to_string(), require_auth: false }
-        ).await;
+    if let MetadataTypes::DeleteServer {
+        delete_server_name,
+        delete_server_files: _,
+    } = request.metadata.clone()
+    {
+        let res = state
+            .database
+            .remove_server_in_db(ModifyElementData {
+                element: Element::Server(Server {
+                    servername: delete_server_name,
+                    ..Default::default()
+                }),
+                jwt: "".to_string(),
+                require_auth: false,
+            })
+            .await;
         if res.is_err() {
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
@@ -2881,7 +2924,7 @@ async fn add_server(
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
-        return Err(StatusCode::UNAUTHORIZED)
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let server = match &request.element {
@@ -2891,10 +2934,10 @@ async fn add_server(
 
     if let Ok(settings) = state.database.get_settings().await {
         if settings.disable_custom_servers && server.provider == "custom" {
-            return Err(StatusCode::UNAUTHORIZED)
+            return Err(StatusCode::UNAUTHORIZED);
         }
     } else {
-        return Err(StatusCode::INTERNAL_SERVER_ERROR)
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     state.current_server = Some(server.clone());
@@ -2920,7 +2963,11 @@ async fn add_server(
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    let settings = state.database.get_settings().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let settings = state
+        .database
+        .get_settings()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let sandbox = {
         if settings.force_sandbox == true {
             true
@@ -2962,40 +3009,39 @@ async fn add_server(
     //SetServerRequest
     let create_server_request = CreateServerRequest {
         metadata: MetadataTypes::Server {
-                servername: server.servername.clone(),
-                provider: server.provider.clone(),
-                providertype: server.providertype.clone(),
-                location: server.location.clone(),
-                sandbox,
-                server_metadata: server.server_metadata.clone()
-            },
+            servername: server.servername.clone(),
+            provider: server.provider.clone(),
+            providertype: server.providertype.clone(),
+            location: server.location.clone(),
+            sandbox,
+            server_metadata: server.server_metadata.clone(),
+        },
     };
     let _ = create_server_request.node_transport(&state).await;
 
     let set_server_request = SetServerRequest {
         metadata: MetadataTypes::Server {
-                servername: server.servername.clone(),
-                provider: server.provider.clone(),
-                providertype: server.providertype.clone(),
-                location: server.location.clone(),
-                sandbox,
-                server_metadata: server.server_metadata.clone()
-            },
+            servername: server.servername.clone(),
+            provider: server.provider.clone(),
+            providertype: server.providertype.clone(),
+            location: server.location.clone(),
+            sandbox,
+            server_metadata: server.server_metadata.clone(),
+        },
     };
     let _ = set_server_request.node_transport(&state).await;
 
     let server_data_request = ServerDataRequest {
         metadata: MetadataTypes::Server {
-                servername: server.servername.clone(),
-                provider: server.provider.clone(),
-                providertype: server.providertype.clone(),
-                location: server.location.clone(),
-                sandbox,
-                server_metadata: server.server_metadata.clone()
-            },
+            servername: server.servername.clone(),
+            provider: server.provider.clone(),
+            providertype: server.providertype.clone(),
+            location: server.location.clone(),
+            sandbox,
+            server_metadata: server.server_metadata.clone(),
+        },
     };
     let _ = server_data_request.node_transport(&state).await;
-
 
     Ok(StatusCode::OK)
 }
@@ -3003,13 +3049,13 @@ async fn add_server(
 async fn get_integrations(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     auth_session: AuthSession,
-    headers: HeaderMap
+    headers: HeaderMap,
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
-        return Err(StatusCode::UNAUTHORIZED)
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let result = state
@@ -3032,13 +3078,13 @@ async fn get_integrations(
 }
 
 // Pings the current or specified node
-// the status code itself does not determine if a ping was successful rather if the ping 
+// the status code itself does not determine if a ping was successful rather if the ping
 // went through
 async fn ping(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
-    Json(request): Json<MessagePayload>
+    Json(request): Json<MessagePayload>,
 ) -> StatusCode {
     let state = arc_state.write().await;
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
@@ -3051,15 +3097,15 @@ async fn ping(
             let ping = Ping {};
             let res = ping.node_transport(&state).await;
             if res.is_ok() {
-                return StatusCode::OK
+                return StatusCode::OK;
             } else {
-                return StatusCode::INTERNAL_SERVER_ERROR
+                return StatusCode::INTERNAL_SERVER_ERROR;
             }
         } else {
-            return StatusCode::INTERNAL_SERVER_ERROR
+            return StatusCode::INTERNAL_SERVER_ERROR;
         }
     } else {
-        return StatusCode::NOT_IMPLEMENTED
+        return StatusCode::NOT_IMPLEMENTED;
     }
 }
 
@@ -3074,7 +3120,7 @@ async fn modify_intergration(
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
-        return Err(StatusCode::UNAUTHORIZED)
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     if let Element::Intergration(ref intergration_element) = request.element {
@@ -3106,7 +3152,9 @@ async fn modify_intergration(
                             intergration_element.settings.get(enabled_key)
                         {
                             if *new_enabled_key == true {
-                                let integration_key_request = IntegrationKeyRequest { key: unwrapped_hook.1.clone() };
+                                let integration_key_request = IntegrationKeyRequest {
+                                    key: unwrapped_hook.1.clone(),
+                                };
                                 let _ = integration_key_request.node_transport(&state).await;
                             }
                         }
@@ -3119,15 +3167,14 @@ async fn modify_intergration(
     }
 
     match state.database.edit_intergrations_in_db(request).await {
-        Ok(status_code) => {
-            Ok((
+        Ok(status_code) => Ok((
             status_code,
             Json(serde_json::json!({
                 "success": true,
                 "message": "Integration modified successfully"
             })),
         )
-            .into_response())},
+            .into_response()),
         Err(e) => {
             let status_code = if let Some(db_err) = e.downcast_ref::<DatabaseError>() {
                 resolve_database_error_into_statuscode(db_err.clone())
@@ -3163,7 +3210,7 @@ async fn delete_intergration(
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
-        return Err(StatusCode::UNAUTHORIZED)
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let result = state
@@ -3186,21 +3233,19 @@ async fn create_intergration(
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
-        return Err(StatusCode::UNAUTHORIZED)
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     println!("got request");
     match state.database.create_intergrations_in_db(request).await {
-        Ok(status_code) => {
-            Ok((
+        Ok(status_code) => Ok((
             status_code,
             Json(serde_json::json!({
                 "success": true,
                 "message": "Integration created successfully"
             })),
         )
-            .into_response())
-        },
+            .into_response()),
         Err(e) => {
             let status_code = if let Some(db_err) = e.downcast_ref::<DatabaseError>() {
                 resolve_database_error_into_statuscode(db_err.clone())
@@ -3237,7 +3282,7 @@ async fn create_user(
 
     let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
-        return Err(StatusCode::UNAUTHORIZED)
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let result = state
@@ -3257,7 +3302,7 @@ async fn edit_user(
     let state = arc_state.write().await;
     let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
-        return Err(StatusCode::UNAUTHORIZED.into_response())
+        return Err(StatusCode::UNAUTHORIZED.into_response());
     }
 
     let result = state
@@ -3278,7 +3323,7 @@ async fn set_server(
     let mut state = arc_state.write().await;
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
-        return Err(StatusCode::UNAUTHORIZED)
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     if let Element::String(servername) = request.element {
@@ -3308,7 +3353,7 @@ async fn set_server(
                 // TODO: Have it so if the user has a specific perm, they can create unsandboxed servers
                 sandbox: retrieved_server.sandbox.clone(),
                 //sandbox: true
-                server_metadata: ServerMetadata::default()
+                server_metadata: ServerMetadata::default(),
             }
             .into(),
         );
@@ -3341,7 +3386,7 @@ async fn set_server(
                 providertype: retrieved_server.providertype,
                 location: retrieved_server.location,
                 sandbox: retrieved_server.sandbox,
-                server_metadata: retrieved_server.server_metadata
+                server_metadata: retrieved_server.server_metadata,
             },
         };
         let _ = set_server_request.node_transport(&state).await;
@@ -3363,7 +3408,7 @@ async fn get_server(
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
-        return Err(StatusCode::UNAUTHORIZED)
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let mut server_to_get = request.element.clone();
@@ -3392,7 +3437,7 @@ async fn get_user(
     let state = arc_state.write().await;
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
-        return Err(StatusCode::UNAUTHORIZED.into_response())
+        return Err(StatusCode::UNAUTHORIZED.into_response());
     }
 
     let result = state
@@ -3415,7 +3460,7 @@ async fn delete_user(
 
     let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
-        return Err(StatusCode::UNAUTHORIZED.into_response())
+        return Err(StatusCode::UNAUTHORIZED.into_response());
     }
 
     let result = state
@@ -3435,19 +3480,18 @@ async fn capabilities(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl In
     Json({ capabilities }).into_response()
 }
 
-
 // a list of users is returned, like alot of other routes, I need to add permissions, and check against those permissions to see if a user
 // can see all the other users, it will delegate the retrival to the database and pass it in as a ApiCalls
 async fn users(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     auth_session: AuthSession,
-    headers: HeaderMap
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, StatusCode> {
     let state = arc_state.write().await;
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
-        return Err(StatusCode::UNAUTHORIZED)
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let users = state
@@ -3476,12 +3520,12 @@ async fn change_node(
 ) -> Result<StatusCode, StatusCode> {
     println!("Changing node");
     let state = arc_state.read().await;
-   // println!("C");
+    // println!("C");
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     //drop(state);
     if !authorized {
-        return Err(StatusCode::UNAUTHORIZED)
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let ws_tx = state.ws_tx.clone();
@@ -3489,7 +3533,7 @@ async fn change_node(
         let state = state.clone();
         state.database.retrieve_nodes(request.node_id.clone()).await
     };
-    
+
     drop(state);
 
     if let Some(node) = option_node {
@@ -3506,9 +3550,15 @@ async fn change_node(
             // }
 
             tokio::spawn(async move {
-                let _ = connect_to_server(arc_state.clone(), node.ip.clone(), ws_tx.clone(), false, false).await;
+                let _ = connect_to_server(
+                    arc_state.clone(),
+                    node.ip.clone(),
+                    ws_tx.clone(),
+                    false,
+                    false,
+                )
+                .await;
             });
-
         }
 
         Ok(StatusCode::OK)
@@ -3520,15 +3570,15 @@ async fn change_node(
 
 // A list of nodes in a k8s cluster is returned, nothing is returned if there is not a client (k8s support is off)
 async fn get_nodes(
-    State(arc_state): State<Arc<RwLock<AppState>>>, 
+    State(arc_state): State<Arc<RwLock<AppState>>>,
     headers: HeaderMap,
-    auth_session: AuthSession
+    auth_session: AuthSession,
 ) -> impl IntoResponse {
     let mut state = arc_state.write().await;
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
-        return Err(StatusCode::UNAUTHORIZED.into_response())
+        return Err(StatusCode::UNAUTHORIZED.into_response());
     }
 
     let mut node_list: Vec<NodeAndTCP> = vec![];
@@ -3590,7 +3640,7 @@ async fn get_nodes(
 async fn get_servers(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     auth_session: AuthSession,
-    headers: HeaderMap
+    headers: HeaderMap,
 ) -> Result<Json<List>, StatusCode> {
     let state = arc_state.write().await;
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
@@ -3605,7 +3655,6 @@ async fn get_servers(
     };
     result
 }
-
 
 // Creates a new type for authsession with our custom backend
 pub type AuthSession = axum_login::AuthSession<Backend>;
@@ -3623,12 +3672,15 @@ pub struct Claims {
 #[derive(Clone)]
 pub struct Backend {
     pub users: HashMap<String, User>,
-    pub database: Database
+    pub database: Database,
 }
 
 impl Backend {
     fn new(database: Database) -> Backend {
-        Backend { users: HashMap::new(), database }
+        Backend {
+            users: HashMap::new(),
+            database,
+        }
     }
     // fn get_user() -> {
     // }
@@ -3660,16 +3712,17 @@ impl AuthnBackend for Backend {
 
 fn resolve_token_perms(state: AppState, token: String) -> Vec<UserPerm> {
     let mut tokens = Vec::new();
-    if let Some(env_token) = get_env_var_or_arg::<String>("HEADER_TOKEN", Some(String::new())){
+    if let Some(env_token) = get_env_var_or_arg::<String>("HEADER_TOKEN", Some(String::new())) {
         tokens.push(env_token.to_string());
     }
-    if tokens.iter().any(|authorized_token| token == *authorized_token){
-        vec![
-            UserPerm {
-                perm: "admin".to_string(),
-                scope: "all".to_string()
-            }
-        ]
+    if tokens
+        .iter()
+        .any(|authorized_token| token == *authorized_token)
+    {
+        vec![UserPerm {
+            perm: "admin".to_string(),
+            scope: "all".to_string(),
+        }]
     } else {
         vec![]
     }
@@ -3688,7 +3741,6 @@ fn resolve_jwt(token: &str) -> Result<TokenData<Claims>, StatusCode> {
     )
     .map_err(|_| StatusCode::UNAUTHORIZED)
 }
-
 
 // LoginData arrives as just a user and password
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -3856,9 +3908,8 @@ async fn get_files_content(
     let state = arc_state.read().await;
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
-        return Err(StatusCode::UNAUTHORIZED.into_response())
+        return Err(StatusCode::UNAUTHORIZED.into_response());
     }
-
 
     let (tcp_tx, tcp_rx) = {
         let state = arc_state.read().await;
@@ -4035,7 +4086,6 @@ pub async fn stream_file_download(
     }
     drop(state);
 
-
     let tcp_fs = {
         let state = arc_state.read().await;
         let (tcp_tx, tcp_rx) = (state.tcp_tx.clone(), state.tcp_tx.subscribe());
@@ -4172,11 +4222,14 @@ mod tests {
         use super::*;
         use crate::database::{Database, Element};
 
-
-        async fn create_db_for_tests() -> Result<Database, Box<dyn std::error::Error + Send + Sync>> {
+        async fn create_db_for_tests() -> Result<Database, Box<dyn std::error::Error + Send + Sync>>
+        {
             let conn = first_connection().await?;
             let database: Database = database::Database::fix_connection(Some(conn)).await;
-            database.ensure_database_conn().await.expect("Failed to ensure db structure");
+            database
+                .ensure_database_conn()
+                .await
+                .expect("Failed to ensure db structure");
             Ok(database)
         }
 
@@ -4228,12 +4281,10 @@ mod tests {
                     element: Element::User {
                         user: "kk".to_owned(),
                         password: "ddd".to_owned(),
-                        user_perms: vec![
-                            UserPerm { 
-                                perm: "test".to_string(), 
-                                scope: "all".to_string()
-                            }
-                        ],
+                        user_perms: vec![UserPerm {
+                            perm: "test".to_string(),
+                            scope: "all".to_string(),
+                        }],
                     },
                     require_auth: true,
                     jwt: "".to_owned(),
@@ -4244,12 +4295,13 @@ mod tests {
                 let retrieved_user_option = database.retrieve_user("kk".to_string()).await;
 
                 if let Some(retrieved_user) = retrieved_user_option {
-                    assert_eq!(retrieved_user.user_perms, vec![
-                        UserPerm { 
-                            perm: "test".to_string(), 
+                    assert_eq!(
+                        retrieved_user.user_perms,
+                        vec![UserPerm {
+                            perm: "test".to_string(),
                             scope: "all".to_string()
-                        }
-                    ]);
+                        }]
+                    );
                 } else {
                     panic!();
                 }
@@ -4352,10 +4404,14 @@ mod tests {
         use crate::database::Database;
         use sqlx::types::Json;
 
-        async fn create_db_for_tests() -> Result<Database, Box<dyn std::error::Error + Send + Sync>> {
+        async fn create_db_for_tests() -> Result<Database, Box<dyn std::error::Error + Send + Sync>>
+        {
             let conn = first_connection().await?;
             let database: Database = database::Database::fix_connection(Some(conn)).await;
-            database.ensure_database_conn().await.expect("Failed to ensure db structure");
+            database
+                .ensure_database_conn()
+                .await
+                .expect("Failed to ensure db structure");
             Ok(database)
         }
 
@@ -4382,7 +4438,7 @@ mod tests {
                             nodetype: NodeType::Custom,
                             k8s_type: K8sType::Unknown,
                         },
-                        server_metadata: ServerMetadata::default()
+                        server_metadata: ServerMetadata::default(),
                     }),
                     jwt: "".to_string(),
                     require_auth: false,
@@ -4418,7 +4474,7 @@ mod tests {
                             nodetype: NodeType::Custom,
                             k8s_type: K8sType::Unknown,
                         },
-                        server_metadata: ServerMetadata::default()
+                        server_metadata: ServerMetadata::default(),
                     }),
                     jwt: "".to_string(),
                     require_auth: false,

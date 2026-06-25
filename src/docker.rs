@@ -1,9 +1,3 @@
-use std::{
-    error::Error,
-    fs::File,
-    io::{self, Cursor},
-    pin::Pin,
-};
 use bollard::{
     Docker,
     auth::DockerCredentials,
@@ -13,6 +7,12 @@ use futures_util::{Stream, StreamExt, TryStreamExt};
 use http_body::Frame;
 use http_body_util::{Either, StreamBody};
 use std::path::Path;
+use std::{
+    error::Error,
+    fs::File,
+    io::{self, Cursor},
+    pin::Pin,
+};
 use tar::{Builder, Header};
 use tokio_util::codec::BytesCodec;
 use tokio_util::{bytes, codec::FramedRead};
@@ -25,7 +25,6 @@ use bytes::Bytes as BytesRaw;
 // TODO:
 // Manually parse or enter the .dockerignore and also
 // make sure the root is correct (should it be ./Dockefile or within gameserver/Dockerfile?)
-
 
 const ENABLE_TAG_AND_PUSH: bool = true;
 
@@ -116,9 +115,7 @@ pub async fn build_docker_image() -> Result<(), Box<dyn std::error::Error + Send
             let b: BytesRaw = bytes_mut.freeze();
             Bytes::from(b)
         })
-        .map_ok(|b: Bytes| {
-            Frame::data(b)
-        })
+        .map_ok(|b: Bytes| Frame::data(b))
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
 
     let boxed_stream: Pin<Box<dyn Stream<Item = Result<Frame<Bytes>, io::Error>> + Send>> =

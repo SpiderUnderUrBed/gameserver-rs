@@ -24,7 +24,7 @@ pub struct Settings {
     pub pre_hook_timeout: Option<u64>,
     pub install_hook_timeout: Option<u64>,
     pub post_hook_timeout: Option<u64>,
-    pub process_timeout: Option<u64>
+    pub process_timeout: Option<u64>,
 }
 
 #[derive(Clone, Default, Debug, Deserialize, Serialize)]

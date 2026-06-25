@@ -4,13 +4,12 @@ use extra::JsonAssembler;
 // use crate::Sender;
 // use crate::{IncomingMessage};
 use async_trait::async_trait;
+use bytes::Bytes;
 use futures::Stream;
 use multer::Multipart;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::Mutex;
 use std::fmt;
-use bytes::Bytes;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::task::Poll;
@@ -18,8 +17,8 @@ use std::time::{Duration, Instant};
 use std::{
     any::Any,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
 };
 use tokio::fs;
@@ -28,6 +27,7 @@ use tokio::fs::OpenOptions;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncSeekExt;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::Mutex;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -52,7 +52,6 @@ pub struct IncomingMessage {
     message_type: String,
     authcode: String,
 }
-
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(tag = "kind", content = "data")]
@@ -102,11 +101,11 @@ pub struct BasicPath {
     pub paths: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct FileRequestMessage {
-    id: u64,
+    pub id: u64,
     #[serde(flatten)]
-    payload: FileRequestPayload,
+    pub payload: FileRequestPayload,
 }
 
 // FileChunk represents a portion of a file, with file name
@@ -119,7 +118,7 @@ pub struct FileChunk {
     pub file_chunk_size: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(tag = "type", content = "data")]
 pub enum FileRequestPayload {
     Metadata {
@@ -1648,10 +1647,10 @@ impl Stream for TcpFileStream {
                     file_chunk_size: actual_chunk_size.to_string(),
                 };
 
-            let result = fs.get_files_content_raw(file_chunk).await?;
-            let is_eof = result.is_empty() || (result.len() as u64) < actual_chunk_size;
-            let data = Bytes::from(result);
-            Ok::<(Bytes, bool), std::io::Error>((data, is_eof))
+                let result = fs.get_files_content_raw(file_chunk).await?;
+                let is_eof = result.is_empty() || (result.len() as u64) < actual_chunk_size;
+                let data = Bytes::from(result);
+                Ok::<(Bytes, bool), std::io::Error>((data, is_eof))
             };
 
             self.pending_fut = Some(Box::pin(fut));
