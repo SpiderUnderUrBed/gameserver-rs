@@ -144,9 +144,7 @@ use crate::transport::node_transport::{
 mod extra;
 use extra::value_from_line;
 
-use tcp_filesystem::{
-    FileChunk, FsItem, RemoteFileSystem, TcpFs,
-};
+use tcp_filesystem::{FileChunk, FsItem, RemoteFileSystem, TcpFs};
 
 // Docker AND kubernetes would be enabled with a standard deployment
 // as you wouldnt need the docker module (or the k8s module) for barebones testing

@@ -225,7 +225,7 @@ where
 {
     let mut results = Vec::new();
     let mut remaining = input;
-    
+
     while let Some(start) = remaining.find('{') {
         let bytes = remaining[start..].as_bytes();
         let mut open_braces = 0usize;

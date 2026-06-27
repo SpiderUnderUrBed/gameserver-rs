@@ -85,7 +85,6 @@ use jsondatabase::{load_db, save_db, DbConn};
 
 // use jsondatabase::{load_db, save_db};
 
-
 // Server directory as in the one at the root of this project (../server)
 // all server files are sandboxed in there including nested server directories
 // by default its set to well, server, and changing this means that it will look for a diffrent directory at the root
@@ -1134,7 +1133,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                 .clone()
                                                 .into_typed_request::<CreateServerRequest>(
                                             ) {
-                                                println!("Got a create server request");
                                                 let _ = create_server(
                                                     arc_state_clone.clone(),
                                                     &cmd_tx,
@@ -1151,12 +1149,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                 .clone()
                                                 .into_typed_request::<DeleteServerRequest>(
                                             ) {
-                                                println!("Got a delete server request");
                                                 if let MetadataTypes::DeleteServer {
                                                     delete_server_name,
                                                     delete_server_files,
                                                 } = delete_server_request.common.metadata
                                                 {
+                                                    let option_path = {
+                                                        if let Some(ProviderTypes::Path(path)) =
+                                                            convert_provider(
+                                                                arc_state_clone.clone(),
+                                                                vec![ProviderTypes::Name(
+                                                                    delete_server_name.clone(),
+                                                                )],
+                                                                ProviderReturnTypes::Path,
+                                                            )
+                                                            .await
+                                                        {
+                                                            Some(path)
+                                                        } else {
+                                                            None
+                                                        }
+                                                    };
+                                                    if delete_server_files {
+                                                        if let Some(mut path) = option_path {
+                                                            if !path.trim().starts_with("server")
+                                                                && !path
+                                                                    .trim()
+                                                                    .starts_with("server/")
+                                                            {
+                                                                path = format!("server/{}", path);
+                                                            }
+                                                            if let Err(errro) =
+                                                                fs::remove_dir_all(&path).await
+                                                            {
+                                                                eprintln!("Failed to delete directory {}: {}", path, errro);
+                                                            }
+                                                        }
+                                                    }
                                                     if let Some(current_server) = arc_state_clone
                                                         .clone()
                                                         .current_server
@@ -1178,44 +1207,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                         db.server_index.remove(&delete_server_name);
                                                         save_db(&db);
                                                         drop(db);
-                                                        let option_path = {
-                                                            if let Some(ProviderTypes::Path(path)) =
-                                                                convert_provider(
-                                                                    arc_state_clone.clone(),
-                                                                    vec![ProviderTypes::Name(
-                                                                        current_server.clone(),
-                                                                    )],
-                                                                    ProviderReturnTypes::Path,
-                                                                )
-                                                                .await
-                                                            {
-                                                                Some(path)
-                                                            } else {
-                                                                None
-                                                            }
-                                                        };
-
-                                                        if delete_server_files {
-                                                            if let Some(mut path) = option_path {
-                                                                //println!("{path}");
-                                                                if !path
-                                                                    .trim()
-                                                                    .starts_with("server")
-                                                                    && !path
-                                                                        .trim()
-                                                                        .starts_with("server/")
-                                                                {
-                                                                    path =
-                                                                        format!("server/{}", path);
-                                                                }
-                                                                //println!("{path}");
-                                                                if let Err(errro) =
-                                                                    fs::remove_dir_all(&path).await
-                                                                {
-                                                                    eprintln!("Failed to delete directory {}: {}", path, errro);
-                                                                }
-                                                            }
-                                                        }
                                                     }
                                                 }
                                             }
