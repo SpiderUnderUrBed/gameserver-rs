@@ -15,13 +15,13 @@
       rustc
       rustfmt
       bubblewrap
+      protobuf
       clippy
       rust-analyzer
       ripgrep
     ];
     
     commonNativeBuildInputs = with pkgs; [
-      # Remove rustup, rustc, cargo from here - they're already in buildInputs
       openssl
       pkg-config
       postgresql
@@ -30,6 +30,9 @@
     
     commonEnv = {
       RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
+      PROTOC = "${pkgs.protobuf}/bin/protoc";
+      PROTOC_INCLUDE = "${pkgs.protobuf}/include";
+      PROTOBUF_LOCATION = "${pkgs.protobuf}";
     };
     
     commonShellHook = ''
@@ -38,6 +41,9 @@
       export OPENSSL_LIB_DIR="${pkgs.openssl.out}/lib"
       export OPENSSL_INCLUDE_DIR="${pkgs.openssl.dev}/include"
       export PKG_CONFIG_PATH=${pkgs.openssl.dev}/lib/pkgconfig:$PKG_CONFIG_PATH
+
+      # export PROTOC="${pkgs.protobuf}/bin/protoc"
+      # export PROTOC_INCLUDE="${pkgs.protobuf}/include"
     '';
     
   in {

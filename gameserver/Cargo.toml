@@ -25,6 +25,12 @@ libc = "0.2.183"
 base64 = "0.22.1"
 sqlx = { version = "0.8.6", optional = true, features = ["postgres", "runtime-tokio", "runtime-tokio-native-tls"] }
 tcp_filesystem = { path = "../lib/tcp_filesystem" }
+tonic = { version = "0.14.6", optional = true }
+prost = { version = "0.14.4", optional = true }
+tonic-prost = { version = "0.14.6", optional = true }
+
+[build-dependencies]
+tonic-prost-build = { version = "0.14.6", optional = true }
 
 [[bin]]
 name = "gameserver-rs-node"
@@ -40,4 +46,10 @@ postgres = [
 ]
 full-stack = [
     "sqlx"
+]
+grpc_experimental = [
+    "tonic",
+    "prost",
+    "tonic-prost-build",
+    "tonic-prost"
 ]

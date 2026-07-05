@@ -42,6 +42,12 @@ tower = "0.5.3"
 base64 = "0.22.1"
 tcp_filesystem = { path = "lib/tcp_filesystem" }
 multer = "3.1.0"
+tonic = { version = "0.14.6", optional = true }
+prost = { version = "0.14.4", optional = true }
+tonic-prost = { version = "0.14.6", optional = true }
+
+[build-dependencies]
+tonic-prost-build = { version = "0.14.6", optional = true }
 
 [features]
 default = []
@@ -60,6 +66,12 @@ full-stack = [
     "serde_yaml",
     "sqlx"
 ]
+grpc_experimental = [
+    "tonic",
+    "prost",
+    "tonic-prost",
+    "tonic-prost-build"
+]
 
 [workspace]
 members = [
@@ -69,3 +81,4 @@ members = [
 [[bin]]
 name = "gameserver-rs"
 path = "src/main.rs"
+

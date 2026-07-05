@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package main;
+
+message Ping {
+  string id = 1;
+}
+
+service NodeTransport {
+  rpc SendPing (Ping) returns (Ping);
+}
