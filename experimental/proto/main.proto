@@ -1,11 +1,51 @@
+import "google/protobuf/struct.proto";
 syntax = "proto3";
 
 package main;
 
-message Ping {
-  string id = 1;
+message MetadataTypes {
+  string kind = 1;
+  string data = 2;
+}
+message ApiCalls {
+  string kind = 1;
+  string data = 2;
+}
+message SrcAndDest {
+  ApiCalls src = 1;
+  ApiCalls dest = 2;
+  string metadata = 3;
 }
 
-service NodeTransport {
-  rpc SendPing (Ping) returns (Ping);
+message DeleteServerRequest {
+  MetadataTypes metadata = 1;
+}
+
+message CreateServerRequest {
+  MetadataTypes metadata = 1;
+}
+
+message StartServerRequest {}
+
+message StopServerRequest {}
+
+message SetServerRequest {}
+
+message MigrateRequest {
+  ApiCalls src = 1;
+  ApiCalls dest = 2;
+  string metadata = 3;
+}
+message ServerDataRequest {
+
+}
+message RawBytes {
+  bytes byte_collection = 1;
+}
+message Ping {}
+message IntegrationKeyRequest {
+  google.protobuf.Struct key = 1;
+}
+message ServerStateRequest {
+  
 }

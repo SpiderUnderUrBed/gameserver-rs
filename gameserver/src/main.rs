@@ -41,12 +41,18 @@ use crate::providers::{Custom, Platforms, Provider, ProviderConfig, ProviderDbLi
 use crate::transport::node_transport::ConsoleRequest;
 use crate::transport::node_transport::CreateServerRequest;
 use crate::transport::node_transport::DeleteServerRequest;
+use crate::transport::node_transport::FileOperationResponse;
 use crate::transport::node_transport::FileRequest;
+use crate::transport::node_transport::NodeTransportable;
 use crate::transport::node_transport::Ping;
+use crate::transport::node_transport::PingResponse;
 use crate::transport::node_transport::RequestHandler;
 use crate::transport::node_transport::ServerDataRequest;
+use crate::transport::node_transport::ServerDataResponse;
 use crate::transport::node_transport::ServerNameRequest;
+use crate::transport::node_transport::ServerNameResponse;
 use crate::transport::node_transport::ServerStateRequest;
+use crate::transport::node_transport::ServerStateResponse;
 use crate::transport::node_transport::SetFilterRequest;
 use crate::transport::node_transport::SetServerRequest;
 use crate::transport::node_transport::StartServerRequest;
@@ -652,6 +658,7 @@ struct AppState {
     jailed_user: String,
     authenticated_origins: Arc<Mutex<Vec<String>>>,
     server_running: Arc<Mutex<bool>>,
+    output_tx: Arc<Mutex<Option<mpsc::Sender<String>>>>,
     server_output_tx: Arc<Mutex<Option<broadcast::Sender<String>>>>,
     server_process: Arc<Mutex<Option<Child>>>,
     last_updated: Arc<Mutex<Option<DateTime<Local>>>>,
@@ -794,6 +801,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         jailed_user: "server".to_string(),
         authenticated_origins: Arc::new(Mutex::new(Vec::new())),
         server_running: Arc::new(Mutex::new(false)),
+        output_tx: Arc::new(Mutex::new(None)),
         server_output_tx: Arc::new(Mutex::new(None)),
         server_process: Arc::new(Mutex::new(None)),
         last_updated: Arc::new(Mutex::new(None)),
@@ -888,6 +896,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let (mut read_half, mut write_half) = socket.into_split();
             let (out_tx, mut out_rx) = mpsc::channel::<String>(128);
             let (cmd_tx, mut cmd_rx) = mpsc::channel::<String>(10_000);
+
+            // let mut output_tx = arc_state_clone.output_tx.lock().await;
+            // *output_tx = Some(out_tx.clone());
+            if let Ok(mut guard) = arc_state_clone.output_tx.try_lock() {
+                println!("assigning out_tx");
+                *guard = Some(out_tx);
+            }
 
             let mut server_output_rx = {
                 let server_running_lock = arc_state_clone.server_running.lock().await;
@@ -1632,24 +1647,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                 request.clone().into_typed_request::<FileRequest>()
                                             {
                                                 println!("got a file request");
-                                                let response = handle_file_request(
-                                                    &arc_state_clone,
-                                                    file_request.common,
-                                                )
-                                                .await;
-                                                let _ = out_tx.send(response).await;
+                                                let file_operation_response = FileOperationResponse {
+                                                    data: handle_file_request(
+                                                        &arc_state_clone,
+                                                        file_request.common,
+                                                    ).await,
+                                                };
+                                                let _ = file_operation_response.node_transport(&arc_state_clone).await;
+                                                
+                                            
+                                                // let response = handle_file_request(
+                                                //     &arc_state_clone,
+                                                //     file_request.common,
+                                                // )
+                                                // .await;
+                                                // let _ = out_tx.send(response).await;
                                             }
                                             if let Ok(_) =
                                                 request.clone().into_typed_request::<Ping>()
                                             {
-                                                println!("Got a ping request");
                                                 //         //let out_tx_clone = out_tx.clone();
-                                                let pong = SimpleMessage {
-                                                    message: "pong".to_string(),
+                                                let pong = PingResponse {
+                                                    message: SimpleMessage { message: "pong".to_string() }
                                                 };
-                                                let _ = out_tx
-                                                    .send(serde_json::to_string(&pong).unwrap())
-                                                    .await;
+                                                let _ = pong.node_transport(&arc_state_clone).await;
+                                                // let pong = SimpleMessage {
+                                                //     message: "pong".to_string(),
+                                                // };
+                                                // let _ = out_tx
+                                                //     .send(serde_json::to_string(&pong).unwrap())
+                                                //     .await;
                                             }
                                             if let Ok(server_data_request) = request
                                                 .clone()
@@ -1726,10 +1753,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                             pick_platform(provider)
                                                         {
                                                             println!("Sending out the info");
-                                                            let _ = out_tx
-                                                                .send(
-                                                                    serde_json::to_string(
-                                                                        &GetState {
+                                                            let server_data_response = ServerDataResponse {
+                                                                state: GetState {
                                                                             name: platform
                                                                                 .default_name
                                                                                 .unwrap_or(
@@ -1745,11 +1770,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                                                 .unwrap_or(
                                                                                     "".to_string(),
                                                                                 ),
-                                                                        },
-                                                                    )
-                                                                    .unwrap(),
-                                                                )
-                                                                .await;
+                                                                        }
+                                                            };
+                                                            
+                                                            let _ = server_data_response.node_transport(&arc_state_clone).await;
+                                                            // let server_data_response = serde_json::to_string(
+                                                            //             &GetState {
+                                                            //                 name: platform
+                                                            //                     .default_name
+                                                            //                     .unwrap_or(
+                                                            //                         "".to_string(),
+                                                            //                     ),
+                                                            //                 start_keyword: platform
+                                                            //                     .start_keyword
+                                                            //                     .unwrap_or(
+                                                            //                         "".to_string(),
+                                                            //                     ),
+                                                            //                 stop_keyword: platform
+                                                            //                     .stop_keyword
+                                                            //                     .unwrap_or(
+                                                            //                         "".to_string(),
+                                                            //                     ),
+                                                            //             },
+                                                            //         )
+                                                            //         .unwrap();
+                                                            // let _ = out_tx
+                                                            //     .send(
+                                                            //         server_data_response
+                                                            //     )
+                                                            //     .await;
                                                         }
                                                     }
                                                 }
@@ -1762,15 +1811,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                 let status =
                                                     &arc_state_clone.server_running.lock().await;
                                                 //println!("{:#?}", status);
-                                                let status_message = MessagePayload {
-                                                    r#type: "server_state".to_string(),
-                                                    message: status.to_string(),
-                                                    authcode: "0".to_string(),
+                                                let server_state_response = ServerStateResponse {
+                                                    message: MessagePayload { 
+                                                        r#type: "server_state".to_string(),
+                                                        message: status.to_string(),
+                                                        authcode: "0".to_string(),
+                                                    }
                                                 };
-                                                //println!("{:#?}", status_message);
-                                                let json_str =
-                                                    serde_json::to_string(&status_message).unwrap();
-                                                let _ = out_tx.send(json_str).await;
+                                                let _ = server_state_response.node_transport(&arc_state_clone).await;
+                                                // let status_message = MessagePayload {
+                                                //     r#type: "server_state".to_string(),
+                                                //     message: status.to_string(),
+                                                //     authcode: "0".to_string(),
+                                                // };
+                                                // //println!("{:#?}", status_message);
+                                                // let json_str =
+                                                //     serde_json::to_string(&status_message).unwrap();
+                                                // let _ = out_tx.send(json_str).await;
                                             }
                                             if let Ok(server_name_request) =
                                                 request.into_typed_request::<ServerNameRequest>()
@@ -1782,18 +1839,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                 // };
                                                 let hostname =
                                                     hostname::get().unwrap_or("unknown".into());
-                                                let _ = out_tx
-                                                    .send(
-                                                        serde_json::to_string(&MessagePayload {
-                                                            r#type: "command".to_string(),
-                                                            message: hostname
-                                                                .into_string()
-                                                                .unwrap(),
-                                                            authcode: "0".to_string(),
-                                                        })
-                                                        .unwrap(),
-                                                    )
-                                                    .await;
+                                                let server_name_response = ServerNameResponse { 
+                                                    message: MessagePayload {
+                                                                r#type: "command".to_string(),
+                                                                message: hostname
+                                                                    .into_string()
+                                                                    .unwrap(),
+                                                                authcode: "0".to_string(),
+                                                            }
+                                                };
+                                                let _ = server_name_response.node_transport(&arc_state_clone).await;
+                                                // let _ = out_tx
+                                                //     .send(
+                                                //         serde_json::to_string(&MessagePayload {
+                                                //             r#type: "command".to_string(),
+                                                //             message: hostname
+                                                //                 .into_string()
+                                                //                 .unwrap(),
+                                                //             authcode: "0".to_string(),
+                                                //         })
+                                                //         .unwrap(),
+                                                //     )
+                                                //     .await;
                                             }
                                         }
                                     } else {

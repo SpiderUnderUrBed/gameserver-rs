@@ -13,13 +13,14 @@ mod proto {
     tonic::include_proto!("main");
 }
 
-
 pub trait NodeTransportable {
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
+
 pub struct DeleteServerRequest {
     pub metadata: MetadataTypes,
 }
+
 // NodeTransportable
 impl NodeTransportable for DeleteServerRequest {
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
