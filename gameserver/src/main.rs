@@ -38,6 +38,8 @@ use crate::databasespec::ServerMetadata;
 // use crate::filesystem::FileChunk;
 // use crate::filesystem::FileOperations;
 use crate::providers::{Custom, Platforms, Provider, ProviderConfig, ProviderDbList, ProviderGame};
+use crate::transport::node_transport::ConnectionHandler;
+use crate::transport::node_transport::ConnectionManager;
 use crate::transport::node_transport::ConsoleRequest;
 use crate::transport::node_transport::CreateServerRequest;
 use crate::transport::node_transport::DeleteServerRequest;
@@ -752,6 +754,8 @@ fn get_env_var_or_arg<T: std::str::FromStr>(env_var: &str, default: Option<T>) -
         .or(default)
 }
 
+async fn ensure_server_directory() {}
+
 // Main function, entrypoint to the program, initalizes the app state, serves a tcp connection
 // at the specified and does most of the intial handling of data, including switching between modes (json and file)
 // and forwards some messages to other functions to handle command or console data, does health checks and set up the forwarding
@@ -760,7 +764,8 @@ fn get_env_var_or_arg<T: std::str::FromStr>(env_var: &str, default: Option<T>) -
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config_local_url = get_env_var_or_arg("LOCALURL", Some(StaticLocalUrl.to_string()));
 
-    let listener = TcpListener::bind(config_local_url.clone().unwrap()).await?;
+    let listener = ConnectionManager::serve(config_local_url.clone().unwrap()).await?;
+    //TcpListener::bind(config_local_url.clone().unwrap()).await?;
     println!("Listening on {}", config_local_url.unwrap());
 
     let shared_stdin: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
@@ -796,6 +801,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
     drop(db);
 
+    ensure_server_directory().await;
+
     let state = AppState {
         current_server: Arc::new(Mutex::new(None)),
         jailed_user: "server".to_string(),
@@ -821,7 +828,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let health_monitor_state = arc_state.clone();
 
-    let mut kill_socket = false;
+    let kill_socket = false;
     const FILE_DELIMITER: &[u8] = b"<|END_OF_FILE|>";
 
     // TODO: sometimes i use kill_socket and sometimes i just break the loop, be consistent
@@ -883,22 +890,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     loop {
-        let (socket, addr) = listener.accept().await?;
-        println!("[Connection] New client from {}", addr);
+        let (mut conn_handler, addr_option) = listener.accept_connection().await?;
+        //let mut conn_handler = ConnectionHandler::new();
+        let addr = addr_option.unwrap_or("unknown".to_string());
+        // let addr_option = conn_handler.accept_connection().await?;
+        //let (socket, addr) = listener.accept().await?;
+        println!(
+            "[Connection] New client from {}",
+            addr
+        );
 
         let stdin_ref = shared_stdin.clone();
         //let hostname_ref = hostname_ref.clone();
         let arc_state_clone = Arc::clone(&arc_state);
 
         tokio::spawn(async move {
-            println!("[{}] DEBUG: Connection task started", addr);
+            println!(
+                "[{}] DEBUG: Connection task started",
+                addr
+            );
 
-            let (mut read_half, mut write_half) = socket.into_split();
+            //let (mut read_half, mut write_half) = socket.into_split();
             let (out_tx, mut out_rx) = mpsc::channel::<String>(128);
             let (cmd_tx, mut cmd_rx) = mpsc::channel::<String>(10_000);
 
             // let mut output_tx = arc_state_clone.output_tx.lock().await;
             // *output_tx = Some(out_tx.clone());
+            let inner_out_tx = out_tx.clone();
             if let Ok(mut guard) = arc_state_clone.output_tx.try_lock() {
                 println!("assigning out_tx");
                 *guard = Some(out_tx);
@@ -921,10 +939,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             let arc_state_for_writer = arc_state_clone.clone();
             let addr_clone = addr.clone();
-            tokio::spawn(async move {
-                let mut retry_interval = tokio::time::interval(tokio::time::Duration::from_secs(2));
-                let mut needs_server_status_check = server_output_rx.is_none();
 
+            let mut temp_buf = [0u8; 20632];
+
+            let mut retry_interval = tokio::time::interval(tokio::time::Duration::from_secs(2));
+            let mut needs_server_status_check = server_output_rx.is_none();
+
+
+            tokio::spawn(async move {
                 loop {
                     if needs_server_status_check {
                         let server_running_lock = arc_state_for_writer.server_running.lock().await;
@@ -944,69 +966,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                     + "\n";
 
                                 if let Err(e) =
-                                    write_half.write_all(connection_msg.as_bytes()).await
+                                    inner_out_tx.send(connection_msg.to_string()).await
                                 {
                                     eprintln!("[{}] Write error: {}", addr_clone, e);
                                     break;
-                                }
+                                };
+                                // if let Err(e) =
+                                //     write_half.write_all(connection_msg.as_bytes()).await
+                                // {
+                                //     eprintln!("[{}] Write error: {}", addr_clone, e);
+                                //     break;
+                                // }
                             }
                         }
                     }
-
-                    tokio::select! {
-                        Some(msg) = cmd_rx.recv() => {
-                            let payload = serde_json::json!({
-                                "type": "info",
-                                "data": msg,
-                                "authcode": "0"
-                            }).to_string() + "\n";
-                            //println!(" writing back cmd {:#?}", payload.clone());
-                            if let Err(e) = write_half.write_all(payload.as_bytes()).await {
-                                eprintln!("[{}] Write error: {}", addr_clone, e);
-                                break;
-                            }
+                    let server_msg = async {
+                        if let Some(rx) = &mut server_output_rx {
+                            rx.recv().await
+                        } else {
+                            retry_interval.tick().await;
+                            Err(broadcast::error::RecvError::Closed)
                         }
-
-                        Some(out) = out_rx.recv() => {
-                            //println!(" writing back out {:#?}", out.clone());
-                            if let Err(e) = write_half.write_all((out + "\n").as_bytes()).await {
-                                eprintln!("[{}] Write error: {}", addr_clone, e);
-                                break;
+                    };
+                    // } => {
+                    match server_msg.await {
+                        Ok(msg) => {
+                            if let Err(e) = inner_out_tx.send(msg).await {
+                                eprintln!("Write error: {}", e);
                             }
+                            break;
+                            // if let Err(e) = write_half.write_all((msg + "\n").as_bytes()).await {
+                            //     eprintln!("[{}] Write error: {}", addr_clone, e);
+                            //     break;
+                            // }
                         }
-
-                        server_msg = async {
-                            if let Some(rx) = &mut server_output_rx {
-                                rx.recv().await
-                            } else {
-                                retry_interval.tick().await;
-                                Err(broadcast::error::RecvError::Closed)
-                            }
-                        } => {
-                            match server_msg {
-                                Ok(msg) => {
-                                    if let Err(e) = write_half.write_all((msg + "\n").as_bytes()).await {
-                                        eprintln!("[{}] Write error: {}", addr_clone, e);
-                                        break;
-                                    }
-                                }
-                                Err(broadcast::error::RecvError::Lagged(_)) => {
-                                    println!("[{}] Lagged behind server output, catching up", addr_clone);
-                                    continue;
-                                }
-                                Err(broadcast::error::RecvError::Closed) => {
-                                    needs_server_status_check = true;
-                                }
-                            }
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            println!("[{}] Lagged behind server output, catching up", addr_clone);
+                            continue;
                         }
-
-                        _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {
-                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            needs_server_status_check = true;
+                        } //}
+                          //}
                     }
                 }
             });
-            let mut read_buf = Vec::new();
-            let mut temp_buf = [0u8; 20632];
+            let (mut writer, mut reader) = conn_handler.split().unwrap();
+            // tokio::select! {
+
+            //     _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {
+            //     }
+            // }
+            //}
+            //});
+            //Vec::new();
 
             // There are two main read modes, Json for message processing and MigrationFile for file transfers, althought it should
             // be renamed to just file transfer, as it switches to this mode during a migration or from the file transfers from the server
@@ -1036,22 +1049,74 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 if kill_socket == true {
                     println!("Shutting down");
                     //write_half.shutdown();
-                    kill_socket = false;
+                    //kill_socket = false;
                     break;
                 }
                 tokio::select! {
-                    result = read_half.read(&mut temp_buf) => {
-                        let n = match result {
-                            Ok(0) => break,
-                            Ok(n) => n,
-                            Err(e) => {
-                                eprintln!("[{}] Read error: {}", addr, e);
+                    // result = read_half.read(&mut temp_buf) => {
+                    //     let n = match result {
+                    //         Ok(0) => break,
+                    //         Ok(n) => n,
+                    //         Err(e) => {
+                    //             eprintln!("[{}] Read error: {}", addr, e);
+                    //             break;
+                    //         }
+                    //     };
+                    //     conn_handler.append_bytes((&temp_buf[..n]).to_vec()).await;
+                    //     // conn_handler.inner().extend_from_slice(&temp_buf[..n]);
+                    // },
+                        Some(msg) = cmd_rx.recv() => {
+                            let payload = serde_json::json!({
+                                "type": "info",
+                                "data": msg,
+                                "authcode": "0"
+                            }).to_string() + "\n";
+                            //println!(" writing back cmd {:#?}", payload.clone());
+                            if let Err(e) = writer.send(payload.as_bytes().to_vec()).await {
+                                eprintln!("[{}] Write error: {}", addr, e);
                                 break;
-                            }
-                        };
-                        read_buf.extend_from_slice(&temp_buf[..n]);
-                    }
+                            };
+                        }
 
+                        Some(out) = out_rx.recv() => {
+                            //println!(" writing back out {:#?}", out.clone());
+                            // if let Err(e) = write_half.write_all((out + "\n").as_bytes()).await {
+                            //     eprintln!("[{}] Write error: {}", addr_clone, e);
+                            //     break;
+                            // }
+                            if let Err(e) = writer.send((out + "\n").as_bytes().to_vec()).await {
+                                eprintln!("[{}] Write error: {}", addr, e);
+                                break;
+                            };
+                        }
+
+                        // server_msg = async {
+                        //     if let Some(rx) = &mut server_output_rx {
+                        //         rx.recv().await
+                        //     } else {
+                        //         retry_interval.tick().await;
+                        //         Err(broadcast::error::RecvError::Closed)
+                        //     }
+                        // } => {
+                        //     match server_msg {
+                        //         Ok(msg) => {
+                        //             if let Err(e) = write_half.write_all((msg + "\n").as_bytes()).await {
+                        //                 eprintln!("[{}] Write error: {}", addr_clone, e);
+                        //                 break;
+                        //             }
+                        //         }
+                        //         Err(broadcast::error::RecvError::Lagged(_)) => {
+                        //             println!("[{}] Lagged behind server output, catching up", addr_clone);
+                        //             continue;
+                        //         }
+                        //         Err(broadcast::error::RecvError::Closed) => {
+                        //             needs_server_status_check = true;
+                        //         }
+                        //     }
+                        // }
+                    _ = reader.handle_request(&mut conn_handler) => {
+                       //println!("got a request");
+                    },
                     _ = tick.tick() => {}
 
                     _ = tokio::time::sleep(tokio::time::Duration::from_secs(120)) => {
@@ -1060,8 +1125,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 }
 
                 const MAX_BUFFER_SIZE: usize = 50 * 1024 * 1024;
-                if read_buf.len() > MAX_BUFFER_SIZE {
-                    read_buf.clear();
+                if conn_handler.inner().len() > MAX_BUFFER_SIZE {
+                    conn_handler.inner().clear();
                     mode = ReadMode::Json;
                     continue;
                 }
@@ -1070,38 +1135,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 //let cloned_db_mutex = state.db.clone();
 
                 loop {
+                    // Mode switching is only valid for TCP
+                    // GRPC does not need it as it is inherently seperated
                     match &mut mode {
                         ReadMode::Json => {
                             let mut found_message = false;
 
-                            while let Some(newline_pos) = read_buf.iter().position(|&b| b == b'\n')
-                            {
-                                let line = &read_buf[..newline_pos];
+                            //while let Some(newline_pos) = conn_handler.inner().iter().position(|&b| b == b'\n')
+                            // println!("before next");
+                            while let Ok(_) = conn_handler.next() {
+                                // println!("got next");
+                                // let line = &conn_handler.inner()[..newline_pos];
 
-                                if line.is_empty() {
-                                    if newline_pos + 1 <= read_buf.len() {
-                                        read_buf.drain(..newline_pos + 1);
-                                    } else {
-                                        read_buf.clear();
-                                    }
+                                // if line.is_empty() {
+                                //     if newline_pos + 1 <= conn_handler.inner().len() {
+                                //         conn_handler.inner().drain(..newline_pos + 1);
+                                //     } else {
+                                //         conn_handler.inner().clear();
+                                //     }
+                                //     continue;
+                                // }
+
+                                // let line_str = String::from_utf8_lossy(line);
+                                let line_str_result = conn_handler.recv_line().await;
+                                if line_str_result.is_err() {
                                     continue;
                                 }
-
-                                let line_str = String::from_utf8_lossy(line);
-
-                                if line_str.trim() == "<|END_OF_FILE|>" {
-                                    if newline_pos + 1 <= read_buf.len() {
-                                        read_buf.drain(..newline_pos + 1);
-                                    } else {
-                                        read_buf.clear();
-                                    }
+                                let mut line_str = line_str_result.unwrap();
+                                line_str = line_str.trim_matches(|c: char| c.is_whitespace() || c == '\0').to_string();
+                                // println!("got line str {}", line_str.clone());
+                                conn_handler.remove_current_segment_or_clear();
+                                // println!("got line str '{}'", line_str.clone());
+                                //println!("got line {}", line_str.clone());
+                                if line_str == "<|END_OF_FILE|>" {
+                                    // conn_handler.remove_current_segment_or_clear();
+                                    // if newline_pos + 1 <= conn_handler.inner().len() {
+                                    //     conn_handler.inner().drain(..newline_pos + 1);
+                                    // } else {
+                                    //     conn_handler.inner().clear();
+                                    // }
                                     found_message = true;
                                     continue;
                                 }
-                                if line_str.trim().starts_with('{')
-                                    && line_str.trim().ends_with('}')
+                                if true
                                 {
-                                    if let Ok(json_value) = serde_json::from_slice::<Value>(line) {
+                                    if let Ok(json_value) = serde_json::from_str::<Value>(&line_str)
+                                    {
                                         log_requests(
                                             json_value.clone(),
                                             addr.to_string(),
@@ -1647,15 +1726,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                 request.clone().into_typed_request::<FileRequest>()
                                             {
                                                 println!("got a file request");
-                                                let file_operation_response = FileOperationResponse {
-                                                    data: handle_file_request(
-                                                        &arc_state_clone,
-                                                        file_request.common,
-                                                    ).await,
-                                                };
-                                                let _ = file_operation_response.node_transport(&arc_state_clone).await;
-                                                
-                                            
+                                                let file_operation_response =
+                                                    FileOperationResponse {
+                                                        data: handle_file_request(
+                                                            &arc_state_clone,
+                                                            file_request.common,
+                                                        )
+                                                        .await,
+                                                    };
+                                                println!("{:#?}", file_operation_response);
+                                                let _ = file_operation_response
+                                                    .node_transport(&arc_state_clone)
+                                                    .await;
+
                                                 // let response = handle_file_request(
                                                 //     &arc_state_clone,
                                                 //     file_request.common,
@@ -1666,11 +1749,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                             if let Ok(_) =
                                                 request.clone().into_typed_request::<Ping>()
                                             {
+                                                println!("got ping request");
                                                 //         //let out_tx_clone = out_tx.clone();
                                                 let pong = PingResponse {
-                                                    message: SimpleMessage { message: "pong".to_string() }
+                                                    message: SimpleMessage {
+                                                        message: "pong".to_string(),
+                                                    },
                                                 };
                                                 let _ = pong.node_transport(&arc_state_clone).await;
+                                                //println!("sent out pong");
                                                 // let pong = SimpleMessage {
                                                 //     message: "pong".to_string(),
                                                 // };
@@ -1753,27 +1840,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                             pick_platform(provider)
                                                         {
                                                             println!("Sending out the info");
-                                                            let server_data_response = ServerDataResponse {
-                                                                state: GetState {
-                                                                            name: platform
-                                                                                .default_name
-                                                                                .unwrap_or(
-                                                                                    "".to_string(),
-                                                                                ),
-                                                                            start_keyword: platform
-                                                                                .start_keyword
-                                                                                .unwrap_or(
-                                                                                    "".to_string(),
-                                                                                ),
-                                                                            stop_keyword: platform
-                                                                                .stop_keyword
-                                                                                .unwrap_or(
-                                                                                    "".to_string(),
-                                                                                ),
-                                                                        }
-                                                            };
-                                                            
-                                                            let _ = server_data_response.node_transport(&arc_state_clone).await;
+                                                            let server_data_response =
+                                                                ServerDataResponse {
+                                                                    state: GetState {
+                                                                        name: platform
+                                                                            .default_name
+                                                                            .unwrap_or(
+                                                                                "".to_string(),
+                                                                            ),
+                                                                        start_keyword: platform
+                                                                            .start_keyword
+                                                                            .unwrap_or(
+                                                                                "".to_string(),
+                                                                            ),
+                                                                        stop_keyword: platform
+                                                                            .stop_keyword
+                                                                            .unwrap_or(
+                                                                                "".to_string(),
+                                                                            ),
+                                                                    },
+                                                                };
+
+                                                            let _ = server_data_response
+                                                                .node_transport(&arc_state_clone)
+                                                                .await;
                                                             // let server_data_response = serde_json::to_string(
                                                             //             &GetState {
                                                             //                 name: platform
@@ -1812,13 +1902,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                     &arc_state_clone.server_running.lock().await;
                                                 //println!("{:#?}", status);
                                                 let server_state_response = ServerStateResponse {
-                                                    message: MessagePayload { 
+                                                    message: MessagePayload {
                                                         r#type: "server_state".to_string(),
                                                         message: status.to_string(),
                                                         authcode: "0".to_string(),
-                                                    }
+                                                    },
                                                 };
-                                                let _ = server_state_response.node_transport(&arc_state_clone).await;
+                                                let _ = server_state_response
+                                                    .node_transport(&arc_state_clone)
+                                                    .await;
                                                 // let status_message = MessagePayload {
                                                 //     r#type: "server_state".to_string(),
                                                 //     message: status.to_string(),
@@ -1839,16 +1931,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                 // };
                                                 let hostname =
                                                     hostname::get().unwrap_or("unknown".into());
-                                                let server_name_response = ServerNameResponse { 
+                                                let server_name_response = ServerNameResponse {
                                                     message: MessagePayload {
-                                                                r#type: "command".to_string(),
-                                                                message: hostname
-                                                                    .into_string()
-                                                                    .unwrap(),
-                                                                authcode: "0".to_string(),
-                                                            }
+                                                        r#type: "command".to_string(),
+                                                        message: hostname.into_string().unwrap(),
+                                                        authcode: "0".to_string(),
+                                                    },
                                                 };
-                                                let _ = server_name_response.node_transport(&arc_state_clone).await;
+                                                let _ = server_name_response
+                                                    .node_transport(&arc_state_clone)
+                                                    .await;
                                                 // let _ = out_tx
                                                 //     .send(
                                                 //         serde_json::to_string(&MessagePayload {
@@ -1870,13 +1962,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                     break;
                                 }
 
-                                if newline_pos + 1 <= read_buf.len() {
-                                    read_buf.drain(..newline_pos + 1);
+                                if conn_handler.has_remaining_buffer().await {
                                     found_message = true;
-                                } else {
-                                    read_buf.clear();
-                                    break;
                                 }
+                                conn_handler.remove_current_segment_or_clear();
+                                // if newline_pos + 1 <= conn_handler.inner().len() {
+                                //     conn_handler.inner().drain(..newline_pos + 1);
+                                //     found_message = true;
+                                // } else {
+                                //     conn_handler.inner().clear();
+                                //     break;
+                                // }
                             }
 
                             if !found_message {
@@ -1894,9 +1990,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         } => {
                             *last_activity = tokio::time::Instant::now();
 
-                            if let Some(delim_pos) = find_subsequence(&read_buf, FILE_DELIMITER) {
+                            if let Some(delim_pos) =
+                                find_subsequence(&conn_handler.inner(), FILE_DELIMITER)
+                            {
                                 if delim_pos > 0 {
-                                    let _ = current_file.write_all(&read_buf[..delim_pos]).await;
+                                    let _ = current_file
+                                        .write_all(&conn_handler.inner()[..delim_pos])
+                                        .await;
                                     *bytes_written += delim_pos as u64;
                                 }
 
@@ -1905,10 +2005,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 let _ = cleanup_end_file_markers(&file_path, file_name).await;
 
                                 let drain_end = delim_pos + FILE_DELIMITER.len();
-                                if drain_end <= read_buf.len() {
-                                    read_buf.drain(..drain_end);
+                                if drain_end <= conn_handler.inner().len() {
+                                    conn_handler.inner().drain(..drain_end);
                                 } else {
-                                    read_buf.clear();
+                                    conn_handler.inner().clear();
                                 }
 
                                 mode = ReadMode::Json;
@@ -1916,11 +2016,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             }
 
                             let keep_buffer_size = FILE_DELIMITER.len() + 1;
-                            if read_buf.len() > keep_buffer_size {
-                                let write_size = read_buf.len() - keep_buffer_size;
-                                let _ = current_file.write_all(&read_buf[..write_size]).await;
+                            if conn_handler.inner().len() > keep_buffer_size {
+                                let write_size = conn_handler.inner().len() - keep_buffer_size;
+                                let _ = current_file
+                                    .write_all(&conn_handler.inner()[..write_size])
+                                    .await;
                                 *bytes_written += write_size as u64;
-                                read_buf.drain(..write_size);
+                                conn_handler.inner().drain(..write_size);
                             } else {
                                 break;
                             }

@@ -1,11 +1,216 @@
 use std::{any::Any, error::Error};
 
+use crate::MessagePayload;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
-use tcp_filesystem::{FileRequestMessage};
-use crate::MessagePayload;
+use tcp_filesystem::FileRequestMessage;
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{tcp::{OwnedReadHalf, OwnedWriteHalf}, TcpListener, TcpStream}};
 
 use crate::{AppState, GetState, IncomingMessage, IncomingMessageWithMetadata, SimpleMessage};
+
+pub struct ConnectionManager {
+    listner: TcpListener,
+    connections: Vec<ConnectionManager>
+}
+impl ConnectionManager {
+    pub async fn serve(url: String) -> Result<ConnectionManager, Box<dyn std::error::Error + Send + Sync>> {
+        let listner = TcpListener::bind(url).await?;
+    
+        Ok(
+            ConnectionManager { 
+                listner, 
+                connections: vec![]
+            }
+        )
+    }
+    pub async fn accept_connection(
+        &self,
+    ) -> Result<(ConnectionHandler, Option<String>), Box<dyn std::error::Error + Send + Sync>> {
+        let (socket, addr) = self.listner.accept().await?;
+        let handler = ConnectionHandler {
+            stream: Some(socket),
+            read_buf: vec![],
+            newline_pos: 0,
+            //last_request: None
+        };
+        Ok((handler, Some(addr.to_string())))
+    }
+}
+
+pub struct ConnectionHandler {
+    stream: Option<TcpStream>,
+    read_buf: Vec<u8>,
+    newline_pos: usize,
+    //last_request: Option<String>
+}
+
+impl ConnectionHandler {
+    pub fn new() -> ConnectionHandler {
+        ConnectionHandler {
+            stream: None,
+            read_buf: Vec::new(),
+            newline_pos: 0,
+            //last_request: None
+        }
+    }
+
+    pub fn inner(&mut self) -> &mut Vec<u8> {
+        &mut self.read_buf
+    }
+
+    pub fn clear(&self) {}
+    pub fn remove_current_segment_or_clear(&mut self) {
+        self.remove_segment_or_clear(self.newline_pos);
+    }
+    fn remove_segment_or_clear(&mut self, position: usize) {
+        if position + 1 <= self.inner().len() {
+            self.inner().drain(..position + 1);
+        } else {
+            self.inner().clear();
+        }
+    }
+    //pub fn next() -> Option<usize> {
+    pub fn next(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if let Some(pos) = self.read_buf.iter().position(|&b| b == b'\n') {
+            self.newline_pos = pos;
+            //self.remove_current_segment_or_clear();
+            Ok(())
+        } else {
+            Err("Did not find next position".into())
+        }
+        //todo!()
+    }
+    pub async fn recv_line(&mut self) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let newline_pos = self.newline_pos.clone();
+        let line = &self.read_buf[..newline_pos];
+
+        if line.is_empty() {
+            self.remove_current_segment_or_clear();
+            return Err("Line is empty".into());
+        }
+
+        let line_str = String::from_utf8_lossy(line);
+        // if let Some(last_request) = &self.last_request {
+        //     if *last_request == line_str {
+        //         return Err("Line is a duplicate".into());
+        //     }
+        // }
+        // self.last_request = Some(line_str.to_string());
+
+        //self.remove_current_segment_or_clear();
+        Ok(line_str.to_string())
+    }
+    pub async fn append_bytes(&mut self, bytes: Vec<u8>) {
+        self.inner().extend_from_slice(&bytes);
+    }
+    pub async fn has_remaining_buffer(&self) -> bool {
+        self.newline_pos + 1 <= self.read_buf.len()
+    }
+    pub async fn handle_request(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // read_half.read(&mut temp_buf) => {
+        //     let n = match result {
+        //         Ok(0) => break,
+        //         Ok(n) => n,
+        //         Err(e) => {
+        //             eprintln!("[{}] Read error: {}", addr, e);
+        //             break;
+        //         }
+        //     };
+        //     read_buf.append_bytes((&temp_buf[..n]).to_vec()).await;
+        //     // read_buf.inner().extend_from_slice(&temp_buf[..n]);
+        // }
+        if let Some(stream) = &mut self.stream {
+            let mut temp_buf = vec![0u8; 4096];
+            stream.read(&mut temp_buf).await?;
+            Ok(())
+        } else {
+            Err("no stream exists".into())
+        }
+        //Ok(())
+    }
+    pub async fn send(
+        &mut self,
+        bytes: Vec<u8>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if let Some(stream) = &mut self.stream {
+            stream.write_all(&bytes).await?;
+            Ok(())
+        } else {
+            Err("no stream".into())
+        }
+    }
+    pub async fn recv(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+        todo!()
+    }
+    // pub async fn accept_connection(
+    //     &self,
+    // ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
+    //     Ok(None)
+    // }
+    pub fn split(&mut self) -> Result<(Writer, Reader), Box<dyn std::error::Error + Send + Sync>> {
+        let stream = self.stream.take().ok_or("no stream set")?;
+        let (read_half, write_half) = stream.into_split();
+        // Ok((Writer { write_half }, Reader { read_half, read_buf: Some(&self.read_buf) }))
+        Ok((Writer { write_half }, Reader { read_half }))
+    }
+    // pub async fn handle_connections() {
+    // }
+}
+pub struct Writer {
+    write_half: OwnedWriteHalf,
+}
+impl Writer {
+    pub async fn send(
+        &mut self,
+        bytes: Vec<u8>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.write_half.write_all(&bytes).await?;
+        Ok(())
+    }
+}
+pub struct Reader {
+    read_half: OwnedReadHalf,
+    //read_buf: Option<&Vec<u8>>,
+}
+impl Reader {
+    pub async fn recv(&mut self) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut temp_buf = vec![0u8; 4096];
+        let n = self.read_half.read(&mut temp_buf).await?;
+
+        if n == 0 {
+            return Err("connection closed by peer or no bytes".into());
+        }
+
+        println!("got {}", String::from_utf8_lossy(&temp_buf[..n]));
+        Ok(temp_buf)
+    }
+    pub async fn handle_request(&mut self, handler: &mut ConnectionHandler) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // read_half.read(&mut temp_buf) => {
+        //     let n = match result {
+        //         Ok(0) => break,
+        //         Ok(n) => n,
+        //         Err(e) => {
+        //             eprintln!("[{}] Read error: {}", addr, e);
+        //             break;
+        //         }
+        //     };
+        //     read_buf.append_bytes((&temp_buf[..n]).to_vec()).await;
+        //     // read_buf.inner().extend_from_slice(&temp_buf[..n]);
+        // }
+        // let mut temp_buf = vec![0u8; 4096];
+        // self.read_half.read(&mut temp_buf).await?;
+        // println!("got {}", String::from_utf8_lossy(&temp_buf));
+        // Ok(())
+        let mut temp_buf = vec![0u8; 4096];
+        let n = self.read_half.read(&mut temp_buf).await?;
+
+        if n == 0 {
+            return Err("connection closed by peer or no bytes".into());
+        }
+        handler.append_bytes(temp_buf.clone()).await;
+        Ok(())
+    }
+}
 
 #[derive(Serialize, Deserialize, Clone)]
 pub enum RequestTypes {
@@ -98,7 +303,6 @@ impl RequestHandler {
         }
         //println!("{:#?}", serde_json::from_value::<FileRequest>(value.clone()).iter().cloned());
         if let Ok(file_request) = serde_json::from_value::<FileRequest>(value.clone()) {
-            println!("Got a file request");
             return Some(RequestTypes::FileRequest(file_request));
         }
 
@@ -232,17 +436,18 @@ pub trait NodeTransportable {
 }
 
 pub struct ServerDataResponse {
-    pub state: GetState
+    pub state: GetState,
 }
 impl NodeTransportable for ServerDataResponse {
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         let tx = state.output_tx.lock().await.clone().unwrap();
         let _ = tx.send(serde_json::to_string(&self.state)?).await;
-        Ok(())    }
+        Ok(())
+    }
 }
 
 pub struct PingResponse {
-    pub message: SimpleMessage
+    pub message: SimpleMessage,
 }
 impl NodeTransportable for PingResponse {
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -252,8 +457,9 @@ impl NodeTransportable for PingResponse {
     }
 }
 
+#[derive(Debug)]
 pub struct FileOperationResponse {
-    pub data: String
+    pub data: String,
 }
 impl NodeTransportable for FileOperationResponse {
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -264,7 +470,7 @@ impl NodeTransportable for FileOperationResponse {
 }
 
 pub struct ServerNameResponse {
-    pub message: MessagePayload
+    pub message: MessagePayload,
 }
 impl NodeTransportable for ServerNameResponse {
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -275,7 +481,7 @@ impl NodeTransportable for ServerNameResponse {
 }
 
 pub struct ServerStateResponse {
-    pub message: MessagePayload
+    pub message: MessagePayload,
 }
 impl NodeTransportable for ServerStateResponse {
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {

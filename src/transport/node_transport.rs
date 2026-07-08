@@ -12,9 +12,6 @@ use std::{error::Error, net::SocketAddr, sync::{atomic::Ordering, Arc}, time::{D
 use anyhow::anyhow;
 
 
-pub trait ImmediateTransportable {
-    async fn immediate_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>>;
-}
 
 
 pub struct PasswordRequest {
@@ -26,6 +23,11 @@ pub struct CapabilitiesRequest {
 pub struct ServernameRequest {
     pub ip: String
 }
+pub trait ImmediateTransportable {
+    async fn immediate_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>>;
+}
+
+
 impl ImmediateTransportable for PasswordRequest {
     async fn immediate_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         let auth_msg = serde_json::to_vec(&AuthTcpMessage {
@@ -44,6 +46,7 @@ impl ImmediateTransportable for CapabilitiesRequest {
         Ok(())
     }
 }
+
 impl ImmediateTransportable for ServernameRequest {
     async fn immediate_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         let cmd_msg = serde_json::to_vec(&MessagePayload {
@@ -78,58 +81,6 @@ impl ImmediateTransportable for ServernameRequest {
     }
 }
 
-// pub fn handle_password(state: &AppState, password: String) -> Result<(), Box<dyn Error + Send + Sync>>{
-//     // let initial_node_password: String =
-//     //     get_env_var_or_arg("INITIAL_NODE_PASSWORD", Some(String::default())).unwrap();
-//     let auth_msg = serde_json::to_vec(&AuthTcpMessage {
-//         password,
-//     })?;
-//     let _ = state.proxy_tx.send(auth_msg);
-//     // writer.write_all(auth_msg.as_bytes()).await?;
-//     Ok(())
-// }
-// pub fn handle_capabilities(state: &AppState, capabilities: Vec<String>) -> Result<(), Box<dyn Error + Send + Sync>>{
-//     let capability_msg = serde_json::to_vec(&List {
-//         list: ToplevelApiCalls::Capabilities(capabilities),
-//     })?;
-//     let _ = state.proxy_tx.send(capability_msg);
-//     // writer.write_all(capability_msg.as_bytes()).await?;
-
-
-//     Ok(())
-// }
-// pub async fn handle_servername(state: &mut AppState, ip: String) -> Result<(), Box<dyn Error + Send + Sync>>{
-//     let cmd_msg = serde_json::to_vec(&MessagePayload {
-//         r#type: "command".to_string(),
-//         message: "server_name".to_string(),
-//         authcode: "0".to_string(),
-//     })?;
-//     let _ = state.proxy_tx.send(cmd_msg);
-//     // writer.write_all(cmd_msg.as_bytes()).await?;
-
-//     'name: {
-//         // let mut state = arc_state.write().await;
-//         if let Ok(Ok(bytes)) = timeout(Duration::from_millis(1000), state.tcp_rx.recv()).await
-//         {
-//             if let Ok(payload) = serde_json::from_slice::<IncomingMessage>(&bytes) {
-//                 state.current_node = NodeAndTCP {
-//                     name: payload.message,
-//                     ip: ip.clone(),
-//                     ..Default::default()
-//                 };
-//                 break 'name;
-//             }
-//         }
-//         state.current_node = NodeAndTCP {
-//             name: "main".to_string(),
-//             ip: ip.clone(),
-//             ..Default::default()
-//         };
-//     }
-
-//     Ok(())
-// }
-
 // does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
 // Changelog:
 // No more blocking with stream, if the caller wants the server connection to not be blocking its the callers job to spawn it in
@@ -145,7 +96,7 @@ pub async fn connect_to_server(
     //let (proxy_tx, _) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
     // let (proxy_tx, _) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
     // let (_, proxy_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
-    let (proxy_tx, proxy_rx) = {
+    let (proxy_tx, mut proxy_rx) = {
         let state_guard = arc_state.write().await;
         (state_guard.connection_handler.proxy_tx.clone(), state_guard.connection_handler.proxy_rx.resubscribe())
     };
@@ -170,10 +121,11 @@ pub async fn connect_to_server(
             Ok(Ok(mut stream)) => {
                 let peer = stream.peer_addr()?;
                 last_peer = Some(peer);
-
+                let cancel_token = CancellationToken::new();
                 {
                     let mut state_guard = arc_state.write().await;
-                    state_guard.cancel_current_conn = CancellationToken::new();
+                    //state_guard.connection_handler.stream = Some(&stream);
+                    state_guard.cancel_current_conn = cancel_token.clone();
                     state_guard.tcp_conn_status = Status::Up;
                 }
                 let ip = stream.peer_addr()?.ip().to_string();
@@ -185,12 +137,17 @@ pub async fn connect_to_server(
 
                 let mut proxy_rx_clone = proxy_rx.resubscribe();
                 let proxy_tx_clone = proxy_tx.clone();
-                let mut rx_clone = rx.resubscribe();
+                //let mut rx_clone = rx.resubscribe();
 
-                let arc_state_clone = arc_state.clone();
+                //let arc_state_clone = arc_state.clone();
+
                 tokio::spawn(async move {
                     loop {
                         tokio::select! {
+                            _ = cancel_token.cancelled() => {
+                                let _ = writer.shutdown();
+                                break;
+                            },
                             read_result = lines.next_line() => {
                                 match read_result {
                                     Ok(Some(line)) => {
@@ -252,7 +209,7 @@ pub async fn connect_to_server(
 
                 let result = handle_stream(
                         Arc::clone(&arc_state),
-                        &mut rx,
+                        &mut proxy_rx,
                         ip,
                         ws_tx.clone(),
                         internal_stream,
@@ -332,6 +289,24 @@ pub async fn connect_to_server(
         }
 
         sleep(CONNECTION_RETRY_DELAY).await;
+    }
+}
+
+pub async fn check_channel_health(
+    state: &AppState,
+    // tx: &broadcast::Sender<Vec<u8>>,
+    // mut rx: broadcast::Receiver<Vec<u8>>,
+) -> bool {
+    let (tx, mut rx) = (state.connection_handler.proxy_tx.clone(), state.connection_handler.proxy_rx.resubscribe());
+    match tx.send("ping".into()) {
+        Ok(_) => true,
+        Err(_) => return false,
+    };
+
+    match rx.recv().await {
+        Ok(_msg) => true,
+        Err(broadcast::error::RecvError::Closed) => false,
+        Err(broadcast::error::RecvError::Lagged(_)) => true,
     }
 }
 
@@ -432,6 +407,59 @@ impl NodeTransportable for DeleteServerRequest {
         Ok(())
     }
 }
+
+
+pub struct ConnectionHandler {
+    //stream: Option<&'static TcpStream>,
+    pub(crate) proxy_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
+    pub(crate) proxy_rx:  tokio::sync::broadcast::Receiver<Vec<u8>>,
+    pub(crate) tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
+    pub(crate) tcp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
+}
+impl ConnectionHandler {
+    pub fn new() -> Self {
+        let (tcp_tx, tcp_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+        let (proxy_tx, proxy_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+        ConnectionHandler {
+            //stream: None,
+            proxy_tx,
+            proxy_rx,
+            tcp_tx, 
+            tcp_rx
+        }
+    }
+    pub fn get_filesystem_stream(&self) -> (broadcast::Sender<Vec<u8>>, broadcast::Receiver<Vec<u8>>) {
+        (self.proxy_tx.clone(), self.proxy_rx.resubscribe())
+    }
+}
+impl Default for ConnectionHandler {
+    fn default() -> Self { 
+        let (tcp_tx, tcp_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+        let (proxy_tx, proxy_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+        ConnectionHandler {
+            //stream: None,
+            proxy_tx,
+            proxy_rx,
+            tcp_tx, 
+            tcp_rx
+        }
+    }
+}
+impl Clone for ConnectionHandler {
+    fn clone(&self) -> Self { 
+        ConnectionHandler { 
+            //stream: None, 
+            proxy_tx: self.proxy_tx.clone(), 
+            proxy_rx: self.proxy_rx.resubscribe(), tcp_tx: self.tcp_tx.clone(), 
+            tcp_rx: self.tcp_rx.resubscribe() 
+        }
+    }
+}
+// impl ConnectionHandler {
+//     pub async fn shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
+//         Ok(())
+//     }
+// }
 
 pub struct CreateServerRequest {
     pub metadata: MetadataTypes,
@@ -620,6 +648,13 @@ impl InternalTransportable for FilterRequest {
     }
 }
 
+// TODO: add and associated type and generic for Ok type while the errors be an eum
+trait ResultTransportable {
+    async fn transport_and_recv(
+        &self,
+        state: &AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>>;
+}
 // }
 pub struct Ping {}
 impl NodeTransportable for Ping {
@@ -628,6 +663,15 @@ impl NodeTransportable for Ping {
             message: "ping".to_string(),
         };
         let res = state.connection_handler.proxy_tx.send(serde_json::to_vec(&ping).unwrap());
+        Ok(())
+    }
+}
+impl ResultTransportable for Ping {
+    async fn transport_and_recv(
+        &self,
+        state: &AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>>{
+
         Ok(())
     }
 }

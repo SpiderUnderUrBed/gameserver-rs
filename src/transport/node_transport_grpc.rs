@@ -2,8 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::{net::TcpStream, sync::{broadcast, RwLock}, time::{sleep, timeout}};
-use tokio_util::sync::CancellationToken;
+use tokio::{net::{TcpStream}, sync::{broadcast, RwLock}, time::{sleep, timeout}};
 
 use crate::{
     database::databasespec::Filters, handle_stream, AppState, MessagePayload, MessagePayloadWithMetadata, MetadataTypes, SimpleMessage, SrcAndDest, Status, StreamResult, CONNECTION_RETRY_DELAY, CONNECTION_TIMEOUT
@@ -14,25 +13,117 @@ use std::{error::Error, net::SocketAddr, sync::Arc, time::Instant};
 use std::time::Duration;
 use anyhow::anyhow;
 
+use tonic::transport::Channel;
 mod proto {
     tonic::include_proto!("main");
 }
-use proto::{general_client::GeneralClient, DeleteServerRequest as DeleteServerRequestGrpc, server_edit_server::ServerEdit};
+use proto::{general_client::GeneralClient, filesystem_client::FilesystemClient, server_edit_client::ServerEditClient, server_manage_client::ServerManageClient, DeleteServerRequest as DeleteServerRequestGrpc, server_edit_server::ServerEdit};
 
+#[derive(Clone)]
+pub struct Clients {
+    general_client: GeneralClient<Channel>,
+    server_manage_client: ServerManageClient<Channel>,
+    server_edit_client: ServerEditClient<Channel>,
+    filesystem_client: FilesystemClient<Channel>
+}
 
+pub struct ConnectionHandler {
+    //stream: Option<&'static TcpStream>,
+    clients: Option<Clients>,
+    proxy_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
+    proxy_rx:  tokio::sync::broadcast::Receiver<Vec<u8>>,
+    pub(crate) tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
+    pub(crate) tcp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
+}
+impl ConnectionHandler {
+    pub fn new() -> Self {
+        let (tcp_tx, tcp_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+        let (proxy_tx, proxy_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+        ConnectionHandler {
+            //stream: None,
+            proxy_tx,
+            proxy_rx,
+            tcp_tx, 
+            tcp_rx,
+            clients: None,
+        }
+    }
+    pub fn get_filesystem_stream(&self) -> (broadcast::Sender<Vec<u8>>, broadcast::Receiver<Vec<u8>>) {
+        (self.proxy_tx.clone(), self.proxy_rx.resubscribe())
+    }
+}
+impl Default for ConnectionHandler {
+    fn default() -> Self { 
+        let (tcp_tx, tcp_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+        let (proxy_tx, proxy_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+        ConnectionHandler {
+            //stream: None,
+            proxy_tx,
+            proxy_rx,
+            tcp_tx, 
+            tcp_rx,
+            clients: None
+        }
+    }
+}
+impl Clone for ConnectionHandler {
+    fn clone(&self) -> Self { 
+        ConnectionHandler { 
+            //stream: None, 
+            clients: self.clients.clone(),
+            proxy_tx: self.proxy_tx.clone(), 
+            proxy_rx: self.proxy_rx.resubscribe(), tcp_tx: self.tcp_tx.clone(), 
+            tcp_rx: self.tcp_rx.resubscribe() 
+        }
+    }
+}
+pub async fn check_channel_health(
+    state: &AppState,
+    // tx: &broadcast::Sender<Vec<u8>>,
+    // mut rx: broadcast::Receiver<Vec<u8>>,
+) -> bool {
+    let (tx, mut rx) = (state.connection_handler.proxy_tx.clone(), state.connection_handler.proxy_rx.resubscribe());
+    match tx.send("ping".into()) {
+        Ok(_) => true,
+        Err(_) => return false,
+    };
+
+    match rx.recv().await {
+        Ok(_msg) => true,
+        Err(broadcast::error::RecvError::Closed) => false,
+        Err(broadcast::error::RecvError::Lagged(_)) => true,
+    }
+}
+// impl ConnectionHandler {
+//     pub async fn shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
+//         Ok(())
+//     }
+// }
 
 
 
 // does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
 pub async fn connect_to_server(
     arc_state: Arc<RwLock<AppState>>,
-    mut tcp_url: String,
-    ws_tx: broadcast::Sender<String>,
-    end_if_timeout: bool,
-    block_with_stream: bool,
+    tcp_url: String,
+    _ws_tx: broadcast::Sender<String>,
+    _end_if_timeout: bool,
+    _block_with_stream: bool,
 ) -> Result<Option<SocketAddr>, Box<dyn Error + Send + Sync>> {
-    // let server_edit = 
-    let mut client = GeneralClient::connect(tcp_url).await;
+    let mut state = arc_state.write().await;
+
+    let channel = Channel::from_shared(tcp_url)?.connect().await?;
+    let general_client = GeneralClient::new(channel.clone());
+    let filesystem_client = FilesystemClient::new(channel.clone());
+    let server_edit_client = ServerEditClient::new(channel.clone());
+    let server_manage_client = ServerManageClient::new(channel.clone());
+
+    state.connection_handler.clients = Some(Clients {
+        general_client,
+        server_manage_client,
+        server_edit_client,
+        filesystem_client,
+    });
 
     Ok(None)
 }
@@ -219,6 +310,7 @@ impl ImmediateTransportable for CapabilitiesRequest {
         Ok(())
     }
 }
+
 impl ImmediateTransportable for ServernameRequest {
     async fn immediate_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         let cmd_msg = serde_json::to_vec(&MessagePayload {
@@ -226,7 +318,7 @@ impl ImmediateTransportable for ServernameRequest {
             message: "server_name".to_string(),
             authcode: "0".to_string(),
         })?;
-        let _ = state.connection_handler.tcp_tx.send(cmd_msg);
+        let _ = state.connection_handler.proxy_tx.send(cmd_msg);
         // writer.write_all(cmd_msg.as_bytes()).await?;
 
         'name: {
@@ -253,57 +345,6 @@ impl ImmediateTransportable for ServernameRequest {
     }
 }
 
-// pub fn handle_password(state: &AppState, password: String) -> Result<(), Box<dyn Error + Send + Sync>>{
-//     // let initial_node_password: String =
-//     //     get_env_var_or_arg("INITIAL_NODE_PASSWORD", Some(String::default())).unwrap();
-//     let auth_msg = serde_json::to_vec(&AuthTcpMessage {
-//         password,
-//     })?;
-//     let _ = state.tcp_tx.send(auth_msg);
-//     // writer.write_all(auth_msg.as_bytes()).await?;
-//     Ok(())
-// }
-// pub fn handle_capabilities(state: &AppState, capabilities: Vec<String>) -> Result<(), Box<dyn Error + Send + Sync>>{
-//     let capability_msg = serde_json::to_vec(&List {
-//         list: ToplevelApiCalls::Capabilities(capabilities),
-//     })?;
-//     let _ = state.tcp_tx.send(capability_msg);
-//     // writer.write_all(capability_msg.as_bytes()).await?;
-
-
-//     Ok(())
-// }
-// pub async fn handle_servername(state: &mut AppState, ip: String) -> Result<(), Box<dyn Error + Send + Sync>>{
-//     let cmd_msg = serde_json::to_vec(&MessagePayload {
-//         r#type: "command".to_string(),
-//         message: "server_name".to_string(),
-//         authcode: "0".to_string(),
-//     })?;
-//     let _ = state.tcp_tx.send(cmd_msg);
-//     // writer.write_all(cmd_msg.as_bytes()).await?;
-
-//     'name: {
-//         // let mut state = arc_state.write().await;
-//         if let Ok(Ok(bytes)) = timeout(Duration::from_millis(1000), state.tcp_rx.recv()).await
-//         {
-//             if let Ok(payload) = serde_json::from_slice::<IncomingMessage>(&bytes) {
-//                 state.current_node = NodeAndTCP {
-//                     name: payload.message,
-//                     ip: ip.clone(),
-//                     ..Default::default()
-//                 };
-//                 break 'name;
-//             }
-//         }
-//         state.current_node = NodeAndTCP {
-//             name: "main".to_string(),
-//             ip: ip.clone(),
-//             ..Default::default()
-//         };
-//     }
-
-//     Ok(())
-// }
 pub struct DeleteServerRequest {
     pub metadata: MetadataTypes,
 }

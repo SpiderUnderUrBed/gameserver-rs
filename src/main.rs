@@ -136,8 +136,9 @@ use database::User;
 
 mod transport;
 use crate::transport::node_transport::{
-    connect_to_server, CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FilterRequest, ImmediateTransportable, IntegrationKeyRequest, MigrateRequest, NodeTransportable, PasswordRequest, Ping, RawBytes, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StopServerRequest
+    check_channel_health, connect_to_server, CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FilterRequest, ImmediateTransportable, IntegrationKeyRequest, MigrateRequest, NodeTransportable, PasswordRequest, Ping, RawBytes, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StopServerRequest
 };
+use crate::transport::node_transport::ConnectionHandler;
 use crate::transport::node_transport::try_initial_connection;
 
 mod extra;
@@ -543,49 +544,6 @@ enum Status {
     Unhealthy,
 }
 
-pub struct ConnectionHandler {
-    request_number: AtomicU64,
-    proxy_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
-    proxy_rx:  tokio::sync::broadcast::Receiver<Vec<u8>>,
-    tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
-    tcp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
-}
-impl ConnectionHandler {
-    fn new() -> Self {
-        let (tcp_tx, tcp_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
-        let (proxy_tx, proxy_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
-        ConnectionHandler {
-            request_number: AtomicU64::new(0),
-            proxy_tx,
-            proxy_rx,
-            tcp_tx, 
-            tcp_rx
-        }
-    }
-}
-impl Default for ConnectionHandler {
-    fn default() -> Self { 
-        let (tcp_tx, tcp_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
-        let (proxy_tx, proxy_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
-        ConnectionHandler {
-            request_number: Default::default(),
-            proxy_tx,
-            proxy_rx,
-            tcp_tx, 
-            tcp_rx
-        }
-    }
-}
-impl Clone for ConnectionHandler {
-    fn clone(&self) -> Self { 
-        ConnectionHandler { request_number: AtomicU64::new(self.request_number.load(Ordering::SeqCst)), proxy_tx: self.proxy_tx.clone(), proxy_rx: self.proxy_rx.resubscribe(), tcp_tx: self.tcp_tx.clone(), tcp_rx: self.tcp_rx.resubscribe() }
-    }
-}
-impl ConnectionHandler {
-    async fn shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
-        Ok(())
-    }
-}
 // AppState, this is a global struct which will be used to store data needed across the application like in routes and etc
 // which includes the sender and reciver to the tcp connection for gameserver, the websocket sender (receiver only needs to be managed by its own handler)
 // the base path like if all the routes are prefixed with something like /gameserver-rs which is the default for my testing deployment, and database as its needed frequently
@@ -852,6 +810,7 @@ async fn handle_all_stream_values(
 
     if let Ok(data_clone) = serde_json::from_value::<SimpleMessage>(value.clone()) {
         if data_clone.message == "pong" {
+            println!("got a ping");
             let state_guard: tokio::sync::RwLockWriteGuard<'_, AppState> = arc_state.write().await;
             let ping_message = MessagePayload {
                 r#type: "status".to_string(),
@@ -1036,13 +995,13 @@ async fn process_stream_data(
     server_start_keyword: &mut String,
     server_stop_keyword: &mut String,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-    {
-        let state_guard = arc_state.read().await;
-        let raw_data_request = RawBytes {
-            bytes: raw_data.to_vec(),
-        };
-        let _ = raw_data_request.node_transport(&state_guard).await;
-    }
+    // {
+    //     let state_guard = arc_state.read().await;
+    //     let raw_data_request = RawBytes {
+    //         bytes: raw_data.to_vec(),
+    //     };
+    //     let _ = raw_data_request.node_transport(&state_guard).await;
+    // }
 
     if let Ok(text) = std::str::from_utf8(raw_data) {
         println!("got text {:#?}", text);
@@ -1052,6 +1011,8 @@ async fn process_stream_data(
         }
 
         let final_data: Vec<Value> = get_all_stream_data_parsed(line_content).await?;
+
+        //println!("{:#?}", final_data);
 
         for value in final_data.iter() {
             let should_break = handle_all_stream_values(
@@ -1203,8 +1164,8 @@ pub async fn handle_stream(
             }
            },
            _ = cloned_token.cancelled() => {
-                let state = arc_state.write().await;
-                let _ = state.connection_handler.shutdown().await;
+                // let state = arc_state.write().await;
+                // let _ = state.connection_handler.shutdown().await;
                 break;
             }
         }
@@ -1498,7 +1459,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         lock: false,
     };
     state.tcp_conn_status = {
-        if check_channel_health(&state.connection_handler.tcp_tx, state.connection_handler.tcp_rx.resubscribe()).await {
+        if check_channel_health(&state).await {
             Status::Up
         } else {
             Status::Down
@@ -1975,7 +1936,7 @@ async fn refresh_status(
     // }
     // if !authorized {
     state.tcp_conn_status = {
-        if check_channel_health(&state.connection_handler.tcp_tx, state.connection_handler.tcp_rx.resubscribe()).await {
+        if check_channel_health(&state).await {
             Status::Up
         } else {
             Status::Down
@@ -2664,21 +2625,6 @@ async fn statistics(
     Sse::new(updates).keep_alive(axum::response::sse::KeepAlive::default())
 }
 
-async fn check_channel_health(
-    tx: &broadcast::Sender<Vec<u8>>,
-    mut rx: broadcast::Receiver<Vec<u8>>,
-) -> bool {
-    match tx.send("ping".into()) {
-        Ok(_) => true,
-        Err(_) => return false,
-    };
-
-    match rx.recv().await {
-        Ok(_msg) => true,
-        Err(broadcast::error::RecvError::Closed) => false,
-        Err(broadcast::error::RecvError::Lagged(_)) => true,
-    }
-}
 
 async fn ongoing_server_status(
     State(arc_state): State<Arc<RwLock<AppState>>>,
@@ -3852,7 +3798,8 @@ async fn get_files_content(
 
     let (tcp_tx, tcp_rx) = {
         let state = arc_state.read().await;
-        (state.connection_handler.tcp_tx.clone(), state.connection_handler.tcp_tx.subscribe())
+        state.connection_handler.get_filesystem_stream()
+        //(state.connection_handler.tcp_tx.clone(), state.connection_handler.tcp_tx.subscribe())
     };
 
     let mut tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
@@ -3901,7 +3848,8 @@ pub async fn get_files(
 ) -> impl IntoResponse {
     let (tcp_tx, tcp_rx) = {
         let state = arc_state.read().await;
-        (state.connection_handler.tcp_tx.clone(), state.connection_handler.tcp_tx.subscribe())
+        //(state.connection_handler.proxy_tx.clone(), state.connection_handler.proxy_rx.resubscribe())
+        state.connection_handler.get_filesystem_stream()
     };
     let state = arc_state.read().await;
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
@@ -4027,7 +3975,8 @@ pub async fn stream_file_download(
 
     let tcp_fs = {
         let state = arc_state.read().await;
-        let (tcp_tx, tcp_rx) = (state.connection_handler.tcp_tx.clone(), state.connection_handler.tcp_tx.subscribe());
+        let (tcp_tx, tcp_rx) = state.connection_handler.get_filesystem_stream();
+        //(state.connection_handler.proxy_tx.clone(), state.connection_handler.proxy_rx.resubscribe());
         Arc::new(Mutex::new(TcpFs::new(tcp_tx, tcp_rx)))
     };
 
