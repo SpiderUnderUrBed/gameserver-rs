@@ -1,5 +1,6 @@
-import "google/protobuf/struct.proto";
 syntax = "proto3";
+
+import "google/protobuf/struct.proto";
 
 package main;
 
@@ -16,6 +17,11 @@ message SrcAndDest {
   ApiCalls dest = 2;
   string metadata = 3;
 }
+message MessagePayload {
+  string type = 1;
+  string message = 2;
+  string authcode = 3;
+}
 
 message DeleteServerRequest {
   MetadataTypes metadata = 1;
@@ -29,16 +35,28 @@ message StartServerRequest {}
 
 message StopServerRequest {}
 
-message SetServerRequest {}
+message SetServerRequest {
+  string message = 1;
+  string type = 2;
+  MetadataTypes metadata = 3;
+  string authcode = 4;
+}
 
 message MigrateRequest {
   ApiCalls src = 1;
   ApiCalls dest = 2;
   string metadata = 3;
 }
-message ServerDataRequest {
+message ServerDataRequest {}
 
+message ServerStateRequest {}
+
+message ServerNameRequest {
+  string type = 1;
+  string message = 2;
+  string authcode = 3;
 }
+
 message RawBytes {
   bytes byte_collection = 1;
 }
@@ -46,6 +64,48 @@ message Ping {}
 message IntegrationKeyRequest {
   google.protobuf.Struct key = 1;
 }
-message ServerStateRequest {
-  
+
+message State {
+  string name = 1;
+  string start_keyword = 2;
+  string stop_keyword = 3;
+}
+message ServerDataResponse {
+  State state = 1;
+}
+message PingResponse {
+  string message = 1;
+}
+message FileOperationResponse {
+  string data = 1;
+}
+message CreateServerResponse {}
+message DeleteServerResponse {}
+message ServerStateResponse {
+  MessagePayload message = 1; 
+}
+message ServerNameResponse {
+  MessagePayload message = 1; 
+}
+message SetServerResponse {}
+message StartServerResponse {}
+message StopServerResponse {}
+
+service ServerEdit {
+  rpc Create(CreateServerRequest) returns (CreateServerResponse);
+  rpc Delete(DeleteServerRequest) returns (DeleteServerResponse);
+  rpc Start(StartServerRequest) returns (StartServerResponse);
+  rpc Stop(StopServerRequest) returns (StopServerResponse);
+}
+service ServerManage {
+  rpc Data(ServerDataRequest) returns (ServerDataResponse);
+  rpc Name(ServerNameRequest) returns (ServerNameResponse);
+  rpc State(ServerStateRequest) returns (ServerStateResponse);
+  rpc Set(SetServerRequest) returns (SetServerResponse);
+}
+service General {
+
+}
+service Filesystem {
+
 }

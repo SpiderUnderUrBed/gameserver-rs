@@ -1,11 +1,406 @@
+use axum::extract::{ws::Utf8Bytes, State};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::{io::{AsyncBufReadExt, AsyncWriteExt, BufReader}, net::TcpStream, sync::{broadcast, RwLock}, time::{sleep, timeout}};
+use tokio_util::sync::CancellationToken;
 
 use crate::{
-    AppState, MessagePayload, MessagePayloadWithMetadata, MetadataTypes, SimpleMessage, SrcAndDest,
-    database::databasespec::Filters,
+    database::databasespec::Filters, handle_stream, AppState, MessagePayload, MessagePayloadWithMetadata, MetadataTypes, SimpleMessage, SrcAndDest, Status, StreamResult, CHANNEL_BUFFER_SIZE, CONNECTION_RETRY_DELAY, CONNECTION_TIMEOUT
 };
-use std::error::Error;
+use crate::{AuthTcpMessage, ApiCalls as ToplevelApiCalls, List, IncomingMessage, NodeAndTCP};
+use std::{error::Error, net::SocketAddr, sync::{atomic::Ordering, Arc}, time::{Duration, Instant}};
+use anyhow::anyhow;
+
+
+pub trait ImmediateTransportable {
+    async fn immediate_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>>;
+}
+
+
+pub struct PasswordRequest {
+    pub password: String
+}
+pub struct CapabilitiesRequest {
+    pub capabilities: Vec<String>
+}
+pub struct ServernameRequest {
+    pub ip: String
+}
+impl ImmediateTransportable for PasswordRequest {
+    async fn immediate_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let auth_msg = serde_json::to_vec(&AuthTcpMessage {
+            password: self.password.clone(),
+        })?;
+        let _ = state.connection_handler.proxy_tx.send(auth_msg);
+        Ok(())
+    }
+}
+impl ImmediateTransportable for CapabilitiesRequest {
+    async fn immediate_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let capability_msg = serde_json::to_vec(&List {
+            list: ToplevelApiCalls::Capabilities(self.capabilities.clone()),
+        })?;
+        let _ = state.connection_handler.proxy_tx.send(capability_msg);
+        Ok(())
+    }
+}
+impl ImmediateTransportable for ServernameRequest {
+    async fn immediate_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let cmd_msg = serde_json::to_vec(&MessagePayload {
+            r#type: "command".to_string(),
+            message: "server_name".to_string(),
+            authcode: "0".to_string(),
+        })?;
+        let _ = state.connection_handler.proxy_tx.send(cmd_msg);
+        // writer.write_all(cmd_msg.as_bytes()).await?;
+
+        'name: {
+            // let mut state = arc_state.write().await;
+            if let Ok(Ok(bytes)) = timeout(Duration::from_millis(1000), state.connection_handler.tcp_rx.recv()).await
+            {
+                if let Ok(payload) = serde_json::from_slice::<IncomingMessage>(&bytes) {
+                    state.current_node = NodeAndTCP {
+                        name: payload.message,
+                        ip: self.ip.clone(),
+                        ..Default::default()
+                    };
+                    break 'name;
+                }
+            }
+            state.current_node = NodeAndTCP {
+                name: "main".to_string(),
+                ip: self.ip.clone(),
+                ..Default::default()
+            };
+        }
+
+        Ok(())
+    }
+}
+
+// pub fn handle_password(state: &AppState, password: String) -> Result<(), Box<dyn Error + Send + Sync>>{
+//     // let initial_node_password: String =
+//     //     get_env_var_or_arg("INITIAL_NODE_PASSWORD", Some(String::default())).unwrap();
+//     let auth_msg = serde_json::to_vec(&AuthTcpMessage {
+//         password,
+//     })?;
+//     let _ = state.proxy_tx.send(auth_msg);
+//     // writer.write_all(auth_msg.as_bytes()).await?;
+//     Ok(())
+// }
+// pub fn handle_capabilities(state: &AppState, capabilities: Vec<String>) -> Result<(), Box<dyn Error + Send + Sync>>{
+//     let capability_msg = serde_json::to_vec(&List {
+//         list: ToplevelApiCalls::Capabilities(capabilities),
+//     })?;
+//     let _ = state.proxy_tx.send(capability_msg);
+//     // writer.write_all(capability_msg.as_bytes()).await?;
+
+
+//     Ok(())
+// }
+// pub async fn handle_servername(state: &mut AppState, ip: String) -> Result<(), Box<dyn Error + Send + Sync>>{
+//     let cmd_msg = serde_json::to_vec(&MessagePayload {
+//         r#type: "command".to_string(),
+//         message: "server_name".to_string(),
+//         authcode: "0".to_string(),
+//     })?;
+//     let _ = state.proxy_tx.send(cmd_msg);
+//     // writer.write_all(cmd_msg.as_bytes()).await?;
+
+//     'name: {
+//         // let mut state = arc_state.write().await;
+//         if let Ok(Ok(bytes)) = timeout(Duration::from_millis(1000), state.tcp_rx.recv()).await
+//         {
+//             if let Ok(payload) = serde_json::from_slice::<IncomingMessage>(&bytes) {
+//                 state.current_node = NodeAndTCP {
+//                     name: payload.message,
+//                     ip: ip.clone(),
+//                     ..Default::default()
+//                 };
+//                 break 'name;
+//             }
+//         }
+//         state.current_node = NodeAndTCP {
+//             name: "main".to_string(),
+//             ip: ip.clone(),
+//             ..Default::default()
+//         };
+//     }
+
+//     Ok(())
+// }
+
+// does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
+// Changelog:
+// No more blocking with stream, if the caller wants the server connection to not be blocking its the callers job to spawn it in
+// its own thread
+pub async fn connect_to_server(
+    arc_state: Arc<RwLock<AppState>>,
+    mut tcp_url: String,
+    ws_tx: broadcast::Sender<String>,
+    end_if_timeout: bool,
+    block_with_stream: bool,
+) -> Result<Option<SocketAddr>, Box<dyn Error + Send + Sync>> {
+    let mut last_peer: Option<SocketAddr> = None;
+    //let (proxy_tx, _) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+    // let (proxy_tx, _) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+    // let (_, proxy_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+    let (proxy_tx, proxy_rx) = {
+        let state_guard = arc_state.write().await;
+        (state_guard.connection_handler.proxy_tx.clone(), state_guard.connection_handler.proxy_rx.resubscribe())
+    };
+
+    loop {
+        let mut rx = {
+            let state = arc_state.read().await;
+            state.connection_handler.tcp_tx.subscribe()
+        };
+        let internal_stream = {
+            let state = arc_state.read().await;
+            state.internal_rx.as_ref().map(|r| r.resubscribe())
+        };
+
+        let deadline = Instant::now() + CONNECTION_TIMEOUT;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("overall connect timeout".into());
+        }
+
+        match timeout(remaining, TcpStream::connect(&tcp_url)).await {
+            Ok(Ok(mut stream)) => {
+                let peer = stream.peer_addr()?;
+                last_peer = Some(peer);
+
+                {
+                    let mut state_guard = arc_state.write().await;
+                    state_guard.cancel_current_conn = CancellationToken::new();
+                    state_guard.tcp_conn_status = Status::Up;
+                }
+                let ip = stream.peer_addr()?.ip().to_string();
+
+                let (reader, mut writer) = stream.into_split();
+                let buf_reader = BufReader::new(reader);
+                let buf = vec![0u8; 4096];
+                let mut lines = buf_reader.lines();
+
+                let mut proxy_rx_clone = proxy_rx.resubscribe();
+                let proxy_tx_clone = proxy_tx.clone();
+                let mut rx_clone = rx.resubscribe();
+
+                let arc_state_clone = arc_state.clone();
+                tokio::spawn(async move {
+                    loop {
+                        tokio::select! {
+                            read_result = lines.next_line() => {
+                                match read_result {
+                                    Ok(Some(line)) => {
+                                        println!("Got line: {:#?}", line.clone());
+                                        let bytes = line.as_bytes();
+                                        let _ = proxy_tx_clone.send(bytes.to_vec());
+                                    },
+                                    Ok(None) => {
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        break;
+                                    },  
+                                }
+                            }
+                            // proxy_rx_result = proxy_rx_clone.recv() => {
+                            //     println!("got entry");
+                            //     //println!("got bytes from entry {:#?}", String::from_utf8(bytes.clone()).unwrap());
+                            //     //println!("{:#?}", proxy_rx_result);
+                            //     if let Ok(bytes) = proxy_rx_result {
+                            //         println!("returning bytes out");
+                            //         if let Err(e) = writer.write_all(&bytes).await {
+
+                            //         }
+                            //         if let Err(e) = writer.write_all(b"\n").await {
+
+                            //         };
+                            //         if let Err(e) = writer.flush().await {
+
+                            //         };        
+                            //     }
+                            // }
+                            rx = proxy_rx_clone.recv() => {
+                                if let Ok(bytes) = rx {
+                                    println!("got bytes to forward {:#?}", String::from_utf8(bytes.clone()).unwrap());
+                                    //let _ = proxy_tx_clone.send(bytes.clone());
+                                    //let mut state_guard = arc_state_clone.write().await;
+                                    // let request_number = state_guard.connection_handler.request_number.load(Ordering::SeqCst);
+                                    // println!("{:#?}", request_number);
+                                    // *state_guard.connection_handler.request_number.get_mut() += 1;
+                                    // drop(state_guard);
+                                    // if let Err(e) = writer.write_all(&request_number.to_be_bytes()).await {
+                                    //     println!("error");
+                                    // }
+                                    if let Err(e) = writer.write_all(&bytes).await {
+                                        println!("error");
+                                    }
+                                    if let Err(e) = writer.write_all(b"\n").await {
+                                        println!("error");
+                                    };
+                                    if let Err(e) = writer.flush().await {
+                                        println!("error");
+                                    };  
+                                }
+                            }
+                        }
+                }
+                });
+
+                let result = handle_stream(
+                        Arc::clone(&arc_state),
+                        &mut rx,
+                        ip,
+                        ws_tx.clone(),
+                        internal_stream,
+                    )
+                    .await;
+
+                // let result = if !block_with_stream {
+                //     handle_stream(
+                //         Arc::clone(&arc_state),
+                //         &mut rx,
+                //         ip,
+                //         ws_tx.clone(),
+                //         internal_stream,
+                //     )
+                //     .await
+                // } else {
+                //     handle_stream(
+                //         Arc::clone(&arc_state),
+                //         &mut rx,
+                //         ip,
+                //         ws_tx.clone(),
+                //         internal_stream,
+                //     )
+                //     .await
+                // };
+
+                match result {
+                    Ok(StreamResult::Reconnect(_, _)) => {
+                    },
+                    // Ok(StreamResult::Reconnect(new_ip, new_name)) => {
+                    //     println!("Reconnecting to {} ({})", new_name, new_ip);
+                    //     {
+                    //         let mut state = arc_state.write().await;
+                    //         state.current_node = NodeAndTCP {
+                    //             name: new_name,
+                    //             ip: new_ip.clone(),
+                    //             ..Default::default()
+                    //         };
+                    //         let node_state_bytes = serde_json::to_vec(&MessagePayload {
+                    //             r#type: "command".to_string(),
+                    //             message: "server_state".to_string(),
+                    //             authcode: "0".to_string(),
+                    //         })
+                    //         .unwrap_or_default();
+                    //         if let Some(tx) = &state.internal_tx {
+                    //             let _ = tx.send(node_state_bytes);
+                    //         }
+                    //     }
+                    //     tcp_url = new_ip;
+                    //     continue;
+                    // }
+                    Ok(StreamResult::Done) => {
+                        return Ok(Some(last_peer.unwrap_or(peer)));
+                    }
+                    Err(e) => {
+                        eprintln!("handle_stream error: {}", e);
+                        // Fall through to retry delay
+                    }
+                }
+            }
+            Ok(Err(e)) => {
+                eprintln!("TCP connect error: {}", e);
+                let mut state_guard = arc_state.write().await;
+                if let Some(tx) = &state_guard.internal_tx {
+                    let _ = tx.send("end_conn".into());
+                }
+                state_guard.tcp_conn_status = Status::Down;
+            }
+            Err(_) => {
+                let mut state_guard = arc_state.write().await;
+                state_guard.tcp_conn_status = Status::Down;
+                eprintln!("TCP connect timed out");
+                if end_if_timeout {
+                    return Err("connection attempt timed out".into());
+                }
+            }
+        }
+
+        sleep(CONNECTION_RETRY_DELAY).await;
+    }
+}
+
+// for the initial connection attempt, which will determine if possibly I would need to create the container and deployment upon failure
+// i will use rusts 'timeout' for x interval determined with CONNECTION_TIMEOUT
+async fn attempt_connection(
+    tcp_url: String,
+) -> Result<TcpStream, Box<dyn std::error::Error + Send + Sync>> {
+    timeout(CONNECTION_TIMEOUT, TcpStream::connect(tcp_url))
+        .await?
+        .map_err(Into::into)
+}
+
+
+// this is where it determines wether or not to try and create the container and deployment, as attempt_connection itself is used in various diffrent contexts (like it will constantly
+// try to connect upon failing but it should not try to create the container and deployment every time it fails)
+// I use anyhow here because it saves me having to try and downcast the error type
+pub(crate) async fn try_initial_connection(
+    conn_attempts: u64,
+    conn_timeout: u64,
+    create_handler: bool,
+    state: &Arc<RwLock<AppState>>,
+    tcp_url: String,
+    ws_tx: &broadcast::Sender<String>,
+    tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
+) -> Result<(), anyhow::Error> {
+    let mut final_error = anyhow!(String::new());
+    for _ in 0..conn_attempts {
+        match attempt_connection(tcp_url.clone()).await {
+            Ok(mut stream) => {
+                println!("Initial connection succeeded!");
+                // note, possibly I wont ever need to create a handler from the test of the intial connection
+                // TODO: think about removing create_handler and just never create a handler here
+                // I was considering to return the handler from here, but it wouldnt make sense to add that complexity
+                // when I only create the initial tcp stream within the main function, it would involve either a thread here, or in the main function
+                // and i rather keep this function focused on testing the connection (there might be a very NICHE case for making a handler here, but if there isnt ill remove it)
+                if create_handler {
+                    let (_, temp_rx) =
+                        tokio::sync::broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+                    let mut temp_rx = temp_rx;
+                    let ip: String = stream.peer_addr()?.ip().to_string();
+
+                    let stream_result = handle_stream(
+                        state.clone(),
+                        &mut temp_rx,
+                        ip,
+                        ws_tx.clone(),
+                        None,
+                    )
+                    .await;
+                    if stream_result.is_ok() {
+                        println!("Stream finished");
+                        return Ok(());
+                    } else {
+                        final_error = anyhow!(stream_result.err().unwrap())
+                    }
+                } else {
+                    return Ok(());
+                }
+            }
+            Err(e) => {
+                eprintln!("Initial connection failed: {}", e);
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    Err(final_error)
+}
+
 
 pub trait NodeTransportable {
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>>;
@@ -32,7 +427,7 @@ impl NodeTransportable for DeleteServerRequest {
         };
         bytes.push(b'\n');
 
-        let _ = state.tcp_tx.send(bytes);
+        let _ = state.connection_handler.proxy_tx.send(bytes);
 
         Ok(())
     }
@@ -57,7 +452,7 @@ impl NodeTransportable for CreateServerRequest {
             }
         };
         bytes.push(b'\n');
-        let _ = state.tcp_tx.send(bytes);
+        let _ = state.connection_handler.proxy_tx.send(bytes);
 
         Ok(())
     }
@@ -77,7 +472,7 @@ impl NodeTransportable for StartServerRequest {
         if let Err(e) = msg {
             return Err("Failed to serialize".into());
         };
-        let _ = state.tcp_tx.send(msg.unwrap());
+        let _ = state.connection_handler.proxy_tx.send(msg.unwrap());
 
         Ok(())
     }
@@ -96,7 +491,7 @@ impl NodeTransportable for StopServerRequest {
         if let Err(e) = msg {
             return Err("Failed to serialize".into());
         };
-        let _ = state.tcp_tx.send(msg.unwrap());
+        let _ = state.connection_handler.proxy_tx.send(msg.unwrap());
 
         Ok(())
     }
@@ -111,7 +506,7 @@ impl NodeTransportable for MigrateRequest {
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         match serde_json::to_vec(&self.common) {
             Ok(bytes) => {
-                if let Err(err) = state.tcp_tx.send(bytes) {
+                if let Err(err) = state.connection_handler.proxy_tx.send(bytes) {
                     eprintln!("Failed to send request over broadcast: {}", err);
                 }
             }
@@ -141,7 +536,7 @@ impl NodeTransportable for SetServerRequest {
             }
         };
         bytes.push(b'\n');
-        let _ = state.tcp_tx.send(bytes);
+        let _ = state.connection_handler.proxy_tx.send(bytes);
 
         Ok(())
     }
@@ -167,7 +562,7 @@ impl NodeTransportable for ServerDataRequest {
             }
         };
         bytes.push(b'\n');
-        let _ = state.tcp_tx.send(bytes);
+        let _ = state.connection_handler.proxy_tx.send(bytes);
 
         Ok(())
     }
@@ -182,7 +577,7 @@ pub struct RawBytes {
 
 impl NodeTransportable for RawBytes {
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let _ = state.tcp_tx.send(self.bytes.clone());
+        let _ = state.connection_handler.proxy_tx.send(self.bytes.clone());
         Ok(())
     }
 }
@@ -209,6 +604,7 @@ impl NodeTransportable for FilterRequest {
             authcode: "0".to_string(),
         };
         let _ = state
+            .connection_handler
             .tcp_tx
             .send(serde_json::to_vec(&filter_request).unwrap());
 
@@ -231,8 +627,7 @@ impl NodeTransportable for Ping {
         let ping = SimpleMessage {
             message: "ping".to_string(),
         };
-        let res = state.tcp_tx.send(serde_json::to_vec(&ping).unwrap());
-
+        let res = state.connection_handler.proxy_tx.send(serde_json::to_vec(&ping).unwrap());
         Ok(())
     }
 }
@@ -255,13 +650,13 @@ impl NodeTransportable for IntegrationKeyRequest {
                 // Add newline delimiter for TCP stream parsing
                 bytes.push(b'\n');
 
-                if let Err(err) = state.tcp_tx.send(bytes.clone()) {
+                if let Err(err) = state.connection_handler.proxy_tx.send(bytes.clone()) {
                     eprintln!("Failed to send to internal stream: {}", err);
                 }
 
                 // Tells the remote server to enable RCON
                 //if let Some(internal_tx) = &state.internal_tx {
-                if let Err(err) = state.tcp_tx.send(bytes) {
+                if let Err(err) = state.connection_handler.proxy_tx.send(bytes) {
                     eprintln!("Failed to send to TCP stream: {}", err);
                 }
                 //}
@@ -290,7 +685,7 @@ impl NodeTransportable for ServerStateRequest {
             authcode: "0".to_string(),
         })
         .unwrap();
-        let _ = state.tcp_tx.send(msg);
+        let _ = state.connection_handler.proxy_tx.send(msg);
 
         Ok(())
     }

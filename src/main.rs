@@ -102,7 +102,7 @@ use tokio::{
 use tower_http::cors::{Any as CorsAny, CorsLayer};
 
 use std::error::Error;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use sysinfo::System;
 
@@ -136,10 +136,9 @@ use database::User;
 
 mod transport;
 use crate::transport::node_transport::{
-    CreateServerRequest, DeleteServerRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest,
-    NodeTransportable, Ping, RawBytes, ServerDataRequest, ServerStateRequest, SetServerRequest,
-    StartServerRequest, StopServerRequest,
+    connect_to_server, CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FilterRequest, ImmediateTransportable, IntegrationKeyRequest, MigrateRequest, NodeTransportable, PasswordRequest, Ping, RawBytes, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StopServerRequest
 };
+use crate::transport::node_transport::try_initial_connection;
 
 mod extra;
 use extra::value_from_line;
@@ -544,14 +543,58 @@ enum Status {
     Unhealthy,
 }
 
+pub struct ConnectionHandler {
+    request_number: AtomicU64,
+    proxy_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
+    proxy_rx:  tokio::sync::broadcast::Receiver<Vec<u8>>,
+    tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
+    tcp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
+}
+impl ConnectionHandler {
+    fn new() -> Self {
+        let (tcp_tx, tcp_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+        let (proxy_tx, proxy_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+        ConnectionHandler {
+            request_number: AtomicU64::new(0),
+            proxy_tx,
+            proxy_rx,
+            tcp_tx, 
+            tcp_rx
+        }
+    }
+}
+impl Default for ConnectionHandler {
+    fn default() -> Self { 
+        let (tcp_tx, tcp_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+        let (proxy_tx, proxy_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+        ConnectionHandler {
+            request_number: Default::default(),
+            proxy_tx,
+            proxy_rx,
+            tcp_tx, 
+            tcp_rx
+        }
+    }
+}
+impl Clone for ConnectionHandler {
+    fn clone(&self) -> Self { 
+        ConnectionHandler { request_number: AtomicU64::new(self.request_number.load(Ordering::SeqCst)), proxy_tx: self.proxy_tx.clone(), proxy_rx: self.proxy_rx.resubscribe(), tcp_tx: self.tcp_tx.clone(), tcp_rx: self.tcp_rx.resubscribe() }
+    }
+}
+impl ConnectionHandler {
+    async fn shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
+        Ok(())
+    }
+}
 // AppState, this is a global struct which will be used to store data needed across the application like in routes and etc
 // which includes the sender and reciver to the tcp connection for gameserver, the websocket sender (receiver only needs to be managed by its own handler)
 // the base path like if all the routes are prefixed with something like /gameserver-rs which is the default for my testing deployment, and database as its needed frequently
 // for user information and etc
 // #[derive(Default)]
 pub struct AppState {
-    tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
-    tcp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
+    // tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
+    // tcp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
+    connection_handler: ConnectionHandler,
     cancel_current_conn: CancellationToken,
     tcp_conn_status: Status,
     internal_rx: Option<broadcast::Receiver<Vec<u8>>>,
@@ -570,11 +613,10 @@ pub struct AppState {
 impl Default for AppState {
     fn default() -> Self {
         let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
-        let (tcp_tx, tcp_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+        // let (tcp_tx, tcp_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
         let tcp_url = get_env_var_or_arg("TCPURL", Some(STATIC_TCP_URL.to_string())).unwrap();
         Self {
-            tcp_tx,
-            tcp_rx,
+            connection_handler: Default::default(),
             cancel_current_conn: Default::default(),
             tcp_conn_status: Default::default(),
             internal_rx: Default::default(),
@@ -596,8 +638,7 @@ impl Default for AppState {
 impl Clone for AppState {
     fn clone(&self) -> Self {
         AppState {
-            tcp_tx: self.tcp_tx.clone(),
-            tcp_rx: self.tcp_rx.resubscribe(),
+            connection_handler: self.connection_handler.clone(),
             cancel_current_conn: self.cancel_current_conn.clone(),
             internal_rx: self.internal_rx.as_ref().map(|r| r.resubscribe()),
             internal_tx: self.internal_tx.clone(),
@@ -635,15 +676,6 @@ impl Clone for AppState {
     }
 }
 
-// for the initial connection attempt, which will determine if possibly I would need to create the container and deployment upon failure
-// i will use rusts 'timeout' for x interval determined with CONNECTION_TIMEOUT
-async fn attempt_connection(
-    tcp_url: String,
-) -> Result<TcpStream, Box<dyn std::error::Error + Send + Sync>> {
-    timeout(CONNECTION_TIMEOUT, TcpStream::connect(tcp_url))
-        .await?
-        .map_err(Into::into)
-}
 
 // What this does is that it will go over the lines retrived from the TCP stream
 // and try parsing them into serveral objects, then it will put them in ConsoleData for it to be extracted and processed
@@ -996,363 +1028,282 @@ async fn handle_all_stream_values(
     Ok(false)
 }
 
+async fn process_stream_data(
+    raw_data: &[u8],
+    arc_state: &Arc<RwLock<AppState>>,
+    ws_tx: &broadcast::Sender<String>,
+    ip: &str,
+    server_start_keyword: &mut String,
+    server_stop_keyword: &mut String,
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    {
+        let state_guard = arc_state.read().await;
+        let raw_data_request = RawBytes {
+            bytes: raw_data.to_vec(),
+        };
+        let _ = raw_data_request.node_transport(&state_guard).await;
+    }
+
+    if let Ok(text) = std::str::from_utf8(raw_data) {
+        println!("got text {:#?}", text);
+        let line_content = text.trim();
+        if line_content.is_empty() {
+            return Ok(false);
+        }
+
+        let final_data: Vec<Value> = get_all_stream_data_parsed(line_content).await?;
+
+        for value in final_data.iter() {
+            let should_break = handle_all_stream_values(
+                arc_state.clone(),
+                value.clone(),
+                ws_tx,
+                ip,
+                server_start_keyword,
+                server_stop_keyword,
+            )
+            .await?;
+            if should_break {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+// This handles the stream
+// when it should terminate and the handshake
+// how internally it gets or sends from the stream
+// is up to the implimentation, among other things
 pub async fn handle_stream(
     arc_state: Arc<RwLock<AppState>>,
     rx: &mut tokio::sync::broadcast::Receiver<Vec<u8>>,
-    stream: &mut TcpStream,
+    //stream: &mut TcpStream,
+    ip: String,
     ws_tx: broadcast::Sender<String>,
     mut internal_stream: Option<broadcast::Receiver<Vec<u8>>>,
 ) -> Result<StreamResult, Box<dyn std::error::Error + Send + Sync>> {
-    let ip = stream.peer_addr()?.to_string();
-    let (reader, mut writer) = stream.split();
-    let buf_reader = BufReader::new(reader);
-    let buf = vec![0u8; 4096];
-    let mut lines = buf_reader.lines();
+    // let ip = stream.peer_addr()?.to_string();
+    // let (reader, mut writer) = stream.split();
+    // let buf_reader = BufReader::new(reader);
+    // let buf = vec![0u8; 4096];
+    // let mut lines = buf_reader.lines();
 
     let mut server_start_keyword = String::new();
     let mut server_stop_keyword = String::new();
 
+    let mut state = arc_state.write().await;
+
     let initial_node_password: String =
         get_env_var_or_arg("INITIAL_NODE_PASSWORD", Some(String::default())).unwrap();
-    let auth_msg = serde_json::to_string(&AuthTcpMessage {
+    let password_request = PasswordRequest {
         password: initial_node_password,
-    })? + "\n";
-    writer.write_all(auth_msg.as_bytes()).await?;
+    };
+    let _ = password_request.immediate_transport(&mut state).await;
 
-    let capability_msg = serde_json::to_string(&List {
-        list: ApiCalls::Capabilities(vec!["all".to_string()]),
-    })? + "\n";
-    writer.write_all(capability_msg.as_bytes()).await?;
+    let capability_request = CapabilitiesRequest {
+        capabilities: vec!["all".to_string()],
+    };
+    let _ = capability_request.immediate_transport(&mut state).await;
+    
+    let server_name_request = ServernameRequest {
+        ip: ip.clone(),
+    };
+    let _ = server_name_request.immediate_transport(&mut state).await;
 
-    // TODO: move this because the reciver is not up at this point i dont think
-    // for command in &["server_name", "server_data", "server_name"] {
-    //     let cmd_msg = serde_json::to_string(&MessagePayload {
-    //         r#type: "command".to_string(),
-    //         message: command.to_string(),
-    //         authcode: "0".to_string(),
-    //     })? + "\n";
-    //     writer.write_all(cmd_msg.as_bytes()).await?;
-    // }
-
-    let cmd_msg = serde_json::to_string(&MessagePayload {
-        r#type: "command".to_string(),
-        message: "server_name".to_string(),
-        authcode: "0".to_string(),
-    })? + "\n";
-    writer.write_all(cmd_msg.as_bytes()).await?;
-
-    println!("called stream");
-    'name: {
-        let mut state = arc_state.write().await;
-        if let Ok(Ok(Some(payload))) = timeout(Duration::from_millis(1000), lines.next_line()).await
-        {
-            if let Ok(payload) = serde_json::from_str::<IncomingMessage>(&payload) {
-                state.current_node = NodeAndTCP {
-                    name: payload.message,
-                    ip: ip.clone(),
-                    ..Default::default()
-                };
-                break 'name;
-            }
-        }
-        state.current_node = NodeAndTCP {
-            name: "main".to_string(),
-            ip: ip.clone(),
-            ..Default::default()
-        };
-    }
-
-    async fn process_stream_data(
-        raw_data: &[u8],
-        arc_state: &Arc<RwLock<AppState>>,
-        ws_tx: &broadcast::Sender<String>,
-        ip: &str,
-        server_start_keyword: &mut String,
-        server_stop_keyword: &mut String,
-    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        {
-            let state_guard = arc_state.read().await;
-            let raw_data_request = RawBytes {
-                bytes: raw_data.to_vec(),
-            };
-            let _ = raw_data_request.node_transport(&state_guard).await;
-        }
-
-        if let Ok(text) = std::str::from_utf8(raw_data) {
-            let line_content = text.trim();
-            if line_content.is_empty() {
-                return Ok(false);
-            }
-
-            let final_data: Vec<Value> = get_all_stream_data_parsed(line_content).await?;
-
-            for value in final_data.iter() {
-                let should_break = handle_all_stream_values(
-                    arc_state.clone(),
-                    value.clone(),
-                    ws_tx,
-                    ip,
-                    server_start_keyword,
-                    server_stop_keyword,
-                )
-                .await?;
-                if should_break {
-                    return Ok(true);
-                }
-            }
-        }
-        Ok(false)
-    }
-
-    let state = arc_state.write().await;
-    let cloned_token = state.cancel_current_conn.clone();
     drop(state);
 
-    loop {
-        if let Some(ref mut internal_rx) = internal_stream {
-            tokio::select! {
-                read_result = lines.next_line() => {
-                    match read_result {
-                        Ok(Some(line)) => {
-                            let raw = line.as_bytes();
-                            if process_stream_data(
-                                raw, &arc_state, &ws_tx, &ip,
-                                &mut server_start_keyword, &mut server_stop_keyword,
-                            ).await? {
-                                break;
-                            }
-                        }
-                        Ok(None) => {
-                            break
-                        },
-                        Err(e) => {
-                            return Err(e.into())
-                        },
+    // let initial_node_password: String =
+    //     get_env_var_or_arg("INITIAL_NODE_PASSWORD", Some(String::default())).unwrap();
+    // let auth_msg = serde_json::to_string(&AuthTcpMessage {
+    //     password: initial_node_password,
+    // })? + "\n";
+    // writer.write_all(auth_msg.as_bytes()).await?;
+
+    // let capability_msg = serde_json::to_string(&List {
+    //     list: ApiCalls::Capabilities(vec!["all".to_string()]),
+    // })? + "\n";
+    // writer.write_all(capability_msg.as_bytes()).await?;
+
+    // // TODO: move this because the reciver is not up at this point i dont think
+    // // for command in &["server_name", "server_data", "server_name"] {
+    // //     let cmd_msg = serde_json::to_string(&MessagePayload {
+    // //         r#type: "command".to_string(),
+    // //         message: command.to_string(),
+    // //         authcode: "0".to_string(),
+    // //     })? + "\n";
+    // //     writer.write_all(cmd_msg.as_bytes()).await?;
+    // // }
+
+    // let cmd_msg = serde_json::to_string(&MessagePayload {
+    //     r#type: "command".to_string(),
+    //     message: "server_name".to_string(),
+    //     authcode: "0".to_string(),
+    // })? + "\n";
+    // writer.write_all(cmd_msg.as_bytes()).await?;
+
+    // 'name: {
+    //     let mut state = arc_state.write().await;
+    //     if let Ok(Ok(Some(payload))) = timeout(Duration::from_millis(1000), lines.next_line()).await
+    //     {
+    //         if let Ok(payload) = serde_json::from_str::<IncomingMessage>(&payload) {
+    //             state.current_node = NodeAndTCP {
+    //                 name: payload.message,
+    //                 ip: ip.clone(),
+    //                 ..Default::default()
+    //             };
+    //             break 'name;
+    //         }
+    //     }
+    //     state.current_node = NodeAndTCP {
+    //         name: "main".to_string(),
+    //         ip: ip.clone(),
+    //         ..Default::default()
+    //     };
+    // }
+
+    let state = arc_state.read().await;
+    let cloned_token = state.cancel_current_conn.clone();
+    let mut internal_rx = state.internal_rx.as_ref().map(|stream| stream.resubscribe());
+    drop(state);
+
+    loop {  
+        tokio::select! {
+            Some(received) = async {
+                match internal_rx.as_mut() {
+                    Some(rx) => Some(rx.recv().await),
+                    None => None,
+                }
+            }, if internal_rx.is_some() => {
+                if let Ok(bytes) = received {
+                    if process_stream_data(
+                        &bytes, &arc_state, &ws_tx, &ip,
+                        &mut server_start_keyword, &mut server_stop_keyword,
+                    ).await? {
+                        break;
                     }
+                } else {
+                    //break;
+                }
+            },
+           broadcast_result = rx.recv() => {
+            match broadcast_result {
+                Ok(bytes) => {
+                    println!("got bytes");
+                    if process_stream_data(
+                        &bytes, &arc_state, &ws_tx, &ip,
+                        &mut server_start_keyword, &mut server_stop_keyword,
+                    ).await? {
+                        break;
+                    }  
                 },
-                _ = cloned_token.cancelled() => {
-                    let _ = writer.shutdown().await;
-                    break;
-                }
-                internal_result = internal_rx.recv() => {
-                    if let Ok(raw_data) = internal_result {
-                        if process_stream_data(
-                            &raw_data, &arc_state, &ws_tx, &ip,
-                            &mut server_start_keyword, &mut server_stop_keyword,
-                        ).await? {
-                            break;
-                        }
-                    }
-                }
-                broadcast_result = rx.recv() => {
-                    match broadcast_result {
-                        Ok(data) => {
-                            writer.write_all(&data).await?;
-                            writer.write_all(b"\n").await?;
-                            writer.flush().await?;
-                        }
-                        Err(_) => {}
-                    }
-                }
+                Err(err) => {
+                    println!("got err {:#?}", err);
+                },
             }
-        } else {
-            tokio::select! {
-                read_result = lines.next_line() => {
-                    match read_result {
-                        Ok(Some(line)) => {
-                            let raw = line.as_bytes();
-                            if process_stream_data(
-                                raw, &arc_state, &ws_tx, &ip,
-                                &mut server_start_keyword, &mut server_stop_keyword,
-                            ).await? {
-                                break;
-                            }
-                        }
-                        Ok(None) => break,
-                        Err(e) => return Err(e.into()),
-                    }
-                }
-                broadcast_result = rx.recv() => {
-                    match broadcast_result {
-                        Ok(data) => {
-                            writer.write_all(&data).await?;
-                            writer.write_all(b"\n").await?;
-                            writer.flush().await?;
-                        }
-                        Err(_) => {}
-                    }
-                }
+           },
+           _ = cloned_token.cancelled() => {
+                let state = arc_state.write().await;
+                let _ = state.connection_handler.shutdown().await;
+                break;
             }
         }
+
+        // tokio::select! {
+        //     _ = cloned_token.cancelled() => {
+        //         let state = arc_state.write().await;
+        //         let _ = state.connection_handler.shutdown().await;
+        //         break;
+        //     }
+        // }
+        // tokio::select! {
+        //     _ = cloned_token.cancelled() => {
+        //         let state = arc_state.write().await;
+        //         let _ = state.connection_handler.shutdown().await;
+        //         break;
+        //     }
+        // }
+        // if let Some(ref mut internal_rx) = internal_stream {
+        //     tokio::select! {
+        //         read_result = lines.next_line() => {
+        //             match read_result {
+        //                 Ok(Some(line)) => {
+        //                     let raw = line.as_bytes();
+        //                     if process_stream_data(
+        //                         raw, &arc_state, &ws_tx, &ip,
+        //                         &mut server_start_keyword, &mut server_stop_keyword,
+        //                     ).await? {
+        //                         break;
+        //                     }
+        //                 }
+        //                 Ok(None) => {
+        //                     break
+        //                 },
+        //                 Err(e) => {
+        //                     return Err(e.into())
+        //                 },
+        //             }
+        //         },
+        //         _ = cloned_token.cancelled() => {
+        //             let _ = writer.shutdown().await;
+        //             break;
+        //         }
+        //         internal_result = internal_rx.recv() => {
+        //             if let Ok(raw_data) = internal_result {
+        //                 if process_stream_data(
+        //                     &raw_data, &arc_state, &ws_tx, &ip,
+        //                     &mut server_start_keyword, &mut server_stop_keyword,
+        //                 ).await? {
+        //                     break;
+        //                 }
+        //             }
+        //         }
+        //         broadcast_result = rx.recv() => {
+        //             match broadcast_result {
+        //                 Ok(data) => {
+        //                     writer.write_all(&data).await?;
+        //                     writer.write_all(b"\n").await?;
+        //                     writer.flush().await?;
+        //                 }
+        //                 Err(_) => {}
+        //             }
+        //         }
+        //     }
+        // } else {
+        //     tokio::select! {
+        //         read_result = lines.next_line() => {
+        //             match read_result {
+        //                 Ok(Some(line)) => {
+        //                     let raw = line.as_bytes();
+        //                     if process_stream_data(
+        //                         raw, &arc_state, &ws_tx, &ip,
+        //                         &mut server_start_keyword, &mut server_stop_keyword,
+        //                     ).await? {
+        //                         break;
+        //                     }
+        //                 }
+        //                 Ok(None) => break,
+        //                 Err(e) => return Err(e.into()),
+        //             }
+        //         }
+        //         broadcast_result = rx.recv() => {
+        //             match broadcast_result {
+        //                 Ok(data) => {
+        //                     writer.write_all(&data).await?;
+        //                     writer.write_all(b"\n").await?;
+        //                     writer.flush().await?;
+        //                 }
+        //                 Err(_) => {}
+        //             }
+        //         }
+        //     }
+        // }
     }
 
     Ok(StreamResult::Done)
 }
 
-// does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
-pub async fn connect_to_server(
-    arc_state: Arc<RwLock<AppState>>,
-    mut tcp_url: String,
-    ws_tx: broadcast::Sender<String>,
-    end_if_timeout: bool,
-    block_with_stream: bool,
-) -> Result<SocketAddr, Box<dyn Error + Send + Sync>> {
-    let mut last_peer: Option<SocketAddr> = None;
 
-    loop {
-        let mut rx = {
-            let state = arc_state.read().await;
-            state.tcp_tx.subscribe()
-        };
-        let internal_stream = {
-            let state = arc_state.read().await;
-            state.internal_rx.as_ref().map(|r| r.resubscribe())
-        };
-
-        let deadline = Instant::now() + CONNECTION_TIMEOUT;
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err("overall connect timeout".into());
-        }
-
-        match timeout(remaining, TcpStream::connect(&tcp_url)).await {
-            Ok(Ok(mut stream)) => {
-                let peer = stream.peer_addr()?;
-                last_peer = Some(peer);
-
-                {
-                    let mut state_guard = arc_state.write().await;
-                    state_guard.cancel_current_conn = CancellationToken::new();
-                    state_guard.tcp_conn_status = Status::Up;
-                }
-
-                let result = if !block_with_stream {
-                    handle_stream(
-                        Arc::clone(&arc_state),
-                        &mut rx,
-                        &mut stream,
-                        ws_tx.clone(),
-                        internal_stream,
-                    )
-                    .await
-                } else {
-                    handle_stream(
-                        Arc::clone(&arc_state),
-                        &mut rx,
-                        &mut stream,
-                        ws_tx.clone(),
-                        internal_stream,
-                    )
-                    .await
-                };
-
-                match result {
-                    Ok(StreamResult::Reconnect(new_ip, new_name)) => {
-                        println!("Reconnecting to {} ({})", new_name, new_ip);
-                        {
-                            let mut state = arc_state.write().await;
-                            state.current_node = NodeAndTCP {
-                                name: new_name,
-                                ip: new_ip.clone(),
-                                ..Default::default()
-                            };
-                            let node_state_bytes = serde_json::to_vec(&MessagePayload {
-                                r#type: "command".to_string(),
-                                message: "server_state".to_string(),
-                                authcode: "0".to_string(),
-                            })
-                            .unwrap_or_default();
-                            if let Some(tx) = &state.internal_tx {
-                                let _ = tx.send(node_state_bytes);
-                            }
-                        }
-                        tcp_url = new_ip;
-                        continue;
-                    }
-                    Ok(StreamResult::Done) => {
-                        return Ok(last_peer.unwrap_or(peer));
-                    }
-                    Err(e) => {
-                        eprintln!("handle_stream error: {}", e);
-                        // Fall through to retry delay
-                    }
-                }
-            }
-            Ok(Err(e)) => {
-                eprintln!("TCP connect error: {}", e);
-                let mut state_guard = arc_state.write().await;
-                if let Some(tx) = &state_guard.internal_tx {
-                    let _ = tx.send("end_conn".into());
-                }
-                state_guard.tcp_conn_status = Status::Down;
-            }
-            Err(_) => {
-                let mut state_guard = arc_state.write().await;
-                state_guard.tcp_conn_status = Status::Down;
-                eprintln!("TCP connect timed out");
-                if end_if_timeout {
-                    return Err("connection attempt timed out".into());
-                }
-            }
-        }
-
-        sleep(CONNECTION_RETRY_DELAY).await;
-    }
-}
-
-// this is where it determines wether or not to try and create the container and deployment, as attempt_connection itself is used in various diffrent contexts (like it will constantly
-// try to connect upon failing but it should not try to create the container and deployment every time it fails)
-// I use anyhow here because it saves me having to try and downcast the error type
-async fn try_initial_connection(
-    conn_attempts: u64,
-    conn_timeout: u64,
-    create_handler: bool,
-    state: &Arc<RwLock<AppState>>,
-    tcp_url: String,
-    ws_tx: &broadcast::Sender<String>,
-    tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
-) -> Result<(), anyhow::Error> {
-    let mut final_error = anyhow!(String::new());
-    for _ in 0..conn_attempts {
-        match attempt_connection(tcp_url.clone()).await {
-            Ok(mut stream) => {
-                println!("Initial connection succeeded!");
-                // note, possibly I wont ever need to create a handler from the test of the intial connection
-                // TODO: think about removing create_handler and just never create a handler here
-                // I was considering to return the handler from here, but it wouldnt make sense to add that complexity
-                // when I only create the initial tcp stream within the main function, it would involve either a thread here, or in the main function
-                // and i rather keep this function focused on testing the connection (there might be a very NICHE case for making a handler here, but if there isnt ill remove it)
-                if create_handler {
-                    let (_, temp_rx) =
-                        tokio::sync::broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
-                    let mut temp_rx = temp_rx;
-
-                    let stream_result = handle_stream(
-                        state.clone(),
-                        &mut temp_rx,
-                        &mut stream,
-                        ws_tx.clone(),
-                        None,
-                    )
-                    .await;
-                    if stream_result.is_ok() {
-                        println!("Stream finished");
-                        return Ok(());
-                    } else {
-                        final_error = anyhow!(stream_result.err().unwrap())
-                    }
-                } else {
-                    return Ok(());
-                }
-            }
-            Err(e) => {
-                eprintln!("Initial connection failed: {}", e);
-            }
-        }
-        tokio::time::sleep(Duration::from_secs(2)).await;
-    }
-    Err(final_error)
-}
 /*
     let handle = tokio::spawn(async move {
         let mut temp_rx = temp_rx;
@@ -1525,10 +1476,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         current_server = Some(database.get_settings().await?.current_server.into_server())
     }
 
+    let connection_handler = ConnectionHandler::new();
     // use everything so far to make the app state
     let mut state: AppState = AppState {
-        tcp_tx: tcp_tx,
-        tcp_rx: tcp_rx,
+        // tcp_tx: tcp_tx,
+        // tcp_rx: tcp_rx,
+        connection_handler,
         cancel_current_conn: CancellationToken::new(),
         internal_rx: Some(internal_rx.resubscribe()),
         internal_tx: Some(internal_tx),
@@ -1545,7 +1498,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         lock: false,
     };
     state.tcp_conn_status = {
-        if check_channel_health(&state.tcp_tx, state.tcp_rx.resubscribe()).await {
+        if check_channel_health(&state.connection_handler.tcp_tx, state.connection_handler.tcp_rx.resubscribe()).await {
             Status::Up
         } else {
             Status::Down
@@ -1692,7 +1645,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         println!("Trying initial connection...");
         let state_clone = inner_state.clone();
         let ws_tx_clone = ws_tx.clone();
-        let tcp_tx_clone = inner_state.write().await.tcp_tx.clone();
+        let tcp_tx_clone = inner_state.write().await.connection_handler.tcp_tx.clone();
         let tcp_url_clone = tcp_url.to_string();
 
         // TODO: Since I never create a handler with initial connections, should i take it out of the thread?, or rather,
@@ -1769,8 +1722,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
                 {
                     let mut state = inner_state.write().await;
-                    state.tcp_tx = new_tcp_tx.clone();
-                    state.tcp_rx = new_tcp_rx.resubscribe();
+                    state.connection_handler.tcp_tx = new_tcp_tx.clone();
+                    state.connection_handler.tcp_rx = new_tcp_rx.resubscribe();
                     state.internal_tx = Some(internal_tx);
                     state.internal_rx = Some(internal_rx.resubscribe());
                 }
@@ -1977,7 +1930,7 @@ async fn upload(
     let body_stream = request.into_body().into_data_stream();
     let multipart = multer::Multipart::new(body_stream, boundary);
 
-    let tcp_tx = state.tcp_tx.clone();
+    let tcp_tx = state.connection_handler.tcp_tx.clone();
     match send_multipart_over_broadcast(multipart, tcp_tx).await {
         Ok(_) => StatusCode::OK,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -2022,7 +1975,7 @@ async fn refresh_status(
     // }
     // if !authorized {
     state.tcp_conn_status = {
-        if check_channel_health(&state.tcp_tx, state.tcp_rx.resubscribe()).await {
+        if check_channel_health(&state.connection_handler.tcp_tx, state.connection_handler.tcp_rx.resubscribe()).await {
             Status::Up
         } else {
             Status::Down
@@ -2294,7 +2247,7 @@ async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
                     // Acquire lock briefly only to send TCP message
                     let tcp_tx = {
                         let state = arc_state.read().await;
-                        state.tcp_tx.clone()
+                        state.connection_handler.tcp_tx.clone()
                     };
 
                     let lock = tcp_tx;
@@ -3899,7 +3852,7 @@ async fn get_files_content(
 
     let (tcp_tx, tcp_rx) = {
         let state = arc_state.read().await;
-        (state.tcp_tx.clone(), state.tcp_tx.subscribe())
+        (state.connection_handler.tcp_tx.clone(), state.connection_handler.tcp_tx.subscribe())
     };
 
     let mut tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
@@ -3948,7 +3901,7 @@ pub async fn get_files(
 ) -> impl IntoResponse {
     let (tcp_tx, tcp_rx) = {
         let state = arc_state.read().await;
-        (state.tcp_tx.clone(), state.tcp_tx.subscribe())
+        (state.connection_handler.tcp_tx.clone(), state.connection_handler.tcp_tx.subscribe())
     };
     let state = arc_state.read().await;
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
@@ -4074,7 +4027,7 @@ pub async fn stream_file_download(
 
     let tcp_fs = {
         let state = arc_state.read().await;
-        let (tcp_tx, tcp_rx) = (state.tcp_tx.clone(), state.tcp_tx.subscribe());
+        let (tcp_tx, tcp_rx) = (state.connection_handler.tcp_tx.clone(), state.connection_handler.tcp_tx.subscribe());
         Arc::new(Mutex::new(TcpFs::new(tcp_tx, tcp_rx)))
     };
 

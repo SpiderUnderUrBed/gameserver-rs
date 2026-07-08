@@ -1271,6 +1271,7 @@ dependencies = [
  "mime_guess",
  "multer",
  "prost",
+ "prost-types",
  "rcon",
  "serde",
  "serde_json",
