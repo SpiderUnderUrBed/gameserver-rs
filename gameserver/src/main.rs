@@ -764,7 +764,7 @@ async fn ensure_server_directory() {}
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config_local_url = get_env_var_or_arg("LOCALURL", Some(StaticLocalUrl.to_string()));
 
-    let listener = ConnectionManager::serve(config_local_url.clone().unwrap()).await?;
+    let mut listener = ConnectionManager::serve(config_local_url.clone().unwrap()).await?;
     //TcpListener::bind(config_local_url.clone().unwrap()).await?;
     println!("Listening on {}", config_local_url.unwrap());
 
@@ -1072,7 +1072,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 "authcode": "0"
                             }).to_string() + "\n";
                             //println!(" writing back cmd {:#?}", payload.clone());
-                            if let Err(e) = writer.send(payload.as_bytes().to_vec()).await {
+                            if let Err(e) = writer.send_with_connection(payload.as_bytes().to_vec(), &mut conn_handler).await {
                                 eprintln!("[{}] Write error: {}", addr, e);
                                 break;
                             };
@@ -1143,8 +1143,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
                             //while let Some(newline_pos) = conn_handler.inner().iter().position(|&b| b == b'\n')
                             // println!("before next");
-                            while let Ok(_) = conn_handler.next() {
-                                // println!("got next");
+                            while let Ok(_) = conn_handler.next().await {
+                                println!("got next");
                                 // let line = &conn_handler.inner()[..newline_pos];
 
                                 // if line.is_empty() {
@@ -1163,8 +1163,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 }
                                 let mut line_str = line_str_result.unwrap();
                                 line_str = line_str.trim_matches(|c: char| c.is_whitespace() || c == '\0').to_string();
-                                // println!("got line str {}", line_str.clone());
-                                conn_handler.remove_current_segment_or_clear();
+                                println!("got line str {}", line_str.clone());
+                                conn_handler.remove_current_segment_or_clear().await;
                                 // println!("got line str '{}'", line_str.clone());
                                 //println!("got line {}", line_str.clone());
                                 if line_str == "<|END_OF_FILE|>" {
@@ -1219,6 +1219,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                             }
                                         }
                                         //println!("before request");
+
+                                        // TODO: consider making a macro which can handle requests in pararell
                                         if let Some(request) =
                                             RequestHandler::try_recv_req(json_value)
                                         {
@@ -1965,7 +1967,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 if conn_handler.has_remaining_buffer().await {
                                     found_message = true;
                                 }
-                                conn_handler.remove_current_segment_or_clear();
+                                conn_handler.remove_current_segment_or_clear().await;
                                 // if newline_pos + 1 <= conn_handler.inner().len() {
                                 //     conn_handler.inner().drain(..newline_pos + 1);
                                 //     found_message = true;

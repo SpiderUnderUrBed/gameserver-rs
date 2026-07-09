@@ -24,7 +24,7 @@ impl ConnectionManager {
         )
     }
     pub async fn accept_connection(
-        &self,
+        &mut self,
     ) -> Result<(ConnectionHandler, Option<String>), Box<dyn std::error::Error + Send + Sync>> {
         let (socket, addr) = self.listner.accept().await?;
         let handler = ConnectionHandler {
@@ -70,7 +70,7 @@ impl ConnectionHandler {
         }
     }
     //pub fn next() -> Option<usize> {
-    pub fn next(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn next(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if let Some(pos) = self.read_buf.iter().position(|&b| b == b'\n') {
             self.newline_pos = pos;
             //self.remove_current_segment_or_clear();
@@ -163,6 +163,14 @@ impl Writer {
     pub async fn send(
         &mut self,
         bytes: Vec<u8>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.write_half.write_all(&bytes).await?;
+        Ok(())
+    }
+    pub async fn send_with_connection(
+        &mut self,
+        bytes: Vec<u8>,
+        handler: &mut ConnectionHandler
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.write_half.write_all(&bytes).await?;
         Ok(())

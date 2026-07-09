@@ -1,7 +1,13 @@
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc};
 use std::{any::Any, error::Error};
+use futures::future::pending;
+use futures::lock::Mutex;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::sync::{broadcast, RwLock};
 
+use crate::transport::node_transport::proto::DeleteServerResponse;
 use crate::MessagePayload;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
@@ -11,46 +17,211 @@ use tokio::net::TcpListener;
 
 use crate::{AppState, GetState, IncomingMessage, IncomingMessageWithMetadata, SimpleMessage};
 
+use tonic::transport::{Channel, Server};
+mod proto {
+    tonic::include_proto!("main");
+}
+use proto::{general_client::GeneralClient, filesystem_client::FilesystemClient, server_edit_client::ServerEditClient, server_edit_server::ServerEditServer, server_manage_client::ServerManageClient, DeleteServerRequest as DeleteServerRequestGrpc, server_edit_server::ServerEdit};
+//use proto::{CreateServerRequest, CreateServerResponse, DeleteServerRequest, DeleteServerResponse, StartServerRequest, StartServerResponse, StopServerRequest, StopServerResponse};
+#[derive(Clone)]
+pub struct Clients {
+    general_client: GeneralClient<Channel>,
+    server_manage_client: ServerManageClient<Channel>,
+    server_edit_client: ServerEditClient<Channel>,
+    filesystem_client: FilesystemClient<Channel>
+}
+
 pub struct ConnectionManager {
-    listner: TcpListener,
-    connections: Vec<ConnectionManager>
+    url: String,
+    accepted_connection: bool
 }
 impl ConnectionManager {
     pub async fn serve(url: String) -> Result<ConnectionManager, Box<dyn std::error::Error + Send + Sync>> {
-        let listner = TcpListener::bind(url).await?;
-    
+
         Ok(
             ConnectionManager { 
-                listner, 
-                connections: vec![]
+                accepted_connection: false,
+                url
             }
         )
     }
     pub async fn accept_connection(
-        &self,
+        &mut self,
     ) -> Result<(ConnectionHandler, Option<String>), Box<dyn std::error::Error + Send + Sync>> {
-        let (socket, addr) = self.listner.accept().await?;
+        if !self.accepted_connection {
+            self.accepted_connection = true;
+        } else {
+            let _never: () = pending().await;
+        }
+        let connection = Connection {
+                requests: Arc::new(RwLock::new(Vec::new())),
+            };
         let handler = ConnectionHandler {
-            stream: Some(socket),
+            // current_request: None,
+            // requests: vec![],
+            connection,
             read_buf: vec![],
-            newline_pos: 0,
+            current_request: None,
         };
-        Ok((handler, Some(addr.to_string())))
+        let url = self.url.clone();
+        let requests_lock = handler.connection.requests.clone();
+        tokio::spawn(async move {
+            //let mut requests = requests_lock.write().await;
+            let inner_connection = Connection {
+                requests: requests_lock,
+            };
+            let _ = Connection::serve_with_arc(Arc::new(inner_connection), url).await;
+        });
+        Ok((handler, None))
     }
 }
+#[derive(Default)]
+pub struct Connection {
+    requests: Arc<RwLock<Vec<Request>>>,
+}
+pub struct Request {
+    data: String,
+    result_tx: broadcast::Sender<String>,
+}
 
+
+async fn delegate_request<T: Serialize, K: Serialize + DeserializeOwned>(
+    request: T,
+    requests_lock: Arc<RwLock<Vec<Request>>>,
+) -> Result<Result<K, Box<dyn std::error::Error + Send + Sync>>, tonic::Status> {
+    let (tx, mut rx) = broadcast::channel::<String>(16);
+
+    let stringified_request = serde_json::to_string(&request)
+        .map_err(|_| tonic::Status::internal(String::new()))?;
+
+    //println!("A");
+    let mut requests = requests_lock.write().await;
+    requests.push(Request {
+        data: stringified_request,
+        result_tx: tx,
+    });
+    let position = requests.len();
+    drop(requests); 
+
+    //println!("B");
+    let result = rx
+        .recv()
+        .await
+        .map_err(|_| tonic::Status::internal("Internal error".to_string()))?;
+
+    //println!("C");
+    // let mut requests = requests_lock.write().await;
+    // requests.remove(position);
+    //println!("D");
+    Ok(serde_json::from_str::<K>(&result).map_err(|e| e.into()))
+}
+
+#[tonic::async_trait]
+impl ServerEdit for Connection {
+        async fn create(
+            &self,
+            request: tonic::Request<proto::CreateServerRequest>,
+        ) -> std::result::Result<
+            tonic::Response<proto::CreateServerResponse>,
+            tonic::Status,
+        >{
+            let inner = request.into_inner();
+            match delegate_request::<proto::CreateServerRequest, proto::CreateServerResponse>(inner, self.requests.clone()).await {
+                Ok(Ok(response)) => Ok(response.into()),
+                Ok(Err(_)) => Err(tonic::Status::ok("done")),
+                Err(_) => Err(tonic::Status::ok("done"))
+            }
+        }
+        async fn delete(
+            &self,
+            request: tonic::Request<proto::DeleteServerRequest>,
+        ) -> std::result::Result<
+            tonic::Response<proto::DeleteServerResponse>,
+            tonic::Status,
+        >{
+            let inner = request.into_inner();
+            match delegate_request::<proto::DeleteServerRequest, proto::DeleteServerResponse>(inner, self.requests.clone()).await {
+                Ok(Ok(response)) => Ok(response.into()),
+                Ok(Err(_)) => Err(tonic::Status::ok("done")),
+                Err(_) => Err(tonic::Status::ok("done"))
+            }
+        }
+        async fn start(
+            &self,
+            request: tonic::Request<proto::StartServerRequest>,
+        ) -> std::result::Result<
+            tonic::Response<proto::StartServerResponse>,
+            tonic::Status,
+        >{
+            let inner = request.into_inner();
+            match delegate_request::<proto::StartServerRequest, proto::StartServerResponse>(inner, self.requests.clone()).await {
+                Ok(Ok(response)) => Ok(response.into()),
+                Ok(Err(_)) => Err(tonic::Status::ok("done")),
+                Err(_) => Err(tonic::Status::ok("done"))
+            }
+        }
+        async fn stop(
+            &self,
+            request: tonic::Request<proto::StopServerRequest>,
+        ) -> std::result::Result<
+            tonic::Response<proto::StopServerResponse>,
+            tonic::Status,
+        > {
+              let inner = request.into_inner();
+            match delegate_request::<proto::StopServerRequest, proto::StopServerResponse>(inner, self.requests.clone()).await {
+                Ok(Ok(response)) => Ok(response.into()),
+                Ok(Err(_)) => Err(tonic::Status::ok("done")),
+                Err(_) => Err(tonic::Status::ok("done"))
+            }
+        }
+}
+
+impl Connection {
+    pub async fn serve_with_arc(self: Arc<Self>, url: String) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let addr = url.parse()?;
+        Server::builder()
+            .add_service(ServerEditServer::from_arc(self))  // reuse the same Connection/requests
+            .serve(addr)
+            .await?;
+        Ok(())
+    }
+    // pub async fn serve(&mut self, url: String) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    //     let addr = url.parse()?; 
+
+    //     Server::builder()
+    //         .add_service(ServerEditServer::new(Connection::default()))
+    //         .serve(addr)
+    //         .await?;
+    //     Ok(())
+    // }
+    // pub async fn serve_requests(requests: &Vec<Request>, url: String) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    //     let addr = url.parse()?; 
+
+    //     Server::builder()
+    //         .add_service(ServerEditServer::new(Connection::default()))
+    //         .serve(addr)
+    //         .await?;
+    //     Ok(())
+    // }
+}
 pub struct ConnectionHandler {
-    stream: Option<TcpStream>,
-    read_buf: Vec<u8>,
-    newline_pos: usize,
+    // current_request: Option<String>,
+    // requests: Vec<String>,
+    connection: Connection,
+    current_request: Option<String>,
+    read_buf: Vec<u8>
 }
 
 impl ConnectionHandler {
     pub fn new() -> ConnectionHandler {
         ConnectionHandler {
-            stream: None,
-            read_buf: Vec::new(),
-            newline_pos: 0,
+            // current_request: None,
+            // requests: Vec::new(),
+            connection: Connection {  
+                    requests: Arc::new(RwLock::new(Vec::new()))
+                },
+            read_buf: Vec::new() ,
+            current_request: None,
         }
     }
 
@@ -58,77 +229,57 @@ impl ConnectionHandler {
         &mut self.read_buf
     }
 
+    // pub fn serve(handler: &ConnectionHandler){
+
+    // }
+
     pub fn clear(&self) {}
     pub async fn remove_current_segment_or_clear(&mut self) {
-        self.remove_segment_or_clear(self.newline_pos).await;
-    }
-    async fn remove_segment_or_clear(&mut self, position: usize) {
-        if position + 1 <= self.inner().len() {
-            self.inner().drain(..position + 1);
-        } else {
-            self.inner().clear();
+        self.current_request = None;
+        let mut requests = self.connection.requests.write().await;
+        if requests.len() > 0 {
+            requests.remove(0);
         }
+        // if let Some(pos) = requests.iter().position(predicate){
+        // }
+        //self.remove_segment_or_clear(self.newline_pos).await;
     }
     //pub fn next() -> Option<usize> {
-    pub fn next(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(pos) = self.read_buf.iter().position(|&b| b == b'\n') {
-            self.newline_pos = pos;
+    pub async fn next(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let requests = self.connection.requests.read().await;
+        if requests.len() > 0 {
+            let current_request = requests.get(0).unwrap();
+            println!("have a current request");
+            let _ = current_request.result_tx.send("\0".to_string());
+            self.current_request = Some(current_request.data.clone());
             Ok(())
         } else {
-            Err("Did not find next position".into())
+            Err("nothing in requests".into())
         }
         //todo!()
     }
     pub async fn recv_line(&mut self) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let newline_pos = self.newline_pos.clone();
-        let line = &self.inner()[..newline_pos];
-
-        if line.is_empty() {
-            self.remove_current_segment_or_clear().await;
-            return Err("Line is empty".into());
+        if let Some(request) = &mut self.current_request {
+            Ok(request.to_string())
+        } else {
+            Err("was nothing".into())
         }
-
-        let line_str = String::from_utf8_lossy(line);
-        Ok(line_str.to_string())
     }
     pub async fn append_bytes(&mut self, bytes: Vec<u8>) {
-        self.inner().extend_from_slice(&bytes);
+        //self.inner().extend_from_slice(&bytes);
     }
     pub async fn has_remaining_buffer(&self) -> bool {
-        self.newline_pos + 1 <= self.read_buf.len()
+        false
     }
     pub async fn handle_request(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // read_half.read(&mut temp_buf) => {
-        //     let n = match result {
-        //         Ok(0) => break,
-        //         Ok(n) => n,
-        //         Err(e) => {
-        //             eprintln!("[{}] Read error: {}", addr, e);
-        //             break;
-        //         }
-        //     };
-        //     read_buf.append_bytes((&temp_buf[..n]).to_vec()).await;
-        //     // read_buf.inner().extend_from_slice(&temp_buf[..n]);
-        // }
-        if let Some(stream) = &mut self.stream {
-            let mut temp_buf = vec![0u8; 4096];
-            stream.read(&mut temp_buf).await?;
-            Ok(())
-        } else {
-            Err("no stream exists".into())
-        }
+        todo!()
         //Ok(())
     }
     pub async fn send(
         &mut self,
         bytes: Vec<u8>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(stream) = &mut self.stream {
-            stream.write_all(&bytes).await?;
-            Ok(())
-        } else {
-            Err("no stream".into())
-        }
+        todo!()
     }
     pub async fn recv(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         todo!()
@@ -139,67 +290,41 @@ impl ConnectionHandler {
     //     Ok(None)
     // }
     pub fn split(&mut self) -> Result<(Writer, Reader), Box<dyn std::error::Error + Send + Sync>> {
-        let stream = self.stream.take().ok_or("no stream set")?;
-        let (read_half, write_half) = stream.into_split();
-        // Ok((Writer { write_half }, Reader { read_half, read_buf: Some(&self.read_buf) }))
-        Ok((Writer { write_half }, Reader { read_half }))
+        Ok((Writer::default(), Reader::default()))
+        //todo!()
     }
     // pub async fn handle_connections() {
     // }
 }
+#[derive(Default)]
 pub struct Writer {
-    write_half: OwnedWriteHalf,
 }
 impl Writer {
     pub async fn send(
         &mut self,
         bytes: Vec<u8>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.write_half.write_all(&bytes).await?;
+        Err("plain send is not supported for grpc".into())
+    }
+    pub async fn send_with_connection(
+        &mut self,
+        bytes: Vec<u8>,
+        handler: &mut ConnectionHandler
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        
         Ok(())
     }
 }
+#[derive(Default)]
 pub struct Reader {
-    read_half: OwnedReadHalf,
     //read_buf: Option<&Vec<u8>>,
 }
 impl Reader {
     pub async fn recv(&mut self) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-        let mut temp_buf = vec![0u8; 4096];
-        let n = self.read_half.read(&mut temp_buf).await?;
-
-        if n == 0 {
-            return Err("connection closed by peer or no bytes".into());
-        }
-
-        println!("got {}", String::from_utf8_lossy(&temp_buf[..n]));
-        Ok(temp_buf)
+        Err("receiving directly is not supported for grpc".into())
     }
     pub async fn handle_request(&mut self, handler: &mut ConnectionHandler) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // read_half.read(&mut temp_buf) => {
-        //     let n = match result {
-        //         Ok(0) => break,
-        //         Ok(n) => n,
-        //         Err(e) => {
-        //             eprintln!("[{}] Read error: {}", addr, e);
-        //             break;
-        //         }
-        //     };
-        //     read_buf.append_bytes((&temp_buf[..n]).to_vec()).await;
-        //     // read_buf.inner().extend_from_slice(&temp_buf[..n]);
-        // }
-        // let mut temp_buf = vec![0u8; 4096];
-        // self.read_half.read(&mut temp_buf).await?;
-        // println!("got {}", String::from_utf8_lossy(&temp_buf));
-        // Ok(())
-        let mut temp_buf = vec![0u8; 4096];
-        let n = self.read_half.read(&mut temp_buf).await?;
-
-        if n == 0 {
-            return Err("connection closed by peer or no bytes".into());
-        }
-        handler.append_bytes(temp_buf.clone()).await;
-        println!("got {}", String::from_utf8_lossy(&temp_buf[..n]));
+        
         Ok(())
     }
 }
