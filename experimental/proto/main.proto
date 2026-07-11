@@ -85,7 +85,9 @@ message ServerStateResponse {
   MessagePayload message = 1; 
 }
 message ServerNameResponse {
-  MessagePayload message = 1; 
+  string type = 1;
+  string message = 2;
+  string authcode = 3;
 }
 message SetServerResponse {}
 message StartServerResponse {}

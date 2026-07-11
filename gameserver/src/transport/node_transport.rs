@@ -59,7 +59,7 @@ impl ConnectionHandler {
     }
 
     pub fn clear(&self) {}
-    pub fn remove_current_segment_or_clear(&mut self) {
+    pub async fn remove_current_segment_or_clear(&mut self) {
         self.remove_segment_or_clear(self.newline_pos);
     }
     fn remove_segment_or_clear(&mut self, position: usize) {
@@ -440,14 +440,14 @@ pub trait TryIntoRequest {
 }
 
 pub trait NodeTransportable {
-    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>>;
+    async fn node_transport(&self, state: &AppState, connection_handler: &mut ConnectionHandler) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
 
 pub struct ServerDataResponse {
     pub state: GetState,
 }
 impl NodeTransportable for ServerDataResponse {
-    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(&self, state: &AppState, _connection_handler: &mut ConnectionHandler) -> Result<(), Box<dyn Error + Send + Sync>> {
         let tx = state.output_tx.lock().await.clone().unwrap();
         let _ = tx.send(serde_json::to_string(&self.state)?).await;
         Ok(())
@@ -458,7 +458,7 @@ pub struct PingResponse {
     pub message: SimpleMessage,
 }
 impl NodeTransportable for PingResponse {
-    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(&self, state: &AppState, _connection_handler: &mut ConnectionHandler) -> Result<(), Box<dyn Error + Send + Sync>> {
         let tx = state.output_tx.lock().await.clone().unwrap();
         let _ = tx.send(serde_json::to_string(&self.message)?).await;
         Ok(())
@@ -470,7 +470,7 @@ pub struct FileOperationResponse {
     pub data: String,
 }
 impl NodeTransportable for FileOperationResponse {
-    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(&self, state: &AppState, _connection_handler: &mut ConnectionHandler) -> Result<(), Box<dyn Error + Send + Sync>> {
         let tx = state.output_tx.lock().await.clone().unwrap();
         let _ = tx.send(self.data.clone()).await;
         Ok(())
@@ -481,7 +481,7 @@ pub struct ServerNameResponse {
     pub message: MessagePayload,
 }
 impl NodeTransportable for ServerNameResponse {
-    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(&self, state: &AppState, _connection_handler: &mut ConnectionHandler) -> Result<(), Box<dyn Error + Send + Sync>> {
         let tx = state.output_tx.lock().await.clone().unwrap();
         let _ = tx.send(serde_json::to_string(&self.message)?).await;
         Ok(())
@@ -492,7 +492,7 @@ pub struct ServerStateResponse {
     pub message: MessagePayload,
 }
 impl NodeTransportable for ServerStateResponse {
-    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(&self, state: &AppState, _connection_handler: &mut ConnectionHandler) -> Result<(), Box<dyn Error + Send + Sync>> {
         let tx = state.output_tx.lock().await.clone().unwrap();
         let _ = tx.send(serde_json::to_string(&self.message)?).await;
         Ok(())

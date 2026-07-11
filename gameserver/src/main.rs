@@ -110,6 +110,11 @@ struct IncomingMessage {
     authcode: String,
 }
 
+// TODO: consider this
+// IncomingMessageWithMetadata has been omitted here but rather imported as 
+// some connection types require it to the the same as some internal defintion of 
+// Incoming
+
 // newer version of IncomingMessage, mainly because this includes the metadata feild which i sometimes use
 // IncomingMessageWithMetadata and IncomingMessage should be renamed to something that makes sense
 // Note, this also handles the things like MessagePayloadWithMetadata and converts it here, as
@@ -122,6 +127,8 @@ struct IncomingMessageWithMetadata {
     metadata: MetadataTypes,
     authcode: String,
 }
+
+
 
 // For very simple messages like pings that need no added complexity
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Default)]
@@ -1164,7 +1171,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 let mut line_str = line_str_result.unwrap();
                                 line_str = line_str.trim_matches(|c: char| c.is_whitespace() || c == '\0').to_string();
                                 println!("got line str {}", line_str.clone());
-                                conn_handler.remove_current_segment_or_clear().await;
+                                //conn_handler.remove_current_segment_or_clear().await;
                                 // println!("got line str '{}'", line_str.clone());
                                 //println!("got line {}", line_str.clone());
                                 if line_str == "<|END_OF_FILE|>" {
@@ -1738,7 +1745,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                     };
                                                 println!("{:#?}", file_operation_response);
                                                 let _ = file_operation_response
-                                                    .node_transport(&arc_state_clone)
+                                                    .node_transport(&arc_state_clone, &mut conn_handler)
                                                     .await;
 
                                                 // let response = handle_file_request(
@@ -1758,7 +1765,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                         message: "pong".to_string(),
                                                     },
                                                 };
-                                                let _ = pong.node_transport(&arc_state_clone).await;
+                                                let _ = pong.node_transport(&arc_state_clone, &mut conn_handler).await;
                                                 //println!("sent out pong");
                                                 // let pong = SimpleMessage {
                                                 //     message: "pong".to_string(),
@@ -1864,7 +1871,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                                 };
 
                                                             let _ = server_data_response
-                                                                .node_transport(&arc_state_clone)
+                                                                .node_transport(&arc_state_clone, &mut conn_handler)
                                                                 .await;
                                                             // let server_data_response = serde_json::to_string(
                                                             //             &GetState {
@@ -1911,7 +1918,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                     },
                                                 };
                                                 let _ = server_state_response
-                                                    .node_transport(&arc_state_clone)
+                                                    .node_transport(&arc_state_clone, &mut conn_handler)
                                                     .await;
                                                 // let status_message = MessagePayload {
                                                 //     r#type: "server_state".to_string(),
@@ -1941,7 +1948,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                     },
                                                 };
                                                 let _ = server_name_response
-                                                    .node_transport(&arc_state_clone)
+                                                    .node_transport(&arc_state_clone, &mut conn_handler)
                                                     .await;
                                                 // let _ = out_tx
                                                 //     .send(

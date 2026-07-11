@@ -1739,7 +1739,7 @@ pub async fn start_server(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     println!("Called start server");
-    let state = arc_state.write().await;
+    let mut state = arc_state.write().await;
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
@@ -1747,7 +1747,7 @@ pub async fn start_server(
     }
 
     let start_server_request = StartServerRequest {};
-    let _ = start_server_request.node_transport(&state).await;
+    let _ = start_server_request.node_transport(&mut state).await;
 
     StatusCode::CREATED.into_response()
 }
@@ -1757,7 +1757,7 @@ pub async fn stop_server(
     auth_session: AuthSession,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let state = arc_state.write().await;
+    let mut state = arc_state.write().await;
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
@@ -1765,7 +1765,7 @@ pub async fn stop_server(
     }
 
     let stop_server_request = StopServerRequest {};
-    let _ = stop_server_request.node_transport(&state).await;
+    let _ = stop_server_request.node_transport(&mut state).await;
 
     StatusCode::CREATED.into_response()
 }
@@ -1904,7 +1904,7 @@ async fn migrate(
     headers: HeaderMap,
     Json(request): Json<SrcAndDest>,
 ) -> impl IntoResponse {
-    let state = arc_state.read().await;
+    let mut state = arc_state.write().await;
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
@@ -1913,7 +1913,7 @@ async fn migrate(
     }
 
     let migrate_request = MigrateRequest { common: request };
-    let _ = migrate_request.node_transport(&state).await;
+    let _ = migrate_request.node_transport(&mut state).await;
 
     StatusCode::OK.into_response()
 }
@@ -2548,7 +2548,7 @@ async fn notify_node_of_settings(
     arc_state: Arc<RwLock<AppState>>,
     old_settings_option: Option<Settings>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let state = arc_state.write().await;
+    let mut state = arc_state.write().await;
     let database = &state.database;
     let settings = database.get_settings().await?;
     if let Some(internal_tx) = &state.internal_tx {
@@ -2557,7 +2557,7 @@ async fn notify_node_of_settings(
                 let filter_request = FilterRequest {
                     filter: settings.filter,
                 };
-                let _ = filter_request.node_transport(&state).await;
+                let _ = filter_request.node_transport(&mut state).await;
             }
             Ok(())
         } else {
@@ -2652,7 +2652,7 @@ async fn ongoing_server_status(
         move |(mut interval, arc_state)| async move {
             interval.tick().await;
             let status = {
-                let state = arc_state.read().await;
+                let mut state = arc_state.write().await;
 
                 if state.cached_status_type.is_empty()
                     || state.cached_status_type == "server-keyword"
@@ -2660,7 +2660,7 @@ async fn ongoing_server_status(
                     state.current_node.status.clone()
                 } else if state.cached_status_type == "server-process" {
                     let server_state_request = ServerStateRequest {};
-                    let _ = server_state_request.node_transport(&state).await;
+                    let _ = server_state_request.node_transport(&mut state).await;
                     state.current_node.status.clone()
                 } else if state.cached_status_type == "node" {
                     state.tcp_conn_status.clone()
@@ -2763,7 +2763,7 @@ async fn delete_server(
     headers: HeaderMap,
     Json(request): Json<IncomingMessageWithMetadata>,
 ) -> impl IntoResponse {
-    let state = arc_state.write().await;
+    let mut state = arc_state.write().await;
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
@@ -2794,7 +2794,7 @@ async fn delete_server(
     let delete_server_request = DeleteServerRequest {
         metadata: request.metadata,
     };
-    let _ = delete_server_request.node_transport(&state).await;
+    let _ = delete_server_request.node_transport(&mut state).await;
 
     Ok(StatusCode::CREATED.into_response())
 }
@@ -2861,37 +2861,6 @@ async fn add_server(
         }
     };
 
-    // for message in ["create_server", "set_server", "server_data"] {
-    //     let msg = MessagePayloadWithMetadata {
-    //         r#type: "command".to_string(),
-    //         message: message.to_string(),
-    //         metadata: MetadataTypes::Server {
-    //             servername: server.servername.clone(),
-    //             provider: server.provider.clone(),
-    //             providertype: server.providertype.clone(),
-    //             location: server.location.clone(),
-    //             sandbox,
-    //             server_metadata: server.server_metadata.clone()
-    //         },
-    //         authcode: "0".to_string(),
-    //     };
-
-    //     let mut bytes = match serde_json::to_vec(&msg) {
-    //         Ok(b) => b,
-    //         Err(e) => {
-    //             eprintln!("Serialization error: {}", e);
-    //             return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    //         }
-    //     };
-    //     bytes.push(b'\n');
-
-    //     println!("Sending create server message");
-    //     if let Err(e) = state.tcp_tx.send(bytes) {
-    //         eprintln!("Failed to send {} to TCP: {}", message, e);
-    //         return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    //     }
-    // }
-    //SetServerRequest
     let create_server_request = CreateServerRequest {
         metadata: MetadataTypes::Server {
             servername: server.servername.clone(),
@@ -2902,7 +2871,7 @@ async fn add_server(
             server_metadata: server.server_metadata.clone(),
         },
     };
-    let _ = create_server_request.node_transport(&state).await;
+    let _ = create_server_request.node_transport(&mut state).await;
 
     let set_server_request = SetServerRequest {
         metadata: MetadataTypes::Server {
@@ -2914,7 +2883,7 @@ async fn add_server(
             server_metadata: server.server_metadata.clone(),
         },
     };
-    let _ = set_server_request.node_transport(&state).await;
+    let _ = set_server_request.node_transport(&mut state).await;
 
     let server_data_request = ServerDataRequest {
         metadata: MetadataTypes::Server {
@@ -2926,7 +2895,7 @@ async fn add_server(
             server_metadata: server.server_metadata.clone(),
         },
     };
-    let _ = server_data_request.node_transport(&state).await;
+    let _ = server_data_request.node_transport(&mut state).await;
 
     Ok(StatusCode::OK)
 }
@@ -2971,7 +2940,7 @@ async fn ping(
     headers: HeaderMap,
     Json(request): Json<MessagePayload>,
 ) -> StatusCode {
-    let state = arc_state.write().await;
+    let mut state = arc_state.write().await;
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED;
@@ -2980,7 +2949,7 @@ async fn ping(
     if request.message.is_empty() {
         if let Some(internal_tx) = &state.internal_tx {
             let ping = Ping {};
-            let res = ping.node_transport(&state).await;
+            let res = ping.node_transport(&mut state).await;
             if res.is_ok() {
                 return StatusCode::OK;
             } else {
@@ -3001,7 +2970,7 @@ async fn modify_intergration(
     headers: HeaderMap,
     Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
-    let state = arc_state.write().await;
+    let mut state = arc_state.write().await;
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
@@ -3040,7 +3009,7 @@ async fn modify_intergration(
                                 let integration_key_request = IntegrationKeyRequest {
                                     key: unwrapped_hook.1.clone(),
                                 };
-                                let _ = integration_key_request.node_transport(&state).await;
+                                let _ = integration_key_request.node_transport(&mut state).await;
                             }
                         }
                     }
@@ -3243,27 +3212,6 @@ async fn set_server(
             .into(),
         );
 
-        // let msg = MessagePayloadWithMetadata {
-        //     r#type: "command".to_string(),
-        //     message: "set_server".to_string(),
-        //     metadata: MetadataTypes::Server {
-        //         servername: retrieved_server.servername,
-        //         provider: retrieved_server.provider,
-        //         providertype: retrieved_server.providertype,
-        //         location: retrieved_server.location,
-        //         sandbox: retrieved_server.sandbox,
-        //         server_metadata: retrieved_server.server_metadata
-        //     },
-        //     authcode: "0".to_string(),
-        // };
-
-        // let mut bytes = serde_json::to_vec(&msg).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        // bytes.push(b'\n');
-        // state
-        //     .tcp_tx
-        //     .send(bytes)
-        //     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
         let set_server_request = SetServerRequest {
             metadata: MetadataTypes::Server {
                 servername: retrieved_server.servername,
@@ -3274,7 +3222,7 @@ async fn set_server(
                 server_metadata: retrieved_server.server_metadata,
             },
         };
-        let _ = set_server_request.node_transport(&state).await;
+        let _ = set_server_request.node_transport(&mut state).await;
 
         Ok(StatusCode::OK)
     } else {

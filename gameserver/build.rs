@@ -2,7 +2,6 @@ use std::error::Error;
 
 
 #[cfg(feature = "grpc_experimental")]
-#[cfg(feature = "grpc_experimental")]
 fn proto_compile() -> Result<(), Box<dyn Error>> {
     use std::fs;
 

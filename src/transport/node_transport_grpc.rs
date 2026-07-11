@@ -82,17 +82,18 @@ pub async fn check_channel_health(
     // tx: &broadcast::Sender<Vec<u8>>,
     // mut rx: broadcast::Receiver<Vec<u8>>,
 ) -> bool {
-    let (tx, mut rx) = (state.connection_handler.proxy_tx.clone(), state.connection_handler.proxy_rx.resubscribe());
-    match tx.send("ping".into()) {
-        Ok(_) => true,
-        Err(_) => return false,
-    };
+    true
+    // let (tx, mut rx) = (state.connection_handler.proxy_tx.clone(), state.connection_handler.proxy_rx.resubscribe());
+    // match tx.send("ping".into()) {
+    //     Ok(_) => true,
+    //     Err(_) => return false,
+    // };
 
-    match rx.recv().await {
-        Ok(_msg) => true,
-        Err(broadcast::error::RecvError::Closed) => false,
-        Err(broadcast::error::RecvError::Lagged(_)) => true,
-    }
+    // match rx.recv().await {
+    //     Ok(_msg) => true,
+    //     Err(broadcast::error::RecvError::Closed) => false,
+    //     Err(broadcast::error::RecvError::Lagged(_)) => true,
+    // }
 }
 // impl ConnectionHandler {
 //     pub async fn shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
@@ -105,14 +106,20 @@ pub async fn check_channel_health(
 // does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
 pub async fn connect_to_server(
     arc_state: Arc<RwLock<AppState>>,
-    tcp_url: String,
+    url: String,
     _ws_tx: broadcast::Sender<String>,
     _end_if_timeout: bool,
     _block_with_stream: bool,
 ) -> Result<Option<SocketAddr>, Box<dyn Error + Send + Sync>> {
     let mut state = arc_state.write().await;
 
-    let channel = Channel::from_shared(tcp_url)?.connect().await?;
+    let url = if url.starts_with("http://") || url.starts_with("https://") {
+        url
+    } else {
+        format!("http://{url}")
+    };
+
+    let channel = Channel::from_shared(url)?.connect().await?;
     let general_client = GeneralClient::new(channel.clone());
     let filesystem_client = FilesystemClient::new(channel.clone());
     let server_edit_client = ServerEditClient::new(channel.clone());
@@ -275,9 +282,10 @@ pub async fn try_initial_connection(
 
 
 pub trait NodeTransportable {
-    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>>;
+    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
 
+// TODO: consider if needed
 pub trait ImmediateTransportable {
     async fn immediate_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
@@ -297,7 +305,7 @@ impl ImmediateTransportable for PasswordRequest {
         let auth_msg = serde_json::to_vec(&AuthTcpMessage {
             password: self.password.clone(),
         })?;
-        state.connection_handler.tcp_tx.send(auth_msg);
+        let _ = state.connection_handler.tcp_tx.send(auth_msg);
         Ok(())
     }
 }
@@ -319,7 +327,6 @@ impl ImmediateTransportable for ServernameRequest {
             authcode: "0".to_string(),
         })?;
         let _ = state.connection_handler.proxy_tx.send(cmd_msg);
-        // writer.write_all(cmd_msg.as_bytes()).await?;
 
         'name: {
             // let mut state = arc_state.write().await;
@@ -351,24 +358,25 @@ pub struct DeleteServerRequest {
 
 // NodeTransportable
 impl NodeTransportable for DeleteServerRequest {
-    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let msg = MessagePayloadWithMetadata {
-            r#type: "command".to_string(),
-            message: "delete_server".to_string(),
-            authcode: "0".to_string(),
-            metadata: self.metadata.clone(),
-        };
+    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
 
-        let mut bytes = match serde_json::to_vec(&msg) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("Serialization error: {}", e);
-                return Err("Failed to serialize".into());
-            }
-        };
-        bytes.push(b'\n');
+        // let msg = MessagePayloadWithMetadata {
+        //     r#type: "command".to_string(),
+        //     message: "delete_server".to_string(),
+        //     authcode: "0".to_string(),
+        //     metadata: self.metadata.clone(),
+        // };
 
-        let _ = state.connection_handler.tcp_tx.send(bytes);
+        // let mut bytes = match serde_json::to_vec(&msg) {
+        //     Ok(b) => b,
+        //     Err(e) => {
+        //         eprintln!("Serialization error: {}", e);
+        //         return Err("Failed to serialize".into());
+        //     }
+        // };
+        // bytes.push(b'\n');
+
+        // let _ = state.connection_handler.tcp_tx.send(bytes);
 
         Ok(())
     }
@@ -378,42 +386,46 @@ pub struct CreateServerRequest {
     pub metadata: MetadataTypes,
 }
 impl NodeTransportable for CreateServerRequest {
-    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let msg = MessagePayloadWithMetadata {
-            r#type: "command".to_string(),
-            message: "create_server".to_string(),
-            metadata: self.metadata.clone(),
-            authcode: "0".to_string(),
-        };
-        let mut bytes = match serde_json::to_vec(&msg) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("Serialization error: {}", e);
-                return Err("Failed to serialize".into());
-            }
-        };
-        bytes.push(b'\n');
-        let _ = state.connection_handler.tcp_tx.send(bytes);
+    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let request = proto::CreateServerRequest { metadata: Some(self.metadata.clone().into()) };
+        let _ = state.connection_handler.clients.as_mut().unwrap().server_edit_client.create(request);
+        // let msg = MessagePayloadWithMetadata {
+        //     r#type: "command".to_string(),
+        //     message: "create_server".to_string(),
+        //     metadata: self.metadata.clone(),
+        //     authcode: "0".to_string(),
+        // };
+        // let mut bytes = match serde_json::to_vec(&msg) {
+        //     Ok(b) => b,
+        //     Err(e) => {
+        //         eprintln!("Serialization error: {}", e);
+        //         return Err("Failed to serialize".into());
+        //     }
+        // };
+        // bytes.push(b'\n');
+        // let _ = state.connection_handler.tcp_tx.send(bytes);
 
         Ok(())
     }
 }
-// NodeTransportable
+// 
 
 pub struct StartServerRequest {
     // metadata: MetadataTypes
 }
 impl NodeTransportable for StartServerRequest {
-    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let msg = serde_json::to_vec(&MessagePayload {
-            r#type: "command".to_string(),
-            message: "start_server".to_string(),
-            authcode: "".to_string(),
-        });
-        if let Err(e) = msg {
-            return Err("Failed to serialize".into());
-        };
-        let _ = state.connection_handler.tcp_tx.send(msg.unwrap());
+    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let request = proto::StartServerRequest {};
+        let _ = state.connection_handler.clients.clone().unwrap().server_edit_client.start(request).await;
+        // let msg = serde_json::to_vec(&MessagePayload {
+        //     r#type: "command".to_string(),
+        //     message: "start_server".to_string(),
+        //     authcode: "".to_string(),
+        // });
+        // if let Err(e) = msg {
+        //     return Err("Failed to serialize".into());
+        // };
+        // let _ = state.connection_handler.tcp_tx.send(msg.unwrap());
 
         Ok(())
     }
@@ -423,16 +435,18 @@ pub struct StopServerRequest {
     // metadata: MetadataTypes
 }
 impl NodeTransportable for StopServerRequest {
-    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let msg = serde_json::to_vec(&MessagePayload {
-            r#type: "command".to_string(),
-            message: "stop_server".to_string(),
-            authcode: "".to_string(),
-        });
-        if let Err(e) = msg {
-            return Err("Failed to serialize".into());
-        };
-        let _ = state.connection_handler.tcp_tx.send(msg.unwrap());
+    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let stop_server_request = proto::StopServerRequest {};
+        let _ = state.connection_handler.clients.clone().unwrap().server_edit_client.stop(stop_server_request).await;
+        // let msg = serde_json::to_vec(&MessagePayload {
+        //     r#type: "command".to_string(),
+        //     message: "stop_server".to_string(),
+        //     authcode: "".to_string(),
+        // });
+        // if let Err(e) = msg {
+        //     return Err("Failed to serialize".into());
+        // };
+        // let _ = state.connection_handler.tcp_tx.send(msg.unwrap());
 
         Ok(())
     }
@@ -444,7 +458,7 @@ pub struct MigrateRequest {
     pub common: SrcAndDest,
 }
 impl NodeTransportable for MigrateRequest {
-    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         match serde_json::to_vec(&self.common) {
             Ok(bytes) => {
                 if let Err(err) = state.connection_handler.tcp_tx.send(bytes) {
@@ -462,22 +476,29 @@ pub struct SetServerRequest {
     pub(crate) metadata: MetadataTypes,
 }
 impl NodeTransportable for SetServerRequest {
-    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let msg = MessagePayloadWithMetadata {
-            r#type: "command".to_string(),
+    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let set_server_request = proto::SetServerRequest {
             message: "set_server".to_string(),
-            metadata: self.metadata.clone(),
+            r#type: "command".to_string(),
+            metadata: Some(self.metadata.clone().into()),
             authcode: "0".to_string(),
         };
-        let mut bytes = match serde_json::to_vec(&msg) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("Serialization error: {}", e);
-                return Err("Failed to serialize".into());
-            }
-        };
-        bytes.push(b'\n');
-        let _ = state.connection_handler.tcp_tx.send(bytes);
+        let _ = state.connection_handler.clients.as_mut().unwrap().server_manage_client.set(set_server_request);
+        // let msg = MessagePayloadWithMetadata {
+        //     r#type: "command".to_string(),
+        //     message: "set_server".to_string(),
+        //     metadata: self.metadata.clone(),
+        //     authcode: "0".to_string(),
+        // };
+        // let mut bytes = match serde_json::to_vec(&msg) {
+        //     Ok(b) => b,
+        //     Err(e) => {
+        //         eprintln!("Serialization error: {}", e);
+        //         return Err("Failed to serialize".into());
+        //     }
+        // };
+        // bytes.push(b'\n');
+        // let _ = state.connection_handler.tcp_tx.send(bytes);
 
         Ok(())
     }
@@ -488,22 +509,24 @@ pub struct ServerDataRequest {
     pub(crate) metadata: MetadataTypes,
 }
 impl NodeTransportable for ServerDataRequest {
-    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let msg = MessagePayloadWithMetadata {
-            r#type: "command".to_string(),
-            message: "server_data".to_string(),
-            metadata: self.metadata.clone(),
-            authcode: "0".to_string(),
-        };
-        let mut bytes = match serde_json::to_vec(&msg) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("Serialization error: {}", e);
-                return Err("Failed to serialize".into());
-            }
-        };
-        bytes.push(b'\n');
-        let _ = state.connection_handler.tcp_tx.send(bytes);
+    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let server_data_request = proto::ServerDataRequest {};
+        let _ = state.connection_handler.clients.as_mut().unwrap().server_manage_client.data(server_data_request);
+        // let msg = MessagePayloadWithMetadata {
+        //     r#type: "command".to_string(),
+        //     message: "server_data".to_string(),
+        //     metadata: self.metadata.clone(),
+        //     authcode: "0".to_string(),
+        // };
+        // let mut bytes = match serde_json::to_vec(&msg) {
+        //     Ok(b) => b,
+        //     Err(e) => {
+        //         eprintln!("Serialization error: {}", e);
+        //         return Err("Failed to serialize".into());
+        //     }
+        // };
+        // bytes.push(b'\n');
+        // let _ = state.connection_handler.tcp_tx.send(bytes);
 
         Ok(())
     }
@@ -517,7 +540,7 @@ pub struct RawBytes {
 }
 
 impl NodeTransportable for RawBytes {
-    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         let _ = state.connection_handler.tcp_tx.send(self.bytes.clone());
         Ok(())
     }
@@ -537,7 +560,7 @@ pub struct FilterRequest {
 //InternalTransportable
 // struct FilterRequest impl NodeTransportable {
 impl NodeTransportable for FilterRequest {
-    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         let filter_request = MessagePayloadWithMetadata {
             r#type: "command".to_string(),
             message: "set_filter".to_string(),
@@ -564,7 +587,7 @@ impl InternalTransportable for FilterRequest {
 // }
 pub struct Ping {}
 impl NodeTransportable for Ping {
-    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         let ping = SimpleMessage {
             message: "ping".to_string(),
         };
@@ -586,7 +609,7 @@ pub struct IntegrationKeyRequest {
     pub key: Value,
 }
 impl NodeTransportable for IntegrationKeyRequest {
-    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         match serde_json::to_vec(&self.key) {
             Ok(mut bytes) => {
                 // Add newline delimiter for TCP stream parsing
@@ -620,14 +643,16 @@ impl InternalTransportable for IntegrationKeyRequest {
 //InternalTransportable
 pub struct ServerStateRequest {}
 impl NodeTransportable for ServerStateRequest {
-    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let msg = serde_json::to_vec(&MessagePayload {
-            r#type: "command".to_string(),
-            message: "server_state".to_string(),
-            authcode: "0".to_string(),
-        })
-        .unwrap();
-        let _ = state.connection_handler.tcp_tx.send(msg);
+    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let server_state_request = proto::ServerStateRequest {};
+        let _ = state.connection_handler.clients.as_mut().unwrap().server_manage_client.state(server_state_request);
+        // let msg = serde_json::to_vec(&MessagePayload {
+        //     r#type: "command".to_string(),
+        //     message: "server_state".to_string(),
+        //     authcode: "0".to_string(),
+        // })
+        // .unwrap();
+        // let _ = state.connection_handler.tcp_tx.send(msg);
 
         Ok(())
     }
@@ -638,6 +663,11 @@ impl InternalTransportable for ServerStateRequest {
         state: &AppState,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         Ok(())
+    }
+}
+impl Into<proto::MetadataTypes> for MetadataTypes {
+    fn into(self) -> proto::MetadataTypes {
+        serde_json::from_value(serde_json::to_value(self.clone()).unwrap()).unwrap()
     }
 }
 // NoteTransportable
