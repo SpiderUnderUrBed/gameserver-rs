@@ -53,6 +53,23 @@ impl JsonAssembler {
         None
     }
 
+    fn strip_leading_escape_artifacts(s: &str) -> &str {
+        let mut s = s.trim_start();
+        loop {
+            let mut stripped_any = false;
+            for esc in ["\\f", "\\n", "\\r", "\\t", "\\0"] {
+                if let Some(rest) = s.strip_prefix(esc) {
+                    s = rest.trim_start();
+                    stripped_any = true;
+                }
+            }
+            if !stripped_any {
+                break;
+            }
+        }
+        s
+    }
+
     pub async fn feed_chunk(&mut self, chunk: &str, id: u64) -> Vec<Vec<u8>> {
         if self.assembly_deadline.is_none() {
             self.assembly_deadline = Some((Instant::now() + self.assembly_timeout).into());
@@ -63,6 +80,11 @@ impl JsonAssembler {
         let mut completed = Vec::new();
 
         loop {
+            let cleaned = Self::strip_leading_escape_artifacts(&self.buffer).to_string();
+            if cleaned != self.buffer {
+                self.buffer = cleaned;
+            }
+
             let s = self.buffer.trim_start();
             if s.is_empty() {
                 self.buffer.clear();
@@ -112,7 +134,7 @@ impl JsonAssembler {
 
                                         return completed;
                                     }
-                                    Err(e) => {}
+                                    Err(_e) => {}
                                 }
                             }
                         }

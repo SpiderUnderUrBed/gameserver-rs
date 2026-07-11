@@ -1,6 +1,8 @@
 use chrono::DateTime;
 use chrono::Local;
 use serde_json::{json, Value};
+use tcp_filesystem::FileResponse;
+use tcp_filesystem::FileResponseMessage;
 use std::convert::TryFrom;
 use std::fmt;
 use std::io::Error;
@@ -650,11 +652,11 @@ pub struct FsEntry {
 // }
 
 // Needs to be phased out, or just removed, everything now uses FileRequestPayload
-#[derive(serde::Serialize, serde::Deserialize)]
-struct FileResponseMessage {
-    in_response_to: u64,
-    data: serde_json::Value,
-}
+// #[derive(serde::Serialize, serde::Deserialize)]
+// struct FileResponseMessage {
+//     in_response_to: u64,
+//     data: serde_json::Value,
+// }
 
 // AppState for the Node, stores the name of the current server, the state of the process
 // whether or not its running, the channel for the output messages, and the process, makes it easier to pass and modify
@@ -1165,12 +1167,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
                                 // let line_str = String::from_utf8_lossy(line);
                                 let line_str_result = conn_handler.recv_line().await;
+                                conn_handler.start_clean_hook().await;
                                 if line_str_result.is_err() {
+                                    //println!("got line str err");
                                     continue;
                                 }
                                 let mut line_str = line_str_result.unwrap();
                                 line_str = line_str.trim_matches(|c: char| c.is_whitespace() || c == '\0').to_string();
+                                // line_str = line_str.strip_prefix("\l").unwrap_or(&line_str).to_string();
+                                if let Some(stripped) = line_str.strip_prefix(r"\f") {
+                                    line_str = stripped.to_string();
+                                    if !line_str.starts_with('{') {
+                                        line_str = "{".to_owned() + &line_str;
+                                    }
+                                    // if line_str.ends_with("}}"){
+                                    //     line_str = line_str.strip_suffix("}").unwrap().to_string();
+                                    // }
+                                }
                                 println!("got line str {}", line_str.clone());
+                                //conn_handler.start_clean_hook().await;
                                 //conn_handler.remove_current_segment_or_clear().await;
                                 // println!("got line str '{}'", line_str.clone());
                                 //println!("got line {}", line_str.clone());
@@ -1743,7 +1758,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                         )
                                                         .await,
                                                     };
-                                                println!("{:#?}", file_operation_response);
+                                                println!("the file response: {:#?}", file_operation_response);
                                                 let _ = file_operation_response
                                                     .node_transport(&arc_state_clone, &mut conn_handler)
                                                     .await;
@@ -1974,7 +1989,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 if conn_handler.has_remaining_buffer().await {
                                     found_message = true;
                                 }
-                                conn_handler.remove_current_segment_or_clear().await;
+                                conn_handler.end_clean_hook().await;
                                 // if newline_pos + 1 <= conn_handler.inner().len() {
                                 //     conn_handler.inner().drain(..newline_pos + 1);
                                 //     found_message = true;
@@ -2123,61 +2138,90 @@ async fn fix_path(path: String) -> String {
 async fn handle_file_request(_state: &Arc<AppState>, request: FileRequestMessage) -> String {
     match request.payload {
         FileRequestPayload::Metadata { path } => match get_metadata(&fix_path(path).await).await {
-            Ok(metadata) => serde_json::to_string(&FileResponseMessage {
-                in_response_to: request.id,
-                data: serde_json::to_value(metadata).unwrap(),
+            Ok(metadata) => serde_json::to_string(&FileResponse {
+                request_type: "file_response".to_string(),
+                common: FileResponseMessage {
+                    in_response_to: request.id,
+                    data: serde_json::to_vec(&metadata).unwrap(),
+                }
             })
             .unwrap(),
-            Err(e) => serde_json::to_string(&FileResponseMessage {
-                in_response_to: request.id,
-                data: serde_json::json!({ "error": e.to_string() }),
+            Err(e) => serde_json::to_string(&FileResponse {
+                request_type: "file_response".to_string(),
+                common: FileResponseMessage {
+                    in_response_to: request.id,
+                    data: serde_json::to_vec(&serde_json::json!({ "error": e.to_string() })).unwrap()
+                },
             })
             .unwrap(),
         },
         FileRequestPayload::PathFromTag { tag: _, path: _ } => {
             let basic_path_response = BasicPath { paths: vec![] };
-            serde_json::to_string(&FileResponseMessage {
-                in_response_to: request.id,
-                data: serde_json::to_value(basic_path_response).unwrap(),
+            serde_json::to_string(&FileResponse {
+                common: FileResponseMessage {
+                    in_response_to: request.id,
+                    data: serde_json::to_vec(&serde_json::to_value(basic_path_response).unwrap()).unwrap(),
+                },
+                request_type: "file_request".to_string(),
             })
             .unwrap()
         }
         FileRequestPayload::ListDir { path } => match list_directory(&fix_path(path).await).await {
-            Ok(entries) => serde_json::to_string(&FileResponseMessage {
-                in_response_to: request.id,
-                data: serde_json::to_value(entries).unwrap(),
+            Ok(entries) => serde_json::to_string(&FileResponse {
+                common: FileResponseMessage {
+                    in_response_to: request.id,
+                    data: serde_json::to_vec(&serde_json::to_value(entries).unwrap()).unwrap(),
+                },
+                request_type: "file_request".to_string(),
             })
             .unwrap(),
-            Err(e) => serde_json::to_string(&FileResponseMessage {
-                in_response_to: request.id,
-                data: serde_json::json!({ "error": e.to_string() }),
+            Err(e) => serde_json::to_string(&FileResponse {
+                common: FileResponseMessage {
+                    in_response_to: request.id,
+                    data: serde_json::to_vec(&serde_json::json!({ "error": e.to_string() })).unwrap(),
+                },
+                request_type: "file_request".to_string(),
             })
             .unwrap(),
         },
         FileRequestPayload::ListDirWithRange { path, start, end } => {
             match list_directory_with_range(&fix_path(path).await, start, end).await {
-                Ok(entries) => serde_json::to_string(&FileResponseMessage {
-                    in_response_to: request.id,
-                    data: serde_json::to_value(entries).unwrap(),
+                Ok(entries) => serde_json::to_string(&FileResponse {
+                    common: FileResponseMessage {
+                        in_response_to: request.id,
+                        data: serde_json::to_vec(&serde_json::to_value(entries).unwrap()).unwrap(),
+                    },
+                    request_type: "file_request".to_string(),
                 })
                 .unwrap(),
-                Err(e) => serde_json::to_string(&FileResponseMessage {
-                    in_response_to: request.id,
-                    data: serde_json::json!({ "error": e.to_string() }),
+                Err(e) => serde_json::to_string(&FileResponse {
+                    common: FileResponseMessage {
+                        in_response_to: request.id,
+                        data: serde_json::to_vec(&serde_json::json!({ "error": e.to_string() })).unwrap(),
+                    },
+                    request_type: "file_request".to_string(),
                 })
                 .unwrap(),
             }
         }
         FileRequestPayload::FileChunk(file_chunk) => match get_files_content(file_chunk).await {
-            Ok(content_msg) => serde_json::to_string(&FileResponseMessage {
-                in_response_to: request.id,
-                data: serde_json::Value::String(content_msg.message),
-            })
+            Ok(content_msg) => serde_json::to_string(&FileResponse {
+                    request_type: "file_request".to_string(),
+                    common: FileResponseMessage {
+                        in_response_to: request.id,
+                        data: serde_json::to_vec(&serde_json::Value::String(content_msg.message)).unwrap(),
+                    }
+                }
+            )
             .unwrap(),
-            Err(e) => serde_json::to_string(&FileResponseMessage {
-                in_response_to: request.id,
-                data: serde_json::json!({ "error": e.to_string() }),
-            })
+            Err(e) => serde_json::to_string(&FileResponse {
+                request_type: "file_request".to_string(),
+                common: FileResponseMessage {
+                    in_response_to: request.id,
+                    data: serde_json::to_vec(&serde_json::json!({ "error": e.to_string() })).unwrap(),
+                }
+            }
+            )
             .unwrap(),
         },
     }

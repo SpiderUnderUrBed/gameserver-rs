@@ -3,7 +3,7 @@ use std::{any::Any, error::Error};
 use crate::MessagePayload;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
-use tcp_filesystem::FileRequestMessage;
+use tcp_filesystem::{FileRequestMessage, FileResponseMessage};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{tcp::{OwnedReadHalf, OwnedWriteHalf}, TcpListener, TcpStream}};
 
 use crate::{AppState, GetState, IncomingMessage, IncomingMessageWithMetadata, SimpleMessage};
@@ -59,6 +59,12 @@ impl ConnectionHandler {
     }
 
     pub fn clear(&self) {}
+    pub async fn start_clean_hook(&mut self){
+        self.remove_current_segment_or_clear().await;
+    }
+    pub async fn end_clean_hook(&mut self){
+        self.remove_current_segment_or_clear().await;
+    }
     pub async fn remove_current_segment_or_clear(&mut self) {
         self.remove_segment_or_clear(self.newline_pos);
     }
@@ -72,6 +78,7 @@ impl ConnectionHandler {
     //pub fn next() -> Option<usize> {
     pub async fn next(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if let Some(pos) = self.read_buf.iter().position(|&b| b == b'\n') {
+            //println!("{:#?}", self.read_buf.iter().filter(|i| **i != 0).collect::<Vec<&u8>>());
             self.newline_pos = pos;
             //self.remove_current_segment_or_clear();
             Ok(())
@@ -85,7 +92,7 @@ impl ConnectionHandler {
         let line = &self.read_buf[..newline_pos];
 
         if line.is_empty() {
-            self.remove_current_segment_or_clear();
+            self.remove_current_segment_or_clear().await;
             return Err("Line is empty".into());
         }
 
@@ -234,12 +241,39 @@ pub enum RequestTypes {
     ServerStateRequest(ServerStateRequest),
     ConsoleRequest(ConsoleRequest),
     FileRequest(FileRequest),
+    FileResponse(FileResponse),
 }
 
 pub struct RequestHandler {}
 impl RequestHandler {
     pub fn try_recv_req(value: Value) -> Option<RequestTypes> {
         //if let Ok(ping_request)
+        let file_request_parse_attempt = serde_json::from_value::<FileRequest>(value.clone());
+        //println!("{:#?}", file_request_parse_attempt.clone());
+        // if let Err(e) = file_request_parse_attempt.clone() {
+        //     println!("{:#?}", e);
+        // }
+        // if let Ok(file_request) = file_request_parse_attempt {
+        //     return Some(RequestTypes::FileRequest(file_request));
+        // }
+        match file_request_parse_attempt {
+            Ok(file_request) => {
+                return Some(RequestTypes::FileRequest(file_request));
+            },
+            Err(e) => {
+                println!("{:#?}", e);
+            },
+        }
+        // let file_response_parse_attempt = serde_json::from_value::<FileResponse>(value.clone());
+        // match file_response_parse_attempt {
+        //     Ok(file_response) => {
+        //         return Some(RequestTypes::FileResponse(file_response));
+        //     },
+        //     Err(e) => {
+        //         println!("{:#?}", e);
+        //     },
+        // }
+
         if let Ok(create_server_request) =
             serde_json::from_value::<CreateServerRequest>(value.clone())
         {
@@ -310,9 +344,6 @@ impl RequestHandler {
             }
         }
         //println!("{:#?}", serde_json::from_value::<FileRequest>(value.clone()).iter().cloned());
-        if let Ok(file_request) = serde_json::from_value::<FileRequest>(value.clone()) {
-            return Some(RequestTypes::FileRequest(file_request));
-        }
 
         None
     }
@@ -326,21 +357,22 @@ impl TryIntoRequest for RequestTypes {
             RequestTypes::CreateServerRequest(req) => Box::new(req),
             RequestTypes::Ping => Box::new(Ping::default()),
             RequestTypes::DeleteSeverRequest(delete_server_request) => {
-                Box::new(delete_server_request)
-            }
+                        Box::new(delete_server_request)
+                    }
             RequestTypes::SetFilterRequest(set_filter_request) => Box::new(set_filter_request),
             RequestTypes::SetServerRequest(set_server_request) => Box::new(set_server_request),
             RequestTypes::ServerDataRequest(server_data_request) => Box::new(server_data_request),
             RequestTypes::ServerNameRequest(server_name_request) => Box::new(server_name_request),
             RequestTypes::StartServerRequest(start_server_request) => {
-                Box::new(start_server_request)
-            }
+                        Box::new(start_server_request)
+                    }
             RequestTypes::StopServerRequest(stop_server_request) => Box::new(stop_server_request),
             RequestTypes::ServerStateRequest(server_state_request) => {
-                Box::new(server_state_request)
-            }
+                        Box::new(server_state_request)
+                    }
             RequestTypes::ConsoleRequest(console_request) => Box::new(console_request),
             RequestTypes::FileRequest(file_request) => Box::new(file_request),
+            RequestTypes::FileResponse(file_response) => Box::new(file_response),
         };
 
         boxed
@@ -359,10 +391,17 @@ impl TryIntoRequest for RequestTypes {
 //FileRequestMessage
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct FileRequest {
+    pub request_type: String,
     #[serde(flatten)]
     pub common: FileRequestMessage,
 }
 
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct FileResponse {
+    pub request_type: String,
+    #[serde(flatten)]
+    pub common: FileResponseMessage,
+}
 #[derive(Deserialize, Serialize, Clone)]
 pub struct ConsoleRequest {
     #[serde(flatten)]

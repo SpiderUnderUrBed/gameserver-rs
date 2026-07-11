@@ -567,6 +567,7 @@ pub struct AppState {
     rcon_connection: Option<Arc<Mutex<Connection<TcpStream>>>>,
     current_server: Option<Server>,
     lock: bool,
+    filesystem: Option<RemoteFileSystem<TcpFs>>
 }
 impl Default for AppState {
     fn default() -> Self {
@@ -589,6 +590,7 @@ impl Default for AppState {
             rcon_connection: Default::default(),
             current_server: Default::default(),
             lock: false,
+            filesystem: None
         }
     }
 }
@@ -630,6 +632,7 @@ impl Clone for AppState {
             rcon_connection: self.rcon_connection.clone(),
             current_server: self.current_server.clone(),
             lock: self.lock.clone(),
+            filesystem: None
         }
     }
 }
@@ -1457,6 +1460,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         rcon_connection,
         current_server,
         lock: false,
+        filesystem: None
     };
     state.tcp_conn_status = {
         if check_channel_health(&state).await {
@@ -2659,8 +2663,8 @@ async fn ongoing_server_status(
                 {
                     state.current_node.status.clone()
                 } else if state.cached_status_type == "server-process" {
-                    let server_state_request = ServerStateRequest {};
-                    let _ = server_state_request.node_transport(&mut state).await;
+                    // let server_state_request = ServerStateRequest {};
+                    // let _ = server_state_request.node_transport(&mut state).await;
                     state.current_node.status.clone()
                 } else if state.cached_status_type == "node" {
                     state.tcp_conn_status.clone()
@@ -3738,23 +3742,32 @@ async fn get_files_content(
     headers: HeaderMap,
     Json(request): Json<FileChunk>,
 ) -> Result<impl IntoResponse, impl IntoResponse> {
-    let state = arc_state.read().await;
+    let mut state = arc_state.write().await;
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED.into_response());
     }
 
     let (tcp_tx, tcp_rx) = {
-        let state = arc_state.read().await;
+        // let state = arc_state.read().await;
         state.connection_handler.get_filesystem_stream()
         //(state.connection_handler.tcp_tx.clone(), state.connection_handler.tcp_tx.subscribe())
     };
 
-    let mut tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
-    let base_path = RemoteFileSystem::new("server", Some(tcp_fs.clone()));
+    //let mut tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
+    //let base_path = RemoteFileSystem::new("server", Some(tcp_fs.clone()));
+
+    let mut base_path = if state.filesystem.is_none() {
+        let mut tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
+        &mut RemoteFileSystem::new("server", Some(tcp_fs.clone()))
+    } else {
+        state.filesystem.as_mut().unwrap()
+    };
+    //let tcp_fs = base_path.in
 
     let user_input = request.file_name.trim_start_matches('/');
 
+    println!("trying to canonolize");
     let requested_path = base_path
         .join(user_input)
         .canonicalize()
@@ -3764,6 +3777,7 @@ async fn get_files_content(
             (StatusCode::BAD_REQUEST, "Invalid path").into_response()
         })?;
 
+    println!("going to get the path structure");
     let (dir_path, file_name) = match (requested_path.parent(), requested_path.file_name()) {
         (Some(dir), Some(file)) => (dir.to_path_buf(), file.to_os_string()),
         _ => {
@@ -3772,6 +3786,7 @@ async fn get_files_content(
         }
     };
 
+    println!("resolving path");
     let full_path = dir_path.join(&file_name);
     let file_chunk = FileChunk {
         file_name: full_path.to_string_lossy().to_string(),
@@ -3779,11 +3794,12 @@ async fn get_files_content(
         file_chunk_size: request.file_chunk_size,
     };
 
-    let content = tcp_fs
+    let content = base_path
         .get_files_content(file_chunk)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read file").into_response())?;
 
+    println!("doing something with file content");
     Ok(Json(content))
 }
 
@@ -3794,18 +3810,23 @@ pub async fn get_files(
     auth_session: AuthSession,
     Json(request): Json<IncomingMessage>,
 ) -> impl IntoResponse {
+    println!("[get_files] called with request.message = {:?}", request.message);
+
     let (tcp_tx, tcp_rx) = {
         let state = arc_state.read().await;
-        //(state.connection_handler.proxy_tx.clone(), state.connection_handler.proxy_rx.resubscribe())
         state.connection_handler.get_filesystem_stream()
     };
-    let state = arc_state.read().await;
-    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
-    drop(state);
+    println!("[get_files] acquired filesystem stream");
 
-    let tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
+    let mut state = arc_state.write().await;
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
+    //drop(state);
+    println!("[get_files] authorized = {:?}", authorized);
+
+    //let tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
 
     let user_input = request.message.trim_start_matches('/');
+    println!("[get_files] user_input (trimmed) = {:?}", user_input);
 
     let fs_path = if user_input.is_empty() {
         "server".to_string()
@@ -3816,14 +3837,31 @@ pub async fn get_files(
     } else {
         format!("server/{}", user_input)
     };
+    println!("[get_files] resolved fs_path = {:?}", fs_path);
 
+    println!("fetching requested path");
+    if state.filesystem.is_none() {
+        let mut tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
+        state.filesystem = Some(RemoteFileSystem::new(&fs_path, Some(tcp_fs.clone())));
+    }
+    let fs = state.filesystem.as_mut().unwrap();
+    fs.set_path(fs_path.clone());
+    //  let mut fs = if state.filesystem.is_none() {
+    //     let mut tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
+    //     &mut RemoteFileSystem::new(&fs_path, Some(tcp_fs.clone()))
+    // } else {
+    //     state.filesystem.as_mut().unwrap()
+    // };
     let mut requested_path = match timeout(
         Duration::from_secs(5),
-        RemoteFileSystem::new(&fs_path, Some(tcp_fs)).canonicalize(),
+        fs.canonicalize(),
     )
     .await
     {
-        Ok(Ok(p)) => p,
+        Ok(Ok(p)) => {
+            println!("[get_files] canonicalized path = {:?}", p.to_string());
+            p
+        }
         Ok(Err(e)) => {
             eprintln!("Invalid path '{}': {}", fs_path, e);
             return (StatusCode::BAD_REQUEST, "Invalid path").into_response();
@@ -3833,30 +3871,51 @@ pub async fn get_files(
             return (StatusCode::GATEWAY_TIMEOUT, "Request timed out").into_response();
         }
     };
-
-    let is_dir = match timeout(Duration::from_secs(3), requested_path.is_dir()).await {
-        Ok(Ok(true)) => true,
-        Ok(Ok(false)) => {
-            eprintln!("Path is not a directory: '{}'", requested_path.to_string());
-            return (StatusCode::BAD_REQUEST, "Path is not a directory").into_response();
+    
+    println!("{:#?}", fs);
+    println!("{:#?}", requested_path.clone());
+    requested_path.add_metadata(fs.get_metadata().unwrap());
+    println!("{:#?}", requested_path.clone());
+    println!("[get_files] checking if '{}' is a directory", requested_path.to_string());
+    // let is_dir = match timeout(Duration::from_secs(10), requested_path.is_dir()).await {
+    //     Ok(Ok(true)) => {
+    //         println!("TTT");
+    //         println!("[get_files] '{}' confirmed as directory", requested_path.to_string());
+    //         true
+    //     }
+    //     Ok(Ok(false)) => {
+    //         println!("XXXX");
+    //         eprintln!("Path is not a directory: '{}'", requested_path.to_string());
+    //         return (StatusCode::BAD_REQUEST, "Path is not a directory").into_response();
+    //     }
+    //     Ok(Err(e)) => {
+    //         println!("BBB");
+    //         eprintln!("Error checking dir '{}': {}", requested_path.to_string(), e);
+    //         return (
+    //             StatusCode::INTERNAL_SERVER_ERROR,
+    //             "Failed to check directory",
+    //         )
+    //             .into_response();
+    //     }
+    //     Err(_) => {
+    //         println!("CCC");
+    //         eprintln!("Timeout checking dir '{}'", requested_path.to_string());
+    //         return (StatusCode::GATEWAY_TIMEOUT, "Request timed out").into_response();
+    //     }
+    // };
+    println!("AAAA");
+    println!("[get_files] reading directory contents of '{}'", requested_path.to_string());
+    println!("{:#?}", requested_path.clone());
+    //println!("{:#?}", requested_path.read_dir().await);
+    println!("done test read");
+    let entries = match timeout(Duration::from_secs(10), requested_path.read_dir()).await {
+        Ok(Ok(list)) => {
+            println!("LLL");
+            println!("[get_files] read_dir returned {} entries", list.len());
+            list
         }
         Ok(Err(e)) => {
-            eprintln!("Error checking dir '{}': {}", requested_path.to_string(), e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to check directory",
-            )
-                .into_response();
-        }
-        Err(_) => {
-            eprintln!("Timeout checking dir '{}'", requested_path.to_string());
-            return (StatusCode::GATEWAY_TIMEOUT, "Request timed out").into_response();
-        }
-    };
-
-    let entries = match timeout(Duration::from_secs(20), requested_path.read_dir()).await {
-        Ok(Ok(list)) => list,
-        Ok(Err(e)) => {
+            println!("XXX");
             eprintln!(
                 "Failed to read directory '{}': {}",
                 requested_path.to_string(),
@@ -3869,23 +3928,48 @@ pub async fn get_files(
                 .into_response();
         }
         Err(_) => {
+            println!("MMM");
             eprintln!("Timeout reading dir '{}'", requested_path.to_string());
-            return (StatusCode::GATEWAY_TIMEOUT, "Request timed out").into_response();
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Request has timed out").into_response();
         }
+        // _ => {
+        //     println!("other thing");
+        //     return (StatusCode::INTERNAL_SERVER_ERROR, "an unexpected thing happened").into_response();
+        // }
     };
+    println!("after reading dir");
 
     let mut items = Vec::with_capacity(entries.len());
-    for mut entry in entries {
-        if let Some(entry_name) = entry.file_name().unwrap().to_str() {
-            if let Ok(is_dir) = entry.is_dir().await {
-                items.push(if is_dir {
-                    FsItem::Folder(entry_name.to_string())
-                } else {
-                    FsItem::File(entry_name.to_string())
-                });
+    for (i, mut entry) in entries.into_iter().enumerate() {
+        let raw_name = entry.file_name();
+        println!("[get_files] entry {}: raw file_name = {:?}", i, raw_name);
+
+        if let Some(entry_name) = raw_name.clone().unwrap().to_str() {
+            match entry.is_dir().await {
+                Ok(is_dir) => {
+                    println!(
+                        "[get_files] entry {} ('{}') is_dir = {}",
+                        i, entry_name, is_dir
+                    );
+                    items.push(if is_dir {
+                        FsItem::Folder(entry_name.to_string())
+                    } else {
+                        FsItem::File(entry_name.to_string())
+                    });
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[get_files] entry {} ('{}') failed is_dir check: {:?}",
+                        i, entry_name, e
+                    );
+                }
             }
+        } else {
+            eprintln!("[get_files] entry {} name is not valid UTF-8: {:?}", i, raw_name);
         }
     }
+
+    println!("[get_files] returning {} items", items.len());
 
     Json(List {
         list: ApiCalls::FileDataList(items),

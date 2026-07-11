@@ -309,6 +309,12 @@ impl ConnectionHandler {
     // }
 
     pub fn clear(&self) {}
+    pub async fn start_clean_hook(&mut self){
+
+    }
+    pub async fn end_clean_hook(&mut self){
+        self.remove_current_segment_or_clear().await;
+    }
     pub async fn remove_current_segment_or_clear(&mut self) {
         self.current_request = None;
         let mut requests = self.connection.requests.write().await;
