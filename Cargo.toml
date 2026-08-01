@@ -40,12 +40,13 @@ tower-sessions = "0.14.0"
 axum-oidc = { git = "https://github.com/pfzetto/axum-oidc" }
 tower = "0.5.3"
 base64 = "0.22.1"
-tcp_filesystem = { path = "lib/tcp_filesystem" }
+general_networked_filesystem = { path = "lib/general_networked_filesystem" }
 multer = "3.1.0"
 tonic = { version = "0.14.6", optional = true }
 prost = { version = "0.14.4", optional = true }
 tonic-prost = { version = "0.14.6", optional = true }
 prost-types = { version = "0.14.4", optional = true }
+flume = "0.12.0"
 
 [build-dependencies]
 tonic-prost-build = { version = "0.14.6", optional = true }
@@ -78,7 +79,7 @@ grpc_experimental = [
 [workspace]
 members = [
     "gameserver"
-, "lib/tcp_filesystem"]
+, "lib/general_networked_filesystem"]
 
 [[bin]]
 name = "gameserver-rs"

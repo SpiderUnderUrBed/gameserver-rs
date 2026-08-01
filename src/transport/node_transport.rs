@@ -1,4 +1,5 @@
 use axum::extract::{ws::Utf8Bytes, State};
+use general_networked_filesystem::{FileRequestExecutable, LsRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::{io::{AsyncBufReadExt, AsyncWriteExt, BufReader}, net::TcpStream, sync::{broadcast, RwLock}, time::{sleep, timeout}};
@@ -380,6 +381,23 @@ pub(crate) async fn try_initial_connection(
 pub trait NodeTransportable {
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
+impl NodeTransportable for LsRequest {
+    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let mut bytes = Vec::new();
+        bytes.push(LsRequest::item_id());
+        bytes.push(self.id);
+        match serde_json::to_vec(&self) {
+            Ok(b) => bytes.extend(b),
+            Err(e) => {
+                eprintln!("Serialization error: {}", e);
+                return Err("Failed to serialize".into());
+            }
+        };
+        let _ = state.connection_handler.proxy_tx.send(bytes);
+        Ok(())
+    }
+}
+
 pub struct DeleteServerRequest {
     pub metadata: MetadataTypes,
 }
@@ -599,16 +617,16 @@ impl NodeTransportable for ServerDataRequest {
 // struct ServerState
 // NodeTransportable
 
-pub struct RawBytes {
-    pub(crate) bytes: Vec<u8>,
-}
+// pub struct RawBytes {
+//     pub(crate) bytes: Vec<u8>,
+// }
 
-impl NodeTransportable for RawBytes {
-    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let _ = state.connection_handler.proxy_tx.send(self.bytes.clone());
-        Ok(())
-    }
-}
+// impl NodeTransportable for RawBytes {
+//     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+//         let _ = state.connection_handler.proxy_tx.send(self.bytes.clone());
+//         Ok(())
+//     }
+// }
 // NodeTransportable
 
 trait InternalTransportable {
@@ -742,6 +760,8 @@ impl InternalTransportable for ServerStateRequest {
         Ok(())
     }
 }
+
+
 // NoteTransportable
 //InternalTransportable
 // struct SrcAndDestFsRequest {

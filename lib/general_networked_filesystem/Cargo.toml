@@ -1,0 +1,10 @@
+[package]
+name = "general_networked_filesystem"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+networked_filesystem = { path = "./network/networked_filesystem" }
+serde = "1.0.229"
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["full"] }

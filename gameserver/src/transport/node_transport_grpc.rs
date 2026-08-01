@@ -1,36 +1,36 @@
-use std::sync::{Arc};
-use std::{any::Any, error::Error};
 use futures::future::pending;
+use std::sync::Arc;
+use std::{any::Any, error::Error};
 use tokio::sync::{broadcast, RwLock};
 
-use crate::transport::node_transport::proto::server_manage_server::{ServerManage, ServerManageServer};
+use crate::transport::node_transport::proto::server_manage_server::{
+    ServerManage, ServerManageServer,
+};
 // use crate::transport::node_transport::proto::{};
 use crate::MessagePayload;
+use crate::{AppState, GetState, IncomingMessage, IncomingMessageWithMetadata, SimpleMessage};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use tcp_filesystem::FileRequestMessage;
-use crate::{AppState, GetState, IncomingMessage, IncomingMessageWithMetadata, SimpleMessage};
 
-use tonic::transport::{Server};
+use tonic::transport::Server;
 mod proto {
     tonic::include_proto!("main");
 }
-use proto::{server_edit_server::ServerEditServer, server_edit_server::ServerEdit};
-
+use proto::{server_edit_server::ServerEdit, server_edit_server::ServerEditServer};
 
 pub struct ConnectionManager {
     url: String,
-    accepted_connection: bool
+    accepted_connection: bool,
 }
 impl ConnectionManager {
-    pub async fn serve(url: String) -> Result<ConnectionManager, Box<dyn std::error::Error + Send + Sync>> {
-
-        Ok(
-            ConnectionManager { 
-                accepted_connection: false,
-                url
-            }
-        )
+    pub async fn serve(
+        url: String,
+    ) -> Result<ConnectionManager, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(ConnectionManager {
+            accepted_connection: false,
+            url,
+        })
     }
     pub async fn accept_connection(
         &mut self,
@@ -41,8 +41,8 @@ impl ConnectionManager {
             let _never: () = pending().await;
         }
         let connection = Connection {
-                requests: Arc::new(RwLock::new(Vec::new())),
-            };
+            requests: Arc::new(RwLock::new(Vec::new())),
+        };
         let handler = ConnectionHandler {
             // current_request: None,
             // requests: vec![],
@@ -72,7 +72,6 @@ pub struct Request {
     result_tx: broadcast::Sender<String>,
 }
 
-
 async fn delegate_request<T: Serialize, K: Serialize + DeserializeOwned + Clone>(
     request: T,
     requests_lock: Arc<RwLock<Vec<Request>>>,
@@ -81,15 +80,15 @@ async fn delegate_request<T: Serialize, K: Serialize + DeserializeOwned + Clone>
 
     println!("A");
     //println!("{:#?}", serde_json::to_value(request));
-    let stringified_request = serde_json::to_string(&request)
-        .map_err(|_| tonic::Status::internal(String::new()))?;
+    let stringified_request =
+        serde_json::to_string(&request).map_err(|_| tonic::Status::internal(String::new()))?;
 
     let mut requests = requests_lock.write().await;
     requests.push(Request {
         data: stringified_request,
         result_tx: tx,
     });
-    drop(requests); 
+    drop(requests);
     println!("B");
 
     let result = rx
@@ -107,81 +106,89 @@ async fn delegate_request<T: Serialize, K: Serialize + DeserializeOwned + Clone>
 
 #[tonic::async_trait]
 impl ServerEdit for Connection {
-        async fn create(
-            &self,
-            request: tonic::Request<proto::CreateServerRequest>,
-        ) -> std::result::Result<
-            tonic::Response<proto::CreateServerResponse>,
-            tonic::Status,
-        >{
-            //let inner = request.into_inner();
-            let create_server_request = CreateServerRequest { 
-                common: IncomingMessageWithMetadata { 
-                    metadata: request.get_ref().clone().metadata.unwrap().into(),
-                    message: "create_server".to_string(),
-                    message_type: "command".to_string(),
-                    authcode: "0".to_string(),
-                }
-            };
-            
-            match delegate_request::<CreateServerRequest, proto::CreateServerResponse>(create_server_request, self.requests.clone()).await {
-                Ok(Ok(response)) => Ok(response.into()),
-                Ok(Err(_)) => Err(tonic::Status::ok("done")),
-                Err(_) => Err(tonic::Status::ok("done"))
-            }
+    async fn create(
+        &self,
+        request: tonic::Request<proto::CreateServerRequest>,
+    ) -> std::result::Result<tonic::Response<proto::CreateServerResponse>, tonic::Status> {
+        //let inner = request.into_inner();
+        let create_server_request = CreateServerRequest {
+            common: IncomingMessageWithMetadata {
+                metadata: request.get_ref().clone().metadata.unwrap().into(),
+                message: "create_server".to_string(),
+                message_type: "command".to_string(),
+                authcode: "0".to_string(),
+            },
+        };
+
+        match delegate_request::<CreateServerRequest, proto::CreateServerResponse>(
+            create_server_request,
+            self.requests.clone(),
+        )
+        .await
+        {
+            Ok(Ok(response)) => Ok(response.into()),
+            Ok(Err(_)) => Err(tonic::Status::ok("done")),
+            Err(_) => Err(tonic::Status::ok("done")),
         }
-        async fn delete(
-            &self,
-            request: tonic::Request<proto::DeleteServerRequest>,
-        ) -> std::result::Result<
-            tonic::Response<proto::DeleteServerResponse>,
-            tonic::Status,
-        >{
-            //let inner = request.into_inner();
-            let delete_server_request = DeleteServerRequest { 
-                common: IncomingMessageWithMetadata { 
-                    message: "delete_server".to_string(), 
-                    message_type: "command".to_string(), 
-                    metadata: request.get_ref().clone().metadata.unwrap().into(), 
-                    authcode: "0".to_string() 
-                }
-            };
-            match delegate_request::<DeleteServerRequest, proto::DeleteServerResponse>(delete_server_request, self.requests.clone()).await {
-                Ok(Ok(response)) => Ok(response.into()),
-                Ok(Err(_)) => Err(tonic::Status::ok("done")),
-                Err(_) => Err(tonic::Status::ok("done"))
-            }
+    }
+    async fn delete(
+        &self,
+        request: tonic::Request<proto::DeleteServerRequest>,
+    ) -> std::result::Result<tonic::Response<proto::DeleteServerResponse>, tonic::Status> {
+        //let inner = request.into_inner();
+        let delete_server_request = DeleteServerRequest {
+            common: IncomingMessageWithMetadata {
+                message: "delete_server".to_string(),
+                message_type: "command".to_string(),
+                metadata: request.get_ref().clone().metadata.unwrap().into(),
+                authcode: "0".to_string(),
+            },
+        };
+        match delegate_request::<DeleteServerRequest, proto::DeleteServerResponse>(
+            delete_server_request,
+            self.requests.clone(),
+        )
+        .await
+        {
+            Ok(Ok(response)) => Ok(response.into()),
+            Ok(Err(_)) => Err(tonic::Status::ok("done")),
+            Err(_) => Err(tonic::Status::ok("done")),
         }
-        async fn start(
-            &self,
-            request: tonic::Request<proto::StartServerRequest>,
-        ) -> std::result::Result<
-            tonic::Response<proto::StartServerResponse>,
-            tonic::Status,
-        >{
-            //let inner = request.into_inner();
-            let start_server_request = StartServerRequest::default();
-            match delegate_request::<StartServerRequest, proto::StartServerResponse>(start_server_request, self.requests.clone()).await {
-                Ok(Ok(response)) => Ok(response.into()),
-                Ok(Err(_)) => Err(tonic::Status::ok("done")),
-                Err(_) => Err(tonic::Status::ok("done"))
-            }
+    }
+    async fn start(
+        &self,
+        request: tonic::Request<proto::StartServerRequest>,
+    ) -> std::result::Result<tonic::Response<proto::StartServerResponse>, tonic::Status> {
+        //let inner = request.into_inner();
+        let start_server_request = StartServerRequest::default();
+        match delegate_request::<StartServerRequest, proto::StartServerResponse>(
+            start_server_request,
+            self.requests.clone(),
+        )
+        .await
+        {
+            Ok(Ok(response)) => Ok(response.into()),
+            Ok(Err(_)) => Err(tonic::Status::ok("done")),
+            Err(_) => Err(tonic::Status::ok("done")),
         }
-        async fn stop(
-            &self,
-            request: tonic::Request<proto::StopServerRequest>,
-        ) -> std::result::Result<
-            tonic::Response<proto::StopServerResponse>,
-            tonic::Status,
-        > {
-            //let inner = request.into_inner();
-            let stop_server_request = StopServerRequest::default();
-            match delegate_request::<StopServerRequest, proto::StopServerResponse>(stop_server_request, self.requests.clone()).await {
-                Ok(Ok(response)) => Ok(response.into()),
-                Ok(Err(_)) => Err(tonic::Status::ok("done")),
-                Err(_) => Err(tonic::Status::ok("done"))
-            }
+    }
+    async fn stop(
+        &self,
+        request: tonic::Request<proto::StopServerRequest>,
+    ) -> std::result::Result<tonic::Response<proto::StopServerResponse>, tonic::Status> {
+        //let inner = request.into_inner();
+        let stop_server_request = StopServerRequest::default();
+        match delegate_request::<StopServerRequest, proto::StopServerResponse>(
+            stop_server_request,
+            self.requests.clone(),
+        )
+        .await
+        {
+            Ok(Ok(response)) => Ok(response.into()),
+            Ok(Err(_)) => Err(tonic::Status::ok("done")),
+            Err(_) => Err(tonic::Status::ok("done")),
         }
+    }
 }
 
 #[tonic::async_trait]
@@ -189,35 +196,38 @@ impl ServerManage for Connection {
     async fn data(
         &self,
         request: tonic::Request<proto::ServerDataRequest>,
-    ) -> std::result::Result<
-        tonic::Response<proto::ServerDataResponse>,
-        tonic::Status,
-    > {
+    ) -> std::result::Result<tonic::Response<proto::ServerDataResponse>, tonic::Status> {
         let server_data_request = ServerDataRequest::default();
-        match delegate_request::<ServerDataRequest, proto::ServerDataResponse>(server_data_request, self.requests.clone()).await {
+        match delegate_request::<ServerDataRequest, proto::ServerDataResponse>(
+            server_data_request,
+            self.requests.clone(),
+        )
+        .await
+        {
             Ok(Ok(response)) => Ok(response.into()),
             Ok(Err(_)) => Err(tonic::Status::ok("done")),
-            Err(_) => Err(tonic::Status::ok("done"))
+            Err(_) => Err(tonic::Status::ok("done")),
         }
     }
     async fn name(
         &self,
         request: tonic::Request<proto::ServerNameRequest>,
-    ) -> std::result::Result<
-        tonic::Response<proto::ServerNameResponse>,
-        tonic::Status,
-    > {
-         let server_name_request = ServerNameRequest::default();
-        match delegate_request::<ServerNameRequest, proto::ServerNameResponse>(server_name_request, self.requests.clone()).await {
-            Ok(Ok(response)) => 
-            {
+    ) -> std::result::Result<tonic::Response<proto::ServerNameResponse>, tonic::Status> {
+        let server_name_request = ServerNameRequest::default();
+        match delegate_request::<ServerNameRequest, proto::ServerNameResponse>(
+            server_name_request,
+            self.requests.clone(),
+        )
+        .await
+        {
+            Ok(Ok(response)) => {
                 println!("returning ok response");
                 Ok(response.into())
-            },
+            }
             Ok(Err(_)) => {
                 println!("error 1");
                 Err(tonic::Status::ok("done"))
-            },
+            }
             Err(_) => {
                 println!("Error 2");
                 Err(tonic::Status::ok("done"))
@@ -227,36 +237,40 @@ impl ServerManage for Connection {
     async fn set(
         &self,
         request: tonic::Request<proto::SetServerRequest>,
-    ) -> std::result::Result<
-        tonic::Response<proto::SetServerResponse>,
-        tonic::Status,
-    > {
-        let server_set_request = SetServerRequest { 
-            common: IncomingMessageWithMetadata { 
-                message: "set_server".to_string(), 
-                message_type: "command".to_string(), 
-                metadata: request.get_ref().metadata.clone().unwrap().into(), 
-                authcode: "0".to_string() 
-            }
+    ) -> std::result::Result<tonic::Response<proto::SetServerResponse>, tonic::Status> {
+        let server_set_request = SetServerRequest {
+            common: IncomingMessageWithMetadata {
+                message: "set_server".to_string(),
+                message_type: "command".to_string(),
+                metadata: request.get_ref().metadata.clone().unwrap().into(),
+                authcode: "0".to_string(),
+            },
         };
-        match delegate_request::<SetServerRequest, proto::SetServerResponse>(server_set_request, self.requests.clone()).await {
+        match delegate_request::<SetServerRequest, proto::SetServerResponse>(
+            server_set_request,
+            self.requests.clone(),
+        )
+        .await
+        {
             Ok(Ok(response)) => Ok(response.into()),
             Ok(Err(_)) => Err(tonic::Status::ok("done")),
-            Err(_) => Err(tonic::Status::ok("done"))
+            Err(_) => Err(tonic::Status::ok("done")),
         }
     }
     async fn state(
         &self,
         request: tonic::Request<proto::ServerStateRequest>,
-    ) -> std::result::Result<
-        tonic::Response<proto::ServerStateResponse>,
-        tonic::Status,
-    > {
+    ) -> std::result::Result<tonic::Response<proto::ServerStateResponse>, tonic::Status> {
         let server_state_request = ServerStateRequest::default();
-        match delegate_request::<ServerStateRequest, proto::ServerStateResponse>(server_state_request, self.requests.clone()).await {
+        match delegate_request::<ServerStateRequest, proto::ServerStateResponse>(
+            server_state_request,
+            self.requests.clone(),
+        )
+        .await
+        {
             Ok(Ok(response)) => Ok(response.into()),
             Ok(Err(_)) => Err(tonic::Status::ok("done")),
-            Err(_) => Err(tonic::Status::ok("done"))
+            Err(_) => Err(tonic::Status::ok("done")),
         }
     }
 }
@@ -268,23 +282,26 @@ impl Into<crate::MetadataTypes> for proto::MetadataTypes {
 }
 
 impl Connection {
-    pub async fn serve_with_arc(self: Arc<Self>, url: String) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn serve_with_arc(
+        self: Arc<Self>,
+        url: String,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let addr = url.parse()?;
         Server::builder()
-            .add_service(ServerEditServer::from_arc(self.clone()))  
+            .add_service(ServerEditServer::from_arc(self.clone()))
             .add_service(ServerManageServer::from_arc(self))
             .serve(addr)
             .await?;
         Ok(())
     }
 }
-pub struct ConnectionHandler { 
+pub struct ConnectionHandler {
     // current_request: Option<String>,
     // requests: Vec<String>,
     connection: Connection,
     //current_request: Option<String>,
     current_request: Option<Request>,
-    read_buf: Vec<u8>
+    read_buf: Vec<u8>,
 }
 
 impl ConnectionHandler {
@@ -292,10 +309,10 @@ impl ConnectionHandler {
         ConnectionHandler {
             // current_request: None,
             // requests: Vec::new(),
-            connection: Connection {  
-                    requests: Arc::new(RwLock::new(Vec::new()))
-                },
-            read_buf: Vec::new() ,
+            connection: Connection {
+                requests: Arc::new(RwLock::new(Vec::new())),
+            },
+            read_buf: Vec::new(),
             current_request: None,
         }
     }
@@ -309,10 +326,8 @@ impl ConnectionHandler {
     // }
 
     pub fn clear(&self) {}
-    pub async fn start_clean_hook(&mut self){
-
-    }
-    pub async fn end_clean_hook(&mut self){
+    pub async fn start_clean_hook(&mut self) {}
+    pub async fn end_clean_hook(&mut self) {
         self.remove_current_segment_or_clear().await;
     }
     pub async fn remove_current_segment_or_clear(&mut self) {
@@ -348,7 +363,12 @@ impl ConnectionHandler {
         }
     }
     pub async fn append_solution(&mut self, solution: String) {
-        let _ = self.current_request.as_mut().unwrap().result_tx.send(solution);
+        let _ = self
+            .current_request
+            .as_mut()
+            .unwrap()
+            .result_tx
+            .send(solution);
     }
     pub async fn append_bytes(&mut self, bytes: Vec<u8>) {
         //self.inner().extend_from_slice(&bytes);
@@ -382,8 +402,7 @@ impl ConnectionHandler {
     // }
 }
 #[derive(Default)]
-pub struct Writer {
-}
+pub struct Writer {}
 impl Writer {
     pub async fn send(
         &mut self,
@@ -394,9 +413,8 @@ impl Writer {
     pub async fn send_with_connection(
         &mut self,
         bytes: Vec<u8>,
-        handler: &mut ConnectionHandler
+        handler: &mut ConnectionHandler,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        
         Ok(())
     }
 }
@@ -408,25 +426,23 @@ impl Reader {
     pub async fn recv(&mut self) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         Err("receiving directly is not supported for grpc".into())
     }
-    pub async fn handle_request(&mut self, handler: &mut ConnectionHandler) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        
+    pub async fn handle_request(
+        &mut self,
+        handler: &mut ConnectionHandler,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok(())
     }
-} 
+}
 
 // TODO: work on a macro which leads to GRPC skipping the event loop
 // the test the implimentation, find a way to directly connect the GRPC code here
 // to the functional code defined in main
 //inventory
 macro_rules! connection {
-    () => {
-        
-    };
+    () => {};
 }
 macro_rules! register_request {
-    ($arg1:ty => $arg2:ident) => {
-        
-    };
+    ($arg1:ty => $arg2:ident) => {};
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -586,12 +602,12 @@ pub struct ServerStateRequest {
 }
 impl Default for ServerStateRequest {
     fn default() -> Self {
-        ServerStateRequest { 
-            common: IncomingMessage { 
-                message: "server_state".to_string(), 
-                message_type: "command".to_string(), 
-                authcode: "0".to_string()
-            }
+        ServerStateRequest {
+            common: IncomingMessage {
+                message: "server_state".to_string(),
+                message_type: "command".to_string(),
+                authcode: "0".to_string(),
+            },
         }
     }
 }
@@ -602,13 +618,13 @@ pub struct StopServerRequest {
     pub common: IncomingMessage,
 }
 impl Default for StopServerRequest {
-    fn default() -> Self { 
-        StopServerRequest { 
-            common: IncomingMessage { 
-                message: "stop_server".to_string(), 
-                message_type: "command".to_string(), 
-                authcode: "0".to_string() 
-            } 
+    fn default() -> Self {
+        StopServerRequest {
+            common: IncomingMessage {
+                message: "stop_server".to_string(),
+                message_type: "command".to_string(),
+                authcode: "0".to_string(),
+            },
         }
     }
 }
@@ -618,13 +634,13 @@ pub struct StartServerRequest {
     pub common: IncomingMessage,
 }
 impl Default for StartServerRequest {
-    fn default() -> Self { 
-        StartServerRequest { 
-            common: IncomingMessage { 
-                message: "start_server".to_string(), 
-                message_type: "command".to_string(), 
-                authcode: "0".to_string() 
-            } 
+    fn default() -> Self {
+        StartServerRequest {
+            common: IncomingMessage {
+                message: "start_server".to_string(),
+                message_type: "command".to_string(),
+                authcode: "0".to_string(),
+            },
         }
     }
 }
@@ -635,13 +651,13 @@ pub struct ServerNameRequest {
     pub common: IncomingMessage,
 }
 impl Default for ServerNameRequest {
-    fn default() -> Self { 
-        ServerNameRequest { 
-            common: IncomingMessage { 
-                message: "server_name".to_string(), 
-                message_type: "command".to_string(), 
-                authcode: "0".to_string()
-            } 
+    fn default() -> Self {
+        ServerNameRequest {
+            common: IncomingMessage {
+                message: "server_name".to_string(),
+                message_type: "command".to_string(),
+                authcode: "0".to_string(),
+            },
         }
     }
 }
@@ -652,17 +668,16 @@ pub struct ServerDataRequest {
     pub common: IncomingMessage,
 }
 impl Default for ServerDataRequest {
-    fn default() -> Self { 
-        ServerDataRequest { 
-            common: IncomingMessage { 
-                message: "server_data".to_string(), 
-                message_type: "command".to_string(), 
-                authcode: "0".to_string()
-            } 
+    fn default() -> Self {
+        ServerDataRequest {
+            common: IncomingMessage {
+                message: "server_data".to_string(),
+                message_type: "command".to_string(),
+                authcode: "0".to_string(),
+            },
         }
     }
 }
-
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct CreateServerRequest {
@@ -705,17 +720,27 @@ pub trait TryIntoRequest {
 }
 
 pub trait NodeTransportable {
-    async fn node_transport(&self, state: &AppState, connection_handler: &mut ConnectionHandler) -> Result<(), Box<dyn Error + Send + Sync>>;
+    async fn node_transport(
+        &self,
+        state: &AppState,
+        connection_handler: &mut ConnectionHandler,
+    ) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
 
 pub struct ServerDataResponse {
     pub state: GetState,
 }
 impl NodeTransportable for ServerDataResponse {
-    async fn node_transport(&self, state: &AppState, connection_handler: &mut ConnectionHandler) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(
+        &self,
+        state: &AppState,
+        connection_handler: &mut ConnectionHandler,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         // let tx = state.output_tx.lock().await.clone().unwrap();
         // let _ = tx.send(serde_json::to_string(&self.state)?).await;
-    connection_handler.append_solution(serde_json::to_string(&self.state)?).await;
+        connection_handler
+            .append_solution(serde_json::to_string(&self.state)?)
+            .await;
         Ok(())
     }
 }
@@ -724,10 +749,16 @@ pub struct PingResponse {
     pub message: SimpleMessage,
 }
 impl NodeTransportable for PingResponse {
-    async fn node_transport(&self, state: &AppState, connection_handler: &mut ConnectionHandler) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(
+        &self,
+        state: &AppState,
+        connection_handler: &mut ConnectionHandler,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         // let tx = state.output_tx.lock().await.clone().unwrap();
         // let _ = tx.send(serde_json::to_string(&self.message)?).await;
-        connection_handler.append_solution(serde_json::to_string(&self.message)?).await;
+        connection_handler
+            .append_solution(serde_json::to_string(&self.message)?)
+            .await;
         Ok(())
     }
 }
@@ -737,7 +768,11 @@ pub struct FileOperationResponse {
     pub data: String,
 }
 impl NodeTransportable for FileOperationResponse {
-    async fn node_transport(&self, state: &AppState, connection_handler: &mut ConnectionHandler) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(
+        &self,
+        state: &AppState,
+        connection_handler: &mut ConnectionHandler,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         // let tx = state.output_tx.lock().await.clone().unwrap();
         // let _ = tx.send(self.data.clone()).await;
         connection_handler.append_solution(self.data.clone()).await;
@@ -749,10 +784,16 @@ pub struct ServerNameResponse {
     pub message: MessagePayload,
 }
 impl NodeTransportable for ServerNameResponse {
-    async fn node_transport(&self, state: &AppState, connection_handler: &mut ConnectionHandler) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(
+        &self,
+        state: &AppState,
+        connection_handler: &mut ConnectionHandler,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         // let tx = state.output_tx.lock().await.clone().unwrap();
         // let _ = tx.send(serde_json::to_string(&self.message)?).await;
-        connection_handler.append_solution(serde_json::to_string(&self.message)?).await;
+        connection_handler
+            .append_solution(serde_json::to_string(&self.message)?)
+            .await;
         Ok(())
     }
 }
@@ -761,10 +802,16 @@ pub struct ServerStateResponse {
     pub message: MessagePayload,
 }
 impl NodeTransportable for ServerStateResponse {
-    async fn node_transport(&self, state: &AppState, connection_handler: &mut ConnectionHandler) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(
+        &self,
+        state: &AppState,
+        connection_handler: &mut ConnectionHandler,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         // let tx = state.output_tx.lock().await.clone().unwrap();
         // let _ = tx.send(serde_json::to_string(&self.message)?).await;
-        connection_handler.append_solution(serde_json::to_string(&self.message)?).await;
+        connection_handler
+            .append_solution(serde_json::to_string(&self.message)?)
+            .await;
         Ok(())
     }
 }

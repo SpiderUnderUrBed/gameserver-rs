@@ -24,12 +24,13 @@ nix = { version = "0.31.2", features = ["user"] }
 libc = "0.2.183"
 base64 = "0.22.1"
 sqlx = { version = "0.8.6", optional = true, features = ["postgres", "runtime-tokio", "runtime-tokio-native-tls"] }
-tcp_filesystem = { path = "../lib/tcp_filesystem" }
+general_networked_filesystem = { path = "../lib/general_networked_filesystem" }
+tokio-util = "0.7.18"
 tonic = { version = "0.14.6", optional = true }
 prost = { version = "0.14.4", optional = true }
 tonic-prost = { version = "0.14.6", optional = true }
 prost-types = { version = "0.14.4", optional = true }
-tokio-util = "0.7.18"
+
 
 [build-dependencies]
 tonic-prost-build = { version = "0.14.6", optional = true }

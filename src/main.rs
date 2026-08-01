@@ -18,6 +18,7 @@ use crate::database::{DatabaseError, Element};
 use crate::http::HeaderMap;
 use crate::kubernetes::verify_is_k8s_gameserver;
 use crate::middleware::from_fn;
+use axum::extract::Multipart;
 use axum::Form;
 use axum::error_handling::HandleErrorLayer;
 use axum::extract::ws::Message as WsMessage;
@@ -55,7 +56,8 @@ use axum_oidc::openidconnect::ClientSecret;
 use axum_oidc::openidconnect::IssuerUrl;
 use axum_oidc::openidconnect::Scope;
 use futures_util::FutureExt;
-use tcp_filesystem::{FileOperations, FsType, TcpFileStream, send_multipart_over_broadcast};
+use general_networked_filesystem::flume_delimited::{FlumeFile, TcpFsReceiver, TcpFsSender};
+use general_networked_filesystem::{FileOperations, LsRequest, RemoteFileSystem};
 use tokio::sync::RwLock;
 
 use rcon::Connection;
@@ -136,7 +138,7 @@ use database::User;
 
 mod transport;
 use crate::transport::node_transport::{
-    check_channel_health, connect_to_server, CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FilterRequest, ImmediateTransportable, IntegrationKeyRequest, MigrateRequest, NodeTransportable, PasswordRequest, Ping, RawBytes, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StopServerRequest
+    check_channel_health, connect_to_server, CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FilterRequest, ImmediateTransportable, IntegrationKeyRequest, MigrateRequest, NodeTransportable, PasswordRequest, Ping, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StopServerRequest
 };
 use crate::transport::node_transport::ConnectionHandler;
 use crate::transport::node_transport::try_initial_connection;
@@ -144,7 +146,6 @@ use crate::transport::node_transport::try_initial_connection;
 mod extra;
 use extra::value_from_line;
 
-use tcp_filesystem::{FileChunk, FsItem, RemoteFileSystem, TcpFs};
 
 // Docker AND kubernetes would be enabled with a standard deployment
 // as you wouldnt need the docker module (or the k8s module) for barebones testing
@@ -501,9 +502,9 @@ enum ApiCalls {
     ButtonDataList(Vec<Button>),
     IncomingMessage(IncomingMessage),
     IncomingMessageWithMetadata(IncomingMessageWithMetadata),
-    FileDataList(Vec<FsItem>),
+    // FileDataList(Vec<FsItem>),
     Node(Node),
-    FileOperations(FileOperations), // FileMoveOperation(String),
+    //FileOperations(FileOperations), // FileMoveOperation(String),
                                     // FileCopyOperation(String),
                                     // FileZipOperation(String),
                                     // FileUnzipOperation(String),
@@ -544,6 +545,11 @@ enum Status {
     Unhealthy,
 }
 
+struct FileSystemHandler {
+    file_tx: RemoteFileSystem<TcpFsSender, FlumeFile>,
+    file_rx: RemoteFileSystem<TcpFsReceiver, FlumeFile>,
+    operations: FileOperations
+}
 // AppState, this is a global struct which will be used to store data needed across the application like in routes and etc
 // which includes the sender and reciver to the tcp connection for gameserver, the websocket sender (receiver only needs to be managed by its own handler)
 // the base path like if all the routes are prefixed with something like /gameserver-rs which is the default for my testing deployment, and database as its needed frequently
@@ -567,75 +573,77 @@ pub struct AppState {
     rcon_connection: Option<Arc<Mutex<Connection<TcpStream>>>>,
     current_server: Option<Server>,
     lock: bool,
-    filesystem: Option<RemoteFileSystem<TcpFs>>
-}
-impl Default for AppState {
-    fn default() -> Self {
-        let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
-        // let (tcp_tx, tcp_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
-        let tcp_url = get_env_var_or_arg("TCPURL", Some(STATIC_TCP_URL.to_string())).unwrap();
-        Self {
-            connection_handler: Default::default(),
-            cancel_current_conn: Default::default(),
-            tcp_conn_status: Default::default(),
-            internal_rx: Default::default(),
-            internal_tx: Default::default(),
-            additonal_node_tcp: Default::default(),
-            current_node: Default::default(),
-            ws_tx,
-            base_path: Default::default(),
-            client: Clients::None,
-            database: Database::new(None),
-            cached_status_type: Default::default(),
-            rcon_connection: Default::default(),
-            current_server: Default::default(),
-            lock: false,
-            filesystem: None
-        }
-    }
+    filesystem: FileSystemHandler
+    // filesystem: Option<RemoteFileSystem<TcpFs>>
 }
 
-impl Clone for AppState {
-    fn clone(&self) -> Self {
-        AppState {
-            connection_handler: self.connection_handler.clone(),
-            cancel_current_conn: self.cancel_current_conn.clone(),
-            internal_rx: self.internal_rx.as_ref().map(|r| r.resubscribe()),
-            internal_tx: self.internal_tx.clone(),
-            ws_tx: self.ws_tx.clone(),
-            base_path: self.base_path.clone(),
-            client: self.client.clone(),
-            current_node: self.current_node.clone(),
-            database: self.database.clone(),
-            tcp_conn_status: Status::Unknown,
-            additonal_node_tcp: self
-                .additonal_node_tcp
-                .iter()
-                .map(|node| NodeAndTCP {
-                    name: node.name.clone(),
-                    ip: node.ip.clone(),
-                    tcp_tx: node.tcp_tx.clone(),
-                    tcp_rx: {
-                        if let Some(tcp_rx) = &node.tcp_rx {
-                            Some(tcp_rx.resubscribe())
-                        } else {
-                            None
-                        }
-                    },
-                    nodetype: node.nodetype.clone(),
-                    status: node.status.clone(),
-                    gameserver: node.gameserver.clone(),
-                    k8s_type: node.k8s_type.clone(),
-                })
-                .collect(),
-            cached_status_type: String::new(),
-            rcon_connection: self.rcon_connection.clone(),
-            current_server: self.current_server.clone(),
-            lock: self.lock.clone(),
-            filesystem: None
-        }
-    }
-}
+// impl Default for AppState {
+//     fn default() -> Self {
+//         let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
+//         // let (tcp_tx, tcp_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+//         let tcp_url = get_env_var_or_arg("TCPURL", Some(STATIC_TCP_URL.to_string())).unwrap();
+//         Self {
+//             connection_handler: Default::default(),
+//             cancel_current_conn: Default::default(),
+//             tcp_conn_status: Default::default(),
+//             internal_rx: Default::default(),
+//             internal_tx: Default::default(),
+//             additonal_node_tcp: Default::default(),
+//             current_node: Default::default(),
+//             ws_tx,
+//             base_path: Default::default(),
+//             client: Clients::None,
+//             database: Database::new(None),
+//             cached_status_type: Default::default(),
+//             rcon_connection: Default::default(),
+//             current_server: Default::default(),
+//             lock: false,
+//             filesystem: None
+//         }
+//     }
+// }
+
+// impl Clone for AppState {
+//     fn clone(&self) -> Self {
+//         AppState {
+//             connection_handler: self.connection_handler.clone(),
+//             cancel_current_conn: self.cancel_current_conn.clone(),
+//             internal_rx: self.internal_rx.as_ref().map(|r| r.resubscribe()),
+//             internal_tx: self.internal_tx.clone(),
+//             ws_tx: self.ws_tx.clone(),
+//             base_path: self.base_path.clone(),
+//             client: self.client.clone(),
+//             current_node: self.current_node.clone(),
+//             database: self.database.clone(),
+//             tcp_conn_status: Status::Unknown,
+//             additonal_node_tcp: self
+//                 .additonal_node_tcp
+//                 .iter()
+//                 .map(|node| NodeAndTCP {
+//                     name: node.name.clone(),
+//                     ip: node.ip.clone(),
+//                     tcp_tx: node.tcp_tx.clone(),
+//                     tcp_rx: {
+//                         if let Some(tcp_rx) = &node.tcp_rx {
+//                             Some(tcp_rx.resubscribe())
+//                         } else {
+//                             None
+//                         }
+//                     },
+//                     nodetype: node.nodetype.clone(),
+//                     status: node.status.clone(),
+//                     gameserver: node.gameserver.clone(),
+//                     k8s_type: node.k8s_type.clone(),
+//                 })
+//                 .collect(),
+//             cached_status_type: String::new(),
+//             rcon_connection: self.rcon_connection.clone(),
+//             current_server: self.current_server.clone(),
+//             lock: self.lock.clone(),
+//             filesystem: None
+//         }
+//     }
+// }
 
 
 // What this does is that it will go over the lines retrived from the TCP stream
@@ -1441,6 +1449,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let connection_handler = ConnectionHandler::new();
+
+    let (fs_sender_tx, fs_sender_rx) = flume::unbounded();
+    let (fs_receiver_tx, fs_receiver_rx) = flume::unbounded();
+    let fs_sender = TcpFsSender::new(fs_sender_rx, fs_sender_tx);
+    let fs_receiver = TcpFsReceiver::new(fs_receiver_tx, fs_receiver_rx);
+    let filesystem = FileSystemHandler { 
+            file_tx: RemoteFileSystem::new(fs_sender), 
+            file_rx: RemoteFileSystem::new(fs_receiver), 
+            operations: FileOperations::new()
+        };
+
     // use everything so far to make the app state
     let mut state: AppState = AppState {
         // tcp_tx: tcp_tx,
@@ -1460,7 +1479,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         rcon_connection,
         current_server,
         lock: false,
-        filesystem: None
+        filesystem
     };
     state.tcp_conn_status = {
         if check_channel_health(&state).await {
@@ -1508,7 +1527,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/users", get(users))
         .route("/api/ws", get(ws_handler))
         .route("/api/upload", post(upload))
-        .route("/api/download/{*wildcard}", get(stream_file_download))
+        // .route("/api/download/{*wildcard}", get(stream_file_download))
         .route("/api/fileoperations", post(file_operations))
         .route("/api/statistics", get(statistics))
         .route("/api/getsettings", get(get_settings))
@@ -1864,14 +1883,15 @@ async fn file_operations(
 
     StatusCode::CREATED
 }
-
+#[axum::debug_handler]
 async fn upload(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
-    request: Request,
+    // request: Request,
+    mut multipart: Multipart
 ) -> StatusCode {
-    let state = arc_state.read().await;
+    let mut state = arc_state.write().await;
     let authorized = authorize(
         &state,
         auth_session,
@@ -1882,24 +1902,26 @@ async fn upload(
     if !authorized {
         return StatusCode::UNAUTHORIZED;
     }
-
-    let boundary = headers
-        .get("content-type")
-        .and_then(|ct| ct.to_str().ok())
-        .and_then(|ct| multer::parse_boundary(ct).ok());
-
-    let Some(boundary) = boundary else {
-        return StatusCode::BAD_REQUEST;
+    let (tx, rx) = flume::unbounded();
+    let filesystem_sender: &mut RemoteFileSystem<TcpFsSender, FlumeFile> = &mut state.filesystem.file_tx;
+    let file = FlumeFile { 
+        original_location: None, 
+        final_location: "test.txt".to_string(), 
+        content_stream: Some(rx)
     };
+    filesystem_sender.append_files(file);
+    while let Some(mut field) = multipart.next_field().await.unwrap() {
+        // let file_name = field.file_name().unwrap_or("upload.bin").to_string();
+        // let mut file = File::create(format!("/tmp/{file_name}")).await.unwrap();
 
-    let body_stream = request.into_body().into_data_stream();
-    let multipart = multer::Multipart::new(body_stream, boundary);
-
-    let tcp_tx = state.connection_handler.tcp_tx.clone();
-    match send_multipart_over_broadcast(multipart, tcp_tx).await {
-        Ok(_) => StatusCode::OK,
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        // `field` implements Stream<Item = Result<Bytes, MultipartError>>
+        while let Some(chunk) = field.chunk().await.unwrap() {
+            // file.write_all(&chunk).await.unwrap();
+            tx.send_async(chunk.to_vec()).await;
+        }
     }
+
+    StatusCode::OK
 }
 //SrcAndDest
 async fn migrate(
@@ -2242,7 +2264,7 @@ async fn authorize(
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state.clone(), token)
+        if resolve_token_perms(state, token)
             .iter()
             .any(|user_perm| {
                 user_perm.perm == "admin"
@@ -3367,7 +3389,7 @@ async fn change_node(
 
     let ws_tx = state.ws_tx.clone();
     let option_node = {
-        let state = state.clone();
+        // let state = state.clone();
         state.database.retrieve_nodes(request.node_id.clone()).await
     };
 
@@ -3547,7 +3569,7 @@ impl AuthnBackend for Backend {
     }
 }
 
-fn resolve_token_perms(state: AppState, token: String) -> Vec<UserPerm> {
+fn resolve_token_perms(state: &AppState, token: String) -> Vec<UserPerm> {
     let mut tokens = Vec::new();
     if let Some(env_token) = get_env_var_or_arg::<String>("HEADER_TOKEN", Some(String::new())) {
         tokens.push(env_token.to_string());
@@ -3732,76 +3754,91 @@ async fn handle_static_request(
             .unwrap()),
     }
 }
+#[derive(Deserialize, Serialize)]
+struct FileChunk {
+    file_name: String,
+    file_offset: u64,
+    file_chunk_size: u64
+}
 
 // This will get the content of a file from gameserver, it will use the custom Tcp filesystem I created
 // it will ensure it is not a path escape
-// then return the file content
 async fn get_files_content(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
     Json(request): Json<FileChunk>,
-) -> Result<impl IntoResponse, impl IntoResponse> {
-    let mut state = arc_state.write().await;
-    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
-    if !authorized {
-        return Err(StatusCode::UNAUTHORIZED.into_response());
-    }
-
-    let (tcp_tx, tcp_rx) = {
-        // let state = arc_state.read().await;
-        state.connection_handler.get_filesystem_stream()
-        //(state.connection_handler.tcp_tx.clone(), state.connection_handler.tcp_tx.subscribe())
-    };
-
-    //let mut tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
-    //let base_path = RemoteFileSystem::new("server", Some(tcp_fs.clone()));
-
-    let mut base_path = if state.filesystem.is_none() {
-        let mut tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
-        &mut RemoteFileSystem::new("server", Some(tcp_fs.clone()))
-    } else {
-        state.filesystem.as_mut().unwrap()
-    };
-    //let tcp_fs = base_path.in
-
-    let user_input = request.file_name.trim_start_matches('/');
-
-    println!("trying to canonolize");
-    let requested_path = base_path
-        .join(user_input)
-        .canonicalize()
-        .await
-        .map_err(|e| {
-            eprintln!("Invalid path: {}", e);
-            (StatusCode::BAD_REQUEST, "Invalid path").into_response()
-        })?;
-
-    println!("going to get the path structure");
-    let (dir_path, file_name) = match (requested_path.parent(), requested_path.file_name()) {
-        (Some(dir), Some(file)) => (dir.to_path_buf(), file.to_os_string()),
-        _ => {
-            eprintln!("Could not split path into directory and file");
-            return Err((StatusCode::BAD_REQUEST, "Invalid path structure").into_response());
-        }
-    };
-
-    println!("resolving path");
-    let full_path = dir_path.join(&file_name);
-    let file_chunk = FileChunk {
-        file_name: full_path.to_string_lossy().to_string(),
-        file_chunk_offet: request.file_chunk_offet,
-        file_chunk_size: request.file_chunk_size,
-    };
-
-    let content = base_path
-        .get_files_content(file_chunk)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read file").into_response())?;
-
-    println!("doing something with file content");
-    Ok(Json(content))
+) -> impl IntoResponse {
+    StatusCode::SERVICE_UNAVAILABLE.into_response()
 }
+
+// then return the file content
+// async fn get_files_content(
+//     State(arc_state): State<Arc<RwLock<AppState>>>,
+//     auth_session: AuthSession,
+//     headers: HeaderMap,
+//     Json(request): Json<FileChunk>,
+// ) -> Result<impl IntoResponse, impl IntoResponse> {
+//     let mut state = arc_state.write().await;
+//     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
+//     if !authorized {
+//         return Err(StatusCode::UNAUTHORIZED.into_response());
+//     }
+
+//     let (tcp_tx, tcp_rx) = {
+//         // let state = arc_state.read().await;
+//         state.connection_handler.get_filesystem_stream()
+//         //(state.connection_handler.tcp_tx.clone(), state.connection_handler.tcp_tx.subscribe())
+//     };
+
+//     //let mut tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
+//     //let base_path = RemoteFileSystem::new("server", Some(tcp_fs.clone()));
+
+//     let mut base_path = if state.filesystem.is_none() {
+//         let mut tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
+//         &mut RemoteFileSystem::new("server", Some(tcp_fs.clone()))
+//     } else {
+//         state.filesystem.as_mut().unwrap()
+//     };
+//     //let tcp_fs = base_path.in
+
+//     let user_input = request.file_name.trim_start_matches('/');
+
+//     println!("trying to canonolize");
+//     let requested_path = base_path
+//         .join(user_input)
+//         .canonicalize()
+//         .await
+//         .map_err(|e| {
+//             eprintln!("Invalid path: {}", e);
+//             (StatusCode::BAD_REQUEST, "Invalid path").into_response()
+//         })?;
+
+//     println!("going to get the path structure");
+//     let (dir_path, file_name) = match (requested_path.parent(), requested_path.file_name()) {
+//         (Some(dir), Some(file)) => (dir.to_path_buf(), file.to_os_string()),
+//         _ => {
+//             eprintln!("Could not split path into directory and file");
+//             return Err((StatusCode::BAD_REQUEST, "Invalid path structure").into_response());
+//         }
+//     };
+
+//     println!("resolving path");
+//     let full_path = dir_path.join(&file_name);
+//     let file_chunk = FileChunk {
+//         file_name: full_path.to_string_lossy().to_string(),
+//         file_chunk_offet: request.file_chunk_offet,
+//         file_chunk_size: request.file_chunk_size,
+//     };
+
+//     let content = base_path
+//         .get_files_content(file_chunk)
+//         .await
+//         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read file").into_response())?;
+
+//     println!("doing something with file content");
+//     Ok(Json(content))
+// }
 
 // Gets a list of files and return to to things like the filebrowser
 pub async fn get_files(
@@ -3810,171 +3847,23 @@ pub async fn get_files(
     auth_session: AuthSession,
     Json(request): Json<IncomingMessage>,
 ) -> impl IntoResponse {
-    println!("[get_files] called with request.message = {:?}", request.message);
-
-    let (tcp_tx, tcp_rx) = {
-        let state = arc_state.read().await;
-        state.connection_handler.get_filesystem_stream()
+    let state = arc_state.write().await;
+    let request = LsRequest {
+        id: 0,
+        location: "/home/projects/gameserver-rs/gameserver".to_string(),
     };
-    println!("[get_files] acquired filesystem stream");
-
-    let mut state = arc_state.write().await;
-    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
-    //drop(state);
-    println!("[get_files] authorized = {:?}", authorized);
-
-    //let tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
-
-    let user_input = request.message.trim_start_matches('/');
-    println!("[get_files] user_input (trimmed) = {:?}", user_input);
-
-    let fs_path = if user_input.is_empty() {
-        "server".to_string()
-    } else if user_input == "server" {
-        "server".to_string()
-    } else if user_input.starts_with("server/") {
-        user_input.to_string()
-    } else {
-        format!("server/{}", user_input)
-    };
-    println!("[get_files] resolved fs_path = {:?}", fs_path);
-
-    println!("fetching requested path");
-    if state.filesystem.is_none() {
-        let mut tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
-        state.filesystem = Some(RemoteFileSystem::new(&fs_path, Some(tcp_fs.clone())));
-    }
-    let fs = state.filesystem.as_mut().unwrap();
-    fs.set_path(fs_path.clone());
-    //  let mut fs = if state.filesystem.is_none() {
-    //     let mut tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
-    //     &mut RemoteFileSystem::new(&fs_path, Some(tcp_fs.clone()))
-    // } else {
-    //     state.filesystem.as_mut().unwrap()
-    // };
-    let mut requested_path = match timeout(
-        Duration::from_secs(5),
-        fs.canonicalize(),
-    )
-    .await
-    {
-        Ok(Ok(p)) => {
-            println!("[get_files] canonicalized path = {:?}", p.to_string());
-            p
-        }
-        Ok(Err(e)) => {
-            eprintln!("Invalid path '{}': {}", fs_path, e);
-            return (StatusCode::BAD_REQUEST, "Invalid path").into_response();
-        }
-        Err(_) => {
-            eprintln!("Timeout resolving '{}'", fs_path);
-            return (StatusCode::GATEWAY_TIMEOUT, "Request timed out").into_response();
-        }
-    };
-    
-    println!("{:#?}", fs);
-    println!("{:#?}", requested_path.clone());
-    requested_path.add_metadata(fs.get_metadata().unwrap());
-    println!("{:#?}", requested_path.clone());
-    println!("[get_files] checking if '{}' is a directory", requested_path.to_string());
-    // let is_dir = match timeout(Duration::from_secs(10), requested_path.is_dir()).await {
-    //     Ok(Ok(true)) => {
-    //         println!("TTT");
-    //         println!("[get_files] '{}' confirmed as directory", requested_path.to_string());
-    //         true
-    //     }
-    //     Ok(Ok(false)) => {
-    //         println!("XXXX");
-    //         eprintln!("Path is not a directory: '{}'", requested_path.to_string());
-    //         return (StatusCode::BAD_REQUEST, "Path is not a directory").into_response();
-    //     }
-    //     Ok(Err(e)) => {
-    //         println!("BBB");
-    //         eprintln!("Error checking dir '{}': {}", requested_path.to_string(), e);
-    //         return (
-    //             StatusCode::INTERNAL_SERVER_ERROR,
-    //             "Failed to check directory",
-    //         )
-    //             .into_response();
-    //     }
-    //     Err(_) => {
-    //         println!("CCC");
-    //         eprintln!("Timeout checking dir '{}'", requested_path.to_string());
-    //         return (StatusCode::GATEWAY_TIMEOUT, "Request timed out").into_response();
-    //     }
-    // };
-    println!("AAAA");
-    println!("[get_files] reading directory contents of '{}'", requested_path.to_string());
-    println!("{:#?}", requested_path.clone());
-    //println!("{:#?}", requested_path.read_dir().await);
-    println!("done test read");
-    let entries = match timeout(Duration::from_secs(10), requested_path.read_dir()).await {
-        Ok(Ok(list)) => {
-            println!("LLL");
-            println!("[get_files] read_dir returned {} entries", list.len());
-            list
-        }
-        Ok(Err(e)) => {
-            println!("XXX");
-            eprintln!(
-                "Failed to read directory '{}': {}",
-                requested_path.to_string(),
-                e
-            );
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to read directory",
-            )
-                .into_response();
-        }
-        Err(_) => {
-            println!("MMM");
-            eprintln!("Timeout reading dir '{}'", requested_path.to_string());
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Request has timed out").into_response();
-        }
-        // _ => {
-        //     println!("other thing");
-        //     return (StatusCode::INTERNAL_SERVER_ERROR, "an unexpected thing happened").into_response();
-        // }
-    };
-    println!("after reading dir");
-
-    let mut items = Vec::with_capacity(entries.len());
-    for (i, mut entry) in entries.into_iter().enumerate() {
-        let raw_name = entry.file_name();
-        println!("[get_files] entry {}: raw file_name = {:?}", i, raw_name);
-
-        if let Some(entry_name) = raw_name.clone().unwrap().to_str() {
-            match entry.is_dir().await {
-                Ok(is_dir) => {
-                    println!(
-                        "[get_files] entry {} ('{}') is_dir = {}",
-                        i, entry_name, is_dir
-                    );
-                    items.push(if is_dir {
-                        FsItem::Folder(entry_name.to_string())
-                    } else {
-                        FsItem::File(entry_name.to_string())
-                    });
-                }
-                Err(e) => {
-                    eprintln!(
-                        "[get_files] entry {} ('{}') failed is_dir check: {:?}",
-                        i, entry_name, e
-                    );
-                }
-            }
-        } else {
-            eprintln!("[get_files] entry {} name is not valid UTF-8: {:?}", i, raw_name);
-        }
+    match request.node_transport(&state).await {
+        Ok(()) => {
+            println!("successfully sent it");
+        },
+        Err(_) => todo!(),
     }
 
-    println!("[get_files] returning {} items", items.len());
-
-    Json(List {
-        list: ApiCalls::FileDataList(items),
-    })
-    .into_response()
+    StatusCode::SERVICE_UNAVAILABLE.into_response()
+    // Json(List {
+    //     list: ApiCalls::FileDataList(items),
+    // })
+    // .into_response()
 }
 
 fn get_auth_bearer(headers: HeaderMap) -> Option<String> {
@@ -3992,143 +3881,143 @@ pub struct AuthenticateParams {
     jwk: String,
 }
 
-pub async fn stream_file_download(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
-    auth_session: AuthSession,
-    headers: HeaderMap,
-    axum::extract::Path(file_path): axum::extract::Path<String>,
-) -> Result<Response<Body>, StatusCode> {
-    let state = arc_state.read().await;
-    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
-    if !authorized {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-    drop(state);
+// pub async fn stream_file_download(
+//     State(arc_state): State<Arc<RwLock<AppState>>>,
+//     auth_session: AuthSession,
+//     headers: HeaderMap,
+//     axum::extract::Path(file_path): axum::extract::Path<String>,
+// ) -> Result<Response<Body>, StatusCode> {
+//     let state = arc_state.read().await;
+//     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
+//     if !authorized {
+//         return Err(StatusCode::UNAUTHORIZED);
+//     }
+//     drop(state);
 
-    let tcp_fs = {
-        let state = arc_state.read().await;
-        let (tcp_tx, tcp_rx) = state.connection_handler.get_filesystem_stream();
-        //(state.connection_handler.proxy_tx.clone(), state.connection_handler.proxy_rx.resubscribe());
-        Arc::new(Mutex::new(TcpFs::new(tcp_tx, tcp_rx)))
-    };
+//     let tcp_fs = {
+//         let state = arc_state.read().await;
+//         let (tcp_tx, tcp_rx) = state.connection_handler.get_filesystem_stream();
+//         //(state.connection_handler.proxy_tx.clone(), state.connection_handler.proxy_rx.resubscribe());
+//         Arc::new(Mutex::new(TcpFs::new(tcp_tx, tcp_rx)))
+//     };
 
-    let decoded_path = urlencoding::decode(&file_path)
-        .map_err(|_| StatusCode::BAD_REQUEST)?
-        .to_string();
+//     let decoded_path = urlencoding::decode(&file_path)
+//         .map_err(|_| StatusCode::BAD_REQUEST)?
+//         .to_string();
 
-    let normalized_path = normalize_and_secure_path(&decoded_path)?;
+//     let normalized_path = normalize_and_secure_path(&decoded_path)?;
 
-    let metadata = {
-        let fs = tcp_fs.lock().await;
-        let mut remote_fs = RemoteFileSystem::new(&normalized_path, Some((*fs).clone()));
+//     let metadata = {
+//         let fs = tcp_fs.lock().await;
+//         let mut remote_fs = RemoteFileSystem::new(&normalized_path, Some((*fs).clone()));
 
-        let is_file = remote_fs.is_file().await.map_err(|e| {
-            eprintln!("Error checking if path is file: {}", e);
-            StatusCode::NOT_FOUND
-        })?;
+//         let is_file = remote_fs.is_file().await.map_err(|e| {
+//             eprintln!("Error checking if path is file: {}", e);
+//             StatusCode::NOT_FOUND
+//         })?;
 
-        if !is_file {
-            return Err(StatusCode::BAD_REQUEST);
-        }
+//         if !is_file {
+//             return Err(StatusCode::BAD_REQUEST);
+//         }
 
-        remote_fs.ensure_metadata().await.map_err(|e| {
-            eprintln!("Error getting metadata: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+//         remote_fs.ensure_metadata().await.map_err(|e| {
+//             eprintln!("Error getting metadata: {}", e);
+//             StatusCode::INTERNAL_SERVER_ERROR
+//         })?;
 
-        remote_fs.cached_metadata.clone()
-    };
+//         remote_fs.cached_metadata.clone()
+//     };
 
-    let file_size = metadata.as_ref().and_then(|m| m.file_size);
-    let chunk_size = 64 * 1024;
+//     let file_size = metadata.as_ref().and_then(|m| m.file_size);
+//     let chunk_size = 64 * 1024;
 
-    let stream = TcpFileStream::new(
-        tcp_fs.clone(),
-        normalized_path.clone(),
-        file_size,
-        chunk_size,
-    );
+//     let stream = TcpFileStream::new(
+//         tcp_fs.clone(),
+//         normalized_path.clone(),
+//         file_size,
+//         chunk_size,
+//     );
 
-    let body = Body::from_stream(stream);
+//     let body = Body::from_stream(stream);
 
-    let filename = std::path::Path::new(&normalized_path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("download");
+//     let filename = std::path::Path::new(&normalized_path)
+//         .file_name()
+//         .and_then(|n| n.to_str())
+//         .unwrap_or("download");
 
-    let mut response = Response::new(body);
-    let headers = response.headers_mut();
+//     let mut response = Response::new(body);
+//     let headers = response.headers_mut();
 
-    headers.insert(
-        header::CONTENT_TYPE,
-        "application/octet-stream".parse().unwrap(),
-    );
-    headers.insert(
-        header::CONTENT_DISPOSITION,
-        format!("attachment; filename=\"{}\"", filename)
-            .parse()
-            .unwrap(),
-    );
+//     headers.insert(
+//         header::CONTENT_TYPE,
+//         "application/octet-stream".parse().unwrap(),
+//     );
+//     headers.insert(
+//         header::CONTENT_DISPOSITION,
+//         format!("attachment; filename=\"{}\"", filename)
+//             .parse()
+//             .unwrap(),
+//     );
 
-    if let Some(size) = file_size {
-        headers.insert(header::CONTENT_LENGTH, size.to_string().parse().unwrap());
-    } else {
-        headers.insert(header::TRANSFER_ENCODING, "chunked".parse().unwrap());
-    }
+//     if let Some(size) = file_size {
+//         headers.insert(header::CONTENT_LENGTH, size.to_string().parse().unwrap());
+//     } else {
+//         headers.insert(header::TRANSFER_ENCODING, "chunked".parse().unwrap());
+//     }
 
-    Ok(response)
-}
-fn normalize_and_secure_path(path: &str) -> Result<String, StatusCode> {
-    use std::path::{Component, PathBuf};
+//     Ok(response)
+// }
+// fn normalize_and_secure_path(path: &str) -> Result<String, StatusCode> {
+//     use std::path::{Component, PathBuf};
 
-    let path = path.trim();
+//     let path = path.trim();
 
-    let path_buf = PathBuf::from(path);
+//     let path_buf = PathBuf::from(path);
 
-    let mut normalized = PathBuf::new();
-    for component in path_buf.components() {
-        match component {
-            Component::Normal(part) => normalized.push(part),
-            Component::RootDir => {
-                continue;
-            }
-            Component::CurDir => {
-                continue;
-            }
-            Component::ParentDir => {
-                if normalized.components().count() > 0 {
-                    normalized.pop();
-                }
-            }
-            _ => {
-                return Err(StatusCode::BAD_REQUEST);
-            }
-        }
-    }
+//     let mut normalized = PathBuf::new();
+//     for component in path_buf.components() {
+//         match component {
+//             Component::Normal(part) => normalized.push(part),
+//             Component::RootDir => {
+//                 continue;
+//             }
+//             Component::CurDir => {
+//                 continue;
+//             }
+//             Component::ParentDir => {
+//                 if normalized.components().count() > 0 {
+//                     normalized.pop();
+//                 }
+//             }
+//             _ => {
+//                 return Err(StatusCode::BAD_REQUEST);
+//             }
+//         }
+//     }
 
-    let normalized_str = normalized.to_string_lossy().to_string();
+//     let normalized_str = normalized.to_string_lossy().to_string();
 
-    let server_prefix = "server/";
-    let final_path = if normalized_str.starts_with(server_prefix) {
-        normalized_str
-    } else if normalized_str.is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
-    } else {
-        format!("{}{}", server_prefix, normalized_str)
-    };
+//     let server_prefix = "server/";
+//     let final_path = if normalized_str.starts_with(server_prefix) {
+//         normalized_str
+//     } else if normalized_str.is_empty() {
+//         return Err(StatusCode::BAD_REQUEST);
+//     } else {
+//         format!("{}{}", server_prefix, normalized_str)
+//     };
 
-    if !final_path.starts_with(server_prefix) {
-        eprintln!("Path traversal attempt blocked: {} -> {}", path, final_path);
-        return Err(StatusCode::FORBIDDEN);
-    }
+//     if !final_path.starts_with(server_prefix) {
+//         eprintln!("Path traversal attempt blocked: {} -> {}", path, final_path);
+//         return Err(StatusCode::FORBIDDEN);
+//     }
 
-    if final_path.contains('\0') {
-        eprintln!("Null byte in path blocked: {}", final_path);
-        return Err(StatusCode::BAD_REQUEST);
-    }
+//     if final_path.contains('\0') {
+//         eprintln!("Null byte in path blocked: {}", final_path);
+//         return Err(StatusCode::BAD_REQUEST);
+//     }
 
-    Ok(final_path)
-}
+//     Ok(final_path)
+// }
 
 // Unit tests
 #[cfg(test)]

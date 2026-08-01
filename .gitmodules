@@ -1,0 +1,8 @@
+[submodule "axum-oidc"]
+	path = lib/axum-oidc
+	url = https://codeberg.org/pfzetto/axum-oidc.git
+
+[submodule "networked_filesystem"]
+	path = lib/general_networked_filesystem/network
+	url = https://github.com/SpiderUnderUrBed/networked_filesystem.git
+    branch = staging

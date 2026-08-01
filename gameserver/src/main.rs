@@ -1,8 +1,8 @@
 use chrono::DateTime;
 use chrono::Local;
+use general_networked_filesystem::FileRequest;
+use general_networked_filesystem::FileRequestExecutable;
 use serde_json::{json, Value};
-use tcp_filesystem::FileResponse;
-use tcp_filesystem::FileResponseMessage;
 use std::convert::TryFrom;
 use std::fmt;
 use std::io::Error;
@@ -10,15 +10,6 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use tcp_filesystem::cleanup_end_file_markers;
-use tcp_filesystem::get_files_content;
-use tcp_filesystem::get_metadata;
-use tcp_filesystem::list_directory;
-use tcp_filesystem::list_directory_with_range;
-use tcp_filesystem::BasicPath;
-use tcp_filesystem::FileOperations;
-use tcp_filesystem::FileRequestMessage;
-use tcp_filesystem::FileRequestPayload;
 use tokio::fs;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
@@ -46,7 +37,6 @@ use crate::transport::node_transport::ConsoleRequest;
 use crate::transport::node_transport::CreateServerRequest;
 use crate::transport::node_transport::DeleteServerRequest;
 use crate::transport::node_transport::FileOperationResponse;
-use crate::transport::node_transport::FileRequest;
 use crate::transport::node_transport::NodeTransportable;
 use crate::transport::node_transport::Ping;
 use crate::transport::node_transport::PingResponse;
@@ -113,8 +103,8 @@ struct IncomingMessage {
 }
 
 // TODO: consider this
-// IncomingMessageWithMetadata has been omitted here but rather imported as 
-// some connection types require it to the the same as some internal defintion of 
+// IncomingMessageWithMetadata has been omitted here but rather imported as
+// some connection types require it to the the same as some internal defintion of
 // Incoming
 
 // newer version of IncomingMessage, mainly because this includes the metadata feild which i sometimes use
@@ -129,8 +119,6 @@ struct IncomingMessageWithMetadata {
     metadata: MetadataTypes,
     authcode: String,
 }
-
-
 
 // For very simple messages like pings that need no added complexity
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Default)]
@@ -260,7 +248,7 @@ enum ApiCalls {
     NodeList(Vec<String>),
     IncomingMessage(MessagePayload),
     Node(Node),
-    FileOperations(FileOperations),
+    // FileOperations(FileOperations),
 }
 
 // I tried to convert from a Value, as in undefined data type, to a List, as its a data type created only
@@ -904,20 +892,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let addr = addr_option.unwrap_or("unknown".to_string());
         // let addr_option = conn_handler.accept_connection().await?;
         //let (socket, addr) = listener.accept().await?;
-        println!(
-            "[Connection] New client from {}",
-            addr
-        );
+        println!("[Connection] New client from {}", addr);
 
         let stdin_ref = shared_stdin.clone();
         //let hostname_ref = hostname_ref.clone();
         let arc_state_clone = Arc::clone(&arc_state);
 
         tokio::spawn(async move {
-            println!(
-                "[{}] DEBUG: Connection task started",
-                addr
-            );
+            println!("[{}] DEBUG: Connection task started", addr);
 
             //let (mut read_half, mut write_half) = socket.into_split();
             let (out_tx, mut out_rx) = mpsc::channel::<String>(128);
@@ -954,7 +936,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let mut retry_interval = tokio::time::interval(tokio::time::Duration::from_secs(2));
             let mut needs_server_status_check = server_output_rx.is_none();
 
-
             tokio::spawn(async move {
                 loop {
                     if needs_server_status_check {
@@ -974,8 +955,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 .to_string()
                                     + "\n";
 
-                                if let Err(e) =
-                                    inner_out_tx.send(connection_msg.to_string()).await
+                                if let Err(e) = inner_out_tx.send(connection_msg.to_string()).await
                                 {
                                     eprintln!("[{}] Write error: {}", addr_clone, e);
                                     break;
@@ -1081,7 +1061,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 "authcode": "0"
                             }).to_string() + "\n";
                             //println!(" writing back cmd {:#?}", payload.clone());
-                            if let Err(e) = writer.send_with_connection(payload.as_bytes().to_vec(), &mut conn_handler).await {
+                            // if let Err(e) = writer.send_with_connection(payload.as_bytes().to_vec(), &mut conn_handler).await {
+                            if let Err(e) = writer.send(payload.as_bytes().to_vec()).await {
                                 eprintln!("[{}] Write error: {}", addr, e);
                                 break;
                             };
@@ -1146,911 +1127,858 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 loop {
                     // Mode switching is only valid for TCP
                     // GRPC does not need it as it is inherently seperated
-                    match &mut mode {
-                        ReadMode::Json => {
-                            let mut found_message = false;
+                    // match &mut mode {
+                    //     ReadMode::Json => {
+                    let mut found_message = false;
 
-                            //while let Some(newline_pos) = conn_handler.inner().iter().position(|&b| b == b'\n')
-                            // println!("before next");
-                            while let Ok(_) = conn_handler.next().await {
-                                println!("got next");
-                                // let line = &conn_handler.inner()[..newline_pos];
+                    //while let Some(newline_pos) = conn_handler.inner().iter().position(|&b| b == b'\n')
+                    // println!("before next");
+                    while let Ok(_) = conn_handler.next().await {
+                        println!("got next");
+                        // let line = &conn_handler.inner()[..newline_pos];
 
-                                // if line.is_empty() {
-                                //     if newline_pos + 1 <= conn_handler.inner().len() {
-                                //         conn_handler.inner().drain(..newline_pos + 1);
-                                //     } else {
-                                //         conn_handler.inner().clear();
-                                //     }
-                                //     continue;
+                        // if line.is_empty() {
+                        //     if newline_pos + 1 <= conn_handler.inner().len() {
+                        //         conn_handler.inner().drain(..newline_pos + 1);
+                        //     } else {
+                        //         conn_handler.inner().clear();
+                        //     }
+                        //     continue;
+                        // }
+
+                        // let line_str = String::from_utf8_lossy(line);
+                        let line_str_result = conn_handler.recv_line().await;
+                        // conn_handler.start_clean_hook().await;
+                        // if line_str_result.is_err() {
+                        //     //println!("got line str err");
+                        //     continue;
+                        // }
+                        if let Ok(mut line_str) = line_str_result {
+                            conn_handler.start_clean_hook().await;
+                            // let mut line_str = line_str_result.unwrap();
+                            line_str = line_str
+                                .trim_matches(|c: char| c.is_whitespace() || c == '\0')
+                                .to_string();
+                            // line_str = line_str.strip_prefix("\l").unwrap_or(&line_str).to_string();
+                            if let Some(stripped) = line_str.strip_prefix(r"\f") {
+                                line_str = stripped.to_string();
+                                if !line_str.starts_with('{') {
+                                    line_str = "{".to_owned() + &line_str;
+                                }
+                                // if line_str.ends_with("}}"){
+                                //     line_str = line_str.strip_suffix("}").unwrap().to_string();
                                 // }
+                            }
+                            println!("got line str {}", line_str.clone());
+                            //conn_handler.start_clean_hook().await;
+                            //conn_handler.remove_current_segment_or_clear().await;
+                            // println!("got line str '{}'", line_str.clone());
+                            //println!("got line {}", line_str.clone());
+                            if line_str == "<|END_OF_FILE|>" {
+                                // conn_handler.remove_current_segment_or_clear();
+                                // if newline_pos + 1 <= conn_handler.inner().len() {
+                                //     conn_handler.inner().drain(..newline_pos + 1);
+                                // } else {
+                                //     conn_handler.inner().clear();
+                                // }
+                                found_message = true;
+                                continue;
+                            }
+                            // if true {
+                                if let Ok(json_value) = serde_json::from_str::<Value>(&line_str) {
+                                    log_requests(
+                                        json_value.clone(),
+                                        addr.to_string(),
+                                        line_str.to_string(),
+                                    );
 
-                                // let line_str = String::from_utf8_lossy(line);
-                                let line_str_result = conn_handler.recv_line().await;
-                                conn_handler.start_clean_hook().await;
-                                if line_str_result.is_err() {
-                                    //println!("got line str err");
-                                    continue;
-                                }
-                                let mut line_str = line_str_result.unwrap();
-                                line_str = line_str.trim_matches(|c: char| c.is_whitespace() || c == '\0').to_string();
-                                // line_str = line_str.strip_prefix("\l").unwrap_or(&line_str).to_string();
-                                if let Some(stripped) = line_str.strip_prefix(r"\f") {
-                                    line_str = stripped.to_string();
-                                    if !line_str.starts_with('{') {
-                                        line_str = "{".to_owned() + &line_str;
+                                    let auth_payload_result: Result<
+                                        AuthTcpMessage,
+                                        serde_json::Error,
+                                    > = serde_json::from_value(json_value.clone());
+                                    let authenticated_origins =
+                                        &mut arc_state_clone.authenticated_origins.lock().await;
+                                    if let Ok(auth_payload) = auth_payload_result {
+                                        let node_password: String = get_env_var_or_arg(
+                                            "NODE_PASSWORD",
+                                            Some(String::default()),
+                                        )
+                                        .unwrap();
+
+                                        if node_password.clone() == auth_payload.password {
+                                            authenticated_origins.push(addr.to_string());
+                                        }
                                     }
-                                    // if line_str.ends_with("}}"){
-                                    //     line_str = line_str.strip_suffix("}").unwrap().to_string();
-                                    // }
-                                }
-                                println!("got line str {}", line_str.clone());
-                                //conn_handler.start_clean_hook().await;
-                                //conn_handler.remove_current_segment_or_clear().await;
-                                // println!("got line str '{}'", line_str.clone());
-                                //println!("got line {}", line_str.clone());
-                                if line_str == "<|END_OF_FILE|>" {
-                                    // conn_handler.remove_current_segment_or_clear();
-                                    // if newline_pos + 1 <= conn_handler.inner().len() {
-                                    //     conn_handler.inner().drain(..newline_pos + 1);
-                                    // } else {
-                                    //     conn_handler.inner().clear();
-                                    // }
-                                    found_message = true;
-                                    continue;
-                                }
-                                if true
-                                {
-                                    if let Ok(json_value) = serde_json::from_str::<Value>(&line_str)
+                                    if !authenticated_origins
+                                        .iter()
+                                        .any(|origin| *origin == addr.to_string())
                                     {
-                                        log_requests(
-                                            json_value.clone(),
-                                            addr.to_string(),
-                                            line_str.to_string(),
-                                        );
-
-                                        let auth_payload_result: Result<
-                                            AuthTcpMessage,
-                                            serde_json::Error,
-                                        > = serde_json::from_value(json_value.clone());
-                                        let authenticated_origins =
-                                            &mut arc_state_clone.authenticated_origins.lock().await;
-                                        if let Ok(auth_payload) = auth_payload_result {
-                                            let node_password: String = get_env_var_or_arg(
-                                                "NODE_PASSWORD",
-                                                Some(String::default()),
-                                            )
-                                            .unwrap();
-
-                                            if node_password.clone() == auth_payload.password {
-                                                authenticated_origins.push(addr.to_string());
-                                            }
+                                        let node_password: String = get_env_var_or_arg(
+                                            "NODE_PASSWORD",
+                                            Some(String::default()),
+                                        )
+                                        .unwrap();
+                                        if !node_password.is_empty() {
+                                            //kill_socket = true;
+                                            break 'outer;
                                         }
-                                        if !authenticated_origins
-                                            .iter()
-                                            .any(|origin| *origin == addr.to_string())
-                                        {
-                                            let node_password: String = get_env_var_or_arg(
-                                                "NODE_PASSWORD",
-                                                Some(String::default()),
-                                            )
-                                            .unwrap();
-                                            if !node_password.is_empty() {
-                                                //kill_socket = true;
-                                                break 'outer;
-                                            }
-                                        }
-                                        //println!("before request");
+                                    }
+                                    //println!("before request");
 
-                                        // TODO: consider making a macro which can handle requests in pararell
-                                        if let Some(request) =
-                                            RequestHandler::try_recv_req(json_value)
-                                        {
-                                            //println!("got a request");
-                                            if let Ok(create_server_request) = request
-                                                .clone()
-                                                .into_typed_request::<CreateServerRequest>(
-                                            ) {
-                                                let _ = create_server(
-                                                    arc_state_clone.clone(),
-                                                    &cmd_tx,
-                                                    &stdin_ref,
-                                                    serde_json::to_value(
-                                                        create_server_request.clone(),
-                                                    )
+                                    // TODO: consider making a macro which can handle requests in pararell
+                                    if let Some(request) =
+                                        RequestHandler::try_recv_req(json_value.clone())
+                                    {
+                                        //println!("got a request");
+                                        if let Ok(create_server_request) = request
+                                            .clone()
+                                            .into_typed_request::<CreateServerRequest>(
+                                        ) {
+                                            let _ = create_server(
+                                                arc_state_clone.clone(),
+                                                &cmd_tx,
+                                                &stdin_ref,
+                                                serde_json::to_value(create_server_request.clone())
                                                     .unwrap(),
-                                                )
-                                                .await;
-                                                println!("Finished creating server");
-                                            }
-                                            if let Ok(delete_server_request) = request
-                                                .clone()
-                                                .into_typed_request::<DeleteServerRequest>(
-                                            ) {
-                                                if let MetadataTypes::DeleteServer {
-                                                    delete_server_name,
-                                                    delete_server_files,
-                                                } = delete_server_request.common.metadata
-                                                {
-                                                    let option_path = {
-                                                        if let Some(ProviderTypes::Path(path)) =
-                                                            convert_provider(
-                                                                arc_state_clone.clone(),
-                                                                vec![ProviderTypes::Name(
-                                                                    delete_server_name.clone(),
-                                                                )],
-                                                                ProviderReturnTypes::Path,
-                                                            )
-                                                            .await
+                                            )
+                                            .await;
+                                            println!("Finished creating server");
+                                        }
+                                        if let Ok(delete_server_request) = request
+                                            .clone()
+                                            .into_typed_request::<DeleteServerRequest>(
+                                        ) {
+                                            if let MetadataTypes::DeleteServer {
+                                                delete_server_name,
+                                                delete_server_files,
+                                            } = delete_server_request.common.metadata
+                                            {
+                                                let option_path = {
+                                                    if let Some(ProviderTypes::Path(path)) =
+                                                        convert_provider(
+                                                            arc_state_clone.clone(),
+                                                            vec![ProviderTypes::Name(
+                                                                delete_server_name.clone(),
+                                                            )],
+                                                            ProviderReturnTypes::Path,
+                                                        )
+                                                        .await
+                                                    {
+                                                        Some(path)
+                                                    } else {
+                                                        None
+                                                    }
+                                                };
+                                                if delete_server_files {
+                                                    if let Some(mut path) = option_path {
+                                                        if !path.trim().starts_with("server")
+                                                            && !path.trim().starts_with("server/")
                                                         {
-                                                            Some(path)
-                                                        } else {
-                                                            None
+                                                            path = format!("server/{}", path);
                                                         }
-                                                    };
-                                                    if delete_server_files {
-                                                        if let Some(mut path) = option_path {
-                                                            if !path.trim().starts_with("server")
-                                                                && !path
-                                                                    .trim()
-                                                                    .starts_with("server/")
-                                                            {
-                                                                path = format!("server/{}", path);
-                                                            }
-                                                            if let Err(errro) =
-                                                                fs::remove_dir_all(&path).await
-                                                            {
-                                                                eprintln!("Failed to delete directory {}: {}", path, errro);
-                                                            }
+                                                        if let Err(errro) =
+                                                            fs::remove_dir_all(&path).await
+                                                        {
+                                                            eprintln!(
+                                                                "Failed to delete directory {}: {}",
+                                                                path, errro
+                                                            );
                                                         }
                                                     }
-                                                    if let Some(current_server) = arc_state_clone
-                                                        .clone()
-                                                        .current_server
+                                                }
+                                                if let Some(current_server) = arc_state_clone
+                                                    .clone()
+                                                    .current_server
+                                                    .lock()
+                                                    .await
+                                                    .clone()
+                                                {
+                                                    //let inner_cloned_db_mutex = cloned_db_mutex.clone();
+                                                    let mut db =
+                                                        arc_state_for_reader.db.lock().await;
+                                                    if *delete_server_name == current_server {
+                                                        *(arc_state_for_reader
+                                                            .current_server
+                                                            .clone())
                                                         .lock()
+                                                        .await = None;
+                                                        db.current_server = String::new();
+                                                    }
+                                                    db.server_index.remove(&delete_server_name);
+                                                    save_db(&db);
+                                                    drop(db);
+                                                }
+                                            }
+                                        }
+                                        if let Ok(start_server_request) = request
+                                            .clone()
+                                            .into_typed_request::<StartServerRequest>(
+                                        ) {
+                                            println!("Got a start server request");
+                                            //shared_stdin
+                                            {
+                                                let stdin_guard = stdin_ref.lock().await;
+                                                if stdin_guard.is_some() {
+                                                    let _ = cmd_tx
+                                                            .send("Server is already running. Use 'stop_server' first.".into())
+                                                            .await;
+                                                }
+                                            }
+                                            if let Some(current_server) =
+                                                arc_state_clone.current_server.lock().await.clone()
+                                            {
+                                                // let provider =
+                                                //     get_provider_from_servername(&state, Some(current_server.clone())).await;
+                                                let location = {
+                                                    if let Some(ProviderTypes::Path(path)) =
+                                                        convert_provider(
+                                                            arc_state_clone.clone(),
+                                                            vec![ProviderTypes::Name(
+                                                                current_server.clone(),
+                                                            )],
+                                                            ProviderReturnTypes::Path,
+                                                        )
                                                         .await
-                                                        .clone()
                                                     {
-                                                        //let inner_cloned_db_mutex = cloned_db_mutex.clone();
-                                                        let mut db =
-                                                            arc_state_for_reader.db.lock().await;
-                                                        if *delete_server_name == current_server {
-                                                            *(arc_state_for_reader
-                                                                .current_server
-                                                                .clone())
-                                                            .lock()
-                                                            .await = None;
-                                                            db.current_server = String::new();
+                                                        Some(path)
+                                                    } else {
+                                                        None
+                                                    }
+                                                };
+                                                // println!("DEBUG current_server: '{}'", current_server);
+                                                // println!("DEBUG location: '{:?}'", location);
+                                                let provider = {
+                                                    if let Some(ProviderTypes::Provider(provider)) =
+                                                        convert_provider(
+                                                            arc_state_clone.clone(),
+                                                            vec![ProviderTypes::Name(
+                                                                current_server.clone(),
+                                                            )],
+                                                            ProviderReturnTypes::Provider,
+                                                        )
+                                                        .await
+                                                    {
+                                                        Some(provider)
+                                                    } else {
+                                                        None
+                                                    }
+                                                };
+                                                let provider_object = {
+                                                    if let Some(ProviderTypes::Object(object)) =
+                                                        convert_provider(
+                                                            arc_state_clone.clone(),
+                                                            vec![
+                                                                ProviderTypes::Path(
+                                                                    location
+                                                                        .clone()
+                                                                        .unwrap_or(String::new()),
+                                                                ),
+                                                                ProviderTypes::Provider(
+                                                                    provider
+                                                                        .unwrap_or(String::new()),
+                                                                ),
+                                                            ],
+                                                            ProviderReturnTypes::Object,
+                                                        )
+                                                        .await
+                                                    {
+                                                        Some(object)
+                                                    } else {
+                                                        None
+                                                    }
+                                                };
+                                                if let Some((_, provider_platform)) =
+                                                    provider_object
+                                                {
+                                                    // let mut provider_game_commands: ProviderGame =
+                                                    //     match pick_platform(provider_platform) {
+                                                    //         Some(prov) => prov.into(),
+                                                    //         None => return Err("no platform".into()),
+                                                    //     };
+                                                    let provider_game_option = pick_platform(
+                                                        provider_platform,
+                                                    )
+                                                    .map(|config| {
+                                                        let provider_game: ProviderGame =
+                                                            config.into();
+                                                        provider_game
+                                                    });
+                                                    if let Some(mut provider_game_commands) =
+                                                        provider_game_option
+                                                    {
+                                                        if let Some(ref loc) = location {
+                                                            let _ = provider_game_commands
+                                                                .set_location(loc.to_owned());
                                                         }
-                                                        db.server_index.remove(&delete_server_name);
-                                                        save_db(&db);
-                                                        drop(db);
+                                                        if let Some(cmd) =
+                                                            provider_game_commands.start()
+                                                        {
+                                                            let tx = cmd_tx.clone();
+                                                            let stdin_clone = stdin_ref.clone();
+
+                                                            let sandbox = {
+                                                                if let Some(
+                                                                    ProviderTypes::Sandbox(sandbox),
+                                                                ) = convert_provider(
+                                                                    arc_state_clone.clone(),
+                                                                    vec![ProviderTypes::Name(
+                                                                        current_server.clone(),
+                                                                    )],
+                                                                    ProviderReturnTypes::Sandbox,
+                                                                )
+                                                                .await
+                                                                {
+                                                                    sandbox
+                                                                } else {
+                                                                    false
+                                                                }
+                                                            };
+                                                            let location = {
+                                                                if let Some(ProviderTypes::Path(
+                                                                    path,
+                                                                )) = convert_provider(
+                                                                    arc_state_clone.clone(),
+                                                                    vec![ProviderTypes::Name(
+                                                                        current_server.clone(),
+                                                                    )],
+                                                                    ProviderReturnTypes::Path,
+                                                                )
+                                                                .await
+                                                                {
+                                                                    Some(path)
+                                                                } else {
+                                                                    None
+                                                                }
+                                                            };
+                                                            let provider = {
+                                                                if let Some(
+                                                                    ProviderTypes::Provider(
+                                                                        provider,
+                                                                    ),
+                                                                ) = convert_provider(
+                                                                    arc_state_clone.clone(),
+                                                                    vec![ProviderTypes::Name(
+                                                                        current_server.clone(),
+                                                                    )],
+                                                                    ProviderReturnTypes::Provider,
+                                                                )
+                                                                .await
+                                                                {
+                                                                    Some(provider)
+                                                                } else {
+                                                                    None
+                                                                }
+                                                            };
+                                                            let provider_object = {
+                                                                if let Some(
+                                                                    ProviderTypes::Object(object),
+                                                                ) = convert_provider(
+                                                                    arc_state_clone.clone(),
+                                                                    vec![
+                                                                        ProviderTypes::Path(
+                                                                            location
+                                                                                .clone()
+                                                                                .unwrap_or(
+                                                                                    String::new(),
+                                                                                ),
+                                                                        ),
+                                                                        ProviderTypes::Provider(
+                                                                            provider.unwrap_or(
+                                                                                String::new(),
+                                                                            ),
+                                                                        ),
+                                                                    ],
+                                                                    ProviderReturnTypes::Object,
+                                                                )
+                                                                .await
+                                                                {
+                                                                    Some(object)
+                                                                } else {
+                                                                    None
+                                                                }
+                                                            };
+
+                                                            let platform = provider_object
+                                                                .unwrap_or((
+                                                                    "".to_string(),
+                                                                    Platforms::default(),
+                                                                ))
+                                                                .1;
+                                                            let provider = pick_platform(platform)
+                                                                .unwrap_or(
+                                                                    ProviderConfig::default(),
+                                                                );
+
+                                                            let arc_state_for_stdin =
+                                                                arc_state_clone.clone();
+                                                            tokio::spawn(async move {
+                                                                let result =
+                                                                    run_command_live_output(
+                                                                        &arc_state_for_stdin,
+                                                                        cmd,
+                                                                        sandbox,
+                                                                        location.unwrap_or(
+                                                                            String::new(),
+                                                                        ),
+                                                                        provider,
+                                                                        "Server".into(),
+                                                                        Some(tx.clone()),
+                                                                        Some(stdin_clone.clone()),
+                                                                        None,
+                                                                    )
+                                                                    .await;
+                                                                {
+                                                                    let mut stdin_guard =
+                                                                        stdin_clone.lock().await;
+                                                                    *stdin_guard = None;
+                                                                }
+
+                                                                match result {
+                                                                    Ok(_) => {
+                                                                        let _ = tx.send("Server process ended".into()).await;
+                                                                    }
+                                                                    Err(e) => {
+                                                                        let _ = tx.send(format!("Server process failed: {}", e)).await;
+                                                                    }
+                                                                }
+                                                            });
+
+                                                            let _ = cmd_tx
+                                                                .send("Server started".into())
+                                                                .await;
+                                                        } else {
+                                                            let _ = cmd_tx
+                                                                    .send("No start command available for this provider".into())
+                                                                    .await;
+                                                        }
+                                                    } else {
+                                                        // let _ = cmd_tx
+                                                        //     .send("Failed to get provider for server".into())
+                                                        //     .await;
                                                     }
                                                 }
                                             }
-                                            if let Ok(start_server_request) = request
-                                                .clone()
-                                                .into_typed_request::<StartServerRequest>(
-                                            ) {
-                                                println!("Got a start server request");
-                                                //shared_stdin
-                                                {
-                                                    let stdin_guard = stdin_ref.lock().await;
-                                                    if stdin_guard.is_some() {
+                                        }
+                                        if let Ok(stop_server_request) = request
+                                            .clone()
+                                            .into_typed_request::<StopServerRequest>(
+                                        ) {
+                                            println!("Got a stop server request");
+                                            if let Some(current_server) =
+                                                arc_state_clone.current_server.lock().await.clone()
+                                            {
+                                                let option_path = {
+                                                    if let Some(ProviderTypes::Path(path)) =
+                                                        convert_provider(
+                                                            arc_state_clone.clone(),
+                                                            vec![ProviderTypes::Name(
+                                                                current_server.clone(),
+                                                            )],
+                                                            ProviderReturnTypes::Path,
+                                                        )
+                                                        .await
+                                                    {
+                                                        Some(path)
+                                                    } else {
+                                                        None
+                                                    }
+                                                };
+                                                let provider = {
+                                                    if let Some(ProviderTypes::Provider(provider)) =
+                                                        convert_provider(
+                                                            arc_state_clone.clone(),
+                                                            vec![ProviderTypes::Name(
+                                                                current_server.clone(),
+                                                            )],
+                                                            ProviderReturnTypes::Provider,
+                                                        )
+                                                        .await
+                                                    {
+                                                        Some(provider)
+                                                    } else {
+                                                        None
+                                                    }
+                                                };
+                                                let provider_object = {
+                                                    if let Some(ProviderTypes::Object(object)) =
+                                                        convert_provider(
+                                                            arc_state_clone.clone(),
+                                                            vec![
+                                                                ProviderTypes::Path(
+                                                                    option_path
+                                                                        .unwrap_or(String::new()),
+                                                                ),
+                                                                ProviderTypes::Provider(
+                                                                    provider
+                                                                        .unwrap_or(String::new()),
+                                                                ),
+                                                            ],
+                                                            ProviderReturnTypes::Object,
+                                                        )
+                                                        .await
+                                                    {
+                                                        Some(object)
+                                                    } else {
+                                                        None
+                                                    }
+                                                };
+
+                                                if let Some(_) = provider_object {
+                                                    let input = "stop";
+                                                    let mut guard = stdin_ref.lock().await;
+                                                    if let Some(stdin) = guard.as_mut() {
+                                                        let _ = stdin
+                                                            .write_all(
+                                                                format!("{}\n", input).as_bytes(),
+                                                            )
+                                                            .await;
+                                                        let _ = stdin.flush().await;
                                                         let _ = cmd_tx
-                                                            .send("Server is already running. Use 'stop_server' first.".into())
+                                                            .send(format!(
+                                                                "Sent to server: {}",
+                                                                input
+                                                            ))
                                                             .await;
                                                     }
                                                 }
-                                                if let Some(current_server) = arc_state_clone
-                                                    .current_server
-                                                    .lock()
-                                                    .await
-                                                    .clone()
-                                                {
-                                                    // let provider =
-                                                    //     get_provider_from_servername(&state, Some(current_server.clone())).await;
-                                                    let location = {
-                                                        if let Some(ProviderTypes::Path(path)) =
-                                                            convert_provider(
-                                                                arc_state_clone.clone(),
-                                                                vec![ProviderTypes::Name(
-                                                                    current_server.clone(),
-                                                                )],
-                                                                ProviderReturnTypes::Path,
-                                                            )
-                                                            .await
-                                                        {
-                                                            Some(path)
-                                                        } else {
-                                                            None
-                                                        }
-                                                    };
-                                                    // println!("DEBUG current_server: '{}'", current_server);
-                                                    // println!("DEBUG location: '{:?}'", location);
-                                                    let provider = {
-                                                        if let Some(ProviderTypes::Provider(
-                                                            provider,
-                                                        )) = convert_provider(
-                                                            arc_state_clone.clone(),
-                                                            vec![ProviderTypes::Name(
-                                                                current_server.clone(),
-                                                            )],
-                                                            ProviderReturnTypes::Provider,
-                                                        )
-                                                        .await
-                                                        {
-                                                            Some(provider)
-                                                        } else {
-                                                            None
-                                                        }
-                                                    };
-                                                    let provider_object = {
-                                                        if let Some(ProviderTypes::Object(object)) =
-                                                            convert_provider(
-                                                                arc_state_clone.clone(),
-                                                                vec![
-                                                                    ProviderTypes::Path(
-                                                                        location.clone().unwrap_or(
-                                                                            String::new(),
-                                                                        ),
-                                                                    ),
-                                                                    ProviderTypes::Provider(
-                                                                        provider.unwrap_or(
-                                                                            String::new(),
-                                                                        ),
-                                                                    ),
-                                                                ],
-                                                                ProviderReturnTypes::Object,
-                                                            )
-                                                            .await
-                                                        {
-                                                            Some(object)
-                                                        } else {
-                                                            None
-                                                        }
-                                                    };
-                                                    if let Some((_, provider_platform)) =
-                                                        provider_object
-                                                    {
-                                                        // let mut provider_game_commands: ProviderGame =
-                                                        //     match pick_platform(provider_platform) {
-                                                        //         Some(prov) => prov.into(),
-                                                        //         None => return Err("no platform".into()),
-                                                        //     };
-                                                        let provider_game_option = pick_platform(
-                                                            provider_platform,
-                                                        )
-                                                        .map(|config| {
-                                                            let provider_game: ProviderGame =
-                                                                config.into();
-                                                            provider_game
-                                                        });
-                                                        if let Some(mut provider_game_commands) =
-                                                            provider_game_option
-                                                        {
-                                                            if let Some(ref loc) = location {
-                                                                let _ = provider_game_commands
-                                                                    .set_location(loc.to_owned());
-                                                            }
-                                                            if let Some(cmd) =
-                                                                provider_game_commands.start()
-                                                            {
-                                                                let tx = cmd_tx.clone();
-                                                                let stdin_clone = stdin_ref.clone();
-
-                                                                let sandbox = {
-                                                                    if let Some(ProviderTypes::Sandbox(sandbox)) = convert_provider(
-                                                                        arc_state_clone.clone(),
-                                                                        vec![ProviderTypes::Name(current_server.clone())],
-                                                                        ProviderReturnTypes::Sandbox,
-                                                                    )
-                                                                    .await
-                                                                    {
-                                                                        sandbox
-                                                                    } else {
-                                                                        false
-                                                                    }
-                                                                };
-                                                                let location = {
-                                                                    if let Some(
-                                                                        ProviderTypes::Path(path),
-                                                                    ) = convert_provider(
-                                                                        arc_state_clone.clone(),
-                                                                        vec![ProviderTypes::Name(
-                                                                            current_server.clone(),
-                                                                        )],
-                                                                        ProviderReturnTypes::Path,
-                                                                    )
-                                                                    .await
-                                                                    {
-                                                                        Some(path)
-                                                                    } else {
-                                                                        None
-                                                                    }
-                                                                };
-                                                                let provider = {
-                                                                    if let Some(ProviderTypes::Provider(provider)) = convert_provider(
-                                                                        arc_state_clone.clone(),
-                                                                        vec![ProviderTypes::Name(current_server.clone())],
-                                                                        ProviderReturnTypes::Provider,
-                                                                    )
-                                                                    .await
-                                                                    {
-                                                                        Some(provider)
-                                                                    } else {
-                                                                        None
-                                                                    }
-                                                                };
-                                                                let provider_object = {
-                                                                    if let Some(
-                                                                        ProviderTypes::Object(
-                                                                            object,
-                                                                        ),
-                                                                    ) = convert_provider(
-                                                                        arc_state_clone.clone(),
-                                                                        vec![
-                                                                            ProviderTypes::Path(
-                                                                                location
-                                                                                    .clone()
-                                                                                    .unwrap_or(
-                                                                                        String::new(
-                                                                                        ),
-                                                                                    ),
-                                                                            ),
-                                                                            ProviderTypes::Provider(
-                                                                                provider.unwrap_or(
-                                                                                    String::new(),
-                                                                                ),
-                                                                            ),
-                                                                        ],
-                                                                        ProviderReturnTypes::Object,
-                                                                    )
-                                                                    .await
-                                                                    {
-                                                                        Some(object)
-                                                                    } else {
-                                                                        None
-                                                                    }
-                                                                };
-
-                                                                let platform = provider_object
-                                                                    .unwrap_or((
-                                                                        "".to_string(),
-                                                                        Platforms::default(),
-                                                                    ))
-                                                                    .1;
-                                                                let provider =
-                                                                    pick_platform(platform)
-                                                                        .unwrap_or(
-                                                                            ProviderConfig::default(
-                                                                            ),
-                                                                        );
-
-                                                                let arc_state_for_stdin =
-                                                                    arc_state_clone.clone();
-                                                                tokio::spawn(async move {
-                                                                    let result =
-                                                                        run_command_live_output(
-                                                                            &arc_state_for_stdin,
-                                                                            cmd,
-                                                                            sandbox,
-                                                                            location.unwrap_or(
-                                                                                String::new(),
-                                                                            ),
-                                                                            provider,
-                                                                            "Server".into(),
-                                                                            Some(tx.clone()),
-                                                                            Some(
-                                                                                stdin_clone.clone(),
-                                                                            ),
-                                                                            None,
-                                                                        )
-                                                                        .await;
-                                                                    {
-                                                                        let mut stdin_guard =
-                                                                            stdin_clone
-                                                                                .lock()
-                                                                                .await;
-                                                                        *stdin_guard = None;
-                                                                    }
-
-                                                                    match result {
-                                                                        Ok(_) => {
-                                                                            let _ = tx.send("Server process ended".into()).await;
-                                                                        }
-                                                                        Err(e) => {
-                                                                            let _ = tx.send(format!("Server process failed: {}", e)).await;
-                                                                        }
-                                                                    }
-                                                                });
-
-                                                                let _ = cmd_tx
-                                                                    .send("Server started".into())
-                                                                    .await;
-                                                            } else {
-                                                                let _ = cmd_tx
-                                                                    .send("No start command available for this provider".into())
-                                                                    .await;
-                                                            }
-                                                        } else {
-                                                            // let _ = cmd_tx
-                                                            //     .send("Failed to get provider for server".into())
-                                                            //     .await;
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            if let Ok(stop_server_request) = request
-                                                .clone()
-                                                .into_typed_request::<StopServerRequest>(
-                                            ) {
-                                                println!("Got a stop server request");
-                                                if let Some(current_server) = arc_state_clone
-                                                    .current_server
-                                                    .lock()
-                                                    .await
-                                                    .clone()
-                                                {
-                                                    let option_path = {
-                                                        if let Some(ProviderTypes::Path(path)) =
-                                                            convert_provider(
-                                                                arc_state_clone.clone(),
-                                                                vec![ProviderTypes::Name(
-                                                                    current_server.clone(),
-                                                                )],
-                                                                ProviderReturnTypes::Path,
-                                                            )
-                                                            .await
-                                                        {
-                                                            Some(path)
-                                                        } else {
-                                                            None
-                                                        }
-                                                    };
-                                                    let provider = {
-                                                        if let Some(ProviderTypes::Provider(
-                                                            provider,
-                                                        )) = convert_provider(
-                                                            arc_state_clone.clone(),
-                                                            vec![ProviderTypes::Name(
-                                                                current_server.clone(),
-                                                            )],
-                                                            ProviderReturnTypes::Provider,
-                                                        )
-                                                        .await
-                                                        {
-                                                            Some(provider)
-                                                        } else {
-                                                            None
-                                                        }
-                                                    };
-                                                    let provider_object = {
-                                                        if let Some(ProviderTypes::Object(object)) =
-                                                            convert_provider(
-                                                                arc_state_clone.clone(),
-                                                                vec![
-                                                                    ProviderTypes::Path(
-                                                                        option_path.unwrap_or(
-                                                                            String::new(),
-                                                                        ),
-                                                                    ),
-                                                                    ProviderTypes::Provider(
-                                                                        provider.unwrap_or(
-                                                                            String::new(),
-                                                                        ),
-                                                                    ),
-                                                                ],
-                                                                ProviderReturnTypes::Object,
-                                                            )
-                                                            .await
-                                                        {
-                                                            Some(object)
-                                                        } else {
-                                                            None
-                                                        }
-                                                    };
-
-                                                    if let Some(_) = provider_object {
-                                                        let input = "stop";
-                                                        let mut guard = stdin_ref.lock().await;
-                                                        if let Some(stdin) = guard.as_mut() {
-                                                            let _ = stdin
-                                                                .write_all(
-                                                                    format!("{}\n", input)
-                                                                        .as_bytes(),
-                                                                )
-                                                                .await;
-                                                            let _ = stdin.flush().await;
-                                                            let _ = cmd_tx
-                                                                .send(format!(
-                                                                    "Sent to server: {}",
-                                                                    input
-                                                                ))
-                                                                .await;
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            if let Ok(set_server_request) = request
-                                                .clone()
-                                                .into_typed_request::<SetServerRequest>(
-                                            ) {
-                                                println!("Got a set server request");
-                                                if let MetadataTypes::Server {
-                                                    servername,
-                                                    provider,
-                                                    location,
-                                                    providertype,
-                                                    sandbox,
-                                                    server_metadata,
-                                                } = set_server_request.common.metadata
-                                                {
-                                                    let mut db = arc_state_clone.db.lock().await;
-                                                    db.current_server = servername.clone();
-                                                    // Ensures the current info is up to date in the server index
-                                                    db.server_index
-                                                        .entry(servername.clone())
-                                                        .or_insert_with(|| ServerIndex {
-                                                            location: if location.is_empty() {
-                                                                format!("server/{}", servername)
-                                                            } else if location
-                                                                .starts_with("server/")
-                                                            {
-                                                                location.clone()
-                                                            } else {
-                                                                format!("server/{}", location)
-                                                            },
-                                                            provider: provider.clone(),
-                                                            providertype: providertype.clone(),
-                                                            sandbox,
-                                                            server_metadata: server_metadata
-                                                                .clone(),
-                                                        });
-                                                    save_db(&db);
-                                                    let mut mutable_server =
-                                                        arc_state_clone.current_server.lock().await;
-                                                    *mutable_server = Some(servername.to_string());
-                                                }
-                                            }
-                                            if let Ok(set_filter_request) = request
-                                                .clone()
-                                                .into_typed_request::<SetFilterRequest>(
-                                            ) {
-                                                println!("Got a filter request");
-                                                // parse_filter(payload.metadata);
-                                                if let MetadataTypes::Filter(filter) =
-                                                    set_filter_request.common.metadata
-                                                {
-                                                    let mut db = arc_state_clone.db.lock().await;
-                                                    db.filter = filter.clone();
-                                                    save_db(&db);
-                                                }
-                                            }
-                                            if let Ok(console_request) = request
-                                                .clone()
-                                                .into_typed_request::<ConsoleRequest>(
-                                            ) {
-                                                println!("Got a console request");
-                                                let input = console_request.common.message.clone();
-                                                let mut guard = stdin_ref.lock().await;
-                                                if let Some(stdin) = guard.as_mut() {
-                                                    let _ = stdin
-                                                        .write_all(
-                                                            format!("{}\n", input).as_bytes(),
-                                                        )
-                                                        .await;
-                                                    let _ = stdin.flush().await;
-                                                    let _ = cmd_tx
-                                                        .send(format!("Sent to server: {}", input))
-                                                        .await;
-                                                }
-                                            }
-                                            if let Ok(file_request) =
-                                                request.clone().into_typed_request::<FileRequest>()
-                                            {
-                                                println!("got a file request");
-                                                let file_operation_response =
-                                                    FileOperationResponse {
-                                                        data: handle_file_request(
-                                                            &arc_state_clone,
-                                                            file_request.common,
-                                                        )
-                                                        .await,
-                                                    };
-                                                println!("the file response: {:#?}", file_operation_response);
-                                                let _ = file_operation_response
-                                                    .node_transport(&arc_state_clone, &mut conn_handler)
-                                                    .await;
-
-                                                // let response = handle_file_request(
-                                                //     &arc_state_clone,
-                                                //     file_request.common,
-                                                // )
-                                                // .await;
-                                                // let _ = out_tx.send(response).await;
-                                            }
-                                            if let Ok(_) =
-                                                request.clone().into_typed_request::<Ping>()
-                                            {
-                                                println!("got ping request");
-                                                //         //let out_tx_clone = out_tx.clone();
-                                                let pong = PingResponse {
-                                                    message: SimpleMessage {
-                                                        message: "pong".to_string(),
-                                                    },
-                                                };
-                                                let _ = pong.node_transport(&arc_state_clone, &mut conn_handler).await;
-                                                //println!("sent out pong");
-                                                // let pong = SimpleMessage {
-                                                //     message: "pong".to_string(),
-                                                // };
-                                                // let _ = out_tx
-                                                //     .send(serde_json::to_string(&pong).unwrap())
-                                                //     .await;
-                                            }
-                                            if let Ok(server_data_request) = request
-                                                .clone()
-                                                .into_typed_request::<ServerDataRequest>(
-                                            ) {
-                                                println!("Got a server data request");
-                                                if let Some(current_server) = arc_state_clone
-                                                    .current_server
-                                                    .lock()
-                                                    .await
-                                                    .clone()
-                                                {
-                                                    let option_path = {
-                                                        if let Some(ProviderTypes::Path(path)) =
-                                                            convert_provider(
-                                                                arc_state_clone.clone(),
-                                                                vec![ProviderTypes::Name(
-                                                                    current_server.clone(),
-                                                                )],
-                                                                ProviderReturnTypes::Path,
-                                                            )
-                                                            .await
-                                                        {
-                                                            Some(path)
-                                                        } else {
-                                                            None
-                                                        }
-                                                    };
-                                                    let provider = {
-                                                        if let Some(ProviderTypes::Provider(
-                                                            provider,
-                                                        )) = convert_provider(
-                                                            arc_state_clone.clone(),
-                                                            vec![ProviderTypes::Name(
-                                                                current_server.clone(),
-                                                            )],
-                                                            ProviderReturnTypes::Provider,
-                                                        )
-                                                        .await
-                                                        {
-                                                            Some(provider)
-                                                        } else {
-                                                            None
-                                                        }
-                                                    };
-                                                    let provider_object = {
-                                                        if let Some(ProviderTypes::Object(object)) =
-                                                            convert_provider(
-                                                                arc_state_clone.clone(),
-                                                                vec![
-                                                                    ProviderTypes::Path(
-                                                                        option_path.unwrap_or(
-                                                                            String::new(),
-                                                                        ),
-                                                                    ),
-                                                                    ProviderTypes::Provider(
-                                                                        provider.unwrap_or(
-                                                                            String::new(),
-                                                                        ),
-                                                                    ),
-                                                                ],
-                                                                ProviderReturnTypes::Object,
-                                                            )
-                                                            .await
-                                                        {
-                                                            Some(object)
-                                                        } else {
-                                                            None
-                                                        }
-                                                    };
-
-                                                    if let Some((_, provider)) = provider_object {
-                                                        if let Some(platform) =
-                                                            pick_platform(provider)
-                                                        {
-                                                            println!("Sending out the info");
-                                                            let server_data_response =
-                                                                ServerDataResponse {
-                                                                    state: GetState {
-                                                                        name: platform
-                                                                            .default_name
-                                                                            .unwrap_or(
-                                                                                "".to_string(),
-                                                                            ),
-                                                                        start_keyword: platform
-                                                                            .start_keyword
-                                                                            .unwrap_or(
-                                                                                "".to_string(),
-                                                                            ),
-                                                                        stop_keyword: platform
-                                                                            .stop_keyword
-                                                                            .unwrap_or(
-                                                                                "".to_string(),
-                                                                            ),
-                                                                    },
-                                                                };
-
-                                                            let _ = server_data_response
-                                                                .node_transport(&arc_state_clone, &mut conn_handler)
-                                                                .await;
-                                                            // let server_data_response = serde_json::to_string(
-                                                            //             &GetState {
-                                                            //                 name: platform
-                                                            //                     .default_name
-                                                            //                     .unwrap_or(
-                                                            //                         "".to_string(),
-                                                            //                     ),
-                                                            //                 start_keyword: platform
-                                                            //                     .start_keyword
-                                                            //                     .unwrap_or(
-                                                            //                         "".to_string(),
-                                                            //                     ),
-                                                            //                 stop_keyword: platform
-                                                            //                     .stop_keyword
-                                                            //                     .unwrap_or(
-                                                            //                         "".to_string(),
-                                                            //                     ),
-                                                            //             },
-                                                            //         )
-                                                            //         .unwrap();
-                                                            // let _ = out_tx
-                                                            //     .send(
-                                                            //         server_data_response
-                                                            //     )
-                                                            //     .await;
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            if let Ok(server_state_request) = request
-                                                .clone()
-                                                .into_typed_request::<ServerStateRequest>(
-                                            ) {
-                                                //println!("Got a server state request");
-                                                let status =
-                                                    &arc_state_clone.server_running.lock().await;
-                                                //println!("{:#?}", status);
-                                                let server_state_response = ServerStateResponse {
-                                                    message: MessagePayload {
-                                                        r#type: "server_state".to_string(),
-                                                        message: status.to_string(),
-                                                        authcode: "0".to_string(),
-                                                    },
-                                                };
-                                                let _ = server_state_response
-                                                    .node_transport(&arc_state_clone, &mut conn_handler)
-                                                    .await;
-                                                // let status_message = MessagePayload {
-                                                //     r#type: "server_state".to_string(),
-                                                //     message: status.to_string(),
-                                                //     authcode: "0".to_string(),
-                                                // };
-                                                // //println!("{:#?}", status_message);
-                                                // let json_str =
-                                                //     serde_json::to_string(&status_message).unwrap();
-                                                // let _ = out_tx.send(json_str).await;
-                                            }
-                                            if let Ok(server_name_request) =
-                                                request.into_typed_request::<ServerNameRequest>()
-                                            {
-                                                println!("Got a server name request");
-                                                // let hostname_str = match hostname_ref.clone() {
-                                                //     Ok(os) => os.to_string_lossy().to_string(),
-                                                //     Err(e) => e.clone(),
-                                                // };
-                                                let hostname =
-                                                    hostname::get().unwrap_or("unknown".into());
-                                                let server_name_response = ServerNameResponse {
-                                                    message: MessagePayload {
-                                                        r#type: "command".to_string(),
-                                                        message: hostname.into_string().unwrap(),
-                                                        authcode: "0".to_string(),
-                                                    },
-                                                };
-                                                let _ = server_name_response
-                                                    .node_transport(&arc_state_clone, &mut conn_handler)
-                                                    .await;
-                                                // let _ = out_tx
-                                                //     .send(
-                                                //         serde_json::to_string(&MessagePayload {
-                                                //             r#type: "command".to_string(),
-                                                //             message: hostname
-                                                //                 .into_string()
-                                                //                 .unwrap(),
-                                                //             authcode: "0".to_string(),
-                                                //         })
-                                                //         .unwrap(),
-                                                //     )
-                                                //     .await;
                                             }
                                         }
-                                    } else {
-                                        break;
+                                        if let Ok(set_server_request) =
+                                            request.clone().into_typed_request::<SetServerRequest>()
+                                        {
+                                            println!("Got a set server request");
+                                            if let MetadataTypes::Server {
+                                                servername,
+                                                provider,
+                                                location,
+                                                providertype,
+                                                sandbox,
+                                                server_metadata,
+                                            } = set_server_request.common.metadata
+                                            {
+                                                let mut db = arc_state_clone.db.lock().await;
+                                                db.current_server = servername.clone();
+                                                // Ensures the current info is up to date in the server index
+                                                db.server_index
+                                                    .entry(servername.clone())
+                                                    .or_insert_with(|| ServerIndex {
+                                                        location: if location.is_empty() {
+                                                            format!("server/{}", servername)
+                                                        } else if location.starts_with("server/") {
+                                                            location.clone()
+                                                        } else {
+                                                            format!("server/{}", location)
+                                                        },
+                                                        provider: provider.clone(),
+                                                        providertype: providertype.clone(),
+                                                        sandbox,
+                                                        server_metadata: server_metadata.clone(),
+                                                    });
+                                                save_db(&db);
+                                                let mut mutable_server =
+                                                    arc_state_clone.current_server.lock().await;
+                                                *mutable_server = Some(servername.to_string());
+                                            }
+                                        }
+                                        if let Ok(set_filter_request) =
+                                            request.clone().into_typed_request::<SetFilterRequest>()
+                                        {
+                                            println!("Got a filter request");
+                                            // parse_filter(payload.metadata);
+                                            if let MetadataTypes::Filter(filter) =
+                                                set_filter_request.common.metadata
+                                            {
+                                                let mut db = arc_state_clone.db.lock().await;
+                                                db.filter = filter.clone();
+                                                save_db(&db);
+                                            }
+                                        }
+                                        if let Ok(console_request) =
+                                            request.clone().into_typed_request::<ConsoleRequest>()
+                                        {
+                                            println!("Got a console request");
+                                            let input = console_request.common.message.clone();
+                                            let mut guard = stdin_ref.lock().await;
+                                            if let Some(stdin) = guard.as_mut() {
+                                                let _ = stdin
+                                                    .write_all(format!("{}\n", input).as_bytes())
+                                                    .await;
+                                                let _ = stdin.flush().await;
+                                                let _ = cmd_tx
+                                                    .send(format!("Sent to server: {}", input))
+                                                    .await;
+                                            }
+                                        }
+
+                                        // if let Ok(file_request) =
+                                        //     request.clone().into_typed_request::<FileRequest>()
+                                        // {
+                                        //     println!("got a file request");
+                                        //     let file_operation_response =
+                                        //         FileOperationResponse {
+                                        //             data: handle_file_request(
+                                        //                 &arc_state_clone,
+                                        //                 file_request.common,
+                                        //             )
+                                        //             .await,
+                                        //         };
+                                        //     println!("the file response: {:#?}", file_operation_response);
+                                        //     let _ = file_operation_response
+                                        //         .node_transport(&arc_state_clone, &mut conn_handler)
+                                        //         .await;
+
+                                        //     // let response = handle_file_request(
+                                        //     //     &arc_state_clone,
+                                        //     //     file_request.common,
+                                        //     // )
+                                        //     // .await;
+                                        //     // let _ = out_tx.send(response).await;
+                                        // }
+                                        if let Ok(_) = request.clone().into_typed_request::<Ping>()
+                                        {
+                                            println!("got ping request");
+                                            //         //let out_tx_clone = out_tx.clone();
+                                            let pong = PingResponse {
+                                                message: SimpleMessage {
+                                                    message: "pong".to_string(),
+                                                },
+                                            };
+                                            let _ = pong
+                                                .node_transport(&arc_state_clone, &mut conn_handler)
+                                                .await;
+                                            //println!("sent out pong");
+                                            // let pong = SimpleMessage {
+                                            //     message: "pong".to_string(),
+                                            // };
+                                            // let _ = out_tx
+                                            //     .send(serde_json::to_string(&pong).unwrap())
+                                            //     .await;
+                                        }
+                                        if let Ok(server_data_request) = request
+                                            .clone()
+                                            .into_typed_request::<ServerDataRequest>(
+                                        ) {
+                                            println!("Got a server data request");
+                                            if let Some(current_server) =
+                                                arc_state_clone.current_server.lock().await.clone()
+                                            {
+                                                let option_path = {
+                                                    if let Some(ProviderTypes::Path(path)) =
+                                                        convert_provider(
+                                                            arc_state_clone.clone(),
+                                                            vec![ProviderTypes::Name(
+                                                                current_server.clone(),
+                                                            )],
+                                                            ProviderReturnTypes::Path,
+                                                        )
+                                                        .await
+                                                    {
+                                                        Some(path)
+                                                    } else {
+                                                        None
+                                                    }
+                                                };
+                                                let provider = {
+                                                    if let Some(ProviderTypes::Provider(provider)) =
+                                                        convert_provider(
+                                                            arc_state_clone.clone(),
+                                                            vec![ProviderTypes::Name(
+                                                                current_server.clone(),
+                                                            )],
+                                                            ProviderReturnTypes::Provider,
+                                                        )
+                                                        .await
+                                                    {
+                                                        Some(provider)
+                                                    } else {
+                                                        None
+                                                    }
+                                                };
+                                                let provider_object = {
+                                                    if let Some(ProviderTypes::Object(object)) =
+                                                        convert_provider(
+                                                            arc_state_clone.clone(),
+                                                            vec![
+                                                                ProviderTypes::Path(
+                                                                    option_path
+                                                                        .unwrap_or(String::new()),
+                                                                ),
+                                                                ProviderTypes::Provider(
+                                                                    provider
+                                                                        .unwrap_or(String::new()),
+                                                                ),
+                                                            ],
+                                                            ProviderReturnTypes::Object,
+                                                        )
+                                                        .await
+                                                    {
+                                                        Some(object)
+                                                    } else {
+                                                        None
+                                                    }
+                                                };
+
+                                                if let Some((_, provider)) = provider_object {
+                                                    if let Some(platform) = pick_platform(provider)
+                                                    {
+                                                        println!("Sending out the info");
+                                                        let server_data_response =
+                                                            ServerDataResponse {
+                                                                state: GetState {
+                                                                    name: platform
+                                                                        .default_name
+                                                                        .unwrap_or("".to_string()),
+                                                                    start_keyword: platform
+                                                                        .start_keyword
+                                                                        .unwrap_or("".to_string()),
+                                                                    stop_keyword: platform
+                                                                        .stop_keyword
+                                                                        .unwrap_or("".to_string()),
+                                                                },
+                                                            };
+
+                                                        let _ = server_data_response
+                                                            .node_transport(
+                                                                &arc_state_clone,
+                                                                &mut conn_handler,
+                                                            )
+                                                            .await;
+                                                        // let server_data_response = serde_json::to_string(
+                                                        //             &GetState {
+                                                        //                 name: platform
+                                                        //                     .default_name
+                                                        //                     .unwrap_or(
+                                                        //                         "".to_string(),
+                                                        //                     ),
+                                                        //                 start_keyword: platform
+                                                        //                     .start_keyword
+                                                        //                     .unwrap_or(
+                                                        //                         "".to_string(),
+                                                        //                     ),
+                                                        //                 stop_keyword: platform
+                                                        //                     .stop_keyword
+                                                        //                     .unwrap_or(
+                                                        //                         "".to_string(),
+                                                        //                     ),
+                                                        //             },
+                                                        //         )
+                                                        //         .unwrap();
+                                                        // let _ = out_tx
+                                                        //     .send(
+                                                        //         server_data_response
+                                                        //     )
+                                                        //     .await;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if let Ok(server_state_request) = request
+                                            .clone()
+                                            .into_typed_request::<ServerStateRequest>(
+                                        ) {
+                                            //println!("Got a server state request");
+                                            let status =
+                                                &arc_state_clone.server_running.lock().await;
+                                            //println!("{:#?}", status);
+                                            let server_state_response = ServerStateResponse {
+                                                message: MessagePayload {
+                                                    r#type: "server_state".to_string(),
+                                                    message: status.to_string(),
+                                                    authcode: "0".to_string(),
+                                                },
+                                            };
+                                            let _ = server_state_response
+                                                .node_transport(&arc_state_clone, &mut conn_handler)
+                                                .await;
+                                            // let status_message = MessagePayload {
+                                            //     r#type: "server_state".to_string(),
+                                            //     message: status.to_string(),
+                                            //     authcode: "0".to_string(),
+                                            // };
+                                            // //println!("{:#?}", status_message);
+                                            // let json_str =
+                                            //     serde_json::to_string(&status_message).unwrap();
+                                            // let _ = out_tx.send(json_str).await;
+                                        }
+                                        if let Ok(server_name_request) =
+                                            request.into_typed_request::<ServerNameRequest>()
+                                        {
+                                            println!("Got a server name request");
+                                            // let hostname_str = match hostname_ref.clone() {
+                                            //     Ok(os) => os.to_string_lossy().to_string(),
+                                            //     Err(e) => e.clone(),
+                                            // };
+                                            let hostname =
+                                                hostname::get().unwrap_or("unknown".into());
+                                            let server_name_response = ServerNameResponse {
+                                                message: MessagePayload {
+                                                    r#type: "command".to_string(),
+                                                    message: hostname.into_string().unwrap(),
+                                                    authcode: "0".to_string(),
+                                                },
+                                            };
+                                            let _ = server_name_response
+                                                .node_transport(&arc_state_clone, &mut conn_handler)
+                                                .await;
+                                            // let _ = out_tx
+                                            //     .send(
+                                            //         serde_json::to_string(&MessagePayload {
+                                            //             r#type: "command".to_string(),
+                                            //             message: hostname
+                                            //                 .into_string()
+                                            //                 .unwrap(),
+                                            //             authcode: "0".to_string(),
+                                            //         })
+                                            //         .unwrap(),
+                                            //     )
+                                            //     .await;
+                                        }
                                     }
-                                } else {
-                                    break;
+                                    // else if let Ok(request) = FileRequest::from_value(json_value){
+                                    //     request.execute();
+                                    // }
                                 }
+                                // else if let Ok(request) = FileRequest::from_request(line_str.into()){
+                                //     match request.execute_bytes() {
+                                //         Ok(bytes) => {
 
-                                if conn_handler.has_remaining_buffer().await {
-                                    found_message = true;
-                                }
-                                conn_handler.end_clean_hook().await;
-                                // if newline_pos + 1 <= conn_handler.inner().len() {
-                                //     conn_handler.inner().drain(..newline_pos + 1);
-                                //     found_message = true;
-                                // } else {
-                                //     conn_handler.inner().clear();
-                                //     break;
+                                //         },
+                                //         Err(_) => {
+
+                                //         },
+                                //     }
                                 // }
-                            }
-
-                            if !found_message {
-                                break;
-                            }
-                        }
-
-                        ReadMode::File {
-                            current_file,
-                            file_name,
-                            bytes_written,
-                            // TODO: consider removing last_logged_mb, its unused
-                            last_logged_mb: _,
-                            last_activity,
-                        } => {
-                            *last_activity = tokio::time::Instant::now();
-
-                            if let Some(delim_pos) =
-                                find_subsequence(&conn_handler.inner(), FILE_DELIMITER)
-                            {
-                                if delim_pos > 0 {
-                                    let _ = current_file
-                                        .write_all(&conn_handler.inner()[..delim_pos])
-                                        .await;
-                                    *bytes_written += delim_pos as u64;
+                                else {
+                                    //break;
                                 }
+                            // } else {
+                            //     break;
+                            // }
 
-                                let _ = current_file.flush().await;
-                                let file_path = format!("server/{}", file_name);
-                                let _ = cleanup_end_file_markers(&file_path, file_name).await;
-
-                                let drain_end = delim_pos + FILE_DELIMITER.len();
-                                if drain_end <= conn_handler.inner().len() {
-                                    conn_handler.inner().drain(..drain_end);
-                                } else {
-                                    conn_handler.inner().clear();
+                            if conn_handler.has_remaining_buffer().await {
+                                found_message = true;
+                            }
+                            conn_handler.end_clean_hook().await;
+                            // if newline_pos + 1 <= conn_handler.inner().len() {
+                            //     conn_handler.inner().drain(..newline_pos + 1);
+                            //     found_message = true;
+                            // } else {
+                            //     conn_handler.inner().clear();
+                            //     break;
+                            // }
+                        } else {
+                            println!("getting bytes");
+                            let bytes = conn_handler.recv_bytes();
+                            if let Ok(request) = FileRequest::from_request(bytes){
+                                println!("got a request");
+                                if let Ok(bytes) = request.execute_bytes(){
+                                    let _ = writer.send(bytes).await;
                                 }
-
-                                mode = ReadMode::Json;
-                                continue;
                             }
-
-                            let keep_buffer_size = FILE_DELIMITER.len() + 1;
-                            if conn_handler.inner().len() > keep_buffer_size {
-                                let write_size = conn_handler.inner().len() - keep_buffer_size;
-                                let _ = current_file
-                                    .write_all(&conn_handler.inner()[..write_size])
-                                    .await;
-                                *bytes_written += write_size as u64;
-                                conn_handler.inner().drain(..write_size);
-                            } else {
-                                break;
-                            }
-                        }
+                        }   
+                    }
+                    if !found_message {
+                        break;
                     }
                 }
             }
@@ -2125,106 +2053,6 @@ async fn fix_path(path: String) -> String {
     let canonical_forced = fs::canonicalize(&forced).await.unwrap_or(forced);
 
     canonical_forced.to_string_lossy().into_owned()
-}
-
-// Handles the file requests via easy match statement, easy for if i need it for another aspect of the whole gameserver stack
-// Metadata just gives the metadata from a individual file
-// PathFromTag will take a tag, usually coorosponding to a servers name or unique identifier, and return a path,
-// as at some point it would be benifical if gameserver-rs could run
-// servers from some nested directory so you dont need to migrate server files, delete it, then migrate newer server files
-// or recreate it
-// should be here and not filesystem because it contains appstate
-// TODO: consider removing _state as its unused
-async fn handle_file_request(_state: &Arc<AppState>, request: FileRequestMessage) -> String {
-    match request.payload {
-        FileRequestPayload::Metadata { path } => match get_metadata(&fix_path(path).await).await {
-            Ok(metadata) => serde_json::to_string(&FileResponse {
-                request_type: "file_response".to_string(),
-                common: FileResponseMessage {
-                    in_response_to: request.id,
-                    data: serde_json::to_vec(&metadata).unwrap(),
-                }
-            })
-            .unwrap(),
-            Err(e) => serde_json::to_string(&FileResponse {
-                request_type: "file_response".to_string(),
-                common: FileResponseMessage {
-                    in_response_to: request.id,
-                    data: serde_json::to_vec(&serde_json::json!({ "error": e.to_string() })).unwrap()
-                },
-            })
-            .unwrap(),
-        },
-        FileRequestPayload::PathFromTag { tag: _, path: _ } => {
-            let basic_path_response = BasicPath { paths: vec![] };
-            serde_json::to_string(&FileResponse {
-                common: FileResponseMessage {
-                    in_response_to: request.id,
-                    data: serde_json::to_vec(&serde_json::to_value(basic_path_response).unwrap()).unwrap(),
-                },
-                request_type: "file_request".to_string(),
-            })
-            .unwrap()
-        }
-        FileRequestPayload::ListDir { path } => match list_directory(&fix_path(path).await).await {
-            Ok(entries) => serde_json::to_string(&FileResponse {
-                common: FileResponseMessage {
-                    in_response_to: request.id,
-                    data: serde_json::to_vec(&serde_json::to_value(entries).unwrap()).unwrap(),
-                },
-                request_type: "file_request".to_string(),
-            })
-            .unwrap(),
-            Err(e) => serde_json::to_string(&FileResponse {
-                common: FileResponseMessage {
-                    in_response_to: request.id,
-                    data: serde_json::to_vec(&serde_json::json!({ "error": e.to_string() })).unwrap(),
-                },
-                request_type: "file_request".to_string(),
-            })
-            .unwrap(),
-        },
-        FileRequestPayload::ListDirWithRange { path, start, end } => {
-            match list_directory_with_range(&fix_path(path).await, start, end).await {
-                Ok(entries) => serde_json::to_string(&FileResponse {
-                    common: FileResponseMessage {
-                        in_response_to: request.id,
-                        data: serde_json::to_vec(&serde_json::to_value(entries).unwrap()).unwrap(),
-                    },
-                    request_type: "file_request".to_string(),
-                })
-                .unwrap(),
-                Err(e) => serde_json::to_string(&FileResponse {
-                    common: FileResponseMessage {
-                        in_response_to: request.id,
-                        data: serde_json::to_vec(&serde_json::json!({ "error": e.to_string() })).unwrap(),
-                    },
-                    request_type: "file_request".to_string(),
-                })
-                .unwrap(),
-            }
-        }
-        FileRequestPayload::FileChunk(file_chunk) => match get_files_content(file_chunk).await {
-            Ok(content_msg) => serde_json::to_string(&FileResponse {
-                    request_type: "file_request".to_string(),
-                    common: FileResponseMessage {
-                        in_response_to: request.id,
-                        data: serde_json::to_vec(&serde_json::Value::String(content_msg.message)).unwrap(),
-                    }
-                }
-            )
-            .unwrap(),
-            Err(e) => serde_json::to_string(&FileResponse {
-                request_type: "file_request".to_string(),
-                common: FileResponseMessage {
-                    in_response_to: request.id,
-                    data: serde_json::to_vec(&serde_json::json!({ "error": e.to_string() })).unwrap(),
-                }
-            }
-            )
-            .unwrap(),
-        },
-    }
 }
 
 // this is a function which will look for a small slice (needle) in a bigger slice (haystack)

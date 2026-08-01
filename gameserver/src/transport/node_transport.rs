@@ -3,25 +3,48 @@ use std::{any::Any, error::Error};
 use crate::MessagePayload;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
-use tcp_filesystem::{FileRequestMessage, FileResponseMessage};
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{tcp::{OwnedReadHalf, OwnedWriteHalf}, TcpListener, TcpStream}};
+
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{
+        tcp::{OwnedReadHalf, OwnedWriteHalf},
+        TcpListener, TcpStream,
+    },
+};
 
 use crate::{AppState, GetState, IncomingMessage, IncomingMessageWithMetadata, SimpleMessage};
 
+// #[derive(Serialize, Deserialize, Debug, Clone)]
+// pub struct FileResponseMessage {
+//     pub in_response_to: u64,
+//     pub data: Vec<u8>,
+// }
+
+// #[derive(Serialize, Deserialize, Clone, Debug)]
+// pub struct FileRequestMessage {
+//     pub id: u64,
+//     #[serde(flatten)]
+//     pub payload: FileRequestPayload,
+// }
+pub enum TaggedRequest {
+    None, 
+    Fs(Vec<u8>)
+}
+
 pub struct ConnectionManager {
     listner: TcpListener,
-    connections: Vec<ConnectionManager>
+    connections: Vec<ConnectionManager>,
 }
 impl ConnectionManager {
-    pub async fn serve(url: String) -> Result<ConnectionManager, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn serve(
+        url: String,
+    ) -> Result<ConnectionManager, Box<dyn std::error::Error + Send + Sync>> {
         let listner = TcpListener::bind(url).await?;
-    
-        Ok(
-            ConnectionManager { 
-                listner, 
-                connections: vec![]
-            }
-        )
+
+        Ok(ConnectionManager {
+            listner,
+            connections: vec![],
+        })
     }
     pub async fn accept_connection(
         &mut self,
@@ -59,10 +82,10 @@ impl ConnectionHandler {
     }
 
     pub fn clear(&self) {}
-    pub async fn start_clean_hook(&mut self){
+    pub async fn start_clean_hook(&mut self) {
         self.remove_current_segment_or_clear().await;
     }
-    pub async fn end_clean_hook(&mut self){
+    pub async fn end_clean_hook(&mut self) {
         self.remove_current_segment_or_clear().await;
     }
     pub async fn remove_current_segment_or_clear(&mut self) {
@@ -86,6 +109,14 @@ impl ConnectionHandler {
             Err("Did not find next position".into())
         }
         //todo!()
+    }
+    pub fn recv_tagged(&mut self) -> TaggedRequest {
+        TaggedRequest::None
+    }
+    pub fn recv_bytes(&mut self) -> Vec<u8> {
+        let bytes = self.read_buf.clone();
+        self.read_buf = Vec::new();
+        bytes
     }
     pub async fn recv_line(&mut self) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let newline_pos = self.newline_pos.clone();
@@ -177,7 +208,7 @@ impl Writer {
     pub async fn send_with_connection(
         &mut self,
         bytes: Vec<u8>,
-        handler: &mut ConnectionHandler
+        handler: &mut ConnectionHandler,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.write_half.write_all(&bytes).await?;
         Ok(())
@@ -199,7 +230,10 @@ impl Reader {
         println!("got {}", String::from_utf8_lossy(&temp_buf[..n]));
         Ok(temp_buf)
     }
-    pub async fn handle_request(&mut self, handler: &mut ConnectionHandler) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn handle_request(
+        &mut self,
+        handler: &mut ConnectionHandler,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // read_half.read(&mut temp_buf) => {
         //     let n = match result {
         //         Ok(0) => break,
@@ -240,15 +274,15 @@ pub enum RequestTypes {
     StopServerRequest(StopServerRequest),
     ServerStateRequest(ServerStateRequest),
     ConsoleRequest(ConsoleRequest),
-    FileRequest(FileRequest),
-    FileResponse(FileResponse),
+    // FileRequest(FileRequest),
+    // FileResponse(FileResponse),
 }
 
 pub struct RequestHandler {}
 impl RequestHandler {
     pub fn try_recv_req(value: Value) -> Option<RequestTypes> {
         //if let Ok(ping_request)
-        let file_request_parse_attempt = serde_json::from_value::<FileRequest>(value.clone());
+        // let file_request_parse_attempt = serde_json::from_value::<FileRequest>(value.clone());
         //println!("{:#?}", file_request_parse_attempt.clone());
         // if let Err(e) = file_request_parse_attempt.clone() {
         //     println!("{:#?}", e);
@@ -256,14 +290,14 @@ impl RequestHandler {
         // if let Ok(file_request) = file_request_parse_attempt {
         //     return Some(RequestTypes::FileRequest(file_request));
         // }
-        match file_request_parse_attempt {
-            Ok(file_request) => {
-                return Some(RequestTypes::FileRequest(file_request));
-            },
-            Err(e) => {
-                println!("{:#?}", e);
-            },
-        }
+        // match file_request_parse_attempt {
+        //     Ok(file_request) => {
+        //         return Some(RequestTypes::FileRequest(file_request));
+        //     },
+        //     Err(e) => {
+        //         println!("{:#?}", e);
+        //     },
+        // }
         // let file_response_parse_attempt = serde_json::from_value::<FileResponse>(value.clone());
         // match file_response_parse_attempt {
         //     Ok(file_response) => {
@@ -357,22 +391,22 @@ impl TryIntoRequest for RequestTypes {
             RequestTypes::CreateServerRequest(req) => Box::new(req),
             RequestTypes::Ping => Box::new(Ping::default()),
             RequestTypes::DeleteSeverRequest(delete_server_request) => {
-                        Box::new(delete_server_request)
-                    }
+                Box::new(delete_server_request)
+            }
             RequestTypes::SetFilterRequest(set_filter_request) => Box::new(set_filter_request),
             RequestTypes::SetServerRequest(set_server_request) => Box::new(set_server_request),
             RequestTypes::ServerDataRequest(server_data_request) => Box::new(server_data_request),
             RequestTypes::ServerNameRequest(server_name_request) => Box::new(server_name_request),
             RequestTypes::StartServerRequest(start_server_request) => {
-                        Box::new(start_server_request)
-                    }
+                Box::new(start_server_request)
+            }
             RequestTypes::StopServerRequest(stop_server_request) => Box::new(stop_server_request),
             RequestTypes::ServerStateRequest(server_state_request) => {
-                        Box::new(server_state_request)
-                    }
+                Box::new(server_state_request)
+            }
             RequestTypes::ConsoleRequest(console_request) => Box::new(console_request),
-            RequestTypes::FileRequest(file_request) => Box::new(file_request),
-            RequestTypes::FileResponse(file_response) => Box::new(file_response),
+            // RequestTypes::FileRequest(file_request) => Box::new(file_request),
+            // RequestTypes::FileResponse(file_response) => Box::new(file_response),
         };
 
         boxed
@@ -388,20 +422,20 @@ impl TryIntoRequest for RequestTypes {
     }
 }
 
-//FileRequestMessage
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct FileRequest {
-    pub request_type: String,
-    #[serde(flatten)]
-    pub common: FileRequestMessage,
-}
+// //FileRequestMessage
+// #[derive(Deserialize, Serialize, Clone, Debug)]
+// pub struct FileRequest {
+//     pub request_type: String,
+//     #[serde(flatten)]
+//     pub common: FileRequestMessage,
+// }
 
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct FileResponse {
-    pub request_type: String,
-    #[serde(flatten)]
-    pub common: FileResponseMessage,
-}
+// #[derive(Deserialize, Serialize, Clone, Debug)]
+// pub struct FileResponse {
+//     pub request_type: String,
+//     #[serde(flatten)]
+//     pub common: FileResponseMessage,
+// }
 #[derive(Deserialize, Serialize, Clone)]
 pub struct ConsoleRequest {
     #[serde(flatten)]
@@ -479,14 +513,22 @@ pub trait TryIntoRequest {
 }
 
 pub trait NodeTransportable {
-    async fn node_transport(&self, state: &AppState, connection_handler: &mut ConnectionHandler) -> Result<(), Box<dyn Error + Send + Sync>>;
+    async fn node_transport(
+        &self,
+        state: &AppState,
+        connection_handler: &mut ConnectionHandler,
+    ) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
 
 pub struct ServerDataResponse {
     pub state: GetState,
 }
 impl NodeTransportable for ServerDataResponse {
-    async fn node_transport(&self, state: &AppState, _connection_handler: &mut ConnectionHandler) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(
+        &self,
+        state: &AppState,
+        _connection_handler: &mut ConnectionHandler,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let tx = state.output_tx.lock().await.clone().unwrap();
         let _ = tx.send(serde_json::to_string(&self.state)?).await;
         Ok(())
@@ -497,7 +539,11 @@ pub struct PingResponse {
     pub message: SimpleMessage,
 }
 impl NodeTransportable for PingResponse {
-    async fn node_transport(&self, state: &AppState, _connection_handler: &mut ConnectionHandler) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(
+        &self,
+        state: &AppState,
+        _connection_handler: &mut ConnectionHandler,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let tx = state.output_tx.lock().await.clone().unwrap();
         let _ = tx.send(serde_json::to_string(&self.message)?).await;
         Ok(())
@@ -509,7 +555,11 @@ pub struct FileOperationResponse {
     pub data: String,
 }
 impl NodeTransportable for FileOperationResponse {
-    async fn node_transport(&self, state: &AppState, _connection_handler: &mut ConnectionHandler) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(
+        &self,
+        state: &AppState,
+        _connection_handler: &mut ConnectionHandler,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let tx = state.output_tx.lock().await.clone().unwrap();
         let _ = tx.send(self.data.clone()).await;
         Ok(())
@@ -520,7 +570,11 @@ pub struct ServerNameResponse {
     pub message: MessagePayload,
 }
 impl NodeTransportable for ServerNameResponse {
-    async fn node_transport(&self, state: &AppState, _connection_handler: &mut ConnectionHandler) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(
+        &self,
+        state: &AppState,
+        _connection_handler: &mut ConnectionHandler,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let tx = state.output_tx.lock().await.clone().unwrap();
         let _ = tx.send(serde_json::to_string(&self.message)?).await;
         Ok(())
@@ -531,9 +585,38 @@ pub struct ServerStateResponse {
     pub message: MessagePayload,
 }
 impl NodeTransportable for ServerStateResponse {
-    async fn node_transport(&self, state: &AppState, _connection_handler: &mut ConnectionHandler) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(
+        &self,
+        state: &AppState,
+        _connection_handler: &mut ConnectionHandler,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let tx = state.output_tx.lock().await.clone().unwrap();
         let _ = tx.send(serde_json::to_string(&self.message)?).await;
         Ok(())
     }
 }
+
+// pub struct RawBytes {
+//     pub bytes: Vec<u8>
+// }
+// impl RawBytes {
+//     async fn raw_transport(
+//         &self,
+//         // state: &AppState,
+//         writer: &mut Writer,
+//     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
+//         writer.send(self.bytes.clone()).await
+//     }
+// }
+
+// impl NodeTransportable for RawBytes {
+//     async fn node_transport(
+//         &self,
+//         state: &AppState,
+//         connection_handler: &mut ConnectionHandler,
+//     ) -> Result<(), Box<dyn Error + Send + Sync>> {
+//         let tx = state.output_tx.lock().await.clone().unwrap();
+//         let _ = tx.send(self.bytes);
+//         Ok(())
+//     }
+// }
