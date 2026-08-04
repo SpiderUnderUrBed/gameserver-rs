@@ -1,36 +1,50 @@
-use axum::extract::{ws::Utf8Bytes, State};
+use axum::extract::{State, ws::Utf8Bytes};
 use general_networked_filesystem::{FileRequestExecutable, LsRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::{io::{AsyncBufReadExt, AsyncWriteExt, BufReader}, net::TcpStream, sync::{broadcast, RwLock}, time::{sleep, timeout}};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    net::TcpStream,
+    sync::{RwLock, broadcast},
+    time::{sleep, timeout},
+};
 use tokio_util::sync::CancellationToken;
 
+use crate::{ApiCalls as ToplevelApiCalls, AuthTcpMessage, IncomingMessage, List, NodeAndTCP};
 use crate::{
-    database::databasespec::Filters, handle_stream, AppState, MessagePayload, MessagePayloadWithMetadata, MetadataTypes, SimpleMessage, SrcAndDest, Status, StreamResult, CHANNEL_BUFFER_SIZE, CONNECTION_RETRY_DELAY, CONNECTION_TIMEOUT
+    AppState, CHANNEL_BUFFER_SIZE, CONNECTION_RETRY_DELAY, CONNECTION_TIMEOUT, MessagePayload,
+    MessagePayloadWithMetadata, MetadataTypes, SimpleMessage, SrcAndDest, Status, StreamResult,
+    database::databasespec::Filters, handle_stream,
 };
-use crate::{AuthTcpMessage, ApiCalls as ToplevelApiCalls, List, IncomingMessage, NodeAndTCP};
-use std::{error::Error, net::SocketAddr, sync::{atomic::Ordering, Arc}, time::{Duration, Instant}};
 use anyhow::anyhow;
-
-
-
+use std::{
+    error::Error,
+    net::SocketAddr,
+    sync::{Arc, atomic::Ordering},
+    time::{Duration, Instant},
+};
 
 pub struct PasswordRequest {
-    pub password: String
+    pub password: String,
 }
 pub struct CapabilitiesRequest {
-    pub capabilities: Vec<String>
+    pub capabilities: Vec<String>,
 }
 pub struct ServernameRequest {
-    pub ip: String
+    pub ip: String,
 }
 pub trait ImmediateTransportable {
-    async fn immediate_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>>;
+    async fn immediate_transport(
+        &self,
+        state: &mut AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
 
-
 impl ImmediateTransportable for PasswordRequest {
-    async fn immediate_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn immediate_transport(
+        &self,
+        state: &mut AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let auth_msg = serde_json::to_vec(&AuthTcpMessage {
             password: self.password.clone(),
         })?;
@@ -39,7 +53,10 @@ impl ImmediateTransportable for PasswordRequest {
     }
 }
 impl ImmediateTransportable for CapabilitiesRequest {
-    async fn immediate_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn immediate_transport(
+        &self,
+        state: &mut AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let capability_msg = serde_json::to_vec(&List {
             list: ToplevelApiCalls::Capabilities(self.capabilities.clone()),
         })?;
@@ -49,7 +66,10 @@ impl ImmediateTransportable for CapabilitiesRequest {
 }
 
 impl ImmediateTransportable for ServernameRequest {
-    async fn immediate_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn immediate_transport(
+        &self,
+        state: &mut AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let cmd_msg = serde_json::to_vec(&MessagePayload {
             r#type: "command".to_string(),
             message: "server_name".to_string(),
@@ -60,7 +80,11 @@ impl ImmediateTransportable for ServernameRequest {
 
         'name: {
             // let mut state = arc_state.write().await;
-            if let Ok(Ok(bytes)) = timeout(Duration::from_millis(1000), state.connection_handler.tcp_rx.recv()).await
+            if let Ok(Ok(bytes)) = timeout(
+                Duration::from_millis(1000),
+                state.connection_handler.tcp_rx.recv(),
+            )
+            .await
             {
                 if let Ok(payload) = serde_json::from_slice::<IncomingMessage>(&bytes) {
                     state.current_node = NodeAndTCP {
@@ -99,7 +123,10 @@ pub async fn connect_to_server(
     // let (_, proxy_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
     let (proxy_tx, mut proxy_rx) = {
         let state_guard = arc_state.write().await;
-        (state_guard.connection_handler.proxy_tx.clone(), state_guard.connection_handler.proxy_rx.resubscribe())
+        (
+            state_guard.connection_handler.proxy_tx.clone(),
+            state_guard.connection_handler.proxy_rx.resubscribe(),
+        )
     };
 
     loop {
@@ -161,7 +188,7 @@ pub async fn connect_to_server(
                                     }
                                     Err(e) => {
                                         break;
-                                    },  
+                                    },
                                 }
                             }
                             // proxy_rx_result = proxy_rx_clone.recv() => {
@@ -178,7 +205,7 @@ pub async fn connect_to_server(
                             //         };
                             //         if let Err(e) = writer.flush().await {
 
-                            //         };        
+                            //         };
                             //     }
                             // }
                             rx = proxy_rx_clone.recv() => {
@@ -201,21 +228,21 @@ pub async fn connect_to_server(
                                     };
                                     if let Err(e) = writer.flush().await {
                                         println!("error");
-                                    };  
+                                    };
                                 }
                             }
                         }
-                }
+                    }
                 });
 
                 let result = handle_stream(
-                        Arc::clone(&arc_state),
-                        &mut proxy_rx,
-                        ip,
-                        ws_tx.clone(),
-                        internal_stream,
-                    )
-                    .await;
+                    Arc::clone(&arc_state),
+                    &mut proxy_rx,
+                    ip,
+                    ws_tx.clone(),
+                    internal_stream,
+                )
+                .await;
 
                 // let result = if !block_with_stream {
                 //     handle_stream(
@@ -238,8 +265,7 @@ pub async fn connect_to_server(
                 // };
 
                 match result {
-                    Ok(StreamResult::Reconnect(_, _)) => {
-                    },
+                    Ok(StreamResult::Reconnect(_, _)) => {}
                     // Ok(StreamResult::Reconnect(new_ip, new_name)) => {
                     //     println!("Reconnecting to {} ({})", new_name, new_ip);
                     //     {
@@ -298,7 +324,10 @@ pub async fn check_channel_health(
     // tx: &broadcast::Sender<Vec<u8>>,
     // mut rx: broadcast::Receiver<Vec<u8>>,
 ) -> bool {
-    let (tx, mut rx) = (state.connection_handler.proxy_tx.clone(), state.connection_handler.proxy_rx.resubscribe());
+    let (tx, mut rx) = (
+        state.connection_handler.proxy_tx.clone(),
+        state.connection_handler.proxy_rx.resubscribe(),
+    );
     match tx.send("ping".into()) {
         Ok(_) => true,
         Err(_) => return false,
@@ -320,7 +349,6 @@ async fn attempt_connection(
         .await?
         .map_err(Into::into)
 }
-
 
 // this is where it determines wether or not to try and create the container and deployment, as attempt_connection itself is used in various diffrent contexts (like it will constantly
 // try to connect upon failing but it should not try to create the container and deployment every time it fails)
@@ -350,14 +378,8 @@ pub(crate) async fn try_initial_connection(
                     let mut temp_rx = temp_rx;
                     let ip: String = stream.peer_addr()?.ip().to_string();
 
-                    let stream_result = handle_stream(
-                        state.clone(),
-                        &mut temp_rx,
-                        ip,
-                        ws_tx.clone(),
-                        None,
-                    )
-                    .await;
+                    let stream_result =
+                        handle_stream(state.clone(), &mut temp_rx, ip, ws_tx.clone(), None).await;
                     if stream_result.is_ok() {
                         println!("Stream finished");
                         return Ok(());
@@ -376,7 +398,6 @@ pub(crate) async fn try_initial_connection(
     }
     Err(final_error)
 }
-
 
 pub trait NodeTransportable {
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>>;
@@ -426,11 +447,10 @@ impl NodeTransportable for DeleteServerRequest {
     }
 }
 
-
 pub struct ConnectionHandler {
     //stream: Option<&'static TcpStream>,
     pub(crate) proxy_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
-    pub(crate) proxy_rx:  tokio::sync::broadcast::Receiver<Vec<u8>>,
+    pub(crate) proxy_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
     pub(crate) tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
     pub(crate) tcp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
 }
@@ -442,34 +462,37 @@ impl ConnectionHandler {
             //stream: None,
             proxy_tx,
             proxy_rx,
-            tcp_tx, 
-            tcp_rx
+            tcp_tx,
+            tcp_rx,
         }
     }
-    pub fn get_filesystem_stream(&self) -> (broadcast::Sender<Vec<u8>>, broadcast::Receiver<Vec<u8>>) {
+    pub fn get_filesystem_stream(
+        &self,
+    ) -> (broadcast::Sender<Vec<u8>>, broadcast::Receiver<Vec<u8>>) {
         (self.proxy_tx.clone(), self.proxy_rx.resubscribe())
     }
 }
 impl Default for ConnectionHandler {
-    fn default() -> Self { 
+    fn default() -> Self {
         let (tcp_tx, tcp_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
         let (proxy_tx, proxy_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
         ConnectionHandler {
             //stream: None,
             proxy_tx,
             proxy_rx,
-            tcp_tx, 
-            tcp_rx
+            tcp_tx,
+            tcp_rx,
         }
     }
 }
 impl Clone for ConnectionHandler {
-    fn clone(&self) -> Self { 
-        ConnectionHandler { 
-            //stream: None, 
-            proxy_tx: self.proxy_tx.clone(), 
-            proxy_rx: self.proxy_rx.resubscribe(), tcp_tx: self.tcp_tx.clone(), 
-            tcp_rx: self.tcp_rx.resubscribe() 
+    fn clone(&self) -> Self {
+        ConnectionHandler {
+            //stream: None,
+            proxy_tx: self.proxy_tx.clone(),
+            proxy_rx: self.proxy_rx.resubscribe(),
+            tcp_tx: self.tcp_tx.clone(),
+            tcp_rx: self.tcp_rx.resubscribe(),
         }
     }
 }
@@ -680,7 +703,10 @@ impl NodeTransportable for Ping {
         let ping = SimpleMessage {
             message: "ping".to_string(),
         };
-        let res = state.connection_handler.proxy_tx.send(serde_json::to_vec(&ping).unwrap());
+        let res = state
+            .connection_handler
+            .proxy_tx
+            .send(serde_json::to_vec(&ping).unwrap());
         Ok(())
     }
 }
@@ -688,8 +714,7 @@ impl ResultTransportable for Ping {
     async fn transport_and_recv(
         &self,
         state: &AppState,
-    ) -> Result<(), Box<dyn Error + Send + Sync>>{
-
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         Ok(())
     }
 }
@@ -760,7 +785,6 @@ impl InternalTransportable for ServerStateRequest {
         Ok(())
     }
 }
-
 
 // NoteTransportable
 //InternalTransportable

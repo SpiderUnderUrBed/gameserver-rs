@@ -18,9 +18,9 @@ use crate::database::{DatabaseError, Element};
 use crate::http::HeaderMap;
 use crate::kubernetes::verify_is_k8s_gameserver;
 use crate::middleware::from_fn;
-use axum::extract::Multipart;
 use axum::Form;
 use axum::error_handling::HandleErrorLayer;
+use axum::extract::Multipart;
 use axum::extract::ws::Message as WsMessage;
 use axum::middleware::{self, Next};
 use axum::response::Redirect;
@@ -137,15 +137,18 @@ use database::ModifyElementData;
 use database::User;
 
 mod transport;
-use crate::transport::node_transport::{
-    check_channel_health, connect_to_server, CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FilterRequest, ImmediateTransportable, IntegrationKeyRequest, MigrateRequest, NodeTransportable, PasswordRequest, Ping, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StopServerRequest
-};
 use crate::transport::node_transport::ConnectionHandler;
 use crate::transport::node_transport::try_initial_connection;
+use crate::transport::node_transport::{
+    CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FilterRequest,
+    ImmediateTransportable, IntegrationKeyRequest, MigrateRequest, NodeTransportable,
+    PasswordRequest, Ping, ServerDataRequest, ServerStateRequest, ServernameRequest,
+    SetServerRequest, StartServerRequest, StopServerRequest, check_channel_health,
+    connect_to_server,
+};
 
 mod extra;
 use extra::value_from_line;
-
 
 // Docker AND kubernetes would be enabled with a standard deployment
 // as you wouldnt need the docker module (or the k8s module) for barebones testing
@@ -505,12 +508,12 @@ enum ApiCalls {
     // FileDataList(Vec<FsItem>),
     Node(Node),
     //FileOperations(FileOperations), // FileMoveOperation(String),
-                                    // FileCopyOperation(String),
-                                    // FileZipOperation(String),
-                                    // FileUnzipOperation(String),
-                                    // FileDownloadOperation(String),
-                                    // FileDownloadAllOperation(String),
-                                    // FileUploadAllOperation(String),
+    // FileCopyOperation(String),
+    // FileZipOperation(String),
+    // FileUnzipOperation(String),
+    // FileDownloadOperation(String),
+    // FileDownloadAllOperation(String),
+    // FileUploadAllOperation(String),
 }
 
 // impl fmt::Display for ApiCalls {
@@ -548,7 +551,7 @@ enum Status {
 struct FileSystemHandler {
     file_tx: RemoteFileSystem<TcpFsSender, FlumeFile>,
     file_rx: RemoteFileSystem<TcpFsReceiver, FlumeFile>,
-    operations: FileOperations
+    operations: FileOperations,
 }
 // AppState, this is a global struct which will be used to store data needed across the application like in routes and etc
 // which includes the sender and reciver to the tcp connection for gameserver, the websocket sender (receiver only needs to be managed by its own handler)
@@ -573,8 +576,7 @@ pub struct AppState {
     rcon_connection: Option<Arc<Mutex<Connection<TcpStream>>>>,
     current_server: Option<Server>,
     lock: bool,
-    filesystem: FileSystemHandler
-    // filesystem: Option<RemoteFileSystem<TcpFs>>
+    filesystem: FileSystemHandler, // filesystem: Option<RemoteFileSystem<TcpFs>>
 }
 
 // impl Default for AppState {
@@ -644,7 +646,6 @@ pub struct AppState {
 //         }
 //     }
 // }
-
 
 // What this does is that it will go over the lines retrived from the TCP stream
 // and try parsing them into serveral objects, then it will put them in ConsoleData for it to be extracted and processed
@@ -1077,10 +1078,8 @@ pub async fn handle_stream(
         capabilities: vec!["all".to_string()],
     };
     let _ = capability_request.immediate_transport(&mut state).await;
-    
-    let server_name_request = ServernameRequest {
-        ip: ip.clone(),
-    };
+
+    let server_name_request = ServernameRequest { ip: ip.clone() };
     let _ = server_name_request.immediate_transport(&mut state).await;
 
     drop(state);
@@ -1136,10 +1135,13 @@ pub async fn handle_stream(
 
     let state = arc_state.read().await;
     let cloned_token = state.cancel_current_conn.clone();
-    let mut internal_rx = state.internal_rx.as_ref().map(|stream| stream.resubscribe());
+    let mut internal_rx = state
+        .internal_rx
+        .as_ref()
+        .map(|stream| stream.resubscribe());
     drop(state);
 
-    loop {  
+    loop {
         tokio::select! {
             Some(received) = async {
                 match internal_rx.as_mut() {
@@ -1167,7 +1169,7 @@ pub async fn handle_stream(
                         &mut server_start_keyword, &mut server_stop_keyword,
                     ).await? {
                         break;
-                    }  
+                    }
                 },
                 Err(err) => {
                     println!("got err {:#?}", err);
@@ -1274,7 +1276,6 @@ pub async fn handle_stream(
 
     Ok(StreamResult::Done)
 }
-
 
 /*
     let handle = tokio::spawn(async move {
@@ -1454,11 +1455,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (fs_receiver_tx, fs_receiver_rx) = flume::unbounded();
     let fs_sender = TcpFsSender::new(fs_sender_rx, fs_sender_tx);
     let fs_receiver = TcpFsReceiver::new(fs_receiver_tx, fs_receiver_rx);
-    let filesystem = FileSystemHandler { 
-            file_tx: RemoteFileSystem::new(fs_sender), 
-            file_rx: RemoteFileSystem::new(fs_receiver), 
-            operations: FileOperations::new()
-        };
+    let filesystem = FileSystemHandler {
+        file_tx: RemoteFileSystem::new(fs_sender),
+        file_rx: RemoteFileSystem::new(fs_receiver),
+        operations: FileOperations::new(),
+    };
 
     // use everything so far to make the app state
     let mut state: AppState = AppState {
@@ -1479,7 +1480,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         rcon_connection,
         current_server,
         lock: false,
-        filesystem
+        filesystem,
     };
     state.tcp_conn_status = {
         if check_channel_health(&state).await {
@@ -1889,7 +1890,7 @@ async fn upload(
     auth_session: AuthSession,
     headers: HeaderMap,
     // request: Request,
-    mut multipart: Multipart
+    mut multipart: Multipart,
 ) -> StatusCode {
     let mut state = arc_state.write().await;
     let authorized = authorize(
@@ -1903,11 +1904,12 @@ async fn upload(
         return StatusCode::UNAUTHORIZED;
     }
     let (tx, rx) = flume::unbounded();
-    let filesystem_sender: &mut RemoteFileSystem<TcpFsSender, FlumeFile> = &mut state.filesystem.file_tx;
-    let file = FlumeFile { 
-        original_location: None, 
-        final_location: "test.txt".to_string(), 
-        content_stream: Some(rx)
+    let filesystem_sender: &mut RemoteFileSystem<TcpFsSender, FlumeFile> =
+        &mut state.filesystem.file_tx;
+    let file = FlumeFile {
+        original_location: None,
+        final_location: "test.txt".to_string(),
+        content_stream: Some(rx),
     };
     filesystem_sender.append_files(file);
     while let Some(mut field) = multipart.next_field().await.unwrap() {
@@ -2264,15 +2266,12 @@ async fn authorize(
         }
     }
     if let Some(token) = get_auth_bearer(headers) {
-        if resolve_token_perms(state, token)
-            .iter()
-            .any(|user_perm| {
-                user_perm.perm == "admin"
-                    || perms
-                        .iter()
-                        .any(|authorized_perm| *authorized_perm == user_perm.perm)
-            })
-        {
+        if resolve_token_perms(state, token).iter().any(|user_perm| {
+            user_perm.perm == "admin"
+                || perms
+                    .iter()
+                    .any(|authorized_perm| *authorized_perm == user_perm.perm)
+        }) {
             return true;
         }
     }
@@ -2650,7 +2649,6 @@ async fn statistics(
     );
     Sse::new(updates).keep_alive(axum::response::sse::KeepAlive::default())
 }
-
 
 async fn ongoing_server_status(
     State(arc_state): State<Arc<RwLock<AppState>>>,
@@ -3758,7 +3756,7 @@ async fn handle_static_request(
 struct FileChunk {
     file_name: String,
     file_offset: u64,
-    file_chunk_size: u64
+    file_chunk_size: u64,
 }
 
 // This will get the content of a file from gameserver, it will use the custom Tcp filesystem I created
@@ -3855,7 +3853,7 @@ pub async fn get_files(
     match request.node_transport(&state).await {
         Ok(()) => {
             println!("successfully sent it");
-        },
+        }
         Err(_) => todo!(),
     }
 

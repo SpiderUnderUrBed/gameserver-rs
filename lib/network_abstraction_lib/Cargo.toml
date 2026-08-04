@@ -10,6 +10,8 @@ tonic = { version = "0.14.6", optional = true }
 prost = { version = "0.14.4", optional = true }
 tonic-prost = { version = "0.14.6", optional = true }
 prost-types = { version = "0.14.4", optional = true }
+tokio = { version = "1.53.1", features = ["full"] }
+futures = "0.3.33"
 
 
 [build-dependencies]

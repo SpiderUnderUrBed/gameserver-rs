@@ -1,37 +1,45 @@
-
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::{net::{TcpStream}, sync::{broadcast, RwLock}, time::{sleep, timeout}};
-
-use crate::{
-    database::databasespec::Filters, handle_stream, AppState, MessagePayload, MessagePayloadWithMetadata, MetadataTypes, SimpleMessage, SrcAndDest, Status, StreamResult, CONNECTION_RETRY_DELAY, CONNECTION_TIMEOUT
+use tokio::{
+    net::TcpStream,
+    sync::{RwLock, broadcast},
+    time::{sleep, timeout},
 };
+
 use crate::CHANNEL_BUFFER_SIZE;
-use crate::{AuthTcpMessage, ApiCalls as ToplevelApiCalls, List, IncomingMessage, NodeAndTCP};
-use std::{error::Error, net::SocketAddr, sync::Arc, time::Instant};
-use std::time::Duration;
+use crate::{ApiCalls as ToplevelApiCalls, AuthTcpMessage, IncomingMessage, List, NodeAndTCP};
+use crate::{
+    AppState, CONNECTION_RETRY_DELAY, CONNECTION_TIMEOUT, MessagePayload,
+    MessagePayloadWithMetadata, MetadataTypes, SimpleMessage, SrcAndDest, Status, StreamResult,
+    database::databasespec::Filters, handle_stream,
+};
 use anyhow::anyhow;
+use std::time::Duration;
+use std::{error::Error, net::SocketAddr, sync::Arc, time::Instant};
 
 use tonic::transport::Channel;
 mod proto {
     tonic::include_proto!("main");
 }
-use proto::{general_client::GeneralClient, filesystem_client::FilesystemClient, server_edit_client::ServerEditClient, server_manage_client::ServerManageClient, DeleteServerRequest as DeleteServerRequestGrpc, server_edit_server::ServerEdit};
+use proto::{
+    DeleteServerRequest as DeleteServerRequestGrpc, filesystem_client::FilesystemClient,
+    general_client::GeneralClient, server_edit_client::ServerEditClient,
+    server_edit_server::ServerEdit, server_manage_client::ServerManageClient,
+};
 
 #[derive(Clone)]
 pub struct Clients {
     general_client: GeneralClient<Channel>,
     server_manage_client: ServerManageClient<Channel>,
     server_edit_client: ServerEditClient<Channel>,
-    filesystem_client: FilesystemClient<Channel>
+    filesystem_client: FilesystemClient<Channel>,
 }
 
 pub struct ConnectionHandler {
     //stream: Option<&'static TcpStream>,
     clients: Option<Clients>,
     proxy_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
-    proxy_rx:  tokio::sync::broadcast::Receiver<Vec<u8>>,
+    proxy_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
     pub(crate) tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
     pub(crate) tcp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
 }
@@ -43,37 +51,40 @@ impl ConnectionHandler {
             //stream: None,
             proxy_tx,
             proxy_rx,
-            tcp_tx, 
+            tcp_tx,
             tcp_rx,
             clients: None,
         }
     }
-    pub fn get_filesystem_stream(&self) -> (broadcast::Sender<Vec<u8>>, broadcast::Receiver<Vec<u8>>) {
+    pub fn get_filesystem_stream(
+        &self,
+    ) -> (broadcast::Sender<Vec<u8>>, broadcast::Receiver<Vec<u8>>) {
         (self.proxy_tx.clone(), self.proxy_rx.resubscribe())
     }
 }
 impl Default for ConnectionHandler {
-    fn default() -> Self { 
+    fn default() -> Self {
         let (tcp_tx, tcp_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
         let (proxy_tx, proxy_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
         ConnectionHandler {
             //stream: None,
             proxy_tx,
             proxy_rx,
-            tcp_tx, 
+            tcp_tx,
             tcp_rx,
-            clients: None
+            clients: None,
         }
     }
 }
 impl Clone for ConnectionHandler {
-    fn clone(&self) -> Self { 
-        ConnectionHandler { 
-            //stream: None, 
+    fn clone(&self) -> Self {
+        ConnectionHandler {
+            //stream: None,
             clients: self.clients.clone(),
-            proxy_tx: self.proxy_tx.clone(), 
-            proxy_rx: self.proxy_rx.resubscribe(), tcp_tx: self.tcp_tx.clone(), 
-            tcp_rx: self.tcp_rx.resubscribe() 
+            proxy_tx: self.proxy_tx.clone(),
+            proxy_rx: self.proxy_rx.resubscribe(),
+            tcp_tx: self.tcp_tx.clone(),
+            tcp_rx: self.tcp_rx.resubscribe(),
         }
     }
 }
@@ -100,8 +111,6 @@ pub async fn check_channel_health(
 //         Ok(())
 //     }
 // }
-
-
 
 // does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
 pub async fn connect_to_server(
@@ -144,7 +153,6 @@ pub async fn attempt_connection(
         .await?
         .map_err(Into::into)
 }
-
 
 // this is where it determines wether or not to try and create the container and deployment, as attempt_connection itself is used in various diffrent contexts (like it will constantly
 // try to connect upon failing but it should not try to create the container and deployment every time it fails)
@@ -279,29 +287,35 @@ pub async fn try_initial_connection(
 //     }
 // }
 
-
-
 pub trait NodeTransportable {
-    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>>;
+    async fn node_transport(
+        &self,
+        state: &mut AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
 
 // TODO: consider if needed
 pub trait ImmediateTransportable {
-    async fn immediate_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>>;
+    async fn immediate_transport(
+        &self,
+        state: &mut AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
-
 
 pub struct PasswordRequest {
-    pub password: String
+    pub password: String,
 }
 pub struct CapabilitiesRequest {
-    pub capabilities: Vec<String>
+    pub capabilities: Vec<String>,
 }
 pub struct ServernameRequest {
-    pub ip: String
+    pub ip: String,
 }
 impl ImmediateTransportable for PasswordRequest {
-    async fn immediate_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn immediate_transport(
+        &self,
+        state: &mut AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let auth_msg = serde_json::to_vec(&AuthTcpMessage {
             password: self.password.clone(),
         })?;
@@ -310,7 +324,10 @@ impl ImmediateTransportable for PasswordRequest {
     }
 }
 impl ImmediateTransportable for CapabilitiesRequest {
-    async fn immediate_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn immediate_transport(
+        &self,
+        state: &mut AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let capability_msg = serde_json::to_vec(&List {
             list: ToplevelApiCalls::Capabilities(self.capabilities.clone()),
         })?;
@@ -320,7 +337,10 @@ impl ImmediateTransportable for CapabilitiesRequest {
 }
 
 impl ImmediateTransportable for ServernameRequest {
-    async fn immediate_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn immediate_transport(
+        &self,
+        state: &mut AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let cmd_msg = serde_json::to_vec(&MessagePayload {
             r#type: "command".to_string(),
             message: "server_name".to_string(),
@@ -330,7 +350,11 @@ impl ImmediateTransportable for ServernameRequest {
 
         'name: {
             // let mut state = arc_state.write().await;
-            if let Ok(Ok(bytes)) = timeout(Duration::from_millis(1000), state.connection_handler.tcp_rx.recv()).await
+            if let Ok(Ok(bytes)) = timeout(
+                Duration::from_millis(1000),
+                state.connection_handler.tcp_rx.recv(),
+            )
+            .await
             {
                 if let Ok(payload) = serde_json::from_slice::<IncomingMessage>(&bytes) {
                     state.current_node = NodeAndTCP {
@@ -358,8 +382,10 @@ pub struct DeleteServerRequest {
 
 // NodeTransportable
 impl NodeTransportable for DeleteServerRequest {
-    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
-
+    async fn node_transport(
+        &self,
+        state: &mut AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         // let msg = MessagePayloadWithMetadata {
         //     r#type: "command".to_string(),
         //     message: "delete_server".to_string(),
@@ -386,9 +412,20 @@ pub struct CreateServerRequest {
     pub metadata: MetadataTypes,
 }
 impl NodeTransportable for CreateServerRequest {
-    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let request = proto::CreateServerRequest { metadata: Some(self.metadata.clone().into()) };
-        let _ = state.connection_handler.clients.as_mut().unwrap().server_edit_client.create(request);
+    async fn node_transport(
+        &self,
+        state: &mut AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let request = proto::CreateServerRequest {
+            metadata: Some(self.metadata.clone().into()),
+        };
+        let _ = state
+            .connection_handler
+            .clients
+            .as_mut()
+            .unwrap()
+            .server_edit_client
+            .create(request);
         // let msg = MessagePayloadWithMetadata {
         //     r#type: "command".to_string(),
         //     message: "create_server".to_string(),
@@ -408,15 +445,25 @@ impl NodeTransportable for CreateServerRequest {
         Ok(())
     }
 }
-// 
+//
 
 pub struct StartServerRequest {
     // metadata: MetadataTypes
 }
 impl NodeTransportable for StartServerRequest {
-    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(
+        &self,
+        state: &mut AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let request = proto::StartServerRequest {};
-        let _ = state.connection_handler.clients.clone().unwrap().server_edit_client.start(request).await;
+        let _ = state
+            .connection_handler
+            .clients
+            .clone()
+            .unwrap()
+            .server_edit_client
+            .start(request)
+            .await;
         // let msg = serde_json::to_vec(&MessagePayload {
         //     r#type: "command".to_string(),
         //     message: "start_server".to_string(),
@@ -435,9 +482,19 @@ pub struct StopServerRequest {
     // metadata: MetadataTypes
 }
 impl NodeTransportable for StopServerRequest {
-    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(
+        &self,
+        state: &mut AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let stop_server_request = proto::StopServerRequest {};
-        let _ = state.connection_handler.clients.clone().unwrap().server_edit_client.stop(stop_server_request).await;
+        let _ = state
+            .connection_handler
+            .clients
+            .clone()
+            .unwrap()
+            .server_edit_client
+            .stop(stop_server_request)
+            .await;
         // let msg = serde_json::to_vec(&MessagePayload {
         //     r#type: "command".to_string(),
         //     message: "stop_server".to_string(),
@@ -458,7 +515,10 @@ pub struct MigrateRequest {
     pub common: SrcAndDest,
 }
 impl NodeTransportable for MigrateRequest {
-    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(
+        &self,
+        state: &mut AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         match serde_json::to_vec(&self.common) {
             Ok(bytes) => {
                 if let Err(err) = state.connection_handler.tcp_tx.send(bytes) {
@@ -476,14 +536,23 @@ pub struct SetServerRequest {
     pub(crate) metadata: MetadataTypes,
 }
 impl NodeTransportable for SetServerRequest {
-    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(
+        &self,
+        state: &mut AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let set_server_request = proto::SetServerRequest {
             message: "set_server".to_string(),
             r#type: "command".to_string(),
             metadata: Some(self.metadata.clone().into()),
             authcode: "0".to_string(),
         };
-        let _ = state.connection_handler.clients.as_mut().unwrap().server_manage_client.set(set_server_request);
+        let _ = state
+            .connection_handler
+            .clients
+            .as_mut()
+            .unwrap()
+            .server_manage_client
+            .set(set_server_request);
         // let msg = MessagePayloadWithMetadata {
         //     r#type: "command".to_string(),
         //     message: "set_server".to_string(),
@@ -509,9 +578,18 @@ pub struct ServerDataRequest {
     pub(crate) metadata: MetadataTypes,
 }
 impl NodeTransportable for ServerDataRequest {
-    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(
+        &self,
+        state: &mut AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let server_data_request = proto::ServerDataRequest {};
-        let _ = state.connection_handler.clients.as_mut().unwrap().server_manage_client.data(server_data_request);
+        let _ = state
+            .connection_handler
+            .clients
+            .as_mut()
+            .unwrap()
+            .server_manage_client
+            .data(server_data_request);
         // let msg = MessagePayloadWithMetadata {
         //     r#type: "command".to_string(),
         //     message: "server_data".to_string(),
@@ -540,7 +618,10 @@ pub struct RawBytes {
 }
 
 impl NodeTransportable for RawBytes {
-    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(
+        &self,
+        state: &mut AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let _ = state.connection_handler.tcp_tx.send(self.bytes.clone());
         Ok(())
     }
@@ -560,7 +641,10 @@ pub struct FilterRequest {
 //InternalTransportable
 // struct FilterRequest impl NodeTransportable {
 impl NodeTransportable for FilterRequest {
-    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(
+        &self,
+        state: &mut AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let filter_request = MessagePayloadWithMetadata {
             r#type: "command".to_string(),
             message: "set_filter".to_string(),
@@ -587,11 +671,17 @@ impl InternalTransportable for FilterRequest {
 // }
 pub struct Ping {}
 impl NodeTransportable for Ping {
-    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(
+        &self,
+        state: &mut AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let ping = SimpleMessage {
             message: "ping".to_string(),
         };
-        let res = state.connection_handler.tcp_tx.send(serde_json::to_vec(&ping).unwrap());
+        let res = state
+            .connection_handler
+            .tcp_tx
+            .send(serde_json::to_vec(&ping).unwrap());
 
         Ok(())
     }
@@ -609,7 +699,10 @@ pub struct IntegrationKeyRequest {
     pub key: Value,
 }
 impl NodeTransportable for IntegrationKeyRequest {
-    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(
+        &self,
+        state: &mut AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         match serde_json::to_vec(&self.key) {
             Ok(mut bytes) => {
                 // Add newline delimiter for TCP stream parsing
@@ -643,9 +736,18 @@ impl InternalTransportable for IntegrationKeyRequest {
 //InternalTransportable
 pub struct ServerStateRequest {}
 impl NodeTransportable for ServerStateRequest {
-    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(
+        &self,
+        state: &mut AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let server_state_request = proto::ServerStateRequest {};
-        let _ = state.connection_handler.clients.as_mut().unwrap().server_manage_client.state(server_state_request);
+        let _ = state
+            .connection_handler
+            .clients
+            .as_mut()
+            .unwrap()
+            .server_manage_client
+            .state(server_state_request);
         // let msg = serde_json::to_vec(&MessagePayload {
         //     r#type: "command".to_string(),
         //     message: "server_state".to_string(),
