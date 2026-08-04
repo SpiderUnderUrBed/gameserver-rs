@@ -1459,6 +1459,7 @@ async fn spawn_request_loop(
 
                 let line_str_result = conn_handler.recv_line().await;
                 if let Ok(mut line_str) = line_str_result {
+                    // println!("got line {:?}", line_str);
                     conn_handler.start_clean_hook().await;
                     line_str = line_str
                         .trim_matches(|c: char| c.is_whitespace() || c == '\0')
@@ -1470,7 +1471,7 @@ async fn spawn_request_loop(
                         }
                     }
 
-                    let router_arc_app_state = inner_arc_state.clone();
+                    //let router_arc_app_state = inner_arc_state.clone();
                     // if true {
                     if let Ok(json_value) = serde_json::from_str::<Value>(&line_str) {
                         log_requests(json_value.clone(), addr.to_string(), line_str.to_string());
@@ -1500,12 +1501,6 @@ async fn spawn_request_loop(
                                 break 'outer;
                             }
                         }
-                        //drop(arc_state_clone);
-
-                        // else if let Ok(request) = FileRequest::from_value(json_value){
-                        //     request.execute();
-                        // }
-                        println!("outside feeding the value");
                         match router.feed_value(json_value).await {
                             Ok(response) => {
                                 match response.try_into_response() {
@@ -1516,20 +1511,10 @@ async fn spawn_request_loop(
                                                 let mut stream = *stream_box;
                                                  let inner_out_tx = out_tx.clone();
                                                 tokio::spawn(async move {
-                                                    println!("got a stream");
-                                                    // let inner_out_tx = out_tx.clone();
                                                     while let Some(item) = stream.next().await {
-                                                        println!("stream item: {}", item);
                                                         let _ = inner_out_tx.clone().send(item).await;
-                                                        // if let Some(sender) = router_arc_app_state.server_output_tx.lock().await.as_mut() {
-                                                        //     println!("sending out");
-                                                        //     let _ = sender.send(item);
-                                                        // }
                                                     }
                                                 });
-                                                // while let Some(item) = stream.next().await {
-                                                //     println!("stream item: {}", item);
-                                                // }
                                             }
                                             Err(_) => println!("resp error: dont know this response type"),
                                         },
@@ -1537,7 +1522,7 @@ async fn spawn_request_loop(
                                     Err(e) => {
                                         match e {
                                             ExtractorErrors::Err(value) => {
-                                                println!("{}", value);
+                                                println!("got err: {}", value);
                                             }
                                             _ => {
                                                  println!("resp error: try_into_response failed")
@@ -1583,6 +1568,11 @@ fn spawn_middlewares(router: &mut Router<Arc<AppState>>){
     router.add_middleware(|mapping: String, request: &dyn IntoRequest| {
         if let Some(value_request) = request.as_any().downcast_ref::<ValueRequest>() {
             if let Some(Value::String(message)) = value_request.value.get("message") {
+                if let Some(Value::String(message_type)) = value_request.value.get("type"){
+                    if message_type == "console" && *message_type == mapping {
+                        return MiddlewareAction::ReassignValue(request)
+                    } 
+                } 
                 if *message == mapping {
                     // if *message == "start_server".to_string() {
                     //     MiddlewareAction::SkipPredicate

@@ -2230,17 +2230,21 @@ async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
                         authcode: "0".into(),
                     });
 
+                println!("before sending payload");
                 if let Ok(mut bytes) = serde_json::to_vec(&payload) {
                     bytes.push(b'\n');
+                    let _ = arc_state.write().await.connection_handler.proxy_tx.send(bytes);
 
                     // Acquire lock briefly only to send TCP message
-                    let tcp_tx = {
-                        let state = arc_state.read().await;
-                        state.connection_handler.tcp_tx.clone()
-                    };
+                    // let tcp_tx = {
+                    //     let state = arc_state.read().await;
+                    //     state.connection_handler.tcp_tx.clone()
+                    // };
 
-                    let lock = tcp_tx;
-                    let _ = lock.send(bytes);
+                    // let lock = tcp_tx;
+                    // let res = lock.send(bytes);
+                    // println!("{:#?}", res);
+                    //println!("sent bytes");
                 }
             }
         }
