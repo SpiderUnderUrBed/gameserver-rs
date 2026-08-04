@@ -9,13 +9,19 @@ use serde::Serialize;
 
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
+
+pub enum MiddlewareAction<'a> {
+    SkipPredicate,
+    ReassignValue(&'a dyn IntoRequest),
+    Continue
+}
 pub struct Router<S>
 where
     S: Send + Clone,
 {
     state: S,
     middleware: Option<
-        Box<dyn for<'a> Fn(String, &'a dyn IntoRequest) -> Result<&'a dyn IntoRequest, ()> + Send>,
+        Box<dyn for<'a> Fn(String, &'a dyn IntoRequest) -> MiddlewareAction + Send>,
     >,
     registry: HashMap<String, Box<dyn HandlerType<S>>>,
 }
@@ -29,6 +35,15 @@ impl<S: Clone + Send> Router<S> {
         }
     }
 
+    pub fn get_state(&self) -> S {
+        self.state.clone()
+    }
+
+    pub fn get_state_mut(&mut self) -> S {
+        self.state.clone()
+    }
+
+
     pub fn register_handler(&mut self, handler: impl HandlerType<S> + 'static) -> &mut Router<S> {
         self.registry.insert(
             handler
@@ -41,7 +56,7 @@ impl<S: Clone + Send> Router<S> {
 
     pub fn add_middleware<T>(&mut self, middleware: T)
     where
-        T: for<'a> Fn(String, &'a dyn IntoRequest) -> Result<&'a dyn IntoRequest, ()>
+        T: for<'a> Fn(String, &'a dyn IntoRequest) -> MiddlewareAction
             + Send
             + 'static,
     {
@@ -78,15 +93,18 @@ impl<S: Clone + Send> Router<S> {
 
             if let Some(ref middleware) = self.middleware {
                 match (middleware)(mapping.to_string(), request) {
-                    Ok(final_request) => {
-                        request = final_request;
-                    }
-                    Err(_) => continue,
+                    MiddlewareAction::SkipPredicate => return Ok(handler.execute(self.state.clone(), request.clone_box()).await),
+                    MiddlewareAction::ReassignValue(value) => request = value,
+                    MiddlewareAction::Continue => continue,
                 }
             }
 
+            println!("trying {}", mapping);
             if let Ok(modified_request) = handler.try_predicate(request) {
+                println!("passed predicate");
                 return Ok(handler.execute(self.state.clone(), modified_request).await);
+            } else {
+                println!("failed predicate");
             }
         }
         Err(RouterErrors::NoHandlerFound)
@@ -101,16 +119,13 @@ impl<S: Clone + Send> Router<S> {
 
             if let Some(ref middleware) = self.middleware {
                 match (middleware)(mapping.to_string(), request) {
-                    Ok(final_request) => {
-                        request = final_request;
-                    }
-                    Err(_) => continue,
+                    MiddlewareAction::SkipPredicate => return Ok(handler.execute(self.state.clone(), request.clone_box()).await),
+                    MiddlewareAction::ReassignValue(value) => request = value,
+                    MiddlewareAction::Continue => continue,
                 }
             }
 
-            println!("trying to run {}", mapping);
             if let Ok(modified_request) = handler.try_predicate(request) {
-                println!("running {}", mapping);
                 return Ok(handler.execute(self.state.clone(), modified_request).await);
             }
         }
@@ -124,6 +139,7 @@ pub enum RouterErrors {
 pub enum ExtractorErrors {
     NotValidExtractor,
     FailedToExtract,
+    Err(String)
 }
 
 #[derive(Clone)]
@@ -388,6 +404,7 @@ impl<Item: Send + 'static> IntoResponse<Box<dyn Any + Send>> for StreamResponse<
         Ok(Box::new(taken) as Box<dyn Any + Send>)
     }
 }
+
 pub fn erase_stream_wrapper<F, Fut, S, R, AppState>(f: F) -> ErasedHandler<AppState>
 where
     F: Fn(AppState, S) -> Fut + Send + Sync + 'static,
@@ -399,6 +416,30 @@ where
 {
     erase::<F, Fut, S, R, StreamResponse<R::Item>, AppState>(f)
 }
+
+pub fn erase_stream_wrapper_result<F, Fut, S, Item, AppState>(f: F) -> ErasedHandler<AppState>
+where
+    F: Fn(AppState, S) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<StreamResponse<Item>, ErrorResponse>> + Send + 'static,
+    S: FromWire + Clone + Send + 'static,
+    Item: Send + 'static,
+    AppState: 'static,
+{
+    erase::<
+        F,
+        Fut,
+        S,
+        Result<StreamResponse<Item>, ErrorResponse>,
+        Result<StreamResponse<Item>, ErrorResponse>,
+        AppState,
+    >(f)
+}
+
+// impl <S>IntoResponse<S> for StreamResponse<S>{
+//     fn try_into_response(&self) -> Result<S, ExtractorErrors> {
+//         Err(ExtractorErrors::NotValidExtractor)
+//     }
+// }
 
 impl<S> HandlerType<S> for BytesHandler
 where
@@ -617,13 +658,22 @@ impl IntoResponse<NoneResponse> for NoneResponse {
 }
 
 #[derive(Default, Serialize)]
-pub struct ErrorResponse {}
+pub struct ErrorResponse {
+    pub error: String
+}
+
 
 impl <S>IntoResponse<S> for ErrorResponse {
     fn try_into_response(&self) -> Result<S, ExtractorErrors> {
-        todo!()
+        Err(ExtractorErrors::Err(self.error.clone()))
     }
 }
+
+// impl <S: Serialize>IntoResponse<S> for ErrorResponse {
+//     fn try_into_response(&self) -> Result<String, ExtractorErrors> {
+//         unimplemented!("not valid");
+//     }
+// }
 
 #[cfg(test)]
 mod tests {

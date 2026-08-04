@@ -1,9 +1,14 @@
+use chrono::format::Item;
 use chrono::DateTime;
 use chrono::Local;
+use futures::stream::unfold;
+use futures::Stream;
+use futures::StreamExt;
 use general_networked_filesystem::FileRequest;
 use general_networked_filesystem::FileRequestExecutable;
 use network_abstraction_lib::any_type;
 use network_abstraction_lib::erase;
+use network_abstraction_lib::erase_stream_wrapper_result;
 use network_abstraction_lib::ErrorResponse;
 use network_abstraction_lib::ExtractResponse;
 use network_abstraction_lib::ExtractorErrors;
@@ -12,7 +17,9 @@ use network_abstraction_lib::IntoRequest;
 use network_abstraction_lib::IntoResponse;
 use network_abstraction_lib::erase_string_wrapper;
 use network_abstraction_lib::erase_stream_wrapper;
+use network_abstraction_lib::MiddlewareAction;
 use network_abstraction_lib::NoneResponse;
+use network_abstraction_lib::StreamResponse;
 use network_abstraction_lib::ValueRequest;
 use serde_json::{json, Value};
 use tokio::sync::broadcast::Receiver;
@@ -21,6 +28,7 @@ use std::fmt;
 use std::io::Error;
 use std::io::ErrorKind;
 use std::path::Path;
+use std::pin::Pin;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use tokio::fs;
@@ -667,7 +675,6 @@ pub struct FsEntry {
 // AppState for the Node, stores the name of the current server, the state of the process
 // whether or not its running, the channel for the output messages, and the process, makes it easier to pass and modify
 // between functions
-#[derive(Clone)]
 struct AppState {
     // current_server has to be an arc mutex because you cant assign data to an arc
     current_server: Arc<Mutex<Option<String>>>,
@@ -676,7 +683,8 @@ struct AppState {
     authenticated_origins: Arc<Mutex<Vec<String>>>,
     server_running: Arc<Mutex<bool>>,
     output_tx: Arc<Mutex<Option<mpsc::Sender<String>>>>,
-    cmd_tx: Option<Arc<Mutex<mpsc::Sender<String>>>>,
+    cmd_rx: Mutex<Option<mpsc::Receiver<String>>>,
+    cmd_tx: Mutex<Option<Arc<mpsc::Sender<String>>>>,
     stdin_ref: Arc<Mutex<Option<ChildStdin>>>,
     server_output_tx: Arc<Mutex<Option<broadcast::Sender<String>>>>,
     server_process: Arc<Mutex<Option<Child>>>,
@@ -771,9 +779,9 @@ fn get_env_var_or_arg<T: std::str::FromStr>(env_var: &str, default: Option<T>) -
         .or(default)
 }
 
-async fn create_server_handler(state: Arc<AppState>, req: CreateServerRequest) -> NoneResponse {
-    let cmd_tx_arc = state.cmd_tx.clone().unwrap();
-    let cmd_tx = cmd_tx_arc.lock().await;
+async fn create_server_handler(state: Arc<AppState>, req: CreateServerRequest) -> Result<StreamResponse<String>, ErrorResponse> {
+    let cmd_tx_arc = state.cmd_tx.lock().await.clone().unwrap();
+    let cmd_tx = cmd_tx_arc;
     let stdin_ref = state.stdin_ref.clone();
     let _ = create_server(
         state.clone(),
@@ -783,13 +791,24 @@ async fn create_server_handler(state: Arc<AppState>, req: CreateServerRequest) -
     )
     .await;
     println!("Finished creating server");
-    NoneResponse {}
-}
-async fn start_server_handler(state: Arc<AppState>, req: StartServerRequest) -> NoneResponse {
-    let current_server = state.current_server.lock().await;
+    //NoneResponse {}
+    if let Some(rx) = state.cmd_rx.lock().await.take() {
+        let stream = unfold(rx, |mut rx| async {
+            match rx.recv().await {
+                Some(value) => Some((value, rx)),
+                None => None,
+            }
+        });
+        Ok(StreamResponse::new(stream))
+    } else {
+        Err(ErrorResponse { error: "stream taken".to_string() })
+    }
+} 
+async fn start_server_handler(state: Arc<AppState>, req: StartServerRequest) -> Result<StreamResponse<String>, ErrorResponse> {
+    //let current_server = state.current_server.lock().await;
     let stdin_ref = &state.stdin_ref;
-    let cmd_tx_arc = state.cmd_tx.clone().unwrap();
-    let cmd_tx = cmd_tx_arc.lock().await;
+    let cmd_tx_arc = state.cmd_tx.lock().await.clone().unwrap();
+    let cmd_tx = cmd_tx_arc;
     {
         let stdin_guard = stdin_ref.lock().await;
         if stdin_guard.is_some() {
@@ -918,7 +937,6 @@ async fn start_server_handler(state: Arc<AppState>, req: StartServerRequest) -> 
                         .unwrap_or(("".to_string(), Platforms::default()))
                         .1;
                     let provider = pick_platform(platform).unwrap_or(ProviderConfig::default());
-
                     let arc_state_for_stdin = state.clone();
                     tokio::spawn(async move {
                         let result = run_command_live_output(
@@ -928,7 +946,7 @@ async fn start_server_handler(state: Arc<AppState>, req: StartServerRequest) -> 
                             location.unwrap_or(String::new()),
                             provider,
                             "Server".into(),
-                            Some(tx.clone()),
+                            Some((*tx).clone()),
                             Some(stdin_clone.clone()),
                             None,
                         )
@@ -937,10 +955,12 @@ async fn start_server_handler(state: Arc<AppState>, req: StartServerRequest) -> 
                             let mut stdin_guard = stdin_clone.lock().await;
                             *stdin_guard = None;
                         }
-
                         match result {
                             Ok(_) => {
                                 let _ = tx.send("Server process ended".into()).await;
+                                let (cmd_tx, cmd_rx) = mpsc::channel::<String>(10_000);
+                                *arc_state_for_stdin.cmd_tx.lock().await = Some(Arc::new(cmd_tx));
+                                *arc_state_for_stdin.cmd_rx.lock().await = Some(cmd_rx);
                             }
                             Err(e) => {
                                 let _ = tx.send(format!("Server process failed: {}", e)).await;
@@ -961,15 +981,27 @@ async fn start_server_handler(state: Arc<AppState>, req: StartServerRequest) -> 
             }
         }
     }
-    NoneResponse {}
+    if let Some(rx) = state.cmd_rx.lock().await.take() {
+        let stream = unfold(rx, |mut rx| async {
+            match rx.recv().await {
+                Some(value) => Some((value, rx)),
+                None => None,
+            }
+        });
+        Ok(StreamResponse::new(stream))
+    } else {
+        println!("C");
+        Err(ErrorResponse { error: "stream taken".to_string() })
+    }
+    //NoneResponse {}
 }
 async fn stop_server_handler(
     state: Arc<AppState>,
     req: StopServerRequest,
 ) -> Result<NoneResponse, ErrorResponse> {
     let stdin_ref = state.stdin_ref.clone();
-    if let Some(cmd_tx_arc) = state.cmd_tx.clone() {
-        let cmd_tx = cmd_tx_arc.lock().await;
+    if let Some(cmd_tx_arc) = state.cmd_tx.lock().await.clone() {
+        let cmd_tx = cmd_tx_arc;
         println!("Got a stop server request");
         if let Some(current_server) = state.current_server.lock().await.clone() {
             let option_path = {
@@ -1025,9 +1057,10 @@ async fn stop_server_handler(
                 }
             }
         }
+
         Ok(NoneResponse {})
     } else {
-        Err(ErrorResponse {})
+        Err(ErrorResponse { error: "could not stop server".to_string() })
     }
 }
 async fn delete_server_handler(state: Arc<AppState>, req: DeleteServerRequest) -> NoneResponse {
@@ -1120,8 +1153,8 @@ async fn console_handler(state: Arc<AppState>, req: ConsoleRequest) -> NoneRespo
     println!("Got a console request");
     let input = req.common.message.clone();
     let stdin_ref = &state.stdin_ref;
-    let cmd_tx_arc = state.cmd_tx.clone().unwrap();
-    let cmd_tx = cmd_tx_arc.lock().await;
+    let cmd_tx_arc = state.cmd_tx.lock().await.clone().unwrap();
+    let cmd_tx = cmd_tx_arc;
     let mut guard = stdin_ref.lock().await;
     if let Some(stdin) = guard.as_mut() {
         let _ = stdin.write_all(format!("{}\n", input).as_bytes()).await;
@@ -1281,10 +1314,10 @@ async fn check_server(arc_state: Arc<AppState>, server_output_rx: &mut Option<Re
 }
 
 async fn spawn_request_loop(
-    arc_state: Arc<AppState>,
+    //arc_state: Arc<AppState>,
     conn_handler: &mut ConnectionHandler,
     router: &mut Router<Arc<AppState>>,
-    cmd_rx: &mut mpsc::Receiver<String>, 
+    //cmd_rx: &mut mpsc::Receiver<String>, 
     addr: String
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let kill_socket = false;
@@ -1294,6 +1327,7 @@ async fn spawn_request_loop(
 
     // let mut output_tx = arc_state_clone.output_tx.lock().await;
     // *output_tx = Some(out_tx.clone());
+    let arc_state = router.get_state();
     let (out_tx, mut out_rx) = mpsc::channel::<String>(128);
     //let inner_out_tx = out_tx.clone();
     if let Ok(mut guard) = arc_state.output_tx.try_lock() {
@@ -1322,6 +1356,7 @@ async fn spawn_request_loop(
     let mut needs_server_status_check = server_output_rx.is_none();
     
     let inner_arc_state = arc_state.clone();
+    let inner_out_tx = out_tx.clone();
     tokio::spawn(async move {
         loop {
             check_server(inner_arc_state.clone(), &mut server_output_rx, &mut needs_server_status_check).await;
@@ -1336,7 +1371,7 @@ async fn spawn_request_loop(
             // } => {
             match server_msg.await {
                 Ok(msg) => {
-                    if let Err(e) = out_tx.send(msg).await {
+                    if let Err(e) = inner_out_tx.send(msg).await {
                         eprintln!("Write error: {}", e);
                     }
                     break;
@@ -1370,17 +1405,17 @@ async fn spawn_request_loop(
             break;
         }
         tokio::select! {
-            Some(msg) = cmd_rx.recv() => {
-                let payload = serde_json::json!({
-                    "type": "info",
-                    "data": msg,
-                    "authcode": "0"
-                }).to_string() + "\n";
-                if let Err(e) = writer.send(payload.as_bytes().to_vec()).await {
-                    eprintln!("[{}] Write error: {}", addr, e);
-                    break;
-                };
-            }
+            // Some(msg) = cmd_rx.recv() => {
+            //     let payload = serde_json::json!({
+            //         "type": "info",
+            //         "data": msg,
+            //         "authcode": "0"
+            //     }).to_string() + "\n";
+            //     if let Err(e) = writer.send(payload.as_bytes().to_vec()).await {
+            //         eprintln!("[{}] Write error: {}", addr, e);
+            //         break;
+            //     };
+            // }
             Some(out) = out_rx.recv() => {
                 if let Err(e) = writer.send((out + "\n").as_bytes().to_vec()).await {
                     eprintln!("[{}] Write error: {}", addr, e);
@@ -1435,6 +1470,7 @@ async fn spawn_request_loop(
                         }
                     }
 
+                    let router_arc_app_state = inner_arc_state.clone();
                     // if true {
                     if let Ok(json_value) = serde_json::from_str::<Value>(&line_str) {
                         log_requests(json_value.clone(), addr.to_string(), line_str.to_string());
@@ -1472,11 +1508,42 @@ async fn spawn_request_loop(
                         println!("outside feeding the value");
                         match router.feed_value(json_value).await {
                             Ok(response) => {
-                                let response_result: Result<String, ExtractorErrors> = response.extract();
-                                if let Ok(resp) = response_result {
-                                    println!("got resp: {}", resp);
-                                } else {
-                                    println!("resp error");
+                                match response.try_into_response() {
+                                    Ok(boxed) => match boxed.downcast::<String>() {
+                                        Ok(resp) => println!("got resp: {}", *resp),
+                                        Err(boxed) => match boxed.downcast::<Pin<Box<dyn Stream<Item = String> + Send>>>() {
+                                            Ok(stream_box) => {
+                                                let mut stream = *stream_box;
+                                                 let inner_out_tx = out_tx.clone();
+                                                tokio::spawn(async move {
+                                                    println!("got a stream");
+                                                    // let inner_out_tx = out_tx.clone();
+                                                    while let Some(item) = stream.next().await {
+                                                        println!("stream item: {}", item);
+                                                        let _ = inner_out_tx.clone().send(item).await;
+                                                        // if let Some(sender) = router_arc_app_state.server_output_tx.lock().await.as_mut() {
+                                                        //     println!("sending out");
+                                                        //     let _ = sender.send(item);
+                                                        // }
+                                                    }
+                                                });
+                                                // while let Some(item) = stream.next().await {
+                                                //     println!("stream item: {}", item);
+                                                // }
+                                            }
+                                            Err(_) => println!("resp error: dont know this response type"),
+                                        },
+                                    },
+                                    Err(e) => {
+                                        match e {
+                                            ExtractorErrors::Err(value) => {
+                                                println!("{}", value);
+                                            }
+                                            _ => {
+                                                 println!("resp error: try_into_response failed")
+                                            }
+                                        }
+                                    },
                                 }
                             }
                             Err(e) => match e {
@@ -1517,15 +1584,19 @@ fn spawn_middlewares(router: &mut Router<Arc<AppState>>){
         if let Some(value_request) = request.as_any().downcast_ref::<ValueRequest>() {
             if let Some(Value::String(message)) = value_request.value.get("message") {
                 if *message == mapping {
-                    Ok(request)
+                    // if *message == "start_server".to_string() {
+                    //     MiddlewareAction::SkipPredicate
+                    // } else {
+                        MiddlewareAction::ReassignValue(request)
+                    // }
                 } else {
-                    Err(())
+                    MiddlewareAction::Continue
                 }
             } else {
-                Ok(request)
+                MiddlewareAction::Continue
             }
         } else {
-            Ok(request)
+            MiddlewareAction::Continue
         }
     });
 } 
@@ -1588,7 +1659,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         authenticated_origins: Arc::new(Mutex::new(Vec::new())),
         server_running: Arc::new(Mutex::new(false)),
         output_tx: Arc::new(Mutex::new(None)),
-        cmd_tx: None,
+        cmd_tx: Mutex::new(None),
+        cmd_rx: Mutex::new(None),
         stdin_ref: shared_stdin,
         server_output_tx: Arc::new(Mutex::new(None)),
         server_process: Arc::new(Mutex::new(None)),
@@ -1605,7 +1677,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         None
     };
 
-    let arc_state = Arc::new(state.clone());
+    let arc_state = Arc::new(state);
 
     let health_monitor_state = arc_state.clone();
 
@@ -1666,36 +1738,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         *server_running = false;
     }
 
+    let (cmd_tx, mut cmd_rx) = mpsc::channel::<String>(10_000);
+
+    // let conn_state = arc_state;
+    *arc_state.cmd_tx.lock().await = Some(Arc::new(cmd_tx.clone()));
+    *arc_state.cmd_rx.lock().await = Some(cmd_rx);
+    //let conn_state = Mutex::new(arc_state);
+
     loop {
-        let mut router = Router::new(arc_state.clone());
+        //let guard = conn_state.lock().await;
+        let mut router = Router::new(Arc::clone(&arc_state));
         //router.register_handler(handler);
         //erase::<_, _, _, _, _>
+        router.register_handler(erase_stream_wrapper_result(start_server_handler).mapping("start_server".to_string()));
         router.register_handler(erase_string_wrapper(stop_server_handler).mapping("stop_server".to_string()));
         router.register_handler(erase_string_wrapper(delete_server_handler).mapping("delete_server".to_string()));
         router.register_handler(erase_string_wrapper(set_server_handler).mapping("set_server".to_string()));
         router.register_handler(erase_string_wrapper(set_filter_handler).mapping("set_filter".to_string()));
-        router.register_handler(erase_string_wrapper(console_handler).mapping("create_server".to_string()));
+        router.register_handler(erase_string_wrapper(console_handler).mapping("console".to_string()));
         router.register_handler(erase_string_wrapper(server_data_handler).mapping("server_data".to_string()));
         router.register_handler(erase_string_wrapper(ping_handler).mapping("ping".to_string()));
         router.register_handler(erase_string_wrapper(server_state_handler).mapping("server_state".to_string()));
         router.register_handler(erase_string_wrapper(server_name_handler).mapping("server_name".to_string()));
-        router.register_handler(erase_stream_wrapper(create_server_handler).mapping("create_server".to_string()));
-        router.register_handler(erase_stream_wrapper(start_server_handler).mapping("start_server".to_string()));
+        router.register_handler(erase_stream_wrapper_result(create_server_handler).mapping("create_server".to_string()));
 
 
         let (mut conn_handler, addr_option) = listener.accept_connection().await?;
         let addr = addr_option.unwrap_or("unknown".to_string());
         println!("[Connection] New client from {}", addr);
 
-        let (cmd_tx, mut cmd_rx) = mpsc::channel::<String>(10_000);
 
-        let mut conn_state = (*arc_state).clone();
-        conn_state.cmd_tx = Some(Arc::new(Mutex::new(cmd_tx.clone())));
-        let arc_state_clone = Arc::new(conn_state);
+        //let arc_state_clone = Arc::new(conn_state);
 
         spawn_middlewares(&mut router);
         tokio::spawn(async move {
-            spawn_request_loop(arc_state_clone, &mut conn_handler, &mut router, &mut cmd_rx, addr).await
+            spawn_request_loop(&mut conn_handler, &mut router, addr).await
         });
     }
 }

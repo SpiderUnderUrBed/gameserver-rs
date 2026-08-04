@@ -1,7 +1,7 @@
 use std::{any::Any, error::Error};
 
 use crate::MessagePayload;
-use network_abstraction_lib::{FromWire, IntoResponse, ValueRequest};
+use network_abstraction_lib::{ErrorResponse, FromWire, IntoResponse, ValueRequest};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 
