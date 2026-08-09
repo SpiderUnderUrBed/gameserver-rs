@@ -191,35 +191,9 @@ pub async fn connect_to_server(
                                     },
                                 }
                             }
-                            // proxy_rx_result = proxy_rx_clone.recv() => {
-                            //     println!("got entry");
-                            //     //println!("got bytes from entry {:#?}", String::from_utf8(bytes.clone()).unwrap());
-                            //     //println!("{:#?}", proxy_rx_result);
-                            //     if let Ok(bytes) = proxy_rx_result {
-                            //         println!("returning bytes out");
-                            //         if let Err(e) = writer.write_all(&bytes).await {
-
-                            //         }
-                            //         if let Err(e) = writer.write_all(b"\n").await {
-
-                            //         };
-                            //         if let Err(e) = writer.flush().await {
-
-                            //         };
-                            //     }
-                            // }
                             rx = proxy_rx_clone.recv() => {
                                 if let Ok(bytes) = rx {
                                     println!("got bytes to forward {:#?}", String::from_utf8(bytes.clone()).unwrap());
-                                    //let _ = proxy_tx_clone.send(bytes.clone());
-                                    //let mut state_guard = arc_state_clone.write().await;
-                                    // let request_number = state_guard.connection_handler.request_number.load(Ordering::SeqCst);
-                                    // println!("{:#?}", request_number);
-                                    // *state_guard.connection_handler.request_number.get_mut() += 1;
-                                    // drop(state_guard);
-                                    // if let Err(e) = writer.write_all(&request_number.to_be_bytes()).await {
-                                    //     println!("error");
-                                    // }
                                     if let Err(e) = writer.write_all(&bytes).await {
                                         println!("error");
                                     }
@@ -244,50 +218,8 @@ pub async fn connect_to_server(
                 )
                 .await;
 
-                // let result = if !block_with_stream {
-                //     handle_stream(
-                //         Arc::clone(&arc_state),
-                //         &mut rx,
-                //         ip,
-                //         ws_tx.clone(),
-                //         internal_stream,
-                //     )
-                //     .await
-                // } else {
-                //     handle_stream(
-                //         Arc::clone(&arc_state),
-                //         &mut rx,
-                //         ip,
-                //         ws_tx.clone(),
-                //         internal_stream,
-                //     )
-                //     .await
-                // };
-
                 match result {
                     Ok(StreamResult::Reconnect(_, _)) => {}
-                    // Ok(StreamResult::Reconnect(new_ip, new_name)) => {
-                    //     println!("Reconnecting to {} ({})", new_name, new_ip);
-                    //     {
-                    //         let mut state = arc_state.write().await;
-                    //         state.current_node = NodeAndTCP {
-                    //             name: new_name,
-                    //             ip: new_ip.clone(),
-                    //             ..Default::default()
-                    //         };
-                    //         let node_state_bytes = serde_json::to_vec(&MessagePayload {
-                    //             r#type: "command".to_string(),
-                    //             message: "server_state".to_string(),
-                    //             authcode: "0".to_string(),
-                    //         })
-                    //         .unwrap_or_default();
-                    //         if let Some(tx) = &state.internal_tx {
-                    //             let _ = tx.send(node_state_bytes);
-                    //         }
-                    //     }
-                    //     tcp_url = new_ip;
-                    //     continue;
-                    // }
                     Ok(StreamResult::Done) => {
                         return Ok(Some(last_peer.unwrap_or(peer)));
                     }
@@ -496,37 +428,6 @@ impl Clone for ConnectionHandler {
         }
     }
 }
-// impl ConnectionHandler {
-//     pub async fn shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
-//         Ok(())
-//     }
-// }
-
-pub struct CreateServerRequest {
-    pub metadata: MetadataTypes,
-}
-impl NodeTransportable for CreateServerRequest {
-    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let msg = MessagePayloadWithMetadata {
-            r#type: "command".to_string(),
-            message: "create_server".to_string(),
-            metadata: self.metadata.clone(),
-            authcode: "0".to_string(),
-        };
-        let mut bytes = match serde_json::to_vec(&msg) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("Serialization error: {}", e);
-                return Err("Failed to serialize".into());
-            }
-        };
-        bytes.push(b'\n');
-        let _ = state.connection_handler.proxy_tx.send(bytes);
-
-        Ok(())
-    }
-}
-// NodeTransportable
 
 pub trait StreamTransportable {
     type Output;
@@ -535,6 +436,50 @@ pub trait StreamTransportable {
         state: Arc<RwLock<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>>;
 }
+
+pub struct CreateServerRequest {
+    pub metadata: MetadataTypes,
+}
+
+impl StreamTransportable for CreateServerRequest {
+    type Output = mpsc::Receiver<ConsoleData>;
+    async fn stream_transport(
+        &self,
+        arc_state: Arc<RwLock<AppState>>,
+    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
+        let msg = serde_json::to_vec(&MessagePayload {
+            r#type: "command".to_string(),
+            message: "create_server".to_string(),
+            authcode: "".to_string(),
+        });
+        if let Err(e) = msg {
+            return Err("Failed to serialize".into());
+        };
+        let state = arc_state.write().await;
+        let _ = state.connection_handler.proxy_tx.send(msg.unwrap());
+        let mut proxy_rx = state.connection_handler.proxy_rx.resubscribe();
+        drop(state);
+        let (server_tx, server_rx) = tokio::sync::mpsc::channel(32);
+        tokio::spawn(async move {
+            loop {
+                if let Ok(bytes) = proxy_rx.recv().await {
+                    if let Ok(value) = serde_json::from_slice::<ConsoleData>(&bytes){
+                        let _ = server_tx.send(value).await;
+                    } 
+                } else {
+                    break;
+                }
+            }
+        });
+
+
+        Ok(server_rx)
+    }
+}
+
+// NodeTransportable
+
+
 pub struct StartServerRequest {
     // metadata: MetadataTypes
     pub stdin: Option<broadcast::Receiver<String>>
@@ -557,19 +502,12 @@ impl StreamTransportable for StartServerRequest {
         let _ = state.connection_handler.proxy_tx.send(msg.unwrap());
         let mut proxy_rx = state.connection_handler.proxy_rx.resubscribe();
         drop(state);
-        // let (server_out_tx, server_out_rx) = tokio::sync::mpsc::channel(32);
-        // let (server_in_tx, server_in_rx) = tokio::sync::mpsc::channel(32);
         let (server_tx, server_rx) = tokio::sync::mpsc::channel(32);
         tokio::spawn(async move {
             loop {
                 if let Ok(bytes) = proxy_rx.recv().await {
-                    // if let Ok(value) = str::from_utf8(&bytes){}
                     if let Ok(value) = serde_json::from_slice::<ConsoleData>(&bytes){
                         let _ = server_tx.send(value).await;
-                        // if value.message == "console" {
-                        //     //String::from_utf8_lossy(&bytes)
-                        //     server_tx.send();
-                        // }
                     } 
                 } else {
                     break;

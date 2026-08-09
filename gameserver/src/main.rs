@@ -625,52 +625,6 @@ pub struct FsMetadata {
     pub canonical_path: String,
 }
 
-// this is FsMetadata but simpler, should be phased out in favor of FsMetadata
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct FsEntry {
-    pub name: String,
-    pub is_file: bool,
-    pub is_dir: bool,
-}
-
-// Due to certain instabillity when it comes to sending files and file content, id matching is required to
-// make sure the correct data is matched to the correct file or operation
-// #[derive(serde::Serialize, serde::Deserialize, Debug)]
-// struct FileRequestMessage {
-//     id: u64,
-//     #[serde(flatten)]
-//     payload: FileRequestPayload,
-// }
-
-// The types of file requests the server can make, easy to match and keep track of/consistent
-// #[derive(serde::Serialize, serde::Deserialize, Debug)]
-// #[serde(tag = "type", content = "data")]
-// enum FileRequestPayload {
-//     Metadata {
-//         path: String,
-//     },
-//     ListDir {
-//         path: String,
-//     },
-//     ListDirWithRange {
-//         path: String,
-//         start: Option<u64>,
-//         end: Option<u64>,
-//     },
-//     PathFromTag {
-//         path: String,
-//         tag: Option<String>,
-//     },
-//     FileChunk(FileChunk),
-// }
-
-// Needs to be phased out, or just removed, everything now uses FileRequestPayload
-// #[derive(serde::Serialize, serde::Deserialize)]
-// struct FileResponseMessage {
-//     in_response_to: u64,
-//     data: serde_json::Value,
-// }
-
 // AppState for the Node, stores the name of the current server, the state of the process
 // whether or not its running, the channel for the output messages, and the process, makes it easier to pass and modify
 // between functions

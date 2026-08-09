@@ -891,53 +891,8 @@ async fn handle_all_stream_values(
                 }
             }
         }
-
-        // if data_clone.data.contains("\"type\":\"stdout\"") {
-        //     if let Ok(output_msg) = serde_json::from_str::<serde_json::Value>(&data_clone.data) {
-        //         if let Some(server_output) = output_msg.get("data").and_then(|v| v.as_str()) {
-        //             if !server_start_keyword.is_empty()
-        //                 && server_output.contains(&*server_start_keyword)
-        //             {
-        //                 let _ = ws_tx.send("Server is ready for connections!".to_string());
-        //                 let mut state_guard = arc_state.write().await;
-        //                 state_guard.current_node.status = Status::Up;
-        //             } else if !server_stop_keyword.is_empty()
-        //                 && server_output.contains(&*server_stop_keyword)
-        //             {
-        //                 let mut state_guard = arc_state.write().await;
-        //                 state_guard.current_node.status = Status::Down;
-        //             }
-        //             let _ = ws_tx.send(server_output.to_string());
-        //         }
-        //     }
-        // }
-        // if data_clone.data.contains("\"type\":\"stderr\"") {
-        //     if let Ok(output_msg) = serde_json::from_str::<serde_json::Value>(&data_clone.data) {
-        //         if let Some(server_output) = output_msg.get("data").and_then(|v| v.as_str()) {
-        //             let _ = ws_tx.send(server_output.to_string());
-        //         }
-        //     }
-        // }
-
-        // if !data_clone.data.contains("\"type\":\"stdout\"")
-        //     && !data_clone.data.contains("\"type\":\"command\"")
-        // {
-        //     let _ = ws_tx.send(data_clone.data.clone());
-        // }
     }
 
-    // if FORWARD_ALL_MESSAGES {
-    //     match serde_json::to_string(&value) {
-    //         Ok(string) => {
-    //             if let Err(err) = ws_tx.send(string) {
-    //                 if LOG_NONFATAL_FORWARD_REQUESTS {
-    //                     eprintln!("Failed to send request over broadcast: {} (not fatal)", err);
-    //                 }
-    //             }
-    //         }
-    //         Err(err) => eprintln!("Failed to serialize request: {}", err),
-    //     }
-    // }
 
     Ok(false)
 }
@@ -950,14 +905,6 @@ async fn process_stream_data(
     server_start_keyword: &mut String,
     server_stop_keyword: &mut String,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-    // {
-    //     let state_guard = arc_state.read().await;
-    //     let raw_data_request = RawBytes {
-    //         bytes: raw_data.to_vec(),
-    //     };
-    //     let _ = raw_data_request.node_transport(&state_guard).await;
-    // }
-
     if let Ok(text) = std::str::from_utf8(raw_data) {
         println!("got text {:#?}", text);
         let line_content = text.trim();
@@ -1663,8 +1610,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
                 let connect_to_server_result =
                     connect_to_server(inner_state, tcp_url, bridge_tx, true, false).await;
-                if let Err(err) = connect_to_server_result {
-                    println!("{:#?}", err);
+                if let Err(_) = connect_to_server_result {
+                    // println", err);
+                    println!("got an error connecting to server");
                 }
             }
         });
@@ -1703,70 +1651,7 @@ pub async fn set_lock(
     }
 }
 
-pub async fn start_server(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
-    auth_session: AuthSession,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    println!("Called start server");
-    let mut state = arc_state.write().await;
 
-    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
-    if !authorized {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
-    // drop(state);
-
-    // tokio::spawn(async move {
-    // let mut state = arc_state.write().await;
-    // let (proxy_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
-    let start_server_request = StartServerRequest {
-        stdin: Some(state.ws_tx.subscribe()),
-    };
-    drop(state);
-    if let Ok(mut stream) = start_server_request.stream_transport(arc_state.clone()).await {
-        // while let Some(data) = stream.recv().await {
-        //     println!("data: {:#?}", data);
-        // } 
-        // println!("stream ended");
-        //  let (proxy_tx, proxy_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
-        //  let ws_tx = state.ws_tx.clone();
-        // let server_console = {
-        //     if let Some(console) = arc_state.server_console.as_ref() {
-        //         console
-        //     } else {
-        //         state.server_console = Some(proxy_tx);
-        //         state.server_console.as_ref().unwrap()
-        //     }
-        // };
-        let mut state = arc_state.write().await;
-        let server_console: broadcast::Sender<String> = if let Some(console) = state.server_console.as_ref() {
-            console.clone()
-        } else {
-            let (server_console_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
-            state.server_console = Some(server_console_tx);
-            println!("notifying");
-            state.server_start_event.notify_waiters();
-            println!("after notify");
-            state.server_console.as_ref().unwrap().clone()
-        };
-        drop(state);
-        //let proxy_rx = server_console.subscribe();
-         tokio::spawn(async move {
-            while let Some(data) = stream.recv().await {
-                println!("got message {:#?}", data);
-                let _ = server_console.send(serde_json::to_string(&data).unwrap());
-                // let _ = proxy_tx.send(serde_json::to_vec(&data).unwrap());
-                // let _ = ws_tx.send(serde_json::to_string(&data).unwrap());
-            }
-         });
-         // state.connection_handler.proxy_rx = proxy_rx;
-        //state.connection_handler.proxy_rx = proxy_rx;
-    };
-    //});
-
-    StatusCode::CREATED.into_response()
-}
 
 pub async fn stop_server(
     State(arc_state): State<Arc<RwLock<AppState>>>,
@@ -2185,52 +2070,16 @@ async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
 
         if let Some(notify) = notify {
             notify.notified().await;
-            println!("got notified first");
         }
         let state = cloned_arc_state.read().await;
-        println!("got notified");
-        let mut server_sender = state.server_console.as_ref().unwrap();
+        let server_sender = state.server_console.as_ref().unwrap();
         let mut server_receiver = server_sender.clone().subscribe();
         drop(state);
-        while let Ok(mut msg) = server_receiver.recv().await {
-            println!("got msg at socket: {}", msg);
-            let res = sender.send(Message::Text(msg.into())).await;
-            println!("{:#?}", res);
+        while let Ok(msg) = server_receiver.recv().await {
+            let _ = sender.send(Message::Text(msg.into())).await;
         };
     });
 
-    // Spawn task forwarding broadcast messages to this client
-    // tokio::spawn(async move {
-    //     // let mut broadcast_rx = broadcast_rx;
-    //     while let Ok(mut msg) = broadcast_rx.recv().await {
-    //         println!("got a msg");
-    //         let locked = {
-    //             let state = cloned_arc_state.read().await;
-    //             state.lock
-    //         };
-    //         println!("A");
-    //         if !locked {
-    //             println!("not locked");
-    //             // Trying to parse msg as JSON Value
-    //             if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&msg) {
-    //                 if let Some(data_val) = v.get_mut("data") {
-    //                     if let Some(decoded_json) = try_decode_data(data_val) {
-    //                         *data_val = decoded_json;
-    //                         if let Ok(new_msg) = serde_json::to_string(&v) {
-    //                             println!("[Conn {}] Forwarding raw message: {:#?}", conn_id, new_msg);
-    //                             msg = new_msg;
-    //                         }
-    //                     }
-    //                 }
-    //             }
-    //         }
-
-    //         let mut sender = broadcast_sender.lock().await;
-    //         if sender.send(Message::Text(msg.into())).await.is_err() {
-    //             break;
-    //         }
-    //     }
-    // });
 
     // Main receive loop
     while let Some(Ok(message)) = receiver.next().await {
@@ -2241,35 +2090,6 @@ async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
         if !locked {
             if let Message::Text(text) = message {
                 let _ = arc_state.write().await.ws_tx.send(text.to_string());
-                // let _ = arc_state.write().await.ws_tx.send(serde_json::to_string(&MessagePayload {
-                //         r#type: "console".into(),
-                //         message: text.to_string(),
-                //         authcode: "0".into(),
-                //     }).unwrap());
-                // println!("[Conn {}] Got from client: {}", conn_id, text);
-                // let payload =
-                //     serde_json::from_str::<MessagePayload>(&text).unwrap_or(MessagePayload {
-                //         r#type: "console".into(),
-                //         message: text.to_string(),
-                //         authcode: "0".into(),
-                //     });
-
-                // println!("before sending payload");
-                // if let Ok(mut bytes) = serde_json::to_vec(&payload) {
-                //     bytes.push(b'\n');
-                //     let _ = arc_state.write().await.connection_handler.proxy_tx.send(bytes);
-
-                //     // Acquire lock briefly only to send TCP message
-                //     // let tcp_tx = {
-                //     //     let state = arc_state.read().await;
-                //     //     state.connection_handler.tcp_tx.clone()
-                //     // };
-
-                //     // let lock = tcp_tx;
-                //     // let res = lock.send(bytes);
-                //     // println!("{:#?}", res);
-                //     //println!("sent bytes");
-                // }
             }
         }
     }
@@ -2850,6 +2670,44 @@ async fn delete_server(
 
     Ok(StatusCode::CREATED.into_response())
 }
+
+pub async fn start_server(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    auth_session: AuthSession,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    println!("Called start server");
+    let mut state = arc_state.write().await;
+
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
+    if !authorized {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let start_server_request = StartServerRequest {
+        stdin: Some(state.ws_tx.subscribe()),
+    };
+    drop(state);
+    if let Ok(mut stream) = start_server_request.stream_transport(arc_state.clone()).await {
+        let mut state = arc_state.write().await;
+        let server_console: broadcast::Sender<String> = if let Some(console) = state.server_console.as_ref() {
+            console.clone()
+        } else {
+            let (server_console_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
+            state.server_console = Some(server_console_tx);
+            state.server_start_event.notify_waiters();
+            state.server_console.as_ref().unwrap().clone()
+        };
+        drop(state);
+         tokio::spawn(async move {
+            while let Some(data) = stream.recv().await {
+                let _ = server_console.send(serde_json::to_string(&data).unwrap());
+            }
+         });
+    };
+
+    StatusCode::CREATED.into_response()
+}
+
 async fn add_server(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     auth_session: AuthSession,
@@ -2923,8 +2781,24 @@ async fn add_server(
             server_metadata: server.server_metadata.clone(),
         },
     };
-    let _ = create_server_request.node_transport(&mut state).await;
-
+    if let Ok(mut stream) = create_server_request.stream_transport(arc_state.clone()).await {
+        let mut state = arc_state.write().await;
+        let server_console: broadcast::Sender<String> = if let Some(console) = state.server_console.as_ref() {
+            console.clone()
+        } else {
+            let (server_console_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
+            state.server_console = Some(server_console_tx);
+            state.server_start_event.notify_waiters();
+            state.server_console.as_ref().unwrap().clone()
+        };
+        drop(state);
+         tokio::spawn(async move {
+            while let Some(data) = stream.recv().await {
+                println!("got message {:#?}", data);
+                let _ = server_console.send(serde_json::to_string(&data).unwrap());
+            }
+         });
+    };
     let set_server_request = SetServerRequest {
         metadata: MetadataTypes::Server {
             servername: server.servername.clone(),

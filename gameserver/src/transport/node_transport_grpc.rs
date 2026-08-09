@@ -71,30 +71,6 @@ impl ConnectionManager {
     }
 }
 
-// if !self.accepted_connection {
-//     self.accepted_connection = true;
-// } else {
-//     let _never: () = pending().await;
-// }
-// let connection = Connection {
-//     requests: Arc::new(RwLock::new(Vec::new())),
-// };
-// let handler = ConnectionHandler {
-//     // current_request: None,
-//     // requests: vec![],
-//     connection,
-// };
-// let url = self.url.clone();
-// let requests_lock = handler.connection.requests.clone();
-// tokio::spawn(async move {
-//     //let mut requests = requests_lock.write().await;
-//     let inner_connection = Connection {
-//         requests: requests_lock,
-//     };
-//     let _ = Connection::serve_with_arc(Arc::new(inner_connection), url).await;
-// });
-// Ok((handler, None))
-
 pub struct Connection {
     router: Arc<Mutex<Router<Arc<AppState>>>>
 }
@@ -104,48 +80,14 @@ pub struct Request {
     result_tx: broadcast::Sender<String>,
 }
 
-// async fn delegate_request<T: Serialize, K: Serialize + DeserializeOwned + Clone>(
-//     request: T,
-//     requests_lock: Arc<RwLock<Vec<Request>>>,
-// ) -> Result<Result<K, Box<dyn std::error::Error + Send + Sync>>, tonic::Status> {
-//     let (tx, mut rx) = broadcast::channel::<String>(16);
-
-//     println!("A");
-//     //println!("{:#?}", serde_json::to_value(request));
-//     let stringified_request =
-//         serde_json::to_string(&request).map_err(|_| tonic::Status::internal(String::new()))?;
-
-//     let mut requests = requests_lock.write().await;
-//     requests.push(Request {
-//         data: stringified_request,
-//         result_tx: tx,
-//     });
-//     drop(requests);
-//     println!("B");
-
-//     let result = rx
-//         .recv()
-//         .await
-//         .map_err(|_| tonic::Status::internal("Internal error".to_string()))?;
-//     println!("C");
-//     println!("{:#?}", result.clone());
-//     let serialized_result = serde_json::from_str::<K>(&result).map_err(|e| e.into());
-//     if let Err(e) = &serialized_result {
-//         println!("error: {:#?}", e);
-//     };
-//     Ok(serialized_result)
-// }
 
 #[tonic::async_trait]
 impl ServerEdit for Connection {
-    // type StartStream =  Pin<Box<dyn futures::Stream<Item = Result<ServerMessage, tonic::Status>> + Send >>;
-    // type CreateStream = Pin<Box<dyn futures::Stream<Item = Result<ServerMessage, tonic::Status>> + Send >>;
     type StartStream =  ReceiverStream<Result<ServerMessage, tonic::Status>>;
     type CreateStream = ReceiverStream<Result<ServerMessage, tonic::Status>>;
     async fn create(
         &self,
         request: tonic::Request<proto::CreateServerRequest>,
-    // ) -> std::result::Result<tonic::Response<proto::CreateServerResponse>, tonic::Status> {
     ) -> std::result::Result<tonic::Response<Self::CreateStream>, tonic::Status> {
         // //let inner = request.into_inner();
         let (tx, rx) = mpsc::channel(32);
@@ -317,7 +259,7 @@ impl ServerEdit for Connection {
     }
     async fn stop(
         &self,
-        request: tonic::Request<proto::StopServerRequest>,
+        _request: tonic::Request<proto::StopServerRequest>,
     ) -> std::result::Result<tonic::Response<proto::StopServerResponse>, tonic::Status> {
         //let inner = request.into_inner();
         let stop_server_request = StopServerRequest::default();
@@ -328,18 +270,19 @@ impl ServerEdit for Connection {
             match response.try_into_response() {
                 Ok(boxed) => match boxed.downcast::<String>(){
                     Ok(final_response) => {
-                        println!("got string");
+                        if let Ok(response) = serde_json::from_str::<proto::StopServerResponse>(&*final_response){
+                            Ok(response.into())
+                        } else {
+                            return Err(tonic::Status::internal("Could not serialize response"));
+                        }
                     }
-                    Err(_) => {}
+                    Err(_) => Err(tonic::Status::internal("Response did not come back as a string")),
                 },
-                Err(_) => {}
+                Err(_) => Err(tonic::Status::internal("Failed during a response conversion")),
             }
-            // if let Ok(final_response) = response.extract::<StopServerResponse>(){
-            //     println!("{:?}", final_response);
-            // }
+        } else {
+            Err(tonic::Status::internal("Could not get response back at all"))
         }
-
-        todo!()
     }
 }
 
@@ -347,14 +290,29 @@ impl ServerEdit for Connection {
 impl ServerManage for Connection {
     async fn data(
         &self,
-        request: tonic::Request<proto::ServerDataRequest>,
+        _request: tonic::Request<proto::ServerDataRequest>,
     ) -> std::result::Result<tonic::Response<proto::ServerDataResponse>, tonic::Status> {
         let server_data_request = ServerDataRequest::default();
-     
-        let mut router = self.router.lock().await;
-        let response = router.execute_handler_typed(server_data_request, "create_server".to_string()).await;
 
-        todo!()
+        let mut router = self.router.lock().await;
+        let response_result = router.execute_handler_typed(server_data_request, "server_data".to_string()).await;
+        if let Ok(response) = response_result {
+            match response.try_into_response() {
+                Ok(boxed) => match boxed.downcast::<String>(){
+                    Ok(final_response) => {
+                        if let Ok(response) = serde_json::from_str::<proto::ServerDataResponse>(&*final_response){
+                            Ok(response.into())
+                        } else {
+                            return Err(tonic::Status::internal("Could not serialize response"));
+                        }
+                    }
+                    Err(_) => Err(tonic::Status::internal("Response did not come back as a string")),
+                },
+                Err(_) => Err(tonic::Status::internal("Failed during a response conversion")),
+            }
+        } else {
+            Err(tonic::Status::internal("Could not get response back at all"))
+        }
     }
     async fn name(
         &self,
@@ -363,9 +321,24 @@ impl ServerManage for Connection {
         let server_name_request = ServerNameRequest::default();
 
         let mut router = self.router.lock().await;
-        let response = router.execute_handler_typed(server_name_request, "create_server".to_string()).await;
-
-        todo!()
+        let response_result = router.execute_handler_typed(server_name_request, "server_name".to_string()).await;
+        if let Ok(response) = response_result {
+            match response.try_into_response() {
+                Ok(boxed) => match boxed.downcast::<String>(){
+                    Ok(final_response) => {
+                        if let Ok(response) = serde_json::from_str::<proto::ServerNameResponse>(&*final_response){
+                            Ok(response.into())
+                        } else {
+                            return Err(tonic::Status::internal("Could not serialize response"));
+                        }
+                    }
+                    Err(_) => Err(tonic::Status::internal("Response did not come back as a string")),
+                },
+                Err(_) => Err(tonic::Status::internal("Failed during a response conversion")),
+            }
+        } else {
+            Err(tonic::Status::internal("Could not get response back at all"))
+        }
     }
     async fn set(
         &self,
@@ -381,9 +354,24 @@ impl ServerManage for Connection {
         };
 
         let mut router = self.router.lock().await;
-        let response = router.execute_handler_typed(server_set_request, "create_server".to_string()).await;
-
-        todo!()
+        let response_result = router.execute_handler_typed(server_set_request, "set_server".to_string()).await;
+        if let Ok(response) = response_result {
+            match response.try_into_response() {
+                Ok(boxed) => match boxed.downcast::<String>(){
+                    Ok(final_response) => {
+                        if let Ok(response) = serde_json::from_str::<proto::SetServerResponse>(&*final_response){
+                            Ok(response.into())
+                        } else {
+                            return Err(tonic::Status::internal("Could not serialize response"));
+                        }
+                    }
+                    Err(_) => Err(tonic::Status::internal("Response did not come back as a string")),
+                },
+                Err(_) => Err(tonic::Status::internal("Failed during a response conversion")),
+            }
+        } else {
+            Err(tonic::Status::internal("Could not get response back at all"))
+        }
    
     }
     async fn state(
@@ -393,9 +381,24 @@ impl ServerManage for Connection {
         let server_state_request = ServerStateRequest::default();
         
         let mut router = self.router.lock().await;
-        let response = router.execute_handler_typed(server_state_request, "create_server".to_string()).await;
-
-        todo!()
+        let response_result = router.execute_handler_typed(server_state_request, "server_state".to_string()).await;
+        if let Ok(response) = response_result {
+            match response.try_into_response() {
+                Ok(boxed) => match boxed.downcast::<String>(){
+                    Ok(final_response) => {
+                        if let Ok(response) = serde_json::from_str::<proto::ServerStateResponse>(&*final_response){
+                            Ok(response.into())
+                        } else {
+                            return Err(tonic::Status::internal("Could not serialize response"));
+                        }
+                    }
+                    Err(_) => Err(tonic::Status::internal("Response did not come back as a string")),
+                },
+                Err(_) => Err(tonic::Status::internal("Failed during a response conversion")),
+            }
+        } else {
+            Err(tonic::Status::internal("Could not get response back at all"))
+        }
     }
 }
 

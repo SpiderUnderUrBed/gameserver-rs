@@ -15,18 +15,6 @@ use tokio::{
 
 use crate::{GetState, IncomingMessage, IncomingMessageWithMetadata, SimpleMessage};
 
-// #[derive(Serialize, Deserialize, Debug, Clone)]
-// pub struct FileResponseMessage {
-//     pub in_response_to: u64,
-//     pub data: Vec<u8>,
-// }
-
-// #[derive(Serialize, Deserialize, Clone, Debug)]
-// pub struct FileRequestMessage {
-//     pub id: u64,
-//     #[serde(flatten)]
-//     pub payload: FileRequestPayload,
-// }
 pub enum TaggedRequest {
     None,
     Fs(Vec<u8>),
@@ -58,7 +46,6 @@ impl ConnectionManager {
             stream: Some(socket),
             read_buf: vec![],
             newline_pos: 0,
-            //last_request: None
         };
         Ok((handler, Some(addr.to_string())))
     }
@@ -71,7 +58,6 @@ pub struct ConnectionHandler {
     stream: Option<TcpStream>,
     read_buf: Vec<u8>,
     newline_pos: usize,
-    //last_request: Option<String>
 }
 
 impl ConnectionHandler {
@@ -80,7 +66,6 @@ impl ConnectionHandler {
             stream: None,
             read_buf: Vec::new(),
             newline_pos: 0,
-            //last_request: None
         }
     }
 
@@ -105,20 +90,15 @@ impl ConnectionHandler {
             self.inner().clear();
         }
     }
-    //pub fn next() -> Option<usize> {
     pub async fn next(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if self.read_buf.len() > 0 {
-            // println!("{:#?}", self.read_buf.clone());
         }
         if let Some(pos) = self.read_buf.iter().position(|&b| b == b'\n') {
-            //println!("{:#?}", self.read_buf.iter().filter(|i| **i != 0).collect::<Vec<&u8>>());
             self.newline_pos = pos;
-            //self.remove_current_segment_or_clear();
             Ok(())
         } else {
             Err("Did not find next position".into())
         }
-        //todo!()
     }
     pub fn recv_bytes(&mut self) -> Vec<u8> {
         let bytes = self.read_buf.clone();
@@ -151,7 +131,6 @@ impl ConnectionHandler {
         } else {
             Err("no stream exists".into())
         }
-        //Ok(())
     }
     pub async fn send(
         &mut self,
@@ -170,11 +149,8 @@ impl ConnectionHandler {
     pub fn split(&mut self) -> Result<(Writer, Reader), Box<dyn std::error::Error + Send + Sync>> {
         let stream = self.stream.take().ok_or("no stream set")?;
         let (read_half, write_half) = stream.into_split();
-        // Ok((Writer { write_half }, Reader { read_half, read_buf: Some(&self.read_buf) }))
         Ok((Writer { write_half }, Reader { read_half }))
     }
-    // pub async fn handle_connections() {
-    // }
 }
 pub struct Writer {
     write_half: OwnedWriteHalf,

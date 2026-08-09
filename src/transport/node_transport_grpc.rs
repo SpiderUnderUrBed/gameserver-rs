@@ -91,27 +91,9 @@ impl Clone for ConnectionHandler {
 }
 pub async fn check_channel_health(
     state: &AppState,
-    // tx: &broadcast::Sender<Vec<u8>>,
-    // mut rx: broadcast::Receiver<Vec<u8>>,
 ) -> bool {
     true
-    // let (tx, mut rx) = (state.connection_handler.proxy_tx.clone(), state.connection_handler.proxy_rx.resubscribe());
-    // match tx.send("ping".into()) {
-    //     Ok(_) => true,
-    //     Err(_) => return false,
-    // };
-
-    // match rx.recv().await {
-    //     Ok(_msg) => true,
-    //     Err(broadcast::error::RecvError::Closed) => false,
-    //     Err(broadcast::error::RecvError::Lagged(_)) => true,
-    // }
 }
-// impl ConnectionHandler {
-//     pub async fn shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
-//         Ok(())
-//     }
-// }
 
 // does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
 pub async fn connect_to_server(
@@ -146,150 +128,21 @@ pub async fn connect_to_server(
     Ok(None)
 }
 
-// // for the initial connection attempt, which will determine if possibly I would need to create the container and deployment upon failure
-// // i will use rusts 'timeout' for x interval determined with CONNECTION_TIMEOUT
-// pub async fn attempt_connection(
-//     tcp_url: String,
-// ) -> Result<TcpStream, Box<dyn std::error::Error + Send + Sync>> {
-//     timeout(CONNECTION_TIMEOUT, TcpStream::connect(tcp_url))
-//         .await?
-//         .map_err(Into::into)
-// }
 
 // this is where it determines wether or not to try and create the container and deployment, as attempt_connection itself is used in various diffrent contexts (like it will constantly
 // try to connect upon failing but it should not try to create the container and deployment every time it fails)
 // I use anyhow here because it saves me having to try and downcast the error type
 pub async fn try_initial_connection(
-    conn_attempts: u64,
-    conn_timeout: u64,
-    create_handler: bool,
-    state: &Arc<RwLock<AppState>>,
-    tcp_url: String,
-    ws_tx: &broadcast::Sender<String>,
-    tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
+    _conn_attempts: u64,
+    _conn_timeout: u64,
+    _create_handler: bool,
+    _state: &Arc<RwLock<AppState>>,
+    _tcp_url: String,
+    _ws_tx: &broadcast::Sender<String>,
+    _tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
 ) -> Result<(), anyhow::Error> {
     Ok(())
-    // let mut final_error = anyhow!(String::new());
-    // println!("trying this initial connection");
-    // for _ in 0..conn_attempts {
-    //     match attempt_connection(tcp_url.clone()).await {
-    //         Ok(mut stream) => {
-    //             println!("Initial connection succeeded!");
-    //             // note, possibly I wont ever need to create a handler from the test of the intial connection
-    //             // TODO: think about removing create_handler and just never create a handler here
-    //             // I was considering to return the handler from here, but it wouldnt make sense to add that complexity
-    //             // when I only create the initial tcp stream within the main function, it would involve either a thread here, or in the main function
-    //             // and i rather keep this function focused on testing the connection (there might be a very NICHE case for making a handler here, but if there isnt ill remove it)
-    //             if create_handler {
-    //                 let (_, temp_rx) =
-    //                     tokio::sync::broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
-    //                 let mut temp_rx = temp_rx;
-    //                 let ip = stream.peer_addr()?.ip().to_string();
-
-    //                 let stream_result = handle_stream(
-    //                     state.clone(),
-    //                     &mut temp_rx,
-    //                     //&mut stream,
-    //                     ip,
-    //                     ws_tx.clone(),
-    //                     None,
-    //                 )
-    //                 .await;
-    //                 if stream_result.is_ok() {
-    //                     println!("Stream finished");
-    //                     return Ok(());
-    //                 } else {
-    //                     final_error = anyhow!(stream_result.err().unwrap())
-    //                 }
-    //             } else {
-    //                 return Ok(());
-    //             }
-    //         }
-    //         Err(e) => {
-    //             eprintln!("Initial connection failed: {}", e);
-    //         }
-    //     }
-    //     tokio::time::sleep(Duration::from_secs(2)).await;
-    // }
-    // Err(final_error)
 }
-
-// #[tonic::async_trait]
-// impl ServerEdit for DeleteServerRequestGrpc {
-//     async fn create(
-//         &self,
-//         request: tonic::Request<proto::CreateServerRequest>
-//     ) -> Result<tonic::Response<proto::CreateServerResponse>, tonic::Status>{
-//         let input = request.get_ref();
-//     }
-// }
-
-// pub enum RequestTypes {
-//     Ping,
-//     CreateServerRequest(CreateServerRequest),
-//     DeleteSeverRequest(DeleteServerRequest),
-//     SetFilterRequest(SetFilterRequest),
-//     SetServerRequest(SetServerRequest),
-//     ServerDataRequest(ServerDataRequest),
-//     ServerNameRequest(ServerNameRequest),
-//     StartServerRequest(StartServerRequest),
-//     StopServerRequest(StopServerRequest),
-//     ServerStateRequest(ServerStateRequest),
-//     ConsoleRequest(ConsoleRequest),
-//     FileRequest(FileRequest),
-// }
-
-// pub struct RequestHandler {}
-// impl RequestHandler {
-//     pub fn try_recv_req(value: Value) -> Option<RequestTypes> {
-
-// pub trait TryIntoRequest {
-//     type Request: DeserializeOwned + Serialize;
-
-//     fn into_typed_request<T: 'static>(self) -> Result<T, Box<dyn std::error::Error + Send + Sync>>;
-
-//     fn into_request(
-//         value: Value,
-//     ) -> Result<Self::Request, Box<dyn std::error::Error + Send + Sync>>;
-// }
-
-// impl TryIntoRequest for RequestTypes {
-//     type Request = Self;
-
-//     fn into_typed_request<T: 'static>(self) -> Result<T, Box<dyn std::error::Error + Send + Sync>> {
-//         let boxed: Box<dyn Any> = match self {
-//             RequestTypes::CreateServerRequest(req) => Box::new(req),
-//             RequestTypes::Ping => Box::new(Ping::default()),
-//             RequestTypes::DeleteSeverRequest(delete_server_request) => {
-//                 Box::new(delete_server_request)
-//             }
-//             RequestTypes::SetFilterRequest(set_filter_request) => Box::new(set_filter_request),
-//             RequestTypes::SetServerRequest(set_server_request) => Box::new(set_server_request),
-//             RequestTypes::ServerDataRequest(server_data_request) => Box::new(server_data_request),
-//             RequestTypes::ServerNameRequest(server_name_request) => Box::new(server_name_request),
-//             RequestTypes::StartServerRequest(start_server_request) => {
-//                 Box::new(start_server_request)
-//             }
-//             RequestTypes::StopServerRequest(stop_server_request) => Box::new(stop_server_request),
-//             RequestTypes::ServerStateRequest(server_state_request) => {
-//                 Box::new(server_state_request)
-//             }
-//             RequestTypes::ConsoleRequest(console_request) => Box::new(console_request),
-//             RequestTypes::FileRequest(file_request) => Box::new(file_request),
-//         };
-
-//         boxed
-//             .downcast::<T>()
-//             .map(|b| *b)
-//             .map_err(|_| "Type T did not match the inner request type".into())
-//     }
-
-//     fn into_request(
-//         value: Value,
-//     ) -> Result<Self::Request, Box<dyn std::error::Error + Send + Sync>> {
-//         Err("Not implimented".into())
-//     }
-// }
 
 pub trait NodeTransportable {
     type Output;
@@ -392,23 +245,16 @@ impl NodeTransportable for DeleteServerRequest {
         &self,
         state: &mut AppState,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        // let msg = MessagePayloadWithMetadata {
-        //     r#type: "command".to_string(),
-        //     message: "delete_server".to_string(),
-        //     authcode: "0".to_string(),
-        //     metadata: self.metadata.clone(),
-        // };
-
-        // let mut bytes = match serde_json::to_vec(&msg) {
-        //     Ok(b) => b,
-        //     Err(e) => {
-        //         eprintln!("Serialization error: {}", e);
-        //         return Err("Failed to serialize".into());
-        //     }
-        // };
-        // bytes.push(b'\n');
-
-        // let _ = state.connection_handler.tcp_tx.send(bytes);
+        let request = proto::DeleteServerRequest {
+            metadata: Some(self.metadata.clone().into()),
+        };
+        let _ = state
+            .connection_handler
+            .clients
+            .as_mut()
+            .unwrap()
+            .server_edit_client
+            .delete(request);
 
         Ok(())
     }
@@ -433,25 +279,52 @@ impl NodeTransportable for CreateServerRequest {
             .unwrap()
             .server_edit_client
             .create(request);
-        // let msg = MessagePayloadWithMetadata {
-        //     r#type: "command".to_string(),
-        //     message: "create_server".to_string(),
-        //     metadata: self.metadata.clone(),
-        //     authcode: "0".to_string(),
-        // };
-        // let mut bytes = match serde_json::to_vec(&msg) {
-        //     Ok(b) => b,
-        //     Err(e) => {
-        //         eprintln!("Serialization error: {}", e);
-        //         return Err("Failed to serialize".into());
-        //     }
-        // };
-        // bytes.push(b'\n');
-        // let _ = state.connection_handler.tcp_tx.send(bytes);
 
         Ok(())
     }
 }
+impl StreamTransportable for CreateServerRequest {
+    type Output = mpsc::Receiver<ConsoleData>;
+    async fn stream_transport(
+        &self,
+        state: Arc<RwLock<AppState>>,
+    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
+        let request = proto::CreateServerRequest {
+            metadata: Some(self.metadata.clone().into())
+        };
+        let (server_out_tx, server_out_rx) = tokio::sync::mpsc::channel(32);
+        let mut clients = {
+            let guard = state.read().await;
+            guard.connection_handler.clients.clone().unwrap()
+        }; 
+
+        if let Ok(response_stream) = clients.server_edit_client.create(request).await {
+            {
+                //drop(state);
+                println!("before creating stream");
+                let mut stream = response_stream.into_inner();
+                tokio::spawn(async move {
+                    while let Some(result) = stream.next().await {
+                        match result {
+                            Ok(message) => {
+                                //println!("got a message {:#?}", message);
+                                let _ = server_out_tx.send(
+                                    ConsoleData { authcode: "0".to_string(), data: message.data, r#type: message.r#type }
+                                ).await;
+                            },
+                            Err(e) => {
+                            }
+                        }
+                    }
+                });
+            } 
+        Ok(server_out_rx)
+    } else {
+        Err("error".into())
+    }
+}
+}
+
 //
 pub trait StreamTransportable {
     type Output;
@@ -474,19 +347,6 @@ impl StreamTransportable for StartServerRequest {
         let (server_out_tx, server_out_rx) = tokio::sync::mpsc::channel(32);
         let (server_in_tx, server_in_rx) = tokio::sync::mpsc::channel(32);
         let outbound_stream = ReceiverStream::new(server_in_rx);
-        // tokio::spawn(async move {
-        //     loop {
-        //         if tx.send(ServerMessage {
-        //             authcode: "0".to_string(),
-        //             data: "test".to_string(),
-        //             r#type: "console".to_string(),
-        //         }).await.is_err() {
-        //             println!("receiver is gone");
-        //             break; 
-        //         }
-        //         sleep(Duration::from_secs(5)).await;
-        //     }
-        // });
         if let Some(mut stdin) = self.stdin.as_ref().map(|r| r.resubscribe()) {
             tokio::spawn(async move {
                 loop {
@@ -528,20 +388,8 @@ impl StreamTransportable for StartServerRequest {
                             }
                         }
                     }
-                    println!("ended stream");
                 });
             } 
-
-        // let msg = serde_json::to_vec(&MessagePayload {
-        //     r#type: "command".to_string(),
-        //     message: "start_server".to_string(),
-        //     authcode: "".to_string(),
-        // });
-        // if let Err(e) = msg {
-        //     return Err("Failed to serialize".into());
-        // };
-        // let _ = state.connection_handler.tcp_tx.send(msg.unwrap());
-
         Ok(server_out_rx)
     } else {
         Err("error".into())
@@ -567,15 +415,6 @@ impl NodeTransportable for StopServerRequest {
             .server_edit_client
             .stop(stop_server_request)
             .await;
-        // let msg = serde_json::to_vec(&MessagePayload {
-        //     r#type: "command".to_string(),
-        //     message: "stop_server".to_string(),
-        //     authcode: "".to_string(),
-        // });
-        // if let Err(e) = msg {
-        //     return Err("Failed to serialize".into());
-        // };
-        // let _ = state.connection_handler.tcp_tx.send(msg.unwrap());
 
         Ok(())
     }
@@ -627,21 +466,6 @@ impl NodeTransportable for SetServerRequest {
             .unwrap()
             .server_manage_client
             .set(set_server_request);
-        // let msg = MessagePayloadWithMetadata {
-        //     r#type: "command".to_string(),
-        //     message: "set_server".to_string(),
-        //     metadata: self.metadata.clone(),
-        //     authcode: "0".to_string(),
-        // };
-        // let mut bytes = match serde_json::to_vec(&msg) {
-        //     Ok(b) => b,
-        //     Err(e) => {
-        //         eprintln!("Serialization error: {}", e);
-        //         return Err("Failed to serialize".into());
-        //     }
-        // };
-        // bytes.push(b'\n');
-        // let _ = state.connection_handler.tcp_tx.send(bytes);
 
         Ok(())
     }
@@ -665,28 +489,10 @@ impl NodeTransportable for ServerDataRequest {
             .unwrap()
             .server_manage_client
             .data(server_data_request);
-        // let msg = MessagePayloadWithMetadata {
-        //     r#type: "command".to_string(),
-        //     message: "server_data".to_string(),
-        //     metadata: self.metadata.clone(),
-        //     authcode: "0".to_string(),
-        // };
-        // let mut bytes = match serde_json::to_vec(&msg) {
-        //     Ok(b) => b,
-        //     Err(e) => {
-        //         eprintln!("Serialization error: {}", e);
-        //         return Err("Failed to serialize".into());
-        //     }
-        // };
-        // bytes.push(b'\n');
-        // let _ = state.connection_handler.tcp_tx.send(bytes);
 
         Ok(())
     }
 }
-
-// struct ServerState
-// NodeTransportable
 
 pub struct RawBytes {
     pub(crate) bytes: Vec<u8>,
@@ -702,7 +508,6 @@ impl NodeTransportable for RawBytes {
         Ok(())
     }
 }
-// NodeTransportable
 
 trait InternalTransportable {
     async fn internal_transport(
@@ -711,11 +516,9 @@ trait InternalTransportable {
     ) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
 pub struct FilterRequest {
-    //pub(crate) //metadata: MetadataTypes
     pub(crate) filter: Filters,
 }
 //InternalTransportable
-// struct FilterRequest impl NodeTransportable {
 impl NodeTransportable for FilterRequest {
     type Output = ();
     async fn node_transport(
@@ -828,14 +631,6 @@ impl NodeTransportable for ServerStateRequest {
             .unwrap()
             .server_manage_client
             .state(server_state_request);
-        // let msg = serde_json::to_vec(&MessagePayload {
-        //     r#type: "command".to_string(),
-        //     message: "server_state".to_string(),
-        //     authcode: "0".to_string(),
-        // })
-        // .unwrap();
-        // let _ = state.connection_handler.tcp_tx.send(msg);
-
         Ok(())
     }
 }
@@ -852,12 +647,4 @@ impl Into<proto::MetadataTypes> for MetadataTypes {
         serde_json::from_value(serde_json::to_value(self.clone()).unwrap()).unwrap()
     }
 }
-// NoteTransportable
-//InternalTransportable
-// struct SrcAndDestFsRequest {
-//     src: String,
-//     dest: String
-// }
-//InternalTransportable
-// async fn send_request_to_node(){
-// }
+
