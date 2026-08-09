@@ -297,8 +297,9 @@ impl StreamTransportable for CreateServerRequest {
             let guard = state.read().await;
             guard.connection_handler.clients.clone().unwrap()
         }; 
-
-        if let Ok(response_stream) = clients.server_edit_client.create(request).await {
+        println!("about to call create");
+        match clients.server_edit_client.create(request).await {
+            Ok(response_stream) => 
             {
                 //drop(state);
                 println!("before creating stream");
@@ -317,11 +318,13 @@ impl StreamTransportable for CreateServerRequest {
                         }
                     }
                 });
-            } 
-        Ok(server_out_rx)
-    } else {
-        Err("error".into())
-    }
+                Ok(server_out_rx)
+            },
+            Err(e) => {
+                println!("{:#?}", e);
+                Err("error".into())
+            }
+        }
 }
 }
 

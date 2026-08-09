@@ -2770,7 +2770,7 @@ async fn add_server(
             server.sandbox.clone()
         }
     };
-
+    drop(state);
     let create_server_request = CreateServerRequest {
         metadata: MetadataTypes::Server {
             servername: server.servername.clone(),
@@ -2781,6 +2781,7 @@ async fn add_server(
             server_metadata: server.server_metadata.clone(),
         },
     };
+    println!("about to initialize the stream");
     if let Ok(mut stream) = create_server_request.stream_transport(arc_state.clone()).await {
         let mut state = arc_state.write().await;
         let server_console: broadcast::Sender<String> = if let Some(console) = state.server_console.as_ref() {
@@ -2809,6 +2810,7 @@ async fn add_server(
             server_metadata: server.server_metadata.clone(),
         },
     };
+    let mut state = arc_state.write().await;
     let _ = set_server_request.node_transport(&mut state).await;
 
     let server_data_request = ServerDataRequest {

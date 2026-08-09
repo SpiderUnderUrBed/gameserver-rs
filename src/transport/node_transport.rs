@@ -447,9 +447,10 @@ impl StreamTransportable for CreateServerRequest {
         &self,
         arc_state: Arc<RwLock<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
-        let msg = serde_json::to_vec(&MessagePayload {
+        let msg = serde_json::to_vec(&MessagePayloadWithMetadata {
             r#type: "command".to_string(),
             message: "create_server".to_string(),
+            metadata: self.metadata.clone(),
             authcode: "".to_string(),
         });
         if let Err(e) = msg {

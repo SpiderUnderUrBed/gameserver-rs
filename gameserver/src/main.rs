@@ -81,7 +81,6 @@ use network_abstraction_lib::Router;
 // I use the same code as in the main server
 // with a few diffrences in stuff like filesystem
 mod databasespec;
-mod extra;
 mod intergrations;
 mod jsondatabase;
 mod providers;
@@ -145,6 +144,15 @@ struct IncomingMessageWithMetadata {
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Default)]
 struct SimpleMessage {
     message: String,
+}
+
+// Used for transmitting stderr and stdout 
+// back to the main server and then to the client
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub struct ConsoleData {
+    authcode: String,
+    data: String,
+    r#type: String,
 }
 
 // Metadata types, currently i primarially use it to transmit server data
@@ -543,8 +551,13 @@ async fn run_command_live_output(
                     continue;
                 }
                 if let Some(tx) = &tx {
-                    let msg =
-                        json!({"type":"stdout","data":format!("[{}] {}", lbl, line)}).to_string();
+                    // let msg =
+                    //     json!({"type":"stdout","data":format!("[{}] {}", lbl, line)}).to_string();
+                    let msg = serde_json::to_string(&ConsoleData {
+                        authcode: "0".to_string(),
+                        data: format!("[{}] {}", lbl, line),
+                        r#type: "console".to_string(),
+                    }).unwrap();
                     let _ = tx.try_send(msg);
                 }
             }
@@ -567,8 +580,13 @@ async fn run_command_live_output(
                     continue;
                 }
                 if let Some(tx) = &tx {
-                    let msg =
-                        json!({"type":"stderr","data":format!("[{}] {}", lbl, line)}).to_string();
+                    // let msg =
+                    //     json!({"type":"stderr","data":format!("[{}] {}", lbl, line)}).to_string();
+                    let msg = serde_json::to_string(&ConsoleData {
+                        authcode: "0".to_string(),
+                        data: format!("[{}] {}", lbl, line),
+                        r#type: "console".to_string(),
+                    }).unwrap();
                     let _ = tx.try_send(msg);
                 }
             }
@@ -941,10 +959,8 @@ async fn start_server_handler(state: &Arc<AppState>, req: StartServerRequest) ->
                 None => None,
             }
         });
-        println!("not C");
         Ok(StreamResponse::new(stream))
     } else {
-        println!("C");
         Err(ErrorResponse { error: "stream taken".to_string() })
     }
     //NoneResponse {}
@@ -1255,15 +1271,12 @@ async fn check_server(arc_state: &Arc<AppState>, server_output_rx: &mut Option<R
                 // };
                 // }
             } else {
-                println!("A");
                 None
             }
         } else {
-            println!("B");
             None
         }
     } else {
-        println!("C");
         None
     }
 }
@@ -1459,7 +1472,6 @@ async fn spawn_request_loop(
                             },
                         }
                     } else {
-                        println!("got bytes which didnt serialize");
                     }
 
                     if conn_handler.has_remaining_buffer().await {

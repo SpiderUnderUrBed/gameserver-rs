@@ -206,7 +206,7 @@ impl Reader {
         if n == 0 {
             return Err("connection closed by peer or no bytes".into());
         }
-        handler.append_bytes(temp_buf.clone()).await;
+        handler.append_bytes(temp_buf[..n].to_vec()).await;
         Ok(())
     }
 }
