@@ -1,7 +1,7 @@
-use std::{any::Any, error::Error};
+use std::sync::Arc;
 
-use crate::MessagePayload;
-use network_abstraction_lib::{ErrorResponse, FromWire, IntoResponse, ValueRequest};
+use crate::{AppState, MessagePayload};
+use network_abstraction_lib::{FromWire, Router, ValueRequest};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 
@@ -10,10 +10,10 @@ use tokio::{
     net::{
         tcp::{OwnedReadHalf, OwnedWriteHalf},
         TcpListener, TcpStream,
-    },
+    }, sync::Mutex,
 };
 
-use crate::{AppState, GetState, IncomingMessage, IncomingMessageWithMetadata, SimpleMessage};
+use crate::{GetState, IncomingMessage, IncomingMessageWithMetadata, SimpleMessage};
 
 // #[derive(Serialize, Deserialize, Debug, Clone)]
 // pub struct FileResponseMessage {
@@ -35,9 +35,11 @@ pub enum TaggedRequest {
 pub struct ConnectionManager {
     listner: TcpListener,
     connections: Vec<ConnectionManager>,
+    router: Arc<Mutex<Router<Arc<AppState>>>>
 }
 impl ConnectionManager {
     pub async fn serve(
+        router: Router<Arc<AppState>>,
         url: String,
     ) -> Result<ConnectionManager, Box<dyn std::error::Error + Send + Sync>> {
         let listner = TcpListener::bind(url).await?;
@@ -45,6 +47,7 @@ impl ConnectionManager {
         Ok(ConnectionManager {
             listner,
             connections: vec![],
+            router: Arc::new(Mutex::new(router)),
         })
     }
     pub async fn accept_connection(
@@ -58,6 +61,9 @@ impl ConnectionManager {
             //last_request: None
         };
         Ok((handler, Some(addr.to_string())))
+    }
+    pub async fn get_arc_mutex_router(&self) -> Arc<Mutex<Router<Arc<AppState>>>>{
+       self.router.clone()
     }
 }
 
@@ -101,6 +107,9 @@ impl ConnectionHandler {
     }
     //pub fn next() -> Option<usize> {
     pub async fn next(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if self.read_buf.len() > 0 {
+            // println!("{:#?}", self.read_buf.clone());
+        }
         if let Some(pos) = self.read_buf.iter().position(|&b| b == b'\n') {
             //println!("{:#?}", self.read_buf.iter().filter(|i| **i != 0).collect::<Vec<&u8>>());
             self.newline_pos = pos;
@@ -110,9 +119,6 @@ impl ConnectionHandler {
             Err("Did not find next position".into())
         }
         //todo!()
-    }
-    pub fn recv_tagged(&mut self) -> TaggedRequest {
-        TaggedRequest::None
     }
     pub fn recv_bytes(&mut self) -> Vec<u8> {
         let bytes = self.read_buf.clone();
@@ -129,14 +135,6 @@ impl ConnectionHandler {
         }
 
         let line_str = String::from_utf8_lossy(line);
-        // if let Some(last_request) = &self.last_request {
-        //     if *last_request == line_str {
-        //         return Err("Line is a duplicate".into());
-        //     }
-        // }
-        // self.last_request = Some(line_str.to_string());
-
-        //self.remove_current_segment_or_clear();
         Ok(line_str.to_string())
     }
     pub async fn append_bytes(&mut self, bytes: Vec<u8>) {
@@ -146,18 +144,6 @@ impl ConnectionHandler {
         self.newline_pos + 1 <= self.read_buf.len()
     }
     pub async fn handle_request(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // read_half.read(&mut temp_buf) => {
-        //     let n = match result {
-        //         Ok(0) => break,
-        //         Ok(n) => n,
-        //         Err(e) => {
-        //             eprintln!("[{}] Read error: {}", addr, e);
-        //             break;
-        //         }
-        //     };
-        //     read_buf.append_bytes((&temp_buf[..n]).to_vec()).await;
-        //     // read_buf.inner().extend_from_slice(&temp_buf[..n]);
-        // }
         if let Some(stream) = &mut self.stream {
             let mut temp_buf = vec![0u8; 4096];
             stream.read(&mut temp_buf).await?;
@@ -181,11 +167,6 @@ impl ConnectionHandler {
     pub async fn recv(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         todo!()
     }
-    // pub async fn accept_connection(
-    //     &self,
-    // ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
-    //     Ok(None)
-    // }
     pub fn split(&mut self) -> Result<(Writer, Reader), Box<dyn std::error::Error + Send + Sync>> {
         let stream = self.stream.take().ok_or("no stream set")?;
         let (read_half, write_half) = stream.into_split();
@@ -209,7 +190,7 @@ impl Writer {
     pub async fn send_with_connection(
         &mut self,
         bytes: Vec<u8>,
-        handler: &mut ConnectionHandler,
+        _handler: &mut ConnectionHandler,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.write_half.write_all(&bytes).await?;
         Ok(())
@@ -235,25 +216,17 @@ impl Reader {
         &mut self,
         handler: &mut ConnectionHandler,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // read_half.read(&mut temp_buf) => {
-        //     let n = match result {
-        //         Ok(0) => break,
-        //         Ok(n) => n,
-        //         Err(e) => {
-        //             eprintln!("[{}] Read error: {}", addr, e);
-        //             break;
-        //         }
-        //     };
-        //     read_buf.append_bytes((&temp_buf[..n]).to_vec()).await;
-        //     // read_buf.inner().extend_from_slice(&temp_buf[..n]);
-        // }
-        // let mut temp_buf = vec![0u8; 4096];
-        // self.read_half.read(&mut temp_buf).await?;
-        // println!("got {}", String::from_utf8_lossy(&temp_buf));
-        // Ok(())
         let mut temp_buf = vec![0u8; 4096];
-        let n = self.read_half.read(&mut temp_buf).await?;
-
+        let n = {
+            match self.read_half.read(&mut temp_buf).await {
+                Ok(n) => {
+                    n
+                },
+                Err(e) => {
+                    return Err("failed to read".into());
+                }
+            }
+        };
         if n == 0 {
             return Err("connection closed by peer or no bytes".into());
         }
@@ -262,20 +235,6 @@ impl Reader {
     }
 }
 
-// //FileRequestMessage
-// #[derive(Deserialize, Serialize, Clone, Debug)]
-// pub struct FileRequest {
-//     pub request_type: String,
-//     #[serde(flatten)]
-//     pub common: FileRequestMessage,
-// }
-
-// #[derive(Deserialize, Serialize, Clone, Debug)]
-// pub struct FileResponse {
-//     pub request_type: String,
-//     #[serde(flatten)]
-//     pub common: FileResponseMessage,
-// }
 #[derive(Deserialize, Serialize, Clone)]
 pub struct ConsoleRequest {
     #[serde(flatten)]
@@ -445,189 +404,23 @@ impl FromWire for Ping {
     }
 }
 
-pub trait TryIntoRequest {
-    type Request: DeserializeOwned + Serialize;
-
-    fn into_typed_request<T: 'static>(self) -> Result<T, Box<dyn std::error::Error + Send + Sync>>;
-
-    fn into_request(
-        value: Value,
-    ) -> Result<Self::Request, Box<dyn std::error::Error + Send + Sync>>;
-}
-
-// pub trait NodeTransportable {
-//     async fn node_transport(
-//         &self,
-//         state: &AppState,
-//         connection_handler: &mut ConnectionHandler,
-//     ) -> Result<(), Box<dyn Error + Send + Sync>>;
-// }
 
 #[derive(Serialize)]
 pub struct ServerDataResponse {
     pub state: GetState,
 }
-// impl IntoResponse<String> for ServerDataResponse {
-//     // fn as_bytes(&self) -> Vec<u8> {
-//     //     serde_json::to_vec(self).unwrap()
-//     // }
-
-//     // fn to_string(&self) -> Result<String, network_abstraction_lib::ExtractorErrors> {
-//     //     serde_json::to_string(self)
-//     //         .map_err(|_| network_abstraction_lib::ExtractorErrors::FailedToExtract)
-//     // }
-    
-//     fn try_into_response(&self) -> Result<String, network_abstraction_lib::ExtractorErrors> {
-//         serde_json::to_string(self)
-//             .map_err(|_| network_abstraction_lib::ExtractorErrors::FailedToExtract)
-//     }
-// }
-
-// impl NodeTransportable for ServerDataResponse {
-//     async fn node_transport(
-//         &self,
-//         state: &AppState,
-//         _connection_handler: &mut ConnectionHandler,
-//     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-//         let tx = state.output_tx.lock().await.clone().unwrap();
-//         let _ = tx.send(serde_json::to_string(&self.state)?).await;
-//         Ok(())
-//     }
-// }
 
 #[derive(Serialize)]
 pub struct PingResponse {
     pub message: SimpleMessage,
 }
-// impl IntoResponse<String> for PingResponse {
-//     // fn as_bytes(&self) -> Vec<u8> {
-//     //     serde_json::to_vec(self).unwrap()
-//     // }
-
-//     // fn to_string(&self) -> Result<String, network_abstraction_lib::ExtractorErrors> {
-//     //     serde_json::to_string(self)
-//     //         .map_err(|_| network_abstraction_lib::ExtractorErrors::FailedToExtract)
-//     // }
-    
-//     fn try_into_response(&self) -> Result<String, network_abstraction_lib::ExtractorErrors> {
-//         serde_json::to_string(self)
-//             .map_err(|_| network_abstraction_lib::ExtractorErrors::FailedToExtract)
-//     }
-// }
-
-// impl NodeTransportable for PingResponse {
-//     async fn node_transport(
-//         &self,
-//         state: &AppState,
-//         _connection_handler: &mut ConnectionHandler,
-//     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-//         let tx = state.output_tx.lock().await.clone().unwrap();
-//         let _ = tx.send(serde_json::to_string(&self.message)?).await;
-//         Ok(())
-//     }
-// }
-
-#[derive(Debug)]
-pub struct FileOperationResponse {
-    pub data: String,
-}
-// impl NodeTransportable for FileOperationResponse {
-//     async fn node_transport(
-//         &self,
-//         state: &AppState,
-//         _connection_handler: &mut ConnectionHandler,
-//     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-//         let tx = state.output_tx.lock().await.clone().unwrap();
-//         let _ = tx.send(self.data.clone()).await;
-//         Ok(())
-//     }
-// }
 
 #[derive(Serialize)]
 pub struct ServerNameResponse {
     pub message: MessagePayload,
 }
-// impl IntoResponse<String> for ServerNameResponse {
-//     // fn as_bytes(&self) -> Vec<u8> {
-//     //     serde_json::to_vec(self).unwrap()
-//     // }
-
-//     // fn to_string(&self) -> Result<String, network_abstraction_lib::ExtractorErrors> {
-//     //     serde_json::to_string(self)
-//     //         .map_err(|_| network_abstraction_lib::ExtractorErrors::FailedToExtract)
-//     // }
-    
-//     fn try_into_response(&self) -> Result<String, network_abstraction_lib::ExtractorErrors> {
-//         serde_json::to_string(self)
-//             .map_err(|_| network_abstraction_lib::ExtractorErrors::FailedToExtract)
-//     }
-// }
-
-// impl NodeTransportable for ServerNameResponse {
-//     async fn node_transport(
-//         &self,
-//         state: &AppState,
-//         _connection_handler: &mut ConnectionHandler,
-//     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-//         let tx = state.output_tx.lock().await.clone().unwrap();
-//         let _ = tx.send(serde_json::to_string(&self.message)?).await;
-//         Ok(())
-//     }
-// }
 
 #[derive(Serialize)]
 pub struct ServerStateResponse {
     pub message: MessagePayload,
 }
-// impl IntoResponse<String> for ServerStateResponse {
-//     // fn as_bytes(&self) -> Vec<u8> {
-//     //     serde_json::to_vec(self).unwrap()
-//     // }
-
-//     // fn to_string(&self) -> Result<String, network_abstraction_lib::ExtractorErrors> {
-//     //     serde_json::to_string(self)
-//     //         .map_err(|_| network_abstraction_lib::ExtractorErrors::FailedToExtract)
-//     // }
-    
-//     fn try_into_response(&self) -> Result<String, network_abstraction_lib::ExtractorErrors> {
-//         serde_json::to_string(self)
-//             .map_err(|_| network_abstraction_lib::ExtractorErrors::FailedToExtract)
-//     }
-// }
-
-// impl NodeTransportable for ServerStateResponse {
-//     async fn node_transport(
-//         &self,
-//         state: &AppState,
-//         _connection_handler: &mut ConnectionHandler,
-//     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-//         let tx = state.output_tx.lock().await.clone().unwrap();
-//         let _ = tx.send(serde_json::to_string(&self.message)?).await;
-//         Ok(())
-//     }
-// }
-
-// pub struct RawBytes {
-//     pub bytes: Vec<u8>
-// }
-// impl RawBytes {
-//     async fn raw_transport(
-//         &self,
-//         // state: &AppState,
-//         writer: &mut Writer,
-//     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
-//         writer.send(self.bytes.clone()).await
-//     }
-// }
-
-// impl NodeTransportable for RawBytes {
-//     async fn node_transport(
-//         &self,
-//         state: &AppState,
-//         connection_handler: &mut ConnectionHandler,
-//     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-//         let tx = state.output_tx.lock().await.clone().unwrap();
-//         let _ = tx.send(self.bytes);
-//         Ok(())
-//     }
-// }

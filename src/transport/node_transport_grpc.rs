@@ -1,12 +1,13 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::{
-    net::TcpStream,
-    sync::{RwLock, broadcast},
+    net::{unix::pipe::Receiver, TcpStream},
+    sync::{broadcast, mpsc, Mutex, RwLock},
     time::{sleep, timeout},
 };
-
-use crate::CHANNEL_BUFFER_SIZE;
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::StreamExt;
+use crate::{transport::node_transport::proto::ServerMessage, ConsoleData, CHANNEL_BUFFER_SIZE};
 use crate::{ApiCalls as ToplevelApiCalls, AuthTcpMessage, IncomingMessage, List, NodeAndTCP};
 use crate::{
     AppState, CONNECTION_RETRY_DELAY, CONNECTION_TIMEOUT, MessagePayload,
@@ -38,8 +39,8 @@ pub struct Clients {
 pub struct ConnectionHandler {
     //stream: Option<&'static TcpStream>,
     clients: Option<Clients>,
-    proxy_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
-    proxy_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
+    pub(crate) proxy_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
+    pub(crate) proxy_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
     pub(crate) tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
     pub(crate) tcp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
 }
@@ -120,6 +121,7 @@ pub async fn connect_to_server(
     _end_if_timeout: bool,
     _block_with_stream: bool,
 ) -> Result<Option<SocketAddr>, Box<dyn Error + Send + Sync>> {
+    println!("using this connect to server");
     let mut state = arc_state.write().await;
 
     let url = if url.starts_with("http://") || url.starts_with("https://") {
@@ -144,15 +146,15 @@ pub async fn connect_to_server(
     Ok(None)
 }
 
-// for the initial connection attempt, which will determine if possibly I would need to create the container and deployment upon failure
-// i will use rusts 'timeout' for x interval determined with CONNECTION_TIMEOUT
-pub async fn attempt_connection(
-    tcp_url: String,
-) -> Result<TcpStream, Box<dyn std::error::Error + Send + Sync>> {
-    timeout(CONNECTION_TIMEOUT, TcpStream::connect(tcp_url))
-        .await?
-        .map_err(Into::into)
-}
+// // for the initial connection attempt, which will determine if possibly I would need to create the container and deployment upon failure
+// // i will use rusts 'timeout' for x interval determined with CONNECTION_TIMEOUT
+// pub async fn attempt_connection(
+//     tcp_url: String,
+// ) -> Result<TcpStream, Box<dyn std::error::Error + Send + Sync>> {
+//     timeout(CONNECTION_TIMEOUT, TcpStream::connect(tcp_url))
+//         .await?
+//         .map_err(Into::into)
+// }
 
 // this is where it determines wether or not to try and create the container and deployment, as attempt_connection itself is used in various diffrent contexts (like it will constantly
 // try to connect upon failing but it should not try to create the container and deployment every time it fails)
@@ -166,48 +168,50 @@ pub async fn try_initial_connection(
     ws_tx: &broadcast::Sender<String>,
     tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
 ) -> Result<(), anyhow::Error> {
-    let mut final_error = anyhow!(String::new());
-    for _ in 0..conn_attempts {
-        match attempt_connection(tcp_url.clone()).await {
-            Ok(mut stream) => {
-                println!("Initial connection succeeded!");
-                // note, possibly I wont ever need to create a handler from the test of the intial connection
-                // TODO: think about removing create_handler and just never create a handler here
-                // I was considering to return the handler from here, but it wouldnt make sense to add that complexity
-                // when I only create the initial tcp stream within the main function, it would involve either a thread here, or in the main function
-                // and i rather keep this function focused on testing the connection (there might be a very NICHE case for making a handler here, but if there isnt ill remove it)
-                if create_handler {
-                    let (_, temp_rx) =
-                        tokio::sync::broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
-                    let mut temp_rx = temp_rx;
-                    let ip = stream.peer_addr()?.ip().to_string();
+    Ok(())
+    // let mut final_error = anyhow!(String::new());
+    // println!("trying this initial connection");
+    // for _ in 0..conn_attempts {
+    //     match attempt_connection(tcp_url.clone()).await {
+    //         Ok(mut stream) => {
+    //             println!("Initial connection succeeded!");
+    //             // note, possibly I wont ever need to create a handler from the test of the intial connection
+    //             // TODO: think about removing create_handler and just never create a handler here
+    //             // I was considering to return the handler from here, but it wouldnt make sense to add that complexity
+    //             // when I only create the initial tcp stream within the main function, it would involve either a thread here, or in the main function
+    //             // and i rather keep this function focused on testing the connection (there might be a very NICHE case for making a handler here, but if there isnt ill remove it)
+    //             if create_handler {
+    //                 let (_, temp_rx) =
+    //                     tokio::sync::broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+    //                 let mut temp_rx = temp_rx;
+    //                 let ip = stream.peer_addr()?.ip().to_string();
 
-                    let stream_result = handle_stream(
-                        state.clone(),
-                        &mut temp_rx,
-                        //&mut stream,
-                        ip,
-                        ws_tx.clone(),
-                        None,
-                    )
-                    .await;
-                    if stream_result.is_ok() {
-                        println!("Stream finished");
-                        return Ok(());
-                    } else {
-                        final_error = anyhow!(stream_result.err().unwrap())
-                    }
-                } else {
-                    return Ok(());
-                }
-            }
-            Err(e) => {
-                eprintln!("Initial connection failed: {}", e);
-            }
-        }
-        tokio::time::sleep(Duration::from_secs(2)).await;
-    }
-    Err(final_error)
+    //                 let stream_result = handle_stream(
+    //                     state.clone(),
+    //                     &mut temp_rx,
+    //                     //&mut stream,
+    //                     ip,
+    //                     ws_tx.clone(),
+    //                     None,
+    //                 )
+    //                 .await;
+    //                 if stream_result.is_ok() {
+    //                     println!("Stream finished");
+    //                     return Ok(());
+    //                 } else {
+    //                     final_error = anyhow!(stream_result.err().unwrap())
+    //                 }
+    //             } else {
+    //                 return Ok(());
+    //             }
+    //         }
+    //         Err(e) => {
+    //             eprintln!("Initial connection failed: {}", e);
+    //         }
+    //     }
+    //     tokio::time::sleep(Duration::from_secs(2)).await;
+    // }
+    // Err(final_error)
 }
 
 // #[tonic::async_trait]
@@ -288,10 +292,11 @@ pub async fn try_initial_connection(
 // }
 
 pub trait NodeTransportable {
+    type Output;
     async fn node_transport(
         &self,
         state: &mut AppState,
-    ) -> Result<(), Box<dyn Error + Send + Sync>>;
+    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>>;
 }
 
 // TODO: consider if needed
@@ -382,6 +387,7 @@ pub struct DeleteServerRequest {
 
 // NodeTransportable
 impl NodeTransportable for DeleteServerRequest {
+    type Output = ();
     async fn node_transport(
         &self,
         state: &mut AppState,
@@ -412,6 +418,7 @@ pub struct CreateServerRequest {
     pub metadata: MetadataTypes,
 }
 impl NodeTransportable for CreateServerRequest {
+    type Output = ();
     async fn node_transport(
         &self,
         state: &mut AppState,
@@ -446,24 +453,85 @@ impl NodeTransportable for CreateServerRequest {
     }
 }
 //
-
+pub trait StreamTransportable {
+    type Output;
+    async fn stream_transport(
+        &self,
+        state: Arc<RwLock<AppState>>,
+    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>>;
+}
 pub struct StartServerRequest {
     // metadata: MetadataTypes
+    pub stdin: Option<broadcast::Receiver<String>>
 }
-impl NodeTransportable for StartServerRequest {
-    async fn node_transport(
+impl StreamTransportable for StartServerRequest {
+    type Output = mpsc::Receiver<ConsoleData>;
+    async fn stream_transport(
         &self,
-        state: &mut AppState,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        state: Arc<RwLock<AppState>>,
+    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         let request = proto::StartServerRequest {};
-        let _ = state
-            .connection_handler
-            .clients
-            .clone()
-            .unwrap()
-            .server_edit_client
-            .start(request)
-            .await;
+        let (server_out_tx, server_out_rx) = tokio::sync::mpsc::channel(32);
+        let (server_in_tx, server_in_rx) = tokio::sync::mpsc::channel(32);
+        let outbound_stream = ReceiverStream::new(server_in_rx);
+        // tokio::spawn(async move {
+        //     loop {
+        //         if tx.send(ServerMessage {
+        //             authcode: "0".to_string(),
+        //             data: "test".to_string(),
+        //             r#type: "console".to_string(),
+        //         }).await.is_err() {
+        //             println!("receiver is gone");
+        //             break; 
+        //         }
+        //         sleep(Duration::from_secs(5)).await;
+        //     }
+        // });
+        if let Some(mut stdin) = self.stdin.as_ref().map(|r| r.resubscribe()) {
+            tokio::spawn(async move {
+                loop {
+                    if let Ok(data) = stdin.recv().await {
+                        let _ = server_in_tx.send(
+                            ServerMessage { 
+                                authcode: "0".to_string(), 
+                                data, 
+                                r#type: "console".to_string()
+                            }
+                        ).await;
+                    } else {
+                        break;
+                    }
+                }
+            });
+        }
+        let mut clients = {
+            let guard = state.read().await;
+            guard.connection_handler.clients.clone().unwrap()
+        }; 
+
+        if let Ok(response_stream) = clients.server_edit_client.start(outbound_stream).await {
+            {
+                //drop(state);
+                println!("before starting stream");
+                let mut stream = response_stream.into_inner();
+                tokio::spawn(async move {
+                    while let Some(result) = stream.next().await {
+                        match result {
+                            Ok(message) => {
+                                //println!("got a message {:#?}", message);
+                                let _ = server_out_tx.send(
+                                    ConsoleData { authcode: "0".to_string(), data: message.data, r#type: message.r#type }
+                                ).await;
+                            },
+                            Err(e) => {
+                                println!("got an err");
+                            }
+                        }
+                    }
+                    println!("ended stream");
+                });
+            } 
+
         // let msg = serde_json::to_vec(&MessagePayload {
         //     r#type: "command".to_string(),
         //     message: "start_server".to_string(),
@@ -474,14 +542,18 @@ impl NodeTransportable for StartServerRequest {
         // };
         // let _ = state.connection_handler.tcp_tx.send(msg.unwrap());
 
-        Ok(())
+        Ok(server_out_rx)
+    } else {
+        Err("error".into())
     }
+}
 }
 
 pub struct StopServerRequest {
     // metadata: MetadataTypes
 }
 impl NodeTransportable for StopServerRequest {
+    type Output = ();
     async fn node_transport(
         &self,
         state: &mut AppState,
@@ -515,6 +587,7 @@ pub struct MigrateRequest {
     pub common: SrcAndDest,
 }
 impl NodeTransportable for MigrateRequest {
+    type Output = ();
     async fn node_transport(
         &self,
         state: &mut AppState,
@@ -536,6 +609,7 @@ pub struct SetServerRequest {
     pub(crate) metadata: MetadataTypes,
 }
 impl NodeTransportable for SetServerRequest {
+    type Output = ();
     async fn node_transport(
         &self,
         state: &mut AppState,
@@ -578,6 +652,7 @@ pub struct ServerDataRequest {
     pub(crate) metadata: MetadataTypes,
 }
 impl NodeTransportable for ServerDataRequest {
+    type Output = ();
     async fn node_transport(
         &self,
         state: &mut AppState,
@@ -618,6 +693,7 @@ pub struct RawBytes {
 }
 
 impl NodeTransportable for RawBytes {
+    type Output = ();
     async fn node_transport(
         &self,
         state: &mut AppState,
@@ -641,6 +717,7 @@ pub struct FilterRequest {
 //InternalTransportable
 // struct FilterRequest impl NodeTransportable {
 impl NodeTransportable for FilterRequest {
+    type Output = ();
     async fn node_transport(
         &self,
         state: &mut AppState,
@@ -671,6 +748,7 @@ impl InternalTransportable for FilterRequest {
 // }
 pub struct Ping {}
 impl NodeTransportable for Ping {
+    type Output = ();
     async fn node_transport(
         &self,
         state: &mut AppState,
@@ -699,6 +777,7 @@ pub struct IntegrationKeyRequest {
     pub key: Value,
 }
 impl NodeTransportable for IntegrationKeyRequest {
+    type Output = ();
     async fn node_transport(
         &self,
         state: &mut AppState,
@@ -736,6 +815,7 @@ impl InternalTransportable for IntegrationKeyRequest {
 //InternalTransportable
 pub struct ServerStateRequest {}
 impl NodeTransportable for ServerStateRequest {
+    type Output = ();
     async fn node_transport(
         &self,
         state: &mut AppState,

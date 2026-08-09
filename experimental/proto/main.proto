@@ -35,6 +35,12 @@ message StartServerRequest {}
 
 message StopServerRequest {}
 
+message ServerMessage {
+  string authcode = 1;
+  string data = 2;
+  string type = 3;
+}
+
 message SetServerRequest {
   string message = 1;
   string type = 2;
@@ -94,9 +100,9 @@ message StartServerResponse {}
 message StopServerResponse {}
 
 service ServerEdit {
-  rpc Create(CreateServerRequest) returns (CreateServerResponse);
+  rpc Create(CreateServerRequest) returns (stream ServerMessage);
   rpc Delete(DeleteServerRequest) returns (DeleteServerResponse);
-  rpc Start(StartServerRequest) returns (StartServerResponse);
+  rpc Start(stream ServerMessage) returns (stream ServerMessage);
   rpc Stop(StopServerRequest) returns (StopServerResponse);
 }
 service ServerManage {

@@ -173,18 +173,21 @@ export class ServerConsoleState {
 				const out = typeof payload === 'string' ? payload : JSON.stringify(payload);
 				console.log("message: " + out);
 				this.currentWsEntry.set(out);
-				if (this.correctMessage(out)) {
+				//if (this.correctMessage(out)) {
+					console.log("correct message");
 					const filtered = this.filterMessage(this.filters, this.cleanOutput(this.cleanJson(out)));
 					// TODO: consider if i want to keep the hardcoded filter for undefined, or fix wherever it
 					// might be coming from
 					if (filtered !== "" && filtered !== undefined && filtered !== "undefined") {
+						console.log("got past filtering");
 						this.addConsoleEntry({ type: 'output', text: filtered, count: 0 });
 					}
-				}
+				//}
 			});
 
-			this.ws.addEventListener('close', () => {
+			this.ws.addEventListener('close', (event) => {
 				this.isConnected = false;
+				console.log('WS close code:', event.code, 'reason:', event.reason, 'wasClean:', event.wasClean);
 				this.addConsoleEntry({
 					type: 'output', text: '[WS] disconnected',
 					count: 0
@@ -233,22 +236,24 @@ export class ServerConsoleState {
 			return message;
 		}
 	}
-	public correctMessage(input: unknown): boolean {
-		let output: unknown = input;
+	// public correctMessage(input: unknown): boolean {
+	// 	let output: unknown = input;
 
-		if (typeof input !== 'string') return true;
+	// 	if (typeof input !== 'string') return true;
 		
-		try {
-			const parsed = JSON.parse(input);
-			if (parsed && typeof parsed === 'object' && 'authcode' in parsed) {
-				return false;
-			}
-		} catch {
-		}
+	// 	try {
+	// 		const parsed = JSON.parse(input);
+	// 		if (parsed && typeof parsed === 'object' && 'authcode' in parsed &&
+	// 			Object.keys(parsed).length === 1
+	// 		) {
+	// 			return false;
+	// 		}
+	// 	} catch {
+	// 	}
 		
-		return true;
+	// 	return true;
 
-	}
+	// }
 
 	public cleanJson(input: unknown): string {
     	let output: unknown = input;

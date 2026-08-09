@@ -5,12 +5,12 @@ use serde_json::Value;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::TcpStream,
-    sync::{RwLock, broadcast},
+    sync::{broadcast, mpsc, RwLock},
     time::{sleep, timeout},
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{ApiCalls as ToplevelApiCalls, AuthTcpMessage, IncomingMessage, List, NodeAndTCP};
+use crate::{ApiCalls as ToplevelApiCalls, AuthTcpMessage, ConsoleData, IncomingMessage, List, NodeAndTCP};
 use crate::{
     AppState, CHANNEL_BUFFER_SIZE, CONNECTION_RETRY_DELAY, CONNECTION_TIMEOUT, MessagePayload,
     MessagePayloadWithMetadata, MetadataTypes, SimpleMessage, SrcAndDest, Status, StreamResult,
@@ -528,11 +528,23 @@ impl NodeTransportable for CreateServerRequest {
 }
 // NodeTransportable
 
+pub trait StreamTransportable {
+    type Output;
+    async fn stream_transport(
+        &self,
+        state: Arc<RwLock<AppState>>,
+    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>>;
+}
 pub struct StartServerRequest {
     // metadata: MetadataTypes
+    pub stdin: Option<broadcast::Receiver<String>>
 }
-impl NodeTransportable for StartServerRequest {
-    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+impl StreamTransportable for StartServerRequest {
+    type Output = mpsc::Receiver<ConsoleData>;
+    async fn stream_transport(
+        &self,
+        arc_state: Arc<RwLock<AppState>>,
+    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         let msg = serde_json::to_vec(&MessagePayload {
             r#type: "command".to_string(),
             message: "start_server".to_string(),
@@ -541,9 +553,32 @@ impl NodeTransportable for StartServerRequest {
         if let Err(e) = msg {
             return Err("Failed to serialize".into());
         };
+        let state = arc_state.write().await;
         let _ = state.connection_handler.proxy_tx.send(msg.unwrap());
+        let mut proxy_rx = state.connection_handler.proxy_rx.resubscribe();
+        drop(state);
+        // let (server_out_tx, server_out_rx) = tokio::sync::mpsc::channel(32);
+        // let (server_in_tx, server_in_rx) = tokio::sync::mpsc::channel(32);
+        let (server_tx, server_rx) = tokio::sync::mpsc::channel(32);
+        tokio::spawn(async move {
+            loop {
+                if let Ok(bytes) = proxy_rx.recv().await {
+                    // if let Ok(value) = str::from_utf8(&bytes){}
+                    if let Ok(value) = serde_json::from_slice::<ConsoleData>(&bytes){
+                        let _ = server_tx.send(value).await;
+                        // if value.message == "console" {
+                        //     //String::from_utf8_lossy(&bytes)
+                        //     server_tx.send();
+                        // }
+                    } 
+                } else {
+                    break;
+                }
+            }
+        });
 
-        Ok(())
+
+        Ok(server_rx)
     }
 }
 

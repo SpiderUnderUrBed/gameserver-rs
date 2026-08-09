@@ -31,6 +31,7 @@ tonic = { version = "0.14.6", optional = true }
 prost = { version = "0.14.4", optional = true }
 tonic-prost = { version = "0.14.6", optional = true }
 prost-types = { version = "0.14.4", optional = true }
+tokio-stream = "0.1.19"
 
 
 [build-dependencies]
