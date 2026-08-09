@@ -107,17 +107,20 @@ impl ServerEdit for Connection {
                 match response.try_into_response() {
                     Ok(boxed) => match boxed.downcast::<Pin<Box<dyn Stream<Item = String> + Send + Sync>>>() {
                         Ok(stream_box) => {
+                            println!("got a stream");
                             let mut stream = *stream_box;
-                            while let Some(message) = stream.next().await {
-                                let _ = tx.send(Ok(
-                                    ServerMessage {
-                                        authcode: "0".to_string(),
-                                        data: message,
-                                        r#type: "command".to_string()
-                                    }
-                                )).await;
-                            }
-                            tx.send(Err(tonic::Status::aborted("stream EOF"))).await;
+                            tokio::spawn(async move {
+                                while let Some(message) = stream.next().await {
+                                    let _ = tx.send(Ok(
+                                        ServerMessage {
+                                            authcode: "0".to_string(),
+                                            data: message,
+                                            r#type: "command".to_string()
+                                        }
+                                    )).await;
+                                }
+                                let _ = tx.send(Err(tonic::Status::aborted("stream EOF"))).await;
+                            });
                         }
                         Err(_) => {
                             return Err(tonic::Status::internal("Did not get a stream type back"))
@@ -183,7 +186,6 @@ impl ServerEdit for Connection {
                 let mut router = inner_router_guard.lock().await;
                 match result {
                     Ok(message) => {
-                        println!("got message");
                         let _ = router.execute_handler_typed(
                             ConsoleRequest {
                                 common: IncomingMessage { 
@@ -215,7 +217,6 @@ impl ServerEdit for Connection {
                             tokio::spawn(async move {
                                 let mut stream = *stream_box;
                                 while let Some(message) = stream.next().await {
-                                    println!("got message {}", message);
                                     if let Err(e) = tx.send(Ok(
                                         ServerMessage {
                                             authcode: "0".to_string(),
@@ -402,12 +403,28 @@ impl ServerManage for Connection {
     }
 }
 
+// impl Into<crate::MetadataTypes> for proto::MetadataTypes {
+//     fn into(self) -> crate::MetadataTypes {
+//         serde_json::from_value(serde_json::to_value(self).unwrap()).unwrap()
+//     }
+// }
 impl Into<crate::MetadataTypes> for proto::MetadataTypes {
     fn into(self) -> crate::MetadataTypes {
-        serde_json::from_value(serde_json::to_value(self).unwrap()).unwrap()
+        // TODO: remove hardcoding of server for
+        // metadata conversion?
+        match self.kind.as_str() {
+            "Server" => {
+                serde_json::from_str::<crate::MetadataTypes>(&self.data).unwrap()
+            },
+            _ => {
+                println!("{:#?}", self);
+                let value = serde_json::to_value(self.clone()).unwrap();
+                println!("{:#?}", value);
+                serde_json::from_value(value).unwrap()
+            }
+        }
     }
 }
-
 impl Connection {
     pub async fn serve_with_arc(
         self: Arc<Self>,
@@ -857,7 +874,8 @@ pub struct PingResponse {
 
 #[derive(Serialize)]
 pub struct ServerNameResponse {
-    pub message: MessagePayload,
+    #[serde(flatten)]
+    pub common: MessagePayload,
 }
 
 #[derive(Serialize)]

@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::{
     net::{unix::pipe::Receiver, TcpStream},
     sync::{broadcast, mpsc, Mutex, RwLock},
@@ -7,18 +7,18 @@ use tokio::{
 };
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
-use crate::{transport::node_transport::proto::ServerMessage, ConsoleData, CHANNEL_BUFFER_SIZE};
+use crate::{transport::node_transport::proto::{ServerMessage, ServerNameRequest}, ConsoleData, CHANNEL_BUFFER_SIZE};
 use crate::{ApiCalls as ToplevelApiCalls, AuthTcpMessage, IncomingMessage, List, NodeAndTCP};
 use crate::{
     AppState, CONNECTION_RETRY_DELAY, CONNECTION_TIMEOUT, MessagePayload,
     MessagePayloadWithMetadata, MetadataTypes, SimpleMessage, SrcAndDest, Status, StreamResult,
-    database::databasespec::Filters, handle_stream,
+    database::databasespec::Filters,
 };
 use anyhow::anyhow;
 use std::time::Duration;
 use std::{error::Error, net::SocketAddr, sync::Arc, time::Instant};
 
-use tonic::transport::Channel;
+use tonic::{server, transport::Channel};
 mod proto {
     tonic::include_proto!("main");
 }
@@ -90,11 +90,35 @@ impl Clone for ConnectionHandler {
     }
 }
 pub async fn check_channel_health(
-    state: &AppState,
+    _state: &AppState,
 ) -> bool {
     true
 }
-
+pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, url: String){
+    let mut state = arc_state.write().await;
+    let server_name_request = proto::ServerNameRequest {
+        r#type: "server_name".to_string(),
+        message: "".to_string(),
+        authcode: "0".to_string()
+    };
+    match state.connection_handler.clients.as_mut().unwrap().server_manage_client.name(server_name_request).await {
+        Ok(server_name) => {
+            state.current_node = NodeAndTCP {
+                name: server_name.get_ref().message.clone(),
+                ip: url,
+                ..Default::default()
+            };
+        }
+        Err(e) => {
+            state.current_node = NodeAndTCP {
+                name: "main".to_string(),
+                ip: url,
+                ..Default::default()
+            };
+            println!("{:#?}", e);
+        }
+    }
+}
 // does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
 pub async fn connect_to_server(
     arc_state: Arc<RwLock<AppState>>,
@@ -112,7 +136,7 @@ pub async fn connect_to_server(
         format!("http://{url}")
     };
 
-    let channel = Channel::from_shared(url)?.connect().await?;
+    let channel = Channel::from_shared(url.clone())?.connect().await?;
     let general_client = GeneralClient::new(channel.clone());
     let filesystem_client = FilesystemClient::new(channel.clone());
     let server_edit_client = ServerEditClient::new(channel.clone());
@@ -124,6 +148,8 @@ pub async fn connect_to_server(
         server_edit_client,
         filesystem_client,
     });
+    drop(state);
+    node_start_hook(arc_state, url).await;
 
     Ok(None)
 }
@@ -647,7 +673,29 @@ impl InternalTransportable for ServerStateRequest {
 }
 impl Into<proto::MetadataTypes> for MetadataTypes {
     fn into(self) -> proto::MetadataTypes {
-        serde_json::from_value(serde_json::to_value(self.clone()).unwrap()).unwrap()
+        // TODO: remove hardcoding of server for 
+        // metadata conversion?
+        match self {
+            MetadataTypes::Server { servername, provider, providertype, location, sandbox, server_metadata } => {
+                proto::MetadataTypes {
+                    kind: "Server".to_string(),
+                    data: serde_json::to_string(&MetadataTypes::Server {
+                        servername: servername,
+                        provider: provider,
+                        providertype: providertype,
+                        location: location,
+                        sandbox: sandbox,
+                        server_metadata: server_metadata
+                    }).unwrap(),
+                }
+            },
+            _ => {
+                println!("{:#?}", self);
+                let value = serde_json::to_value(self.clone()).unwrap();
+                println!("{:#?}", value);
+                serde_json::from_value(value).unwrap()
+            }
+        }
     }
 }
 

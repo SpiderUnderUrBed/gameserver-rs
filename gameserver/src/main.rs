@@ -754,6 +754,7 @@ async fn create_server_handler(state: &Arc<AppState>, req: CreateServerRequest) 
     let cmd_tx_arc = state.cmd_tx.lock().await.clone().unwrap();
     let cmd_tx = cmd_tx_arc;
     let stdin_ref = state.stdin_ref.clone();
+    
     let _ = create_server(
         state.clone(),
         &cmd_tx,
@@ -770,6 +771,7 @@ async fn create_server_handler(state: &Arc<AppState>, req: CreateServerRequest) 
                 None => None,
             }
         });
+        println!("returning the stream finally");
         Ok(StreamResponse::new(stream))
     } else {
         Err(ErrorResponse { error: "stream taken".to_string() })
@@ -1237,7 +1239,7 @@ async fn server_name_handler(state: &Arc<AppState>, req: ServerNameRequest) -> S
     // };
     let hostname = hostname::get().unwrap_or("unknown".into());
     let server_name_response = ServerNameResponse {
-        message: MessagePayload {
+        common: MessagePayload {
             r#type: "command".to_string(),
             message: hostname.into_string().unwrap(),
             authcode: "0".to_string(),
@@ -1838,7 +1840,7 @@ async fn create_server(
             providertype: _,
             sandbox,
             server_metadata: _,
-        } = &payload.metadata.clone()
+        } = payload.metadata.clone()
         {
             println!("[create_server] servername={servername:?} location={location:?}");
 
@@ -1953,11 +1955,12 @@ async fn create_server(
                 println!(
                     "[create_server] set_location({filtered_location:?}) -> {set_loc_result:?}"
                 );
-
+                let inner_cmd_tx = cmd_tx.clone();
+                tokio::spawn(async move {
                 if let Some(cmd) = prov.pre_hook() {
                     println!("[create_server] running pre_hook: {cmd:?}");
                     let sandbox = resolve_sandbox(&state).await;
-                    let path = resolve_path(&state, servername).await;
+                    let path = resolve_path(&state, &servername).await;
                     run_command_live_output(
                         &state,
                         cmd,
@@ -1965,7 +1968,7 @@ async fn create_server(
                         path.unwrap_or(String::new()),
                         provider_config.clone().unwrap(),
                         "Pre-hook".into(),
-                        Some(cmd_tx.clone()),
+                        Some(inner_cmd_tx.clone()),
                         None,
                         Some(60000),
                     )
@@ -1975,11 +1978,10 @@ async fn create_server(
                 } else {
                     println!("[create_server] no pre_hook");
                 }
-
                 if let Some(cmd) = prov.install() {
                     println!("[create_server] running install: {cmd:?}");
                     let sandbox = resolve_sandbox(&state).await;
-                    let path = resolve_path(&state, servername).await;
+                    let path = resolve_path(&state, &servername).await;
                     run_command_live_output(
                         &state,
                         cmd,
@@ -1987,7 +1989,7 @@ async fn create_server(
                         path.unwrap_or(String::new()),
                         provider_config.clone().unwrap(),
                         "Install".into(),
-                        Some(cmd_tx.clone()),
+                        Some(inner_cmd_tx.clone()),
                         None,
                         Some(60000),
                     )
@@ -2001,7 +2003,7 @@ async fn create_server(
                 if let Some(cmd) = prov.post_hook() {
                     println!("[create_server] running post_hook: {cmd:?}");
                     let sandbox = resolve_sandbox(&state).await;
-                    let path = resolve_path(&state, servername).await;
+                    let path = resolve_path(&state, &servername).await;
                     run_command_live_output(
                         &state,
                         cmd,
@@ -2009,7 +2011,7 @@ async fn create_server(
                         path.unwrap_or(String::new()),
                         provider_config.clone().unwrap(),
                         "Post-hook".into(),
-                        Some(cmd_tx.clone()),
+                        Some(inner_cmd_tx.clone()),
                         None,
                         Some(60000),
                     )
@@ -2019,6 +2021,8 @@ async fn create_server(
                 } else {
                     println!("[create_server] no post_hook");
                 }
+                });
+                println!("about to return");
             } else {
                 println!("[create_server] no provider_object, skipping hooks");
             }

@@ -106,6 +106,100 @@ impl ImmediateTransportable for ServernameRequest {
     }
 }
 
+
+pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, ip: String){
+    let mut state = arc_state.write().await;
+    let initial_node_password: String =
+        get_env_var_or_arg("INITIAL_NODE_PASSWORD", Some(String::default())).unwrap();
+    let password_request = PasswordRequest {
+        password: initial_node_password,
+    };
+    let _ = password_request.immediate_transport(&mut state).await;
+
+    let capability_request = CapabilitiesRequest {
+        capabilities: vec!["all".to_string()],
+    };
+    let _ = capability_request.immediate_transport(&mut state).await;
+
+    let server_name_request = ServernameRequest { ip: ip.clone() };
+    let _ = server_name_request.immediate_transport(&mut state).await;
+
+}
+
+// This handles the stream
+// when it should terminate and the handshake
+// how internally it gets or sends from the stream
+// is up to the implimentation, among other things
+pub async fn handle_stream(
+    arc_state: Arc<RwLock<AppState>>,
+    rx: &mut tokio::sync::broadcast::Receiver<Vec<u8>>,
+    //stream: &mut TcpStream,
+    ip: String,
+    ws_tx: broadcast::Sender<String>,
+    mut internal_stream: Option<broadcast::Receiver<Vec<u8>>>,
+) -> Result<StreamResult, Box<dyn std::error::Error + Send + Sync>> {
+
+    let mut server_start_keyword = String::new();
+    let mut server_stop_keyword = String::new();
+
+    node_start_hook(arc_state.clone(), ip.clone()).await;
+
+    let state = arc_state.read().await;
+    let cloned_token = state.cancel_current_conn.clone();
+    let mut internal_rx = state
+        .internal_rx
+        .as_ref()
+        .map(|stream| stream.resubscribe());
+    drop(state);
+
+    loop {
+        tokio::select! {
+            Some(received) = async {
+                match internal_rx.as_mut() {
+                    Some(rx) => Some(rx.recv().await),
+                    None => None,
+                }
+            }, if internal_rx.is_some() => {
+                if let Ok(bytes) = received {
+                    if process_stream_data(
+                        &bytes, &arc_state, &ws_tx, &ip,
+                        &mut server_start_keyword, &mut server_stop_keyword,
+                    ).await? {
+                        break;
+                    }
+                } else {
+                    //break;
+                }
+            },
+           broadcast_result = rx.recv() => {
+            match broadcast_result {
+                Ok(bytes) => {
+                    println!("got bytes");
+                    if process_stream_data(
+                        &bytes, &arc_state, &ws_tx, &ip,
+                        &mut server_start_keyword, &mut server_stop_keyword,
+                    ).await? {
+                        break;
+                    }
+                },
+                Err(err) => {
+                    println!("got err {:#?}", err);
+                },
+            }
+           },
+           _ = cloned_token.cancelled() => {
+                // let state = arc_state.write().await;
+                // let _ = state.connection_handler.shutdown().await;
+                break;
+            }
+        }
+
+    }
+
+    Ok(StreamResult::Done)
+}
+
+
 // does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
 // Changelog:
 // No more blocking with stream, if the caller wants the server connection to not be blocking its the callers job to spawn it in
