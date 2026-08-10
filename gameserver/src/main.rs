@@ -679,6 +679,7 @@ struct AppState {
     authenticated_origins: Arc<Mutex<Vec<String>>>,
     server_running: Arc<AtomicBool>,
     output_tx: Arc<Mutex<Option<mpsc::Sender<String>>>>,
+    server_output_tx: Arc<Mutex<Option<broadcast::Sender<String>>>>,
     cmd_rx: Mutex<Option<mpsc::Receiver<String>>>,
     cmd_tx: Mutex<Option<Arc<mpsc::Sender<String>>>>,
     stdin_ref: Arc<Mutex<Option<ChildStdin>>>,
@@ -1285,10 +1286,10 @@ async fn server_name_handler(state: &Arc<AppState>, req: ServerNameRequest) -> S
 #[cfg(not(feature = "grpc_experimental"))]
 async fn check_server(arc_state: &Arc<AppState>, server_output_rx: &mut Option<Receiver<String>>, needs_server_status_check: &mut bool) -> Option<String> {
     if *needs_server_status_check {
-        let server_running_lock = arc_state.server_running.lock().await;
+        let server_running = arc_state.server_running.load(Ordering::SeqCst);
         let output_tx_lock = arc_state.server_output_tx.lock().await;
 
-        if *server_running_lock {
+        if server_running {
             if let Some(ref tx) = *output_tx_lock {
                 *server_output_rx = Some(tx.subscribe());
                 *needs_server_status_check = false;
@@ -1610,6 +1611,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         cmd_tx: Mutex::new(None),
         cmd_rx: Mutex::new(None),
         stdin_ref: Arc::new(Mutex::new(None)),
+        server_output_tx: Arc::new(Mutex::new(None)),
         last_updated: Arc::new(Mutex::new(None)),
         db_conn: Arc::new(Mutex::new(Some(DbConn::first_connection().await))),
         db: Arc::clone(&arc_db),
