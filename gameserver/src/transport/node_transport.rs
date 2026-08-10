@@ -393,7 +393,8 @@ pub struct PingResponse {
 
 #[derive(Serialize)]
 pub struct ServerNameResponse {
-    pub message: MessagePayload,
+    #[serde(flatten)]
+    pub common: MessagePayload,
 }
 
 #[derive(Serialize)]

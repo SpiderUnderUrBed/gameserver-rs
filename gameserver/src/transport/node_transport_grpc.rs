@@ -163,11 +163,26 @@ impl ServerEdit for Connection {
                 authcode: "0".to_string(),
             },
         };
-        
-        let mut router = self.router.lock().await;
-        let response = router.execute_handler_typed(delete_server_request, "create_server".to_string()).await;
 
-        todo!()
+        let mut router = self.router.lock().await;
+        let response_result = router.execute_handler_typed(delete_server_request, "delete_server".to_string()).await;
+        if let Ok(response) = response_result {
+            match response.try_into_response() {
+                Ok(boxed) => match boxed.downcast::<String>(){
+                    Ok(final_response) => {
+                        if let Ok(response) = serde_json::from_str::<proto::DeleteServerResponse>(&*final_response){
+                            Ok(response.into())
+                        } else {
+                            return Err(tonic::Status::internal("Could not serialize response"));
+                        }
+                    }
+                    Err(_) => Err(tonic::Status::internal("Response did not come back as a string")),
+                },
+                Err(_) => Err(tonic::Status::internal("Failed during a response conversion")),
+            }
+        } else {
+            Err(tonic::Status::internal("Could not get response back at all"))
+        }
 
     }
     async fn start(
@@ -377,7 +392,7 @@ impl ServerManage for Connection {
     }
     async fn state(
         &self,
-        request: tonic::Request<proto::ServerStateRequest>,
+        _request: tonic::Request<proto::ServerStateRequest>,
     ) -> std::result::Result<tonic::Response<proto::ServerStateResponse>, tonic::Status> {
         let server_state_request = ServerStateRequest::default();
         

@@ -24,6 +24,7 @@ use network_abstraction_lib::StreamResponse;
 use network_abstraction_lib::ValueRequest;
 use serde_json::{json, Value};
 use tokio::sync::broadcast::Receiver;
+use tokio::time::sleep;
 use std::convert::TryFrom;
 use std::fmt;
 use std::io::Error;
@@ -31,6 +32,8 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::pin::Pin;
 use std::process::{Command, Stdio};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::fs;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -38,6 +41,7 @@ use tokio::net::TcpListener;
 use tokio::process::Child;
 use tokio::process::{ChildStdin, Command as TokioCommand};
 use tokio::sync::{mpsc, Mutex};
+use tokio::time::Duration;
 
 use crate::broadcast::Sender;
 use crate::databasespec::Filters;
@@ -495,6 +499,11 @@ fn process_hook(
         }
     }
 }
+enum ProcessErrors {
+    IOError(std::io::Error),
+    Timeout
+}
+
 // runs a command and forwards the output of the command to the given channel, which in this case would be back to
 // the main server
 async fn run_command_live_output(
@@ -507,7 +516,8 @@ async fn run_command_live_output(
     sender: Option<mpsc::Sender<String>>,
     stdin_arc: Option<Arc<Mutex<Option<ChildStdin>>>>,
     timeout: Option<u64>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    status: Option<Arc<AtomicBool>>
+) -> Result<(), ProcessErrors> {
     let db = state.db.lock().await;
     let current_filter = db.filter.clone();
     save_db(&db);
@@ -528,7 +538,10 @@ async fn run_command_live_output(
     println!("Befre process hook");
     process_hook(state, provider, sandbox, Some(location), &mut tokio_cmd);
     println!("After process hook");
-    let mut child = tokio_cmd.spawn()?;
+    let mut child = tokio_cmd.spawn()
+        .map_err(|e| ProcessErrors::IOError(e))?;
+
+
 
     if let Some(stdin_slot) = stdin_arc {
         let child_stdin = child.stdin.take();
@@ -594,31 +607,43 @@ async fn run_command_live_output(
     } else {
         None
     };
+    if let Some(ref status) = status {
+        status.store(true, Ordering::SeqCst);
+    }
 
-    if let Some(timeout_number) = timeout {
-        match tokio::time::timeout(
-            tokio::time::Duration::from_millis(timeout_number),
-            child.wait(),
-        )
-        .await
-        {
-            Err(_) => {
-                println!("Command timed out, killing process");
-                let _ = child.kill().await;
-                return Err(Box::new(Error::new(
-                    ErrorKind::TimedOut,
-                    "Command timed out",
-                )));
-            }
-            Ok(wait_result) => {
-                if let Err(e) = wait_result {
-                    println!("Error waiting for process: {}", e);
-                    return Err(e.into());
-                }
-            }
+    let sleep_fut = async {
+        match timeout {
+            Some(t) => sleep(Duration::new(t, 0)).await,
+            None => std::future::pending().await,
         }
-    } else {
-        child.wait().await?;
+    };
+    tokio::pin!(sleep_fut);
+
+    loop {
+        tokio::select! {
+            _ = child.wait() => {
+                break;
+            }
+            _ = sleep_fut => {
+                child.kill().await.map_err(|e| ProcessErrors::IOError(e))?;
+                if let Some(ref status) = status {
+                    status.store(false, Ordering::SeqCst);
+                }
+                println!("Timed out, flushing whats left..");
+                if let Some(h) = stdout_handle {
+                    let _ = h.await;
+                }
+                if let Some(h) = stderr_handle {
+                    let _ = h.await;
+                }
+                println!("timeout flush has completed");
+                return Err(ProcessErrors::Timeout);
+            }
+        };
+    }
+
+    if let Some(ref status) = status {
+        status.store(false, Ordering::SeqCst);
     }
 
     println!("Post-hook process exited");
@@ -652,13 +677,11 @@ struct AppState {
     //server_index: HashMap<String, ServerIndex>,
     jailed_user: String,
     authenticated_origins: Arc<Mutex<Vec<String>>>,
-    server_running: Arc<Mutex<bool>>,
+    server_running: Arc<AtomicBool>,
     output_tx: Arc<Mutex<Option<mpsc::Sender<String>>>>,
     cmd_rx: Mutex<Option<mpsc::Receiver<String>>>,
     cmd_tx: Mutex<Option<Arc<mpsc::Sender<String>>>>,
     stdin_ref: Arc<Mutex<Option<ChildStdin>>>,
-    server_output_tx: Arc<Mutex<Option<broadcast::Sender<String>>>>,
-    server_process: Arc<Mutex<Option<Child>>>,
     last_updated: Arc<Mutex<Option<DateTime<Local>>>>,
     // Consider if i want to store the db at all, previously I was wondering whether or not to have an arc mutex, (arc not needed; the app state has a arc, so I just need to add a mutex
     // so now any changes will still be in sync so you never have a case of a longer operation based on older data writting to the db overwriting the newer one).
@@ -911,6 +934,7 @@ async fn start_server_handler(state: &Arc<AppState>, req: StartServerRequest) ->
                         .1;
                     let provider = pick_platform(platform).unwrap_or(ProviderConfig::default());
                     let arc_state_for_stdin = state.clone();
+                    let status = arc_state_for_stdin.server_running.clone();
                     tokio::spawn(async move {
                         let result = run_command_live_output(
                             &arc_state_for_stdin,
@@ -922,6 +946,7 @@ async fn start_server_handler(state: &Arc<AppState>, req: StartServerRequest) ->
                             Some((*tx).clone()),
                             Some(stdin_clone.clone()),
                             None,
+                            Some(status)
                         )
                         .await;
                         {
@@ -934,14 +959,25 @@ async fn start_server_handler(state: &Arc<AppState>, req: StartServerRequest) ->
                                 let (cmd_tx, cmd_rx) = mpsc::channel::<String>(10_000);
                                 *arc_state_for_stdin.cmd_tx.lock().await = Some(Arc::new(cmd_tx));
                                 *arc_state_for_stdin.cmd_rx.lock().await = Some(cmd_rx);
+                                arc_state_for_stdin.server_running.store(false, Ordering::SeqCst);
                             }
                             Err(e) => {
-                                let _ = tx.send(format!("Server process failed: {}", e)).await;
+                                match e {
+                                    ProcessErrors::IOError(error) => {
+                                        let _ = tx.send(format!("Server process failed: {}", error)).await;
+                                    },
+                                    _ => {
+                                        
+                                    }
+                                }
                             }
                         }
                     });
-
+                    //println!("will say server started");
                     let _ = cmd_tx.send("Server started".into()).await;
+                    //let mut server_running = state.server_running.lock().await;
+                    // println!("has access to the running lock");
+                    // *server_running = true;
                 } else {
                     let _ = cmd_tx
                         .send("No start command available for this provider".into())
@@ -1217,15 +1253,13 @@ async fn ping_handler(state: &Arc<AppState>, req: Ping) -> SimpleMessage {
 }
 async fn server_state_handler(
     state: &Arc<AppState>,
-    req: ServerStateRequest,
+    _req: ServerStateRequest,
 ) -> ServerStateResponse {
-    //println!("Got a server state request");
-    let status = &state.server_running.lock().await;
-    //println!("{:#?}", status);
+    let status = state.server_running.load(Ordering::SeqCst);
     let server_state_response = ServerStateResponse {
         message: MessagePayload {
             r#type: "server_state".to_string(),
-            message: status.to_string(),
+            message:  status.to_string(),
             authcode: "0".to_string(),
         },
     };
@@ -1248,6 +1282,7 @@ async fn server_name_handler(state: &Arc<AppState>, req: ServerNameRequest) -> S
     server_name_response
 }
 
+#[cfg(not(feature = "grpc_experimental"))]
 async fn check_server(arc_state: &Arc<AppState>, server_output_rx: &mut Option<Receiver<String>>, needs_server_status_check: &mut bool) -> Option<String> {
     if *needs_server_status_check {
         let server_running_lock = arc_state.server_running.lock().await;
@@ -1570,13 +1605,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         current_server: Arc::new(Mutex::new(None)),
         jailed_user: "server".to_string(),
         authenticated_origins: Arc::new(Mutex::new(Vec::new())),
-        server_running: Arc::new(Mutex::new(false)),
+        server_running: Arc::new(AtomicBool::new(false)),
         output_tx: Arc::new(Mutex::new(None)),
         cmd_tx: Mutex::new(None),
         cmd_rx: Mutex::new(None),
         stdin_ref: Arc::new(Mutex::new(None)),
-        server_output_tx: Arc::new(Mutex::new(None)),
-        server_process: Arc::new(Mutex::new(None)),
         last_updated: Arc::new(Mutex::new(None)),
         db_conn: Arc::new(Mutex::new(Some(DbConn::first_connection().await))),
         db: Arc::clone(&arc_db),
@@ -1617,62 +1650,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let health_monitor_state = arc_state.clone();
 
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
-        loop {
-            interval.tick().await;
+    // tokio::spawn(async move {
+    //     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+    //     loop {
+    //         interval.tick().await;
 
-            let server_running = health_monitor_state.server_running.lock().await;
-            let mut server_process = health_monitor_state.server_process.lock().await;
+    //         let server_running = health_monitor_state.server_running.lock().await;
+    //         let mut server_process = health_monitor_state.server_process.lock().await;
 
-            if *server_running {
-                if let Some(process) = server_process.as_mut() {
-                    match process.try_wait() {
-                        Ok(Some(_)) => {
-                            drop(server_running);
-                            drop(server_process);
+    //         if *server_running {
+    //             if let Some(process) = server_process.as_mut() {
+    //                 match process.try_wait() {
+    //                     Ok(Some(_)) => {
+    //                         drop(server_running);
+    //                         drop(server_process);
 
-                            let mut server_running =
-                                health_monitor_state.server_running.lock().await;
-                            *server_running = false;
+    //                         let mut server_running =
+    //                             health_monitor_state.server_running.lock().await;
+    //                         *server_running = false;
 
-                            let mut server_process =
-                                health_monitor_state.server_process.lock().await;
-                            *server_process = None;
+    //                         let mut server_process =
+    //                             health_monitor_state.server_process.lock().await;
+    //                         *server_process = None;
 
-                            let mut output_tx = health_monitor_state.server_output_tx.lock().await;
-                            *output_tx = None;
 
-                            println!("Server state reset due to process exit");
-                        }
-                        Ok(None) => {}
-                        Err(e) => {
-                            eprintln!("Error checking server process: {}", e);
-                        }
-                    }
-                } else {
-                    drop(server_running);
-                    drop(server_process);
+    //                         println!("Server state reset due to process exit");
+    //                     }
+    //                     Ok(None) => {}
+    //                     Err(e) => {
+    //                         eprintln!("Error checking server process: {}", e);
+    //                     }
+    //                 }
+    //             } else {
+    //                 drop(server_running);
+    //                 drop(server_process);
 
-                    let mut server_running = health_monitor_state.server_running.lock().await;
-                    *server_running = false;
+    //                 let mut server_running = health_monitor_state.server_running.lock().await;
+    //                 *server_running = false;
 
-                    let mut output_tx = health_monitor_state.server_output_tx.lock().await;
-                    *output_tx = None;
-                }
-            }
-        }
-    });
+    //             }
+    //         }
+    //     }
+    // });
 
-    {
-        let mut server_running = arc_state.server_running.lock().await;
-        *server_running = true;
-    }
+    // {
+    //     let mut server_running = arc_state.server_running.lock().await;
+    //     *server_running = true;
+    // }
 
-    {
-        let mut server_running = arc_state.server_running.lock().await;
-        *server_running = false;
-    }
+    // {
+    //     let mut server_running = arc_state.server_running.lock().await;
+    //     *server_running = false;
+    // }
 
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<String>(10_000);
 
@@ -1971,6 +2000,7 @@ async fn create_server(
                         Some(inner_cmd_tx.clone()),
                         None,
                         Some(60000),
+                        None
                     )
                     .await
                     .ok();
@@ -1992,6 +2022,7 @@ async fn create_server(
                         Some(inner_cmd_tx.clone()),
                         None,
                         Some(60000),
+                        None
                     )
                     .await
                     .ok();
@@ -2014,6 +2045,7 @@ async fn create_server(
                         Some(inner_cmd_tx.clone()),
                         None,
                         Some(60000),
+                        None
                     )
                     .await
                     .ok();

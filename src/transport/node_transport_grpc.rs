@@ -17,6 +17,8 @@ use crate::{
 use anyhow::anyhow;
 use std::time::Duration;
 use std::{error::Error, net::SocketAddr, sync::Arc, time::Instant};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use tonic::{server, transport::Channel};
 mod proto {
@@ -41,19 +43,19 @@ pub struct ConnectionHandler {
     clients: Option<Clients>,
     pub(crate) proxy_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
     pub(crate) proxy_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
-    pub(crate) tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
-    pub(crate) tcp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
+    pub(crate) tx: tokio::sync::broadcast::Sender<Vec<u8>>,
+    pub(crate) rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
 }
 impl ConnectionHandler {
     pub fn new() -> Self {
-        let (tcp_tx, tcp_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+        let (tx, rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
         let (proxy_tx, proxy_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
         ConnectionHandler {
             //stream: None,
             proxy_tx,
             proxy_rx,
-            tcp_tx,
-            tcp_rx,
+            tx,
+            rx,
             clients: None,
         }
     }
@@ -65,14 +67,14 @@ impl ConnectionHandler {
 }
 impl Default for ConnectionHandler {
     fn default() -> Self {
-        let (tcp_tx, tcp_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+        let (tx, rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
         let (proxy_tx, proxy_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
         ConnectionHandler {
             //stream: None,
             proxy_tx,
             proxy_rx,
-            tcp_tx,
-            tcp_rx,
+            tx,
+            rx,
             clients: None,
         }
     }
@@ -84,8 +86,8 @@ impl Clone for ConnectionHandler {
             clients: self.clients.clone(),
             proxy_tx: self.proxy_tx.clone(),
             proxy_rx: self.proxy_rx.resubscribe(),
-            tcp_tx: self.tcp_tx.clone(),
-            tcp_rx: self.tcp_rx.resubscribe(),
+            tx: self.tx.clone(),
+            rx: self.rx.resubscribe(),
         }
     }
 }
@@ -118,6 +120,44 @@ pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, url: String){
             println!("{:#?}", e);
         }
     }
+    drop(state);
+    tokio::spawn(async move {
+        let state = arc_state.write().await;
+        let mut rx = state.cached_status_type.subscribe();
+        drop(state);
+        loop {
+            if rx.changed().await.is_err() {
+                break;
+            }
+            let end_server_polling = AtomicBool::new(false);
+            if rx.borrow().to_string() == "server-process" {
+                let inner_arc_state = arc_state.clone();
+                tokio::spawn(async move {
+                    let state = inner_arc_state.read().await;
+                    let notify = state.poll_server_event.clone();
+                    drop(state);
+                    loop {
+                        notify.notified().await;
+                        if end_server_polling.load(Ordering::SeqCst) == true {
+                            break;
+                        }
+                        let mut state = inner_arc_state.write().await;
+                        let server_state_request = ServerStateRequest {};
+                        match server_state_request.node_transport(&mut state).await {
+                            Ok(res) => {
+                                state.current_node.status = res;
+                            },
+                            Err(_) => {
+                                break;
+                            }
+                        }
+                    }
+                });
+            } else {
+                end_server_polling.store(true, Ordering::SeqCst);
+            }
+        }
+    });
 }
 // does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
 pub async fn connect_to_server(
@@ -165,7 +205,7 @@ pub async fn try_initial_connection(
     _state: &Arc<RwLock<AppState>>,
     _tcp_url: String,
     _ws_tx: &broadcast::Sender<String>,
-    _tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
+    _tx: tokio::sync::broadcast::Sender<Vec<u8>>,
 ) -> Result<(), anyhow::Error> {
     Ok(())
 }
@@ -203,7 +243,7 @@ impl ImmediateTransportable for PasswordRequest {
         let auth_msg = serde_json::to_vec(&AuthTcpMessage {
             password: self.password.clone(),
         })?;
-        let _ = state.connection_handler.tcp_tx.send(auth_msg);
+        let _ = state.connection_handler.tx.send(auth_msg);
         Ok(())
     }
 }
@@ -215,7 +255,7 @@ impl ImmediateTransportable for CapabilitiesRequest {
         let capability_msg = serde_json::to_vec(&List {
             list: ToplevelApiCalls::Capabilities(self.capabilities.clone()),
         })?;
-        let _ = state.connection_handler.tcp_tx.send(capability_msg);
+        let _ = state.connection_handler.tx.send(capability_msg);
         Ok(())
     }
 }
@@ -236,7 +276,7 @@ impl ImmediateTransportable for ServernameRequest {
             // let mut state = arc_state.write().await;
             if let Ok(Ok(bytes)) = timeout(
                 Duration::from_millis(1000),
-                state.connection_handler.tcp_rx.recv(),
+                state.connection_handler.rx.recv(),
             )
             .await
             {
@@ -454,20 +494,21 @@ pub struct MigrateRequest {
     #[serde(flatten)]
     pub common: SrcAndDest,
 }
+// TODO: impliment this
 impl NodeTransportable for MigrateRequest {
     type Output = ();
     async fn node_transport(
         &self,
         state: &mut AppState,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        match serde_json::to_vec(&self.common) {
-            Ok(bytes) => {
-                if let Err(err) = state.connection_handler.tcp_tx.send(bytes) {
-                    eprintln!("Failed to send request over broadcast: {}", err);
-                }
-            }
-            Err(err) => eprintln!("Failed to serialize request: {}", err),
-        }
+        // match serde_json::to_vec(&self.common) {
+        //     Ok(bytes) => {
+        //         if let Err(err) = state.connection_handler.tx.send(bytes) {
+        //             eprintln!("Failed to send request over broadcast: {}", err);
+        //         }
+        //     }
+        //     Err(err) => eprintln!("Failed to serialize request: {}", err),
+        // }
 
         Ok(())
     }
@@ -488,13 +529,13 @@ impl NodeTransportable for SetServerRequest {
             metadata: Some(self.metadata.clone().into()),
             authcode: "0".to_string(),
         };
-        let _ = state
+        let _  = state
             .connection_handler
             .clients
             .as_mut()
             .unwrap()
             .server_manage_client
-            .set(set_server_request);
+            .set(set_server_request).await;
 
         Ok(())
     }
@@ -517,7 +558,8 @@ impl NodeTransportable for ServerDataRequest {
             .as_mut()
             .unwrap()
             .server_manage_client
-            .data(server_data_request);
+            .data(server_data_request)
+            .await;
 
         Ok(())
     }
@@ -533,7 +575,7 @@ impl NodeTransportable for RawBytes {
         &self,
         state: &mut AppState,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let _ = state.connection_handler.tcp_tx.send(self.bytes.clone());
+        let _ = state.connection_handler.tx.send(self.bytes.clone());
         Ok(())
     }
 }
@@ -548,6 +590,7 @@ pub struct FilterRequest {
     pub(crate) filter: Filters,
 }
 //InternalTransportable
+// TODO: impliment this
 impl NodeTransportable for FilterRequest {
     type Output = ();
     async fn node_transport(
@@ -560,10 +603,10 @@ impl NodeTransportable for FilterRequest {
             metadata: MetadataTypes::Filter(self.filter.clone()),
             authcode: "0".to_string(),
         };
-        let _ = state
-            .connection_handler
-            .tcp_tx
-            .send(serde_json::to_vec(&filter_request).unwrap());
+        // let _ = state
+        //     .connection_handler
+        //     .tx
+        //     .send(serde_json::to_vec(&filter_request).unwrap());
 
         Ok(())
     }
@@ -578,6 +621,7 @@ impl InternalTransportable for FilterRequest {
 }
 
 // }
+// TODO: impliment this
 pub struct Ping {}
 impl NodeTransportable for Ping {
     type Output = ();
@@ -588,10 +632,10 @@ impl NodeTransportable for Ping {
         let ping = SimpleMessage {
             message: "ping".to_string(),
         };
-        let res = state
-            .connection_handler
-            .tcp_tx
-            .send(serde_json::to_vec(&ping).unwrap());
+        // let res = state
+        //     .connection_handler
+        //     .tx
+        //     .send(serde_json::to_vec(&ping).unwrap());
 
         Ok(())
     }
@@ -608,6 +652,7 @@ impl InternalTransportable for Ping {
 pub struct IntegrationKeyRequest {
     pub key: Value,
 }
+// TODO: impliment this
 impl NodeTransportable for IntegrationKeyRequest {
     type Output = ();
     async fn node_transport(
@@ -619,13 +664,13 @@ impl NodeTransportable for IntegrationKeyRequest {
                 // Add newline delimiter for TCP stream parsing
                 bytes.push(b'\n');
 
-                if let Err(err) = state.connection_handler.tcp_tx.send(bytes.clone()) {
+                if let Err(err) = state.connection_handler.tx.send(bytes.clone()) {
                     eprintln!("Failed to send to internal stream: {}", err);
                 }
 
                 // Tells the remote server to enable RCON
                 //if let Some(internal_tx) = &state.internal_tx {
-                if let Err(err) = state.connection_handler.tcp_tx.send(bytes) {
+                if let Err(err) = state.connection_handler.tx.send(bytes) {
                     eprintln!("Failed to send to TCP stream: {}", err);
                 }
                 //}
@@ -647,20 +692,31 @@ impl InternalTransportable for IntegrationKeyRequest {
 //InternalTransportable
 pub struct ServerStateRequest {}
 impl NodeTransportable for ServerStateRequest {
-    type Output = ();
+    type Output = Status;
     async fn node_transport(
         &self,
         state: &mut AppState,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    ) -> Result<Status, Box<dyn Error + Send + Sync>> {
         let server_state_request = proto::ServerStateRequest {};
-        let _ = state
+        let result = state
             .connection_handler
             .clients
             .as_mut()
             .unwrap()
             .server_manage_client
-            .state(server_state_request);
-        Ok(())
+            .state(server_state_request)
+            .await;
+        match result {
+            Ok(res) => {
+                let status_bool: bool = res.get_ref().message.clone().unwrap().message.parse()?;
+                if status_bool == true {
+                    Ok(Status::Up)
+                } else {
+                    Ok(Status::Down)
+                }
+            },
+            Err(e) => Err(Box::new(e))
+        }
     }
 }
 impl InternalTransportable for ServerStateRequest {

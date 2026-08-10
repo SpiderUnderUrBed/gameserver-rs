@@ -58,7 +58,7 @@ use axum_oidc::openidconnect::Scope;
 use futures_util::FutureExt;
 use general_networked_filesystem::flume_delimited::{FlumeFile, TcpFsReceiver, TcpFsSender};
 use general_networked_filesystem::{FileOperations, LsRequest, RemoteFileSystem};
-use tokio::sync::RwLock;
+use tokio::sync::{watch, RwLock};
 
 use rcon::Connection;
 use tokio_util::sync::CancellationToken;
@@ -373,8 +373,8 @@ struct NodeAndTCP {
     nodetype: NodeType,
     k8s_type: K8sType,
     gameserver: Value,
-    tcp_tx: Option<tokio::sync::broadcast::Sender<Vec<u8>>>,
-    tcp_rx: Option<tokio::sync::broadcast::Receiver<Vec<u8>>>,
+    tx: Option<tokio::sync::broadcast::Sender<Vec<u8>>>,
+    rx: Option<tokio::sync::broadcast::Receiver<Vec<u8>>>,
 }
 impl Clone for NodeAndTCP {
     fn clone(&self) -> NodeAndTCP {
@@ -384,8 +384,8 @@ impl Clone for NodeAndTCP {
             nodetype: self.nodetype.clone(),
             status: self.status.clone(),
             gameserver: self.gameserver.clone(),
-            tcp_tx: self.tcp_tx.clone(),
-            tcp_rx: self.tcp_tx.as_ref().map(|tx| tx.subscribe()),
+            tx: self.tx.clone(),
+            rx: self.tx.as_ref().map(|tx| tx.subscribe()),
             k8s_type: self.k8s_type.clone(),
         }
     }
@@ -547,7 +547,7 @@ enum ApiCalls {
 //     api_call: ApiCalls
 // }
 #[derive(Clone, Default, Serialize, Deserialize, Debug)]
-enum Status {
+pub enum Status {
     Unknown,
     Up,
     Healthy,
@@ -567,14 +567,14 @@ struct FileSystemHandler {
 // for user information and etc
 // #[derive(Default)]
 pub struct AppState {
-    // tcp_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
-    // tcp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
+    // tx: tokio::sync::broadcast::Sender<Vec<u8>>,
+    // rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
     connection_handler: ConnectionHandler,
     cancel_current_conn: CancellationToken,
-    tcp_conn_status: Status,
+    conn_status: Status,
     internal_rx: Option<broadcast::Receiver<Vec<u8>>>,
     internal_tx: Option<broadcast::Sender<Vec<u8>>>,
-    additonal_node_tcp: Vec<NodeAndTCP>,
+    additonal_node: Vec<NodeAndTCP>,
     current_node: NodeAndTCP,
     ws_tx: broadcast::Sender<String>,
     server_start_event: Arc<Notify>,
@@ -583,356 +583,14 @@ pub struct AppState {
     base_path: String,
     client: Clients,
     database: database::Database,
-    cached_status_type: String,
+    cached_status_type: watch::Sender<String>,
+    poll_server_event: Arc<Notify>,
     rcon_connection: Option<Arc<Mutex<Connection<TcpStream>>>>,
     current_server: Option<Server>,
     lock: bool,
     filesystem: FileSystemHandler, // filesystem: Option<RemoteFileSystem<TcpFs>>
 }
 
-// What this does is that it will go over the lines retrived from the TCP stream
-// and try parsing them into serveral objects, then it will put them in ConsoleData for it to be extracted and processed
-// individually again
-// (Sometimes the data sent is weird so this is why i do this intermediary step rather than directly processing things)
-async fn get_all_stream_data_parsed(line_content: &str) -> Result<Vec<Value>, serde_json::Error> {
-    let mut final_data = vec![];
-
-    let list_parsed: Vec<Result<List, serde_json::Error>> =
-        value_from_line::<List, _>(line_content, |line| line.contains("\"list\"")).await;
-
-    let mut list_values: Vec<Value> = vec![];
-    for item in list_parsed {
-        if let Ok(list_item) = item {
-            let serialized = serde_json::to_string(&list_item)?;
-            if let Ok(seralized_value) = serde_json::to_value(ConsoleData {
-                data: serialized,
-                r#type: "list_item".to_string(),
-                authcode: "0".to_string(),
-            }) {
-                if !list_values.contains(&seralized_value) {
-                    list_values.push(seralized_value)
-                }
-            }
-        }
-    }
-    final_data.extend(list_values.clone());
-
-    let list_lines: Vec<String> = list_values
-        .iter()
-        .map(|v| {
-            serde_json::to_string(v.get("data").clone().unwrap_or(&Value::Null))
-                .unwrap_or(String::new())
-        })
-        .collect();
-
-    let console_parsed: Vec<Result<ConsoleData, serde_json::Error>> =
-        value_from_line::<ConsoleData, _>(line_content, |line| !line.contains("\"list\"")).await;
-
-    let mut console_values: Vec<Value> = vec![];
-
-    for item in console_parsed {
-        if let Ok(data) = item {
-            if !list_lines.contains(&data.data) {
-                if let Ok(seralized_value) = serde_json::to_value(data) {
-                    console_values.push(seralized_value);
-                }
-            }
-        }
-    }
-    final_data.extend(console_values);
-
-    let console_parsed: Vec<Result<LogLine, serde_json::Error>> =
-        value_from_line::<LogLine, _>(line_content, |line| !line.contains("\"list\"")).await;
-
-    let mut console_values: Vec<Value> = vec![];
-    for item in console_parsed {
-        if let Ok(log) = item {
-            if !list_lines.contains(&log.data) {
-                console_values.push(serde_json::json!({ "data": log.data }));
-            }
-        }
-    }
-    final_data.extend(console_values);
-
-    if let Ok(value) = serde_json::from_str::<Value>(line_content) {
-        if let (Some(_), Some(_), Some(_)) = (
-            value.get("start_keyword").and_then(|v| v.as_str()),
-            value.get("stop_keyword").and_then(|v| v.as_str()),
-            value.get("name").and_then(|v| v.as_str()),
-        ) {
-            final_data.push(
-                serde_json::to_value(ConsoleData {
-                    authcode: "0".to_string(),
-                    data: serde_json::to_string(&value).unwrap_or("".to_string()),
-                    r#type: "info".to_string(),
-                })
-                .unwrap(),
-            )
-        }
-    }
-
-    let message_parsed: Vec<Result<MessagePayload, serde_json::Error>> =
-        value_from_line::<MessagePayload, _>(line_content, |line| !line.contains("\"list\"")).await;
-
-    let mut message_values: Vec<Value> = vec![];
-    for item in message_parsed {
-        if let Ok(data) = item {
-            if let Ok(seralized_value) = serde_json::to_value(data) {
-                if !message_values.contains(&seralized_value) {
-                    message_values.push(seralized_value)
-                }
-            }
-        }
-    }
-    final_data.extend(message_values);
-
-    let src_and_dest_parsed: Vec<Result<SrcAndDest, serde_json::Error>> =
-        value_from_line::<SrcAndDest, _>(line_content, |line| line.contains("\"src\"")).await;
-
-    let mut src_and_dest_values: Vec<Value> = vec![];
-    for item in src_and_dest_parsed {
-        if let Ok(data) = item {
-            if let Ok(serialized_value) = serde_json::to_value(data) {
-                if !src_and_dest_values.contains(&serialized_value) {
-                    src_and_dest_values.push(serialized_value);
-                }
-            }
-        }
-    }
-    final_data.extend(src_and_dest_values);
-
-    let simple_messages_parsed: Vec<Result<SimpleMessage, serde_json::Error>> =
-        value_from_line::<SimpleMessage, _>(line_content, |line| line.contains("\"message\""))
-            .await;
-
-    let mut simple_messages_values: Vec<Value> = vec![];
-    for item in simple_messages_parsed {
-        if let Ok(data) = item {
-            if let Ok(serialized_value) = serde_json::to_value(data) {
-                if !simple_messages_values.contains(&serialized_value) {
-                    simple_messages_values.push(serialized_value);
-                }
-            }
-        }
-    }
-    final_data.extend(simple_messages_values);
-
-    let integration_parsed: Vec<Result<IntegrationCommands, serde_json::Error>> =
-        value_from_line::<IntegrationCommands, _>(line_content, |line| line.contains("\"kind\""))
-            .await;
-
-    let mut integration_values: Vec<Value> = vec![];
-    for item in integration_parsed {
-        if let Ok(data) = item {
-            if let Ok(serialized_value) = serde_json::to_value(data) {
-                if !integration_values.contains(&serialized_value) {
-                    integration_values.push(serialized_value);
-                }
-            }
-        }
-    }
-
-    final_data.extend(integration_values);
-    return Ok(final_data);
-}
-
-// Deserializes all the values which has previously been serialized and processed individually
-// rationale for this extra step is explained above
-async fn handle_all_stream_values(
-    arc_state: Arc<RwLock<AppState>>,
-    value: Value,
-    ws_tx: &broadcast::Sender<String>,
-    ip: &str,
-    server_start_keyword: &mut String,
-    server_stop_keyword: &mut String,
-) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-    if let Ok(payload) = serde_json::from_value::<MessagePayload>(value.clone()) {
-        //     if payload.message == "end_conn" {
-        //         println!("Ending current connection");
-        //         let mut state_guard = arc_state.write().await;
-        //         state_guard.tcp_conn_status = Status::Down;
-        //         return Ok(true);
-        // } else
-        if payload.r#type == "server_state" {
-            let mut state_guard = arc_state.write().await;
-            let sent_status = payload.message.parse().unwrap_or(false);
-            state_guard.current_node.status = match sent_status {
-                true => Status::Up,
-                false => Status::Down,
-            };
-        }
-    }
-
-    if let Ok(data_clone) = serde_json::from_value::<SimpleMessage>(value.clone()) {
-        if data_clone.message == "pong" {
-            println!("got a ping");
-            let state_guard: tokio::sync::RwLockWriteGuard<'_, AppState> = arc_state.write().await;
-            let ping_message = MessagePayload {
-                r#type: "status".to_string(),
-                message: "ping_ok".to_string(),
-                authcode: "0".to_string(),
-            };
-            let _ = state_guard
-                .ws_tx
-                .send(serde_json::to_string(&ping_message).unwrap());
-        }
-    }
-
-    //println!("{:#?} and {:#?} end", serde_json::from_value::<ConsoleData>(value.clone()), value.clone());
-    if let Ok(data_clone) = serde_json::from_value::<ConsoleData>(value.clone()) {
-        if let Ok(inner_value) = serde_json::from_str::<serde_json::Value>(&data_clone.data) {
-            if let (Some(start_kw), Some(stop_kw), Some(name)) = (
-                inner_value.get("start_keyword").and_then(|v| v.as_str()),
-                inner_value.get("stop_keyword").and_then(|v| v.as_str()),
-                inner_value.get("name").and_then(|v| v.as_str()),
-            ) {
-                *server_start_keyword = start_kw.to_string();
-                *server_stop_keyword = stop_kw.to_string();
-                let mut state_guard = arc_state.write().await;
-                if let Some(current_server) = &mut state_guard.current_server {
-                    if current_server.servername.is_empty() {
-                        current_server.servername = name.to_string();
-                    }
-                }
-            }
-        }
-
-        if data_clone.data.contains("\"type\":\"command\"") {
-            if let Ok(inner_msg) = serde_json::from_str::<MessagePayload>(&data_clone.data) {
-                if inner_msg.r#type == "command" {
-                    let (client_option, database) = {
-                        let state_guard = arc_state.read().await;
-                        (state_guard.client.clone(), state_guard.database.clone())
-                    };
-
-                    if let Ok(nodes) = database.fetch_all_nodes().await {
-                        let node_status = if let Clients::K8s(client) = client_option {
-                            let client_clone = client.clone();
-                            let ip_clone = ip.to_string();
-                            match tokio::time::timeout(
-                                std::time::Duration::from_millis(100),
-                                verify_is_k8s_gameserver(client_clone, ip_clone),
-                            )
-                            .await
-                            {
-                                Ok(Ok(true)) => NodeStatus::ImmutablyEnabled,
-                                _ => NodeStatus::Enabled,
-                            }
-                        } else {
-                            NodeStatus::Enabled
-                        };
-
-                        let node = Node {
-                            ip: ip.to_string(),
-                            nodename: inner_msg.message,
-                            nodetype: {
-                                let state_guard = arc_state.read().await;
-                                if let Clients::K8s(client) = &state_guard.client {
-                                    if kubernetes::verify_is_k8s_gameserver(
-                                        client.clone(),
-                                        ip.to_string(),
-                                    )
-                                    .await?
-                                    {
-                                        NodeType::Inbuilt
-                                    } else {
-                                        NodeType::Custom
-                                    }
-                                } else {
-                                    NodeType::Custom
-                                }
-                            },
-                            nodestatus: node_status,
-                            k8s_type: {
-                                let state_guard = arc_state.read().await;
-                                if let Clients::K8s(client) = &state_guard.client {
-                                    if kubernetes::verify_is_k8s_gameserver(
-                                        client.clone(),
-                                        ip.to_string(),
-                                    )
-                                    .await?
-                                    {
-                                        if kubernetes::verify_is_k8s_pod(client, ip.to_string())
-                                            .await?
-                                        {
-                                            K8sType::Pod
-                                        } else if kubernetes::verify_is_k8s_node(
-                                            client,
-                                            ip.to_string(),
-                                        )
-                                        .await?
-                                        {
-                                            K8sType::Node
-                                        } else {
-                                            K8sType::Unknown
-                                        }
-                                    } else {
-                                        K8sType::None
-                                    }
-                                } else {
-                                    K8sType::Unknown
-                                }
-                            },
-                        };
-
-                        if !nodes
-                            .iter()
-                            .any(|n| n.ip == node.ip && n.nodename == node.nodename)
-                        {
-                            let _ = database
-                                .create_nodes_in_db(ModifyElementData {
-                                    element: Element::Node(node),
-                                    jwt: "".to_string(),
-                                    require_auth: false,
-                                })
-                                .await;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-
-    Ok(false)
-}
-
-async fn process_stream_data(
-    raw_data: &[u8],
-    arc_state: &Arc<RwLock<AppState>>,
-    ws_tx: &broadcast::Sender<String>,
-    ip: &str,
-    server_start_keyword: &mut String,
-    server_stop_keyword: &mut String,
-) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-    if let Ok(text) = std::str::from_utf8(raw_data) {
-        println!("got text {:#?}", text);
-        let line_content = text.trim();
-        if line_content.is_empty() {
-            return Ok(false);
-        }
-
-        let final_data: Vec<Value> = get_all_stream_data_parsed(line_content).await?;
-
-        //println!("{:#?}", final_data);
-
-        for value in final_data.iter() {
-            let should_break = handle_all_stream_values(
-                arc_state.clone(),
-                value.clone(),
-                ws_tx,
-                ip,
-                server_start_keyword,
-                server_stop_keyword,
-            )
-            .await?;
-            if should_break {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
-}
 
 
 // Looks for a env varible, if its not found, try the specified default, if none is found it will use the default of whatever that type is
@@ -1025,8 +683,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         get_env_var_or_arg("INITIAL_CONNECTION_TIMEOUT", Some(2)).unwrap();
 
     // creates a websocket broadcase and tcp channels
-    let (ws_tx, ws_rx) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
-    let (tcp_tx, tcp_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+    let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
 
     // sets the client to be none by default unless this is ran the stanard way which will be ran with the appropriate feature-flag
     // which will set the k8s client
@@ -1099,10 +756,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         operations: FileOperations::new(),
     };
 
+    let cached_status_type = watch::channel(String::new()).0;
+
     // use everything so far to make the app state
     let mut state: AppState = AppState {
-        // tcp_tx: tcp_tx,
-        // tcp_rx: tcp_rx,
+        // tx: tx,
+        // rx: rx,
         connection_handler,
         cancel_current_conn: CancellationToken::new(),
         internal_rx: Some(internal_rx.resubscribe()),
@@ -1115,15 +774,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         current_node: NodeAndTCP::default(),
         database: database.clone(),
         client,
-        additonal_node_tcp: nodes,
-        tcp_conn_status: Status::Unknown,
-        cached_status_type: String::new(),
+        additonal_node: nodes,
+        conn_status: Status::Unknown,
+        cached_status_type,
+        poll_server_event: Arc::new(Notify::new()),
         rcon_connection,
         current_server,
         lock: false,
         filesystem,
     };
-    state.tcp_conn_status = {
+    state.conn_status = {
         if check_channel_health(&state).await {
             Status::Up
         } else {
@@ -1271,7 +931,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         println!("Trying initial connection...");
         let state_clone = inner_state.clone();
         let ws_tx_clone = ws_tx.clone();
-        let tcp_tx_clone = inner_state.write().await.connection_handler.tcp_tx.clone();
+        let tx_clone = inner_state.write().await.connection_handler.tx.clone();
         let tcp_url_clone = tcp_url.to_string();
 
         // TODO: Since I never create a handler with initial connections, should i take it out of the thread?, or rather,
@@ -1284,7 +944,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 &state_clone,
                 tcp_url_clone,
                 &ws_tx_clone,
-                tcp_tx_clone,
+                tx_clone,
             )
             .await;
             if initial_connection_result.is_err() {
@@ -1343,13 +1003,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             // internal for things like terminating a connection to a node locally, or forwarding said message to node
             if initial_connection_result.is_ok() {
                 println!("Creating a new connection");
-                let (new_tcp_tx, new_tcp_rx) = broadcast::channel::<Vec<u8>>(100);
+                let (new_tx, new_rx) = broadcast::channel::<Vec<u8>>(100);
                 let (internal_tx, internal_rx) = broadcast::channel::<Vec<u8>>(100);
 
                 {
                     let mut state = inner_state.write().await;
-                    state.connection_handler.tcp_tx = new_tcp_tx.clone();
-                    state.connection_handler.tcp_rx = new_tcp_rx.resubscribe();
+                    state.connection_handler.tx = new_tx.clone();
+                    state.connection_handler.rx = new_rx.resubscribe();
                     state.internal_tx = Some(internal_tx);
                     state.internal_rx = Some(internal_rx.resubscribe());
                 }
@@ -1588,7 +1248,7 @@ async fn refresh_status(
     //     }
     // }
     // if !authorized {
-    state.tcp_conn_status = {
+    state.conn_status = {
         if check_channel_health(&state).await {
             Status::Up
         } else {
@@ -2106,7 +1766,7 @@ async fn load_settings(
             ));
         }
     };
-    state.cached_status_type = settings.status_type;
+    state.cached_status_type.send(settings.status_type);
 
     Ok(())
 }
@@ -2252,39 +1912,23 @@ async fn ongoing_server_status(
     let interval = interval(Duration::from_secs(3));
     let state_clone = arc_state.clone();
 
-    // let mut authorized = false;
-    // if let Some(user) = auth_session.user {
-    //     if user.user_perms.iter().any(|user_perm| user_perm.perm == "admin"){
-    //         authorized = true;
-    //     }
-    // }
-    // if let Some(token) = get_auth_bearer(headers) {
-    //     if !resolve_token_perms(state_clone.clone(), token).iter().any(|user_perm| user_perm.perm == "admin"){
-    //         authorized = true;
-    //     }
-    // }
-    // if !authorized {
-    //     return Err(StatusCode::UNAUTHORIZED)
-    // }
-
     let updates = stream::unfold(
         (interval, state_clone),
         move |(mut interval, arc_state)| async move {
             interval.tick().await;
             let status = {
-                let mut state = arc_state.write().await;
-
-                if state.cached_status_type.is_empty()
-                    || state.cached_status_type == "server-keyword"
+                let state = arc_state.write().await;
+                let status_type = state.cached_status_type.borrow().to_string();
+                if status_type.is_empty()
+                    || status_type == "server-keyword"
                 {
                     state.current_node.status.clone()
-                } else if state.cached_status_type == "server-process" {
-                    // let server_state_request = ServerStateRequest {};
-                    // let _ = server_state_request.node_transport(&mut state).await;
+                } else if status_type == "server-process" {
+                    state.poll_server_event.notify_waiters();
                     state.current_node.status.clone()
-                } else if state.cached_status_type == "node" {
-                    state.tcp_conn_status.clone()
-                } else if state.cached_status_type == "manual-click" {
+                } else if status_type == "node" {
+                    state.conn_status.clone()
+                } else if status_type == "manual-click" {
                     Status::Unknown
                 } else {
                     Status::Unknown
@@ -2899,7 +2543,6 @@ async fn set_server(
             },
         };
         let _ = set_server_request.node_transport(&mut state).await;
-
         Ok(StatusCode::OK)
     } else {
         Ok(StatusCode::INTERNAL_SERVER_ERROR)
@@ -3124,9 +2767,9 @@ async fn get_nodes(
     }
 
     for node in node_list.clone() {
-        let exists = state.additonal_node_tcp.iter().any(|n| n.name == node.name);
+        let exists = state.additonal_node.iter().any(|n| n.name == node.name);
         if !exists {
-            state.additonal_node_tcp.push(node);
+            state.additonal_node.push(node);
         }
     }
 
@@ -3435,17 +3078,17 @@ async fn get_files_content(
 //         return Err(StatusCode::UNAUTHORIZED.into_response());
 //     }
 
-//     let (tcp_tx, tcp_rx) = {
+//     let (tx, rx) = {
 //         // let state = arc_state.read().await;
 //         state.connection_handler.get_filesystem_stream()
-//         //(state.connection_handler.tcp_tx.clone(), state.connection_handler.tcp_tx.subscribe())
+//         //(state.connection_handler.tx.clone(), state.connection_handler.tx.subscribe())
 //     };
 
-//     //let mut tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
+//     //let mut tcp_fs = TcpFs::new(tx, rx);
 //     //let base_path = RemoteFileSystem::new("server", Some(tcp_fs.clone()));
 
 //     let mut base_path = if state.filesystem.is_none() {
-//         let mut tcp_fs = TcpFs::new(tcp_tx, tcp_rx);
+//         let mut tcp_fs = TcpFs::new(tx, rx);
 //         &mut RemoteFileSystem::new("server", Some(tcp_fs.clone()))
 //     } else {
 //         state.filesystem.as_mut().unwrap()
@@ -3547,9 +3190,9 @@ pub struct AuthenticateParams {
 
 //     let tcp_fs = {
 //         let state = arc_state.read().await;
-//         let (tcp_tx, tcp_rx) = state.connection_handler.get_filesystem_stream();
+//         let (tx, rx) = state.connection_handler.get_filesystem_stream();
 //         //(state.connection_handler.proxy_tx.clone(), state.connection_handler.proxy_rx.resubscribe());
-//         Arc::new(Mutex::new(TcpFs::new(tcp_tx, tcp_rx)))
+//         Arc::new(Mutex::new(TcpFs::new(tx, rx)))
 //     };
 
 //     let decoded_path = urlencoding::decode(&file_path)
@@ -3952,7 +3595,7 @@ mod tests {
             #[serial]
             async fn try_initial_connection_test() {
                 let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
-                let (tcp_tx, _) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+                let (tx, _) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
 
                 let tcp_url = get_env_var_or_arg("TCPURL", Some(StaticTcpUrl.to_string())).unwrap();
 
@@ -3971,7 +3614,7 @@ mod tests {
                     &state,
                     tcp_url,
                     &ws_tx,
-                    tcp_tx,
+                    tx,
                 )
                 .await;
 
