@@ -121,6 +121,7 @@ pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, url: String){
         }
     }
     drop(state);
+    // TODO: consider interrupts instead of polling
     tokio::spawn(async move {
         let state = arc_state.write().await;
         let mut rx = state.cached_status_type.subscribe();
@@ -136,6 +137,7 @@ pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, url: String){
                     let state = inner_arc_state.read().await;
                     let notify = state.poll_server_event.clone();
                     drop(state);
+                    let mut interval = tokio::time::interval(Duration::from_millis(500));
                     loop {
                         notify.notified().await;
                         if end_server_polling.load(Ordering::SeqCst) == true {
@@ -151,6 +153,7 @@ pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, url: String){
                                 break;
                             }
                         }
+                        interval.tick().await;
                     }
                 });
             } else {
