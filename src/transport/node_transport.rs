@@ -10,7 +10,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{database::{databasespec::{K8sType, NodeStatus, NodeType}, Element, ModifyElementData, Node, NodesDatabase}, extra::value_from_line, get_env_var_or_arg, kubernetes::{self, verify_is_k8s_gameserver}, ApiCalls as ToplevelApiCalls, AuthTcpMessage, Clients, ConsoleData, IncomingMessage, IntegrationCommands, List, LogLine, NodeAndTCP};
+use crate::{database::{databasespec::{K8sType, NodeStatus, NodeType}, Element, ModifyElementData, Node, NodesDatabase}, extra::value_from_line, get_env_var_or_arg, kubernetes::{self, verify_is_k8s_gameserver}, ApiCalls as ToplevelApiCalls, AuthTcpMessage, Clients, ConsoleData, IncomingMessage, IntegrationCommands, List, LogLine, NodeWithStream};
 use crate::{
     AppState, CHANNEL_BUFFER_SIZE, CONNECTION_RETRY_DELAY, CONNECTION_TIMEOUT, MessagePayload,
     MessagePayloadWithMetadata, MetadataTypes, SimpleMessage, SrcAndDest, Status, StreamResult,
@@ -89,7 +89,7 @@ impl ImmediateTransportable for ServernameRequest {
             .await
             {
                 if let Ok(payload) = serde_json::from_slice::<IncomingMessage>(&bytes) {
-                    state.current_node = NodeAndTCP {
+                    state.current_node = NodeWithStream {
                         name: payload.message,
                         ip: self.ip.clone(),
                         ..Default::default()
@@ -97,7 +97,7 @@ impl ImmediateTransportable for ServernameRequest {
                     break 'name;
                 }
             }
-            state.current_node = NodeAndTCP {
+            state.current_node = NodeWithStream {
                 name: "main".to_string(),
                 ip: self.ip.clone(),
                 ..Default::default()
@@ -588,10 +588,7 @@ pub async fn connect_to_server(
     ws_tx: broadcast::Sender<String>,
     end_if_timeout: bool,
 ) -> Result<Option<SocketAddr>, Box<dyn Error + Send + Sync>> {
-    let mut last_peer: Option<SocketAddr> = None;
-    //let (proxy_tx, _) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
-    // let (proxy_tx, _) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
-    // let (_, proxy_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+    let mut last_peer: Option<SocketAddr>;
     let (proxy_tx, mut proxy_rx) = {
         let state_guard = arc_state.write().await;
         (
@@ -601,15 +598,6 @@ pub async fn connect_to_server(
     };
 
     loop {
-        let mut rx = {
-            let state = arc_state.read().await;
-            state.connection_handler.tx.subscribe()
-        };
-        let internal_stream = {
-            let state = arc_state.read().await;
-            state.internal_rx.as_ref().map(|r| r.resubscribe())
-        };
-
         let deadline = Instant::now() + CONNECTION_TIMEOUT;
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -617,7 +605,7 @@ pub async fn connect_to_server(
         }
 
         match timeout(remaining, TcpStream::connect(&tcp_url)).await {
-            Ok(Ok(mut stream)) => {
+            Ok(Ok(stream)) => {
                 let peer = stream.peer_addr()?;
                 last_peer = Some(peer);
                 let cancel_token = CancellationToken::new();
@@ -631,7 +619,6 @@ pub async fn connect_to_server(
 
                 let (reader, mut writer) = stream.into_split();
                 let buf_reader = BufReader::new(reader);
-                let buf = vec![0u8; 4096];
                 let mut lines = buf_reader.lines();
 
                 let mut proxy_rx_clone = proxy_rx.resubscribe();
@@ -657,7 +644,7 @@ pub async fn connect_to_server(
                                     Ok(None) => {
                                         break;
                                     }
-                                    Err(e) => {
+                                    Err(_) => {
                                         break;
                                     },
                                 }
@@ -796,7 +783,7 @@ pub(crate) async fn try_initial_connection(
                 eprintln!("Initial connection failed: {}", e);
             }
         }
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(Duration::from_secs(conn_timeout)).await;
     }
     Err(final_error)
 }
@@ -1135,13 +1122,7 @@ impl InternalTransportable for FilterRequest {
     }
 }
 
-// TODO: add and associated type and generic for Ok type while the errors be an eum
-trait ResultTransportable {
-    async fn transport_and_recv(
-        &self,
-        state: &AppState,
-    ) -> Result<(), Box<dyn Error + Send + Sync>>;
-}
+
 // }
 pub struct Ping {}
 impl NodeTransportable for Ping {
@@ -1156,14 +1137,7 @@ impl NodeTransportable for Ping {
         Ok(())
     }
 }
-impl ResultTransportable for Ping {
-    async fn transport_and_recv(
-        &self,
-        state: &AppState,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        Ok(())
-    }
-}
+
 impl InternalTransportable for Ping {
     async fn internal_transport(
         &self,

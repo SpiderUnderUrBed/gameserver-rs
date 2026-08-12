@@ -170,7 +170,7 @@ mod docker {
 }
 #[cfg(not(feature = "full-stack"))]
 mod kubernetes {
-    use crate::NodeAndTCP;
+    use crate::NodeWithStream;
 
     pub async fn create_k8s_deployment(
         _: &crate::Client,
@@ -185,7 +185,7 @@ mod kubernetes {
     }
     pub async fn list_node_info(
         _: crate::Client,
-    ) -> Result<Vec<NodeAndTCP>, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Vec<NodeWithStream>, Box<dyn std::error::Error + Send + Sync>> {
         Err("This should not be running".into())
     }
     pub async fn verify_is_k8s_gameserver(
@@ -349,7 +349,7 @@ pub enum StreamResult {
 
 // #[derive(PartialEq)]
 #[derive(Default)]
-struct NodeAndTCP {
+struct NodeWithStream {
     name: String,
     ip: String,
     status: Status,
@@ -359,9 +359,9 @@ struct NodeAndTCP {
     tx: Option<tokio::sync::broadcast::Sender<Vec<u8>>>,
     rx: Option<tokio::sync::broadcast::Receiver<Vec<u8>>>,
 }
-impl Clone for NodeAndTCP {
-    fn clone(&self) -> NodeAndTCP {
-        NodeAndTCP {
+impl Clone for NodeWithStream {
+    fn clone(&self) -> NodeWithStream {
+        NodeWithStream {
             name: self.name.clone(),
             ip: self.ip.clone(),
             nodetype: self.nodetype.clone(),
@@ -558,8 +558,8 @@ pub struct AppState {
     conn_status: Status,
     internal_rx: Option<broadcast::Receiver<Vec<u8>>>,
     internal_tx: Option<broadcast::Sender<Vec<u8>>>,
-    additonal_node: Vec<NodeAndTCP>,
-    current_node: NodeAndTCP,
+    additonal_node: Vec<NodeWithStream>,
+    current_node: NodeWithStream,
     ws_tx: broadcast::Sender<String>,
     server_start_event: Arc<Notify>,
     //ws_rx: broadcast::Receiver<String>,
@@ -686,11 +686,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    let mut nodes: Vec<NodeAndTCP> = vec![];
+    let mut nodes: Vec<NodeWithStream> = vec![];
     if let Ok(db_nodes) = database.fetch_all_nodes().await {
         nodes = db_nodes
             .into_iter()
-            .map(|node| NodeAndTCP {
+            .map(|node| NodeWithStream {
                 name: node.nodename,
                 nodetype: node.nodetype,
                 ip: node.ip,
@@ -750,7 +750,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         server_console: None,
         server_start_event: Arc::new(Notify::new()),
         base_path: base_path.clone(),
-        current_node: NodeAndTCP::default(),
+        current_node: NodeWithStream::default(),
         database: database.clone(),
         client,
         additonal_node: nodes,
@@ -2650,7 +2650,7 @@ async fn change_node(
 
             // {
             //     let mut state = arc_state.write().await;
-            //     state.current_node = NodeAndTCP {
+            //     state.current_node = NodeWithStream {
             //         name: node.nodename.clone(),
             //         ip: node.ip.clone(),
             //         ..Default::default()
@@ -2688,7 +2688,7 @@ async fn get_nodes(
         return Err(StatusCode::UNAUTHORIZED.into_response());
     }
 
-    let mut node_list: Vec<NodeAndTCP> = vec![];
+    let mut node_list: Vec<NodeWithStream> = vec![];
 
     if let Clients::K8s(client) = state.client.clone() {
         match kubernetes::list_node_info(client).await {
@@ -2704,7 +2704,7 @@ async fn get_nodes(
     match state.database.fetch_all_nodes().await {
         Ok(nodes) => {
             for node in nodes {
-                let new_node = NodeAndTCP {
+                let new_node = NodeWithStream {
                     name: node.nodename,
                     ip: node.ip,
                     nodetype: node.nodetype,

@@ -13,11 +13,11 @@ use kube::api::PostParams;
 use kube::{Api, Client};
 
 use crate::K8sType;
-use crate::NodeAndTCP;
+use crate::NodeWithStream;
 use crate::NodeType;
 use crate::Status;
 
-pub async fn list_node_info(client: Client) -> Result<Vec<NodeAndTCP>, Box<dyn Error>> {
+pub async fn list_node_info(client: Client) -> Result<Vec<NodeWithStream>, Box<dyn Error>> {
     let nodes: Api<Node> = Api::all(client);
     let node_list = nodes.list(&Default::default()).await?;
 
@@ -51,7 +51,7 @@ pub async fn list_node_info(client: Client) -> Result<Vec<NodeAndTCP>, Box<dyn E
                             .and_then(|labels| labels.get("kubernetes.io/role").cloned())
                             .unwrap_or_else(|| "unknown".to_string());
 
-                        result.push(NodeAndTCP {
+                        result.push(NodeWithStream {
                             name,
                             ip,
                             gameserver: Value::String(String::new()),
