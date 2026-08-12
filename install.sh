@@ -10,6 +10,83 @@ NODE_BINARY_NAME="$NODE_SERVICE_NAME"
 LOCAL_RUST="$PWD/.rust"
 REQUIRED_RUST_VERSION="1.88.0"
 
+echo "What would you like to do?"
+echo "  1) Install"
+echo "  2) Update"
+read -rp "Selection [1]: " MODE_SELECTION
+MODE_SELECTION="${MODE_SELECTION:-1}"
+
+read -rp "Project build flags (passed to cargo build, leave blank for none): " CARGO_BUILD_FLAGS
+CARGO_FEATURE_ARGS=()
+[ -n "$CARGO_BUILD_FLAGS" ] && read -ra CARGO_FEATURE_ARGS <<< "$CARGO_BUILD_FLAGS"
+
+ensure_cargo() {
+    if [ -d "$LOCAL_RUST" ]; then
+        export PATH="$LOCAL_RUST/bin:$PATH"
+    fi
+    if ! command -v cargo &> /dev/null; then
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+            sh -s -- -y --no-modify-path --default-toolchain "$REQUIRED_RUST_VERSION" --profile minimal
+        mv "$HOME/.cargo" "$LOCAL_RUST"
+        export PATH="$LOCAL_RUST/bin:$PATH"
+    fi
+    command -v cargo >/dev/null 2>&1 || { echo "Cargo installation failed"; exit 1; }
+}
+
+update_unit() {
+    local name="$1"
+    local subdir="$2"
+    local unit_file="/etc/systemd/system/$name.service"
+
+    if [ ! -f "$unit_file" ]; then
+        echo "Unit file not found for $name, skipping"
+        return
+    fi
+
+    local exec_start
+    exec_start=$(grep -m1 '^ExecStart=' "$unit_file" | cut -d'=' -f2-)
+    local repo_dir="${exec_start%/target/release/*}"
+    local bin_name
+    bin_name=$(basename "$exec_start")
+
+    if [ ! -d "$repo_dir" ]; then
+        echo "Could not determine source directory for $name, skipping"
+        return
+    fi
+
+    if [ -n "$subdir" ] && [ -d "$repo_dir/$subdir" ]; then
+        (cd "$repo_dir/$subdir" && cargo build --release "${CARGO_FEATURE_ARGS[@]}")
+    else
+        (cd "$repo_dir" && cargo build --release "${CARGO_FEATURE_ARGS[@]}")
+    fi
+
+    local built_bin="$repo_dir/target/release/$bin_name"
+    if [ -f "$built_bin" ] && [ "$built_bin" != "$exec_start" ]; then
+        sudo cp "$built_bin" "$exec_start"
+    fi
+
+    sudo systemctl restart "$name.service"
+    echo "Updated and restarted $name"
+}
+
+if [ "$MODE_SELECTION" = "2" ]; then
+    read -rp "Enter $MAIN_SERVICE_NAME (server) service name(s) to update, space separated (leave blank for none): " PANEL_SERVICE_NAMES
+    read -rp "Enter $NODE_SERVICE_NAME service name(s) to update, space separated (leave blank for none): " NODE_SERVICE_NAMES
+
+    ensure_cargo
+
+    for name in $PANEL_SERVICE_NAMES; do
+        update_unit "$name" ""
+    done
+
+    for name in $NODE_SERVICE_NAMES; do
+        update_unit "$name" "gameserver"
+    done
+
+    echo "Done."
+    exit 0
+fi
+
 # Ask what to install
 echo "What would you like to install?"
 echo "  1) Panel"
@@ -34,6 +111,17 @@ fi
 if $INSTALL_NODE; then
     read -rp "Node service name [$NODE_SERVICE_NAME]: " NODE_SERVICE_NAME_INPUT
     NODE_SERVICE_NAME="${NODE_SERVICE_NAME_INPUT:-$NODE_SERVICE_NAME}"
+
+    echo "How should the node binary be deployed?"
+    echo "  1) Shared binary (single build, all nodes on this host use the same binary)"
+    echo "  2) Copied binary per node (required for gRPC nodes)"
+    read -rp "Selection [1]: " NODE_BINARY_MODE_SELECTION
+    NODE_BINARY_MODE_SELECTION="${NODE_BINARY_MODE_SELECTION:-1}"
+    case "$NODE_BINARY_MODE_SELECTION" in
+        1) NODE_BINARY_MODE="shared" ;;
+        2) NODE_BINARY_MODE="copied" ;;
+        *) echo "Invalid selection"; exit 1 ;;
+    esac
 
     DEFAULT_NODE_WORKDIR="$PWD/gameserver"
     read -rp "Node working directory [$DEFAULT_NODE_WORKDIR]: " NODE_WORKDIR_INPUT
@@ -70,14 +158,7 @@ if [[ "$PULL_UPDATE" =~ ^[Yy]$ ]]; then
     git pull
 fi
 
-if ! command -v cargo &> /dev/null; then
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-        sh -s -- -y --no-modify-path --default-toolchain "$REQUIRED_RUST_VERSION" --profile minimal
-    mv "$HOME/.cargo" "$LOCAL_RUST"
-fi
-
-export PATH="$LOCAL_RUST/bin:$PATH"
-command -v cargo >/dev/null 2>&1 || { echo "Cargo installation failed"; exit 1; }
+ensure_cargo
 rustup override set "$REQUIRED_RUST_VERSION"
 
 if $INSTALL_PANEL; then
@@ -100,7 +181,7 @@ if $INSTALL_NODE; then
     read -rp "Enter LOCALURL value for $NODE_SERVICE_NAME (leave blank for none): " LOCALURL_NODE
 fi
 
-cargo build --release
+cargo build --release "${CARGO_FEATURE_ARGS[@]}"
 
 if $INSTALL_PANEL; then
     MAIN_SERVICE_FILE=$(mktemp)
@@ -132,8 +213,18 @@ fi
 
 if $INSTALL_NODE; then
     cd gameserver
-    cargo build --release
+    cargo build --release "${CARGO_FEATURE_ARGS[@]}"
     cd ..
+
+    NODE_BIN_SRC="$PWD/target/release/$NODE_BINARY_NAME"
+    if [ "$NODE_BINARY_MODE" = "copied" ]; then
+        NODE_BIN_DEST="$NODE_WORKDIR/$NODE_BINARY_NAME"
+        cp "$NODE_BIN_SRC" "$NODE_BIN_DEST"
+        chmod +x "$NODE_BIN_DEST"
+        NODE_EXEC_START="$NODE_BIN_DEST"
+    else
+        NODE_EXEC_START="$NODE_BIN_SRC"
+    fi
 
     NODE_SERVICE_FILE=$(mktemp)
     cat <<EOF > "$NODE_SERVICE_FILE"
@@ -144,7 +235,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$NODE_WORKDIR
-ExecStart=$PWD/target/release/$NODE_BINARY_NAME
+ExecStart=$NODE_EXEC_START
 Restart=on-failure
 EOF
 
