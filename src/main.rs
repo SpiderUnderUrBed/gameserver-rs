@@ -3268,7 +3268,142 @@ fn get_auth_bearer(headers: HeaderMap) -> Option<String> {
 // Unit tests
 #[cfg(test)]
 mod tests {
+    //use std::any::Any;
+
     use super::*;
+
+    async fn create_app_state_for_tests() -> Result<AppState, Box<dyn std::error::Error + Send + Sync>> {
+
+        println!("A");
+        let conn = first_connection().await?;
+        let database = database::Database::new(Some(conn));
+        println!("B");
+
+        let database_conn_result = database.ensure_database_conn().await;
+
+        ensure_admin_user(database.clone()).await;
+
+        if let Err(err) = database_conn_result {
+            println!("{}", err);
+        }
+
+        let base_path = std::env::var("SITE_URL")
+            .map(|s| {
+                let mut s = s.trim().to_string();
+                if !s.is_empty() {
+                    if !s.starts_with('/') {
+                        s.insert(0, '/');
+                    }
+                    if s.ends_with('/') && s != "/" {
+                        s.pop();
+                    }
+                }
+                s
+            })
+            .unwrap_or_default();
+
+
+        // Overrides for testing or specific cases where how it works a setup may be diffrent
+        let enable_k8s_client: bool = get_env_var_or_arg("ENABLE_K8S_CLIENT", Some(true)).unwrap();
+
+        // creates a websocket broadcase and tcp channels
+        let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
+
+        // sets the client to be none by default unless this is ran the stanard way which will be ran with the appropriate feature-flag
+        // which will set the k8s client
+        let mut client: Clients = Clients::None;
+        if enable_k8s_client && K8S_WORKS {
+            client = Clients::K8s(Client::try_default().await?);
+        }
+
+        // let mut node_url: String = config_node_url.to_string();
+        // if !dont_override_conn_with_k8s && let Clients::K8s(ref inner_client) = client {
+        //     if let Ok(url_result) = &kubernetes::get_avalible_gameserver(&inner_client).await {
+        //         node_url = url_result.clone();
+        //     } else {
+        //         println!(
+        //             "Could not get a successful url for a existing gameserver, will try the fallback url"
+        //         )
+        //     }
+        // }
+
+        let mut nodes: Vec<NodeWithStream> = vec![];
+        if let Ok(db_nodes) = database.fetch_all_nodes().await {
+            nodes = db_nodes
+                .into_iter()
+                .map(|node| NodeWithStream {
+                    name: node.nodename,
+                    nodetype: node.nodetype,
+                    ip: node.ip,
+                    ..Default::default()
+                })
+                .collect()
+        }
+
+        let (internal_tx, internal_rx) = broadcast::channel::<Vec<u8>>(100);
+
+        let mut rcon_connection: Option<Arc<Mutex<Connection<TcpStream>>>> = None;
+        if let Ok(retrived_db) = database.get_settings().await {
+            if retrived_db.enabled_rcon {
+                rcon_connection = match Connection::builder()
+                    .enable_minecraft_quirks(true)
+                    .connect(&retrived_db.rcon_url, &retrived_db.rcon_password)
+                    .await
+                {
+                    Ok(conn) => Some(Arc::new(Mutex::new(conn))),
+                    Err(e) => {
+                        eprintln!("Failed to connect to RCON: {}", e);
+                        None
+                    }
+                }
+            }
+        }
+
+        let current_server = None;
+        // if !(database.get_settings().await?.current_server.into_server() == Server::default()) {
+        //     current_server = Some(database.get_settings().await?.current_server.into_server())
+        // }
+
+        let connection_handler = ConnectionHandler::new();
+
+        let (fs_sender_tx, fs_sender_rx) = flume::unbounded();
+        let (fs_receiver_tx, fs_receiver_rx) = flume::unbounded();
+        let fs_sender = TcpFsSender::new(fs_sender_rx, fs_sender_tx);
+        let fs_receiver = TcpFsReceiver::new(fs_receiver_tx, fs_receiver_rx);
+        let filesystem = FileSystemHandler {
+            file_tx: RemoteFileSystem::new(fs_sender),
+            file_rx: RemoteFileSystem::new(fs_receiver),
+            operations: FileOperations::new(),
+        };
+
+        let cached_status_type = watch::channel(String::new()).0;
+
+        let state: AppState = AppState {
+            // tx: tx,
+            // rx: rx,
+            connection_handler,
+            cancel_current_conn: CancellationToken::new(),
+            internal_rx: Some(internal_rx.resubscribe()),
+            internal_tx: Some(internal_tx),
+            ws_tx: ws_tx.clone(),
+            // ws_rx: ws_rx.resubscribe(),
+            server_console: None,
+            server_start_event: Arc::new(Notify::new()),
+            base_path: base_path.clone(),
+            current_node: NodeWithStream::default(),
+            database: database.clone(),
+            client,
+            additonal_node: nodes,
+            conn_status: Status::Unknown,
+            cached_status_type,
+            poll_server_event: Arc::new(Notify::new()),
+            rcon_connection,
+            current_server,
+            lock: false,
+            filesystem,
+        };
+        Ok(state)
+    }
 
     /*
     shared tests (which should work on both bare-metal and k8s)
@@ -3457,7 +3592,6 @@ mod tests {
     mod k8s {
         use super::*;
         use crate::database::Database;
-        use sqlx::types::Json;
 
         async fn create_db_for_tests() -> Result<Database, Box<dyn std::error::Error + Send + Sync>>
         {
@@ -3547,35 +3681,35 @@ mod tests {
 
             use super::*;
 
-            // #[tokio::test]
-            // #[serial]
-            // async fn try_initial_connection_test() {
-            //     let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
-            //     let (tx, _) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+            #[tokio::test]
+            #[serial]
+            async fn try_initial_connection_test() {
+                let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
+                let (tx, _) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
 
-            //     let node_url = get_env_var_or_arg("TCPURL", Some(StaticTcpUrl.to_string())).unwrap();
+                let node_url = get_env_var_or_arg("TCPURL", Some(STATIC_NODE_URL.to_string())).unwrap();
 
-            //     let initial_connection_attempts: u64 =
-            //         get_env_var_or_arg("INITIAL_CONNECTION_ATTEMPTS", Some(5)).unwrap();
+                let initial_connection_attempts: u64 =
+                    get_env_var_or_arg("INITIAL_CONNECTION_ATTEMPTS", Some(5)).unwrap();
 
-            //     let initial_connection_timeout: u64 =
-            //         get_env_var_or_arg("INITIAL_CONNECTION_TIMEOUT", Some(2)).unwrap();
+                let initial_connection_timeout: u64 =
+                    get_env_var_or_arg("INITIAL_CONNECTION_TIMEOUT", Some(2)).unwrap();
 
-            //     let state = Arc::new(RwLock::new(AppState::default()));
+                let state = Arc::new(RwLock::new(create_app_state_for_tests().await.unwrap()));
 
-            //     let result = try_initial_connection(
-            //         initial_connection_attempts,
-            //         initial_connection_timeout,
-            //         false,
-            //         &state,
-            //         node_url,
-            //         &ws_tx,
-            //         tx,
-            //     )
-            //     .await;
+                let result = try_initial_connection(
+                    initial_connection_attempts,
+                    initial_connection_timeout,
+                    false,
+                    &state,
+                    node_url,
+                    &ws_tx,
+                    tx,
+                )
+                .await;
 
-            //     assert!(result.is_ok());
-            // }
+                assert!(result.is_ok());
+            }
         }
     }
 
