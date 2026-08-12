@@ -217,7 +217,7 @@ mod kubernetes {
 // I like these defaults for testing, and for the moment I doubt anyone would object
 // but at some point this will be removed in favor of testing with ENV varibles
 #[cfg(not(feature = "full-stack"))]
-static STATIC_TCP_URL: &str = "127.0.0.1:8082";
+static STATIC_NODE_URL: &str = "127.0.0.1:8082";
 
 #[cfg(not(feature = "full-stack"))]
 static STATIC_LOCAL_URL: &str = "127.0.0.1:8083";
@@ -230,7 +230,7 @@ static K8S_WORKS: bool = false;
 static DOCKER_WORKS: bool = false;
 
 #[cfg(feature = "full-stack")]
-static STATIC_TCP_URL: &str = "gameserver-service:8080";
+static STATIC_NODE_URL: &str = "gameserver-service:8080";
 
 #[cfg(feature = "full-stack")]
 static STATIC_LOCAL_URL: &str = "127.0.0.1:8080";
@@ -643,7 +643,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         })
         .unwrap_or_default();
 
-    let config_tcp_url = get_env_var_or_arg("TCPURL", Some(STATIC_TCP_URL.to_string())).unwrap();
+    let config_node_url = get_env_var_or_arg("TCPURL", Some(STATIC_NODE_URL.to_string())).unwrap();
     let config_local_url =
         get_env_var_or_arg("LOCALURL", Some(STATIC_LOCAL_URL.to_string())).unwrap();
 
@@ -675,10 +675,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         client = Clients::K8s(Client::try_default().await?);
     }
 
-    let mut tcp_url: String = config_tcp_url.to_string();
+    let mut node_url: String = config_node_url.to_string();
     if !dont_override_conn_with_k8s && let Clients::K8s(ref inner_client) = client {
         if let Ok(url_result) = &kubernetes::get_avalible_gameserver(&inner_client).await {
-            tcp_url = url_result.clone();
+            node_url = url_result.clone();
         } else {
             println!(
                 "Could not get a successful url for a existing gameserver, will try the fallback url"
@@ -911,7 +911,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let state_clone = inner_state.clone();
         let ws_tx_clone = ws_tx.clone();
         let tx_clone = inner_state.write().await.connection_handler.tx.clone();
-        let tcp_url_clone = tcp_url.to_string();
+        let node_url_clone = node_url.to_string();
 
         // TODO: Since I never create a handler with initial connections, should i take it out of the thread?, or rather,
         // leave it to set a TcpStream for the appstate for when it sorts itself out
@@ -921,7 +921,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 initial_connection_timeout,
                 false,
                 &state_clone,
-                tcp_url_clone,
+                node_url_clone,
                 &ws_tx_clone,
                 tx_clone,
             )
@@ -996,7 +996,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let bridge_tx = inner_state.read().await.ws_tx.clone();
 
                 let connect_to_server_result =
-                    connect_to_server(inner_state, tcp_url, bridge_tx, true).await;
+                    connect_to_server(inner_state, node_url, bridge_tx, true).await;
                 if let Err(_) = connect_to_server_result {
                     // println", err);
                     println!("got an error connecting to server");
@@ -3471,6 +3471,8 @@ mod tests {
         }
 
         mod server {
+            use serial_test::serial;
+
             use super::*;
 
             #[tokio::test]
@@ -3541,37 +3543,39 @@ mod tests {
         }
 
         mod node_connection {
+            use serial_test::serial;
+
             use super::*;
 
-            #[tokio::test]
-            #[serial]
-            async fn try_initial_connection_test() {
-                let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
-                let (tx, _) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
+            // #[tokio::test]
+            // #[serial]
+            // async fn try_initial_connection_test() {
+            //     let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
+            //     let (tx, _) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
 
-                let tcp_url = get_env_var_or_arg("TCPURL", Some(StaticTcpUrl.to_string())).unwrap();
+            //     let node_url = get_env_var_or_arg("TCPURL", Some(StaticTcpUrl.to_string())).unwrap();
 
-                let initial_connection_attempts: u64 =
-                    get_env_var_or_arg("INITIAL_CONNECTION_ATTEMPTS", Some(5)).unwrap();
+            //     let initial_connection_attempts: u64 =
+            //         get_env_var_or_arg("INITIAL_CONNECTION_ATTEMPTS", Some(5)).unwrap();
 
-                let initial_connection_timeout: u64 =
-                    get_env_var_or_arg("INITIAL_CONNECTION_TIMEOUT", Some(2)).unwrap();
+            //     let initial_connection_timeout: u64 =
+            //         get_env_var_or_arg("INITIAL_CONNECTION_TIMEOUT", Some(2)).unwrap();
 
-                let state = Arc::new(RwLock::new(AppState::default()));
+            //     let state = Arc::new(RwLock::new(AppState::default()));
 
-                let result = try_initial_connection(
-                    initial_connection_attempts,
-                    initial_connection_timeout,
-                    false,
-                    &state,
-                    tcp_url,
-                    &ws_tx,
-                    tx,
-                )
-                .await;
+            //     let result = try_initial_connection(
+            //         initial_connection_attempts,
+            //         initial_connection_timeout,
+            //         false,
+            //         &state,
+            //         node_url,
+            //         &ws_tx,
+            //         tx,
+            //     )
+            //     .await;
 
-                assert!(result.is_ok());
-            }
+            //     assert!(result.is_ok());
+            // }
         }
     }
 

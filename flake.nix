@@ -19,6 +19,7 @@
       clippy
       rust-analyzer
       ripgrep
+      act
     ];
     
     commonNativeBuildInputs = with pkgs; [

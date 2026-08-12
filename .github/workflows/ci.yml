@@ -8,7 +8,6 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Job 1: Bare metal — spin up gameserver as separate process before main tests
   test-bare-metal:
     name: Tests (bare metal with gameserver process)
     runs-on: ubuntu-latest
@@ -26,7 +25,6 @@ jobs:
         run: |
           git submodule sync --recursive
           git submodule update --init --recursive
-
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -52,9 +50,9 @@ jobs:
           GAMESERVER_PID=$!
           echo "GAMESERVER_PID=$GAMESERVER_PID" >> $GITHUB_ENV
 
-          echo "Waiting for gameserver to start on port $GAMESERVER_PORT..."
           for i in $(seq 1 30); do
-            if nc -z localhost $GAMESERVER_PORT 2>/dev/null; then
+            if (exec 3<>/dev/tcp/localhost/$GAMESERVER_PORT) 2>/dev/null; then
+              exec 3<&-
               echo "Gameserver port is open!"
               break
             fi
@@ -79,8 +77,6 @@ jobs:
             wait $GAMESERVER_PID 2>/dev/null || true
           fi
 
-  # Job 2: k3d — inner gameserver deployment (child node / workspace member)
-  # Uses registry on port 5002
   test-k3d-gameserver:
     name: Tests (full-stack feature / k3d inner gameserver)
     runs-on: ubuntu-latest
@@ -151,14 +147,20 @@ jobs:
               echo "Removed $count broken layers"
             '
 
-          sudo systemctl restart docker
-          sleep 5
+          if command -v systemctl >/dev/null 2>&1 && systemctl is-system-running >/dev/null 2>&1; then
+            sudo systemctl restart docker
+            sleep 5
+          else
+            echo "Skipping docker restart (no systemd available, likely running under act)"
+          fi
 
           for img in registry:2 alpine:latest postgres:15; do
             for j in 1 2 3 4 5; do
               docker pull $img && break
               echo "Pull of $img attempt $j failed, retrying..."
-              sudo systemctl restart docker
+              if command -v systemctl >/dev/null 2>&1 && systemctl is-system-running >/dev/null 2>&1; then
+                sudo systemctl restart docker
+              fi
               sleep 5
             done
           done
@@ -194,12 +196,16 @@ jobs:
             fi
             echo "Attempt $i failed, pruning and retrying..."
             docker system prune -af --volumes || true
-            sudo systemctl restart docker
+            if command -v systemctl >/dev/null 2>&1 && systemctl is-system-running >/dev/null 2>&1; then
+              sudo systemctl restart docker
+            fi
             sleep 10
             for j in 1 2 3 4 5; do
               docker pull registry:2 && break
               echo "registry:2 pull attempt $j failed, retrying..."
-              sudo systemctl restart docker
+              if command -v systemctl >/dev/null 2>&1 && systemctl is-system-running >/dev/null 2>&1; then
+                sudo systemctl restart docker
+              fi
               sleep 5
             done
             if [ $i -eq 3 ]; then
@@ -209,6 +215,7 @@ jobs:
           done
           k3d cluster create ci-gameserver \
             --registry-use k3d-localregistry-gameserver:5002 \
+            --k3s-arg "--kubelet-arg=eviction-hard=imagefs.available<1%,nodefs.available<1%@server:*" \
             --wait \
             --timeout 120s
 
@@ -216,7 +223,6 @@ jobs:
         run: |
           docker build -f gameserver/Dockerfile -t localhost:5002/gameserver:latest .
 
-          echo "=== Verifying image configuration ==="
           IMAGE_CMD=$(docker inspect localhost:5002/gameserver:latest | jq -r '.[0].Config.Cmd | join(" ")')
           echo "CMD: $IMAGE_CMD"
 
@@ -224,9 +230,7 @@ jobs:
             echo "ERROR: Built development image (contains cargo) instead of production image"
             exit 1
           fi
-          echo "Correct production image built"
 
-          echo "=== Verifying binary ==="
           if docker run --rm localhost:5002/gameserver:latest test -x /app/gameserver-node; then
             echo "Binary found at /app/gameserver-node"
           else
@@ -236,10 +240,8 @@ jobs:
             exit 1
           fi
 
-          echo "=== Pushing image to registry ==="
           docker push localhost:5002/gameserver:latest
 
-          echo "=== Verifying image in registry ==="
           curl -s http://localhost:5002/v2/gameserver/tags/list
 
       - name: Deploy inner gameserver manifest
@@ -309,9 +311,30 @@ jobs:
         run: |
           kubectl port-forward svc/gameserver-service 8080:8080 &
           PF_PID=$!
-          sleep 5
+
+          for i in $(seq 1 30); do
+            if (exec 3<>/dev/tcp/localhost/8080) 2>/dev/null; then
+              exec 3<&-
+              echo "Port-forward is ready!"
+              break
+            fi
+            echo "Attempt $i/30: port-forward not ready yet..."
+            sleep 1
+
+            if [ $i -eq 30 ]; then
+              echo "Port-forward failed to become ready within timeout"
+              kill $PF_PID 2>/dev/null || true
+              exit 1
+            fi
+          done
+
           cargo test --features full-stack
-          kill $PF_PID || true
+          TEST_EXIT=$?
+
+          kill $PF_PID 2>/dev/null || true
+          wait $PF_PID 2>/dev/null || true
+
+          exit $TEST_EXIT
 
       - name: Dump logs on failure
         if: failure()

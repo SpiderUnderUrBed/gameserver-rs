@@ -57,8 +57,8 @@ pub async fn list_node_info(client: Client) -> Result<Vec<NodeAndTCP>, Box<dyn E
                             gameserver: Value::String(String::new()),
                             status: Status::Unknown,
                             nodetype: NodeType::InbuiltWithString(nodetype),
-                            tcp_tx: None,
-                            tcp_rx: None,
+                            tx: None,
+                            rx: None,
                             k8s_type: K8sType::Unknown,
                         });
                     }

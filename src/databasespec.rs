@@ -14,6 +14,12 @@ use sqlx::{
 
 use std::str::FromStr;
 
+#[allow(unused)]
+use serde::ser::StdError;
+
+#[allow(unused)]
+type BoxDynError = Box<dyn StdError + Send + Sync>;
+
 // #[derive(Debug)]
 // pub struct DatabaseError(pub StatusCode);
 
@@ -21,8 +27,6 @@ use std::str::FromStr;
 pub enum DatabaseError {
     StatusCode(StatusCode),
 }
-
-
 
 impl fmt::Display for DatabaseError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -234,7 +238,8 @@ pub enum NodeType {
     // CustomNodeWithString(String),
     // InbuiltNodeWithString(String),
     // InbuiltPodWithString(String),
-    // InbuiltWithString(String),
+    #[allow(unused)]
+    InbuiltWithString(String),
     // InbuiltNode,
     // InbuiltPod,
     Inbuilt,

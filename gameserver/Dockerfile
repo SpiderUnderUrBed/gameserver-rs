@@ -6,6 +6,9 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
+
+COPY lib /lib
+
 # Copy only the gameserver node project
 COPY gameserver/Cargo.toml gameserver/Cargo.lock ./
 COPY gameserver/src ./src
