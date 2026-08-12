@@ -95,6 +95,7 @@ jobs:
       POSTGRES_DB: gameserver_db
       POSTGRES_HOST: localhost
       POSTGRES_PORT: "5432"
+      TCPURL: "localhost:8080"
 
     steps:
       - uses: actions/checkout@v4
