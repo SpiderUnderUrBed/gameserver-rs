@@ -55,14 +55,14 @@ jobs:
           echo "Waiting for gameserver to start on port $GAMESERVER_PORT..."
           for i in $(seq 1 30); do
             if nc -z localhost $GAMESERVER_PORT 2>/dev/null; then
-              echo "✅ Gameserver TCP port is open!"
+              echo "Gameserver port is open!"
               break
             fi
             echo "Attempt $i/30: port not ready yet..."
             sleep 2
 
             if [ $i -eq 30 ]; then
-              echo "❌ Gameserver failed to start within timeout"
+              echo "Gameserver failed to start within timeout"
               kill $GAMESERVER_PID 2>/dev/null || true
               exit 1
             fi

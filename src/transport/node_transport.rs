@@ -515,7 +515,6 @@ pub async fn handle_stream(
     //stream: &mut TcpStream,
     ip: String,
     ws_tx: broadcast::Sender<String>,
-    mut internal_stream: Option<broadcast::Receiver<Vec<u8>>>,
 ) -> Result<StreamResult, Box<dyn std::error::Error + Send + Sync>> {
 
     let mut server_start_keyword = String::new();
@@ -585,10 +584,9 @@ pub async fn handle_stream(
 // its own thread
 pub async fn connect_to_server(
     arc_state: Arc<RwLock<AppState>>,
-    mut tcp_url: String,
+    tcp_url: String,
     ws_tx: broadcast::Sender<String>,
     end_if_timeout: bool,
-    block_with_stream: bool,
 ) -> Result<Option<SocketAddr>, Box<dyn Error + Send + Sync>> {
     let mut last_peer: Option<SocketAddr> = None;
     //let (proxy_tx, _) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
@@ -668,13 +666,13 @@ pub async fn connect_to_server(
                                 if let Ok(bytes) = rx {
                                     println!("got bytes to forward {:#?}", String::from_utf8(bytes.clone()).unwrap());
                                     if let Err(e) = writer.write_all(&bytes).await {
-                                        println!("error");
+                                        println!("Error writing {}", e);
                                     }
                                     if let Err(e) = writer.write_all(b"\n").await {
-                                        println!("error");
+                                        println!("Error writing {}", e);
                                     };
                                     if let Err(e) = writer.flush().await {
-                                        println!("error");
+                                        println!("Error flushing writer: {}", e);
                                     };
                                 }
                             }
@@ -687,7 +685,6 @@ pub async fn connect_to_server(
                     &mut proxy_rx,
                     ip,
                     ws_tx.clone(),
-                    internal_stream,
                 )
                 .await;
 
@@ -770,7 +767,7 @@ pub(crate) async fn try_initial_connection(
     let mut final_error = anyhow!(String::new());
     for _ in 0..conn_attempts {
         match attempt_connection(tcp_url.clone()).await {
-            Ok(mut stream) => {
+            Ok(stream) => {
                 println!("Initial connection succeeded!");
                 // note, possibly I wont ever need to create a handler from the test of the intial connection
                 // TODO: think about removing create_handler and just never create a handler here
@@ -784,7 +781,7 @@ pub(crate) async fn try_initial_connection(
                     let ip: String = stream.peer_addr()?.ip().to_string();
 
                     let stream_result =
-                        handle_stream(state.clone(), &mut temp_rx, ip, ws_tx.clone(), None).await;
+                        handle_stream(state.clone(), &mut temp_rx, ip, ws_tx.clone()).await;
                     if stream_result.is_ok() {
                         println!("Stream finished");
                         return Ok(());

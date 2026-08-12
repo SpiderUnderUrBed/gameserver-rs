@@ -168,7 +168,6 @@ pub async fn connect_to_server(
     url: String,
     _ws_tx: broadcast::Sender<String>,
     _end_if_timeout: bool,
-    _block_with_stream: bool,
 ) -> Result<Option<SocketAddr>, Box<dyn Error + Send + Sync>> {
     println!("using this connect to server");
     let mut state = arc_state.write().await;

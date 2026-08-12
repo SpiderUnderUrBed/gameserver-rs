@@ -1,4 +1,3 @@
-use chrono::format::Item;
 use chrono::DateTime;
 use chrono::Local;
 use futures::stream::unfold;
@@ -6,29 +5,20 @@ use futures::Stream;
 use futures::StreamExt;
 use general_networked_filesystem::FileRequest;
 use general_networked_filesystem::FileRequestExecutable;
-use network_abstraction_lib::any_type;
-use network_abstraction_lib::erase;
 use network_abstraction_lib::erase_stream_wrapper_result;
-use network_abstraction_lib::owned_state;
 use network_abstraction_lib::ErrorResponse;
-use network_abstraction_lib::ExtractResponse;
 use network_abstraction_lib::ExtractorErrors;
 use network_abstraction_lib::HandlerType;
 use network_abstraction_lib::IntoRequest;
-use network_abstraction_lib::IntoResponse;
 use network_abstraction_lib::erase_string_wrapper;
-use network_abstraction_lib::erase_stream_wrapper;
 use network_abstraction_lib::MiddlewareAction;
 use network_abstraction_lib::NoneResponse;
 use network_abstraction_lib::StreamResponse;
 use network_abstraction_lib::ValueRequest;
-use serde_json::{json, Value};
+use serde_json::{Value};
 use tokio::sync::broadcast::Receiver;
 use tokio::time::sleep;
 use std::convert::TryFrom;
-use std::fmt;
-use std::io::Error;
-use std::io::ErrorKind;
 use std::path::Path;
 use std::pin::Pin;
 use std::process::{Command, Stdio};
@@ -37,8 +27,6 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::fs;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::net::TcpListener;
-use tokio::process::Child;
 use tokio::process::{ChildStdin, Command as TokioCommand};
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::Duration;
@@ -64,7 +52,6 @@ use crate::transport::node_transport::CreateServerRequest;
 use crate::transport::node_transport::DeleteServerRequest;
 // use crate::transport::node_transport::NodeTransportable;
 use crate::transport::node_transport::Ping;
-use crate::transport::node_transport::PingResponse;
 use crate::transport::node_transport::ServerDataRequest;
 use crate::transport::node_transport::ServerDataResponse;
 use crate::transport::node_transport::ServerNameRequest;
@@ -205,7 +192,6 @@ enum ProviderTypes {
 enum ProviderReturnTypes {
     Path,
     Object,
-    Name,
     Sandbox,
     Provider,
 }
@@ -675,6 +661,8 @@ struct AppState {
     // current_server has to be an arc mutex because you cant assign data to an arc
     current_server: Arc<Mutex<Option<String>>>,
     //server_index: HashMap<String, ServerIndex>,
+    // TODO: consider if I want to add jailed user support
+    #[allow(unused)]
     jailed_user: String,
     authenticated_origins: Arc<Mutex<Vec<String>>>,
     server_running: Arc<AtomicBool>,
@@ -684,10 +672,12 @@ struct AppState {
     cmd_tx: Mutex<Option<Arc<mpsc::Sender<String>>>>,
     stdin_ref: Arc<Mutex<Option<ChildStdin>>>,
     last_updated: Arc<Mutex<Option<DateTime<Local>>>>,
+    // TODO:
     // Consider if i want to store the db at all, previously I was wondering whether or not to have an arc mutex, (arc not needed; the app state has a arc, so I just need to add a mutex
     // so now any changes will still be in sync so you never have a case of a longer operation based on older data writting to the db overwriting the newer one).
     // now I am considering if I need db at all, ill keep it here for now to consider parity with the main gameserver node based on design choices.
     db: Arc<Mutex<databasespec::Database>>,
+    #[allow(unused)]
     db_conn: Arc<Mutex<Option<DbConn>>>,
 }
 
@@ -777,12 +767,10 @@ fn get_env_var_or_arg<T: std::str::FromStr>(env_var: &str, default: Option<T>) -
 async fn create_server_handler(state: &Arc<AppState>, req: CreateServerRequest) -> Result<StreamResponse<String>, ErrorResponse> {
     let cmd_tx_arc = state.cmd_tx.lock().await.clone().unwrap();
     let cmd_tx = cmd_tx_arc;
-    let stdin_ref = state.stdin_ref.clone();
-    
+
     let _ = create_server(
         state.clone(),
         &cmd_tx,
-        &stdin_ref,
         serde_json::to_value(req.clone()).unwrap(),
     )
     .await;
@@ -801,7 +789,7 @@ async fn create_server_handler(state: &Arc<AppState>, req: CreateServerRequest) 
         Err(ErrorResponse { error: "stream taken".to_string() })
     }
 } 
-async fn start_server_handler(state: &Arc<AppState>, req: StartServerRequest) -> Result<StreamResponse<String>, ErrorResponse> {
+async fn start_server_handler(state: &Arc<AppState>, _req: StartServerRequest) -> Result<StreamResponse<String>, ErrorResponse> {
     //let current_server = state.current_server.lock().await;
     let stdin_ref = &state.stdin_ref;
     let cmd_tx_arc = state.cmd_tx.lock().await.clone().unwrap();
@@ -1006,7 +994,7 @@ async fn start_server_handler(state: &Arc<AppState>, req: StartServerRequest) ->
 }
 async fn stop_server_handler(
     state: &Arc<AppState>,
-    req: StopServerRequest,
+    _req: StopServerRequest,
 ) -> Result<NoneResponse, ErrorResponse> {
     let stdin_ref = state.stdin_ref.clone();
     if let Some(cmd_tx_arc) = state.cmd_tx.lock().await.clone() {
@@ -1174,7 +1162,7 @@ async fn console_handler(state: &Arc<AppState>, req: ConsoleRequest) -> NoneResp
 }
 async fn server_data_handler(
     state: &Arc<AppState>,
-    req: ServerDataRequest,
+    _req: ServerDataRequest,
 ) -> Result<ServerDataResponse, NoneResponse> {
     println!("Got a server data request");
     if let Some(current_server) = state.current_server.lock().await.clone() {
@@ -1244,7 +1232,7 @@ async fn server_data_handler(
     }
     //NoneResponse {}
 }
-async fn ping_handler(state: &Arc<AppState>, req: Ping) -> SimpleMessage {
+async fn ping_handler(_state: &Arc<AppState>, _req: Ping) -> SimpleMessage {
     println!("got ping request");
     //         //let out_tx_clone = out_tx.clone();
     let pong = SimpleMessage {
@@ -1266,7 +1254,7 @@ async fn server_state_handler(
     };
     server_state_response
 }
-async fn server_name_handler(state: &Arc<AppState>, req: ServerNameRequest) -> ServerNameResponse {
+async fn server_name_handler(_state: &Arc<AppState>, _req: ServerNameRequest) -> ServerNameResponse {
     println!("Got a server name request");
     // let hostname_str = match hostname_ref.clone() {
     //     Ok(os) => os.to_string_lossy().to_string(),
@@ -1650,8 +1638,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let arc_state = Arc::new(state);
 
-    let health_monitor_state = arc_state.clone();
-
+  
     // tokio::spawn(async move {
     //     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
     //     loop {
@@ -1705,7 +1692,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     //     *server_running = false;
     // }
 
-    let (cmd_tx, mut cmd_rx) = mpsc::channel::<String>(10_000);
+    let (cmd_tx, cmd_rx) = mpsc::channel::<String>(10_000);
 
     // let conn_state = arc_state;
     *arc_state.cmd_tx.lock().await = Some(Arc::new(cmd_tx.clone()));
@@ -1727,18 +1714,7 @@ loop {
 }
 }
 
-#[derive(Debug)]
-enum CommandOrConsoleErrors {
-    AuthDisconnect,
-}
-impl std::error::Error for CommandOrConsoleErrors {}
-impl fmt::Display for CommandOrConsoleErrors {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            CommandOrConsoleErrors::AuthDisconnect => write!(f, "Authentication disconnected"),
-        }
-    }
-}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 struct AuthTcpMessage {
     password: String,
@@ -1770,6 +1746,9 @@ pub fn log_requests(json_value: Value, addr: String, raw_string: String) {
     }
 }
 
+// TODO: consider if nessesary under the new file management system
+// Should be resused to ensure there is no path escape
+#[allow(unused)]
 async fn fix_path(path: String) -> String {
     let server_root = Path::new("server");
 
@@ -1797,17 +1776,17 @@ async fn fix_path(path: String) -> String {
     canonical_forced.to_string_lossy().into_owned()
 }
 
-// this is a function which will look for a small slice (needle) in a bigger slice (haystack)
-// if it finds it, it will return where it starts, otherwise returns None
-fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return None;
-    }
+// // this is a function which will look for a small slice (needle) in a bigger slice (haystack)
+// // if it finds it, it will return where it starts, otherwise returns None
+// fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+//     if needle.is_empty() || haystack.len() < needle.len() {
+//         return None;
+//     }
 
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
-}
+//     haystack
+//         .windows(needle.len())
+//         .position(|window| window == needle)
+// }
 
 // this function takes a tcp stream and forwards the data from that to the sender it returns, used a few times
 pub async fn tcp_to_writer(stream: TcpStream) -> mpsc::Sender<Vec<u8>> {
@@ -1856,7 +1835,7 @@ pub async fn tcp_to_writer(stream: TcpStream) -> mpsc::Sender<Vec<u8>> {
 async fn create_server(
     state: Arc<AppState>,
     cmd_tx: &mpsc::Sender<String>,
-    stdin_ref: &Arc<Mutex<Option<ChildStdin>>>,
+    // stdin_ref: &Arc<Mutex<Option<ChildStdin>>>,
     payload_raw_value: Value,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("[create_server] called");
@@ -1869,7 +1848,7 @@ async fn create_server(
             provider: _,
             location,
             providertype: _,
-            sandbox,
+            sandbox: _,
             server_metadata: _,
         } = payload.metadata.clone()
         {
@@ -2192,7 +2171,6 @@ async fn convert_provider(
         ProviderReturnTypes::Provider => known_provider.map(ProviderTypes::Provider),
         ProviderReturnTypes::Sandbox => known_sandbox.map(ProviderTypes::Sandbox),
         ProviderReturnTypes::Object => known_object.map(ProviderTypes::Object),
-        ProviderReturnTypes::Name => known_name.map(ProviderTypes::Name),
     };
 
     if output.is_none() {

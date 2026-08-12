@@ -787,8 +787,8 @@ mod tests {
 
         #[derive(Debug, serde::Deserialize, Clone)]
         struct MyPayload {
-            name: String,
-            count: u32,
+            _name: String,
+            _count: u32,
         }
 
         impl FromWire for MyPayload {
@@ -813,7 +813,7 @@ mod tests {
             }
         }
 
-        fn test_example(request: BytesRequest) -> NoneResponse {
+        fn test_example(_request: BytesRequest) -> NoneResponse {
             println!("ran this");
             NoneResponse {}
         }

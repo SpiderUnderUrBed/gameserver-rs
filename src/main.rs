@@ -16,12 +16,10 @@ use crate::database::{DatabaseError, Element};
 // use crate::filesystem::{execute_file_operation, FileOperations, TcpFileStream};
 // use crate::filesystem::{FsType, send_multipart_over_broadcast};
 use crate::http::HeaderMap;
-use crate::kubernetes::verify_is_k8s_gameserver;
 use crate::middleware::from_fn;
 use axum::Form;
 use axum::error_handling::HandleErrorLayer;
 use axum::extract::Multipart;
-use axum::extract::ws::Message as WsMessage;
 use axum::middleware::{self, Next};
 use axum::response::Redirect;
 use axum::response::Response;
@@ -55,7 +53,6 @@ use axum_oidc::openidconnect::ClientId;
 use axum_oidc::openidconnect::ClientSecret;
 use axum_oidc::openidconnect::IssuerUrl;
 use axum_oidc::openidconnect::Scope;
-use futures_util::FutureExt;
 use general_networked_filesystem::flume_delimited::{FlumeFile, TcpFsReceiver, TcpFsSender};
 use general_networked_filesystem::{FileOperations, LsRequest, RemoteFileSystem};
 use tokio::sync::{watch, RwLock};
@@ -76,14 +73,12 @@ use crate::database::databasespec::{
     SettingsDatabase,
 };
 
-use crate::http::header;
 // miscellancious imports, future traits are used because alot of the code is asyncronus and cant fully be contained in tokio
 // mime_guess as when I am serving the files, I need to serve it with the correct mime type
 // serde_json because I exchange alot of json data between the backend and frontend and to the gameserver
 // tokio because when working with alot of networking stuff and things that will take a indeterminent amount of time, async/await is the way to go (for better efficency too)
 // chrono for time, tower for cors (TODO:: use less permissive CORS due to potential security risks)
 // jsonwebtokens is standard when working with authentication, and bcrypt so I can use password hashs, I explain the authentication methods later
-use anyhow::anyhow;
 use async_trait::async_trait;
 use futures_util::{sink::SinkExt, stream::StreamExt};
 use jsonwebtoken::{DecodingKey, TokenData, Validation, decode};
@@ -92,26 +87,22 @@ use mime_guess::from_path;
 use futures_util::{Stream, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::time::{Instant, interval, sleep};
+use tokio::time::{interval};
 use tokio::{
     fs as tokio_fs,
-    io::AsyncWriteExt,
     net::{TcpListener, TcpStream},
     sync::{Mutex, broadcast},
-    time::{Duration, timeout},
+    time::{Duration},
 };
 use tokio::sync::Notify;
 use tower_http::cors::{Any as CorsAny, CorsLayer};
 
 use std::error::Error;
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use sysinfo::System;
 
 static CONNECTION_COUNTER: AtomicUsize = AtomicUsize::new(0);
-static FORWARD_ALL_MESSAGES: bool = true;
-static LOG_NONFATAL_FORWARD_REQUESTS: bool = false;
 
 // For now I only restrict the json backend for running this without kubernetes
 // the json backend is only for testing in most cases, simple deployments would use full-stack feature flag
@@ -148,15 +139,14 @@ mod transport;
 use crate::transport::node_transport::ConnectionHandler;
 use crate::transport::node_transport::try_initial_connection;
 use crate::transport::node_transport::{
-    CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FilterRequest,
-    ImmediateTransportable, IntegrationKeyRequest, MigrateRequest, NodeTransportable, StreamTransportable,
-    PasswordRequest, Ping, ServerDataRequest, ServerStateRequest, ServernameRequest,
+    CreateServerRequest, DeleteServerRequest, FilterRequest,
+    IntegrationKeyRequest, MigrateRequest, NodeTransportable, StreamTransportable,
+    Ping, ServerDataRequest, 
     SetServerRequest, StartServerRequest, StopServerRequest, check_channel_health,
     connect_to_server,
 };
 
 mod extra;
-use extra::value_from_line;
 
 // Docker AND kubernetes would be enabled with a standard deployment
 // as you wouldnt need the docker module (or the k8s module) for barebones testing
@@ -187,6 +177,7 @@ mod kubernetes {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Err("This should not be running".into())
     }
+    #[allow(unused)]
     pub async fn list_node_names(
         _: crate::Client,
     ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
@@ -209,14 +200,14 @@ mod kubernetes {
         Err("This should not be running in a non-k8s environemnt".into())
     }
     pub async fn verify_is_k8s_pod(
-        client: &crate::Client,
-        ip: String,
+        _client: &crate::Client,
+        _ip: String,
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         Ok(false)
     }
     pub async fn verify_is_k8s_node(
-        client: &crate::Client,
-        ip: String,
+        _client: &crate::Client,
+        _ip: String,
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         Ok(false)
     }
@@ -299,8 +290,6 @@ const CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(2);
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(3);
 const CHANNEL_BUFFER_SIZE: usize = 32;
 
-const ALLOW_NONJSON_DATA: bool = false;
-
 // MessagePayload is how most data are exchanged between the gameserver, and the backend (sometimes the frontend)
 // TODO: Consider merging CommandPayload, and IncomingMessage, and their corrosponding metadata varients
 // (if i dont replace them with their metadata varients first), as originally I thought it would be good
@@ -332,12 +321,6 @@ struct SimpleMessage {
 pub struct SimpleMesagePayload {
     message: String,
     authcode: String,
-}
-
-// A simple response message, no authorization needed, alhough the equivalent would be setting the authcode to 0 and making a custom type for this
-#[derive(Debug, Serialize)]
-struct ResponseMessage {
-    response: String,
 }
 
 // more modern version of incoming message, i only keep incomingMessage for now as it will take a bit of effort to change it all to support the new types
@@ -556,6 +539,7 @@ pub enum Status {
     Unhealthy,
 }
 
+#[allow(unused)]
 struct FileSystemHandler {
     file_tx: RemoteFileSystem<TcpFsSender, FlumeFile>,
     file_rx: RemoteFileSystem<TcpFsReceiver, FlumeFile>,
@@ -609,7 +593,7 @@ async fn ensure_admin_user(database: Database) {
     let admin_user = std::env::var("ADMIN_USER").unwrap_or_default();
     let admin_password = std::env::var("ADMIN_PASSWORD").unwrap_or_default();
     if enable_admin_user {
-        let database_result = database
+        let _ = database
             .create_user_in_db(ModifyElementData {
                 element: Element::User {
                     password: admin_password,
@@ -644,7 +628,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         println!("{}", err);
     }
 
-    let verbose = std::env::var("VERBOSE").is_ok();
     let base_path = std::env::var("SITE_URL")
         .map(|s| {
             let mut s = s.trim().to_string();
@@ -715,11 +698,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             })
             .collect()
     }
-    let backup_node = &NodeAndTCP {
-        name: "placeholder".to_string(),
-        ip: tcp_url.clone(),
-        ..Default::default()
-    };
+
     let (internal_tx, internal_rx) = broadcast::channel::<Vec<u8>>(100);
 
     let mut rcon_connection: Option<Arc<Mutex<Connection<TcpStream>>>> = None;
@@ -1017,7 +996,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let bridge_tx = inner_state.read().await.ws_tx.clone();
 
                 let connect_to_server_result =
-                    connect_to_server(inner_state, tcp_url, bridge_tx, true, false).await;
+                    connect_to_server(inner_state, tcp_url, bridge_tx, true).await;
                 if let Err(_) = connect_to_server_result {
                     // println", err);
                     println!("got an error connecting to server");
@@ -1204,7 +1183,7 @@ async fn upload(
         // `field` implements Stream<Item = Result<Bytes, MultipartError>>
         while let Some(chunk) = field.chunk().await.unwrap() {
             // file.write_all(&chunk).await.unwrap();
-            tx.send_async(chunk.to_vec()).await;
+            let _ = tx.send_async(chunk.to_vec()).await;
         }
     }
 
@@ -1230,10 +1209,12 @@ async fn migrate(
 
     StatusCode::OK.into_response()
 }
+
+// TODO: see if this is really a nessesary route
 async fn refresh_status(
     State(arc_state): State<Arc<RwLock<AppState>>>,
-    auth_session: AuthSession,
-    headers: HeaderMap,
+    // auth_session: AuthSession,
+    // headers: HeaderMap,
 ) {
     let mut state = arc_state.write().await;
     // let mut authorized = false;
@@ -1432,21 +1413,6 @@ pub struct LogLine {
     pub data: String,
 }
 
-
-fn try_decode_data(data_val: &serde_json::Value) -> Option<serde_json::Value> {
-    if let Some(s) = data_val.as_str() {
-        return serde_json::from_str::<serde_json::Value>(s).ok();
-    }
-    if let Some(arr) = data_val.as_array() {
-        if arr.iter().all(|item| item.is_u64()) {
-            let bytes: Vec<u8> = arr.iter().map(|i| i.as_u64().unwrap() as u8).collect();
-            if let Ok(s) = std::str::from_utf8(&bytes) {
-                return serde_json::from_str::<serde_json::Value>(s).ok();
-            }
-        }
-    }
-    None
-}
 
 async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
     // Acquire lock just to get needed data
@@ -1756,7 +1722,7 @@ async fn oidc_login_initiate(
 async fn load_settings(
     arc_state: Arc<RwLock<AppState>>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let mut state = arc_state.write().await;
+    let state = arc_state.write().await;
 
     let settings = match state.database.get_settings().await {
         Ok(s) => s,
@@ -1766,7 +1732,7 @@ async fn load_settings(
             ));
         }
     };
-    state.cached_status_type.send(settings.status_type);
+    let _ = state.cached_status_type.send(settings.status_type);
 
     Ok(())
 }
@@ -1832,20 +1798,16 @@ async fn notify_node_of_settings(
     let mut state = arc_state.write().await;
     let database = &state.database;
     let settings = database.get_settings().await?;
-    if let Some(internal_tx) = &state.internal_tx {
-        if let Some(old_settings) = old_settings_option {
-            if !(old_settings.filter == settings.filter) {
-                let filter_request = FilterRequest {
-                    filter: settings.filter,
-                };
-                let _ = filter_request.node_transport(&mut state).await;
-            }
-            Ok(())
-        } else {
-            Ok(())
+    if let Some(old_settings) = old_settings_option {
+        if !(old_settings.filter == settings.filter) {
+            let filter_request = FilterRequest {
+                filter: settings.filter,
+            };
+            let _ = filter_request.node_transport(&mut state).await;
         }
+        Ok(())
     } else {
-        Err("No internal tx".into())
+        Ok(())
     }
 }
 // enum ServerRequests {
@@ -2008,7 +1970,6 @@ async fn add_node(
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
 
-    let authorized = false;
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED);
@@ -2018,7 +1979,7 @@ async fn add_node(
         .database
         .create_nodes_in_db(request)
         .await
-        .map_err(|e| StatusCode::INTERNAL_SERVER_ERROR);
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
     result
 }
 async fn delete_server(
@@ -2267,14 +2228,10 @@ async fn ping(
     }
 
     if request.message.is_empty() {
-        if let Some(internal_tx) = &state.internal_tx {
-            let ping = Ping {};
-            let res = ping.node_transport(&mut state).await;
-            if res.is_ok() {
-                return StatusCode::OK;
-            } else {
-                return StatusCode::INTERNAL_SERVER_ERROR;
-            }
+        let ping = Ping {};
+        let res = ping.node_transport(&mut state).await;
+        if res.is_ok() {
+            return StatusCode::OK;
         } else {
             return StatusCode::INTERNAL_SERVER_ERROR;
         }
@@ -2463,7 +2420,7 @@ async fn create_user(
         .database
         .create_user_in_db(request)
         .await
-        .map_err(|e| StatusCode::INTERNAL_SERVER_ERROR);
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
     result
 }
 // edits the user data in the db
@@ -2660,7 +2617,6 @@ async fn users(
 #[derive(serde::Deserialize)]
 struct ChangeNodeRequest {
     node_id: String,
-    server_id: String,
 }
 
 #[axum::debug_handler]
@@ -2706,7 +2662,6 @@ async fn change_node(
                     arc_state.clone(),
                     node.ip.clone(),
                     ws_tx.clone(),
-                    false,
                     false,
                 )
                 .await;
@@ -2862,6 +2817,7 @@ impl AuthnBackend for Backend {
     }
 }
 
+// TODO: consider if i need state at all to resolve token perms
 fn resolve_token_perms(state: &AppState, token: String) -> Vec<UserPerm> {
     let mut tokens = Vec::new();
     if let Some(env_token) = get_env_var_or_arg::<String>("HEADER_TOKEN", Some(String::new())) {
@@ -3056,6 +3012,7 @@ struct FileChunk {
 
 // This will get the content of a file from gameserver, it will use the custom Tcp filesystem I created
 // it will ensure it is not a path escape
+#[allow(unused)]
 async fn get_files_content(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     auth_session: AuthSession,
@@ -3134,6 +3091,7 @@ async fn get_files_content(
 // }
 
 // Gets a list of files and return to to things like the filebrowser
+#[allow(unused)]
 pub async fn get_files(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     headers: HeaderMap,
@@ -3167,13 +3125,7 @@ fn get_auth_bearer(headers: HeaderMap) -> Option<String> {
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(|token| token.to_string())
 }
-// This is crucial for authentication, it will take a next for redirects, and a jwk to verify the claim with, then it grants the claim for the current session
-// and redirects the user to their original destination
-#[derive(Deserialize)]
-pub struct AuthenticateParams {
-    next: String,
-    jwk: String,
-}
+
 
 // pub async fn stream_file_download(
 //     State(arc_state): State<Arc<RwLock<AppState>>>,

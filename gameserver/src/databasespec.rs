@@ -59,16 +59,3 @@ impl ServerIndex {
     }
 }
 
-pub fn parse_filter(s: &str) -> Filters {
-    match s {
-        "AlternatingLine" => Filters::AlternatingLine,
-        _ => Filters::None,
-    }
-}
-
-pub fn filter_to_str(f: &Filters) -> &'static str {
-    match f {
-        Filters::AlternatingLine => "AlternatingLine",
-        Filters::None => "None",
-    }
-}

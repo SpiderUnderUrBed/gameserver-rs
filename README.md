@@ -28,6 +28,7 @@ Running it in kubernetes:
 $ docker run -d -p 5000:5000 --name my-registry registry:2
 $ git clone https://github.com/SpiderUnderUrBed/gameserver-rs.git
 $ cd gameserver-rs
+$ git submodule update --init --recursive
 $ docker build . -t "localhost:5000/rust-k8s:latest"
 $ docker build gameserver/. -t "localhost:5000/rust-k8s:latest"
 $ docker push localhost:5000/rust-k8s:latest

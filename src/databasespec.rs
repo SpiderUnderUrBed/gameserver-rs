@@ -4,8 +4,6 @@ use crate::StatusCode;
 use std::error::Error;
 use std::fmt;
 
-
-use serde::ser::StdError;
 use serde_json::Value;
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
@@ -16,15 +14,12 @@ use sqlx::{
 
 use std::str::FromStr;
 
-type BoxDynError = Box<dyn StdError + Send + Sync>;
-
 // #[derive(Debug)]
 // pub struct DatabaseError(pub StatusCode);
 
 #[derive(Debug, Clone)]
 pub enum DatabaseError {
     StatusCode(StatusCode),
-    String(String)
 }
 
 
@@ -33,7 +28,6 @@ impl fmt::Display for DatabaseError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             DatabaseError::StatusCode(status_code) => write!(f, "HTTP error: {}", status_code),
-            DatabaseError::String(output) => write!(f, "{}", output)
         }
     }
 }
@@ -240,7 +234,7 @@ pub enum NodeType {
     // CustomNodeWithString(String),
     // InbuiltNodeWithString(String),
     // InbuiltPodWithString(String),
-    InbuiltWithString(String),
+    // InbuiltWithString(String),
     // InbuiltNode,
     // InbuiltPod,
     Inbuilt,
@@ -287,7 +281,6 @@ impl ToString for NodeType {
             NodeType::Inbuilt => "inbuilt".to_string(),
             NodeType::Main => "main".to_string(),
             NodeType::CustomWithString(s) => s.clone(),
-            NodeType::InbuiltWithString(s) => s.clone(),
             _ => String::new(),
         }
     }
@@ -389,12 +382,6 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for User {
     }
 }
 
-#[cfg(not(any(feature = "full-stack", feature = "database")))]
-impl From<Node> for Json<Node> {
-    fn from(n: Node) -> Self {
-        Json(n)
-    }
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 #[cfg_attr(
@@ -441,25 +428,7 @@ pub struct Intergration {
     pub settings: Value,
 }
 
-#[cfg(not(any(feature = "full-stack", feature = "database")))]
-#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
-#[serde(transparent)]
-pub struct Json<T>(pub T);
 
-#[cfg(not(any(feature = "full-stack", feature = "database")))]
-impl<T> std::ops::Deref for Json<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        &self.0
-    }
-}
-
-#[cfg(not(any(feature = "full-stack", feature = "database")))]
-impl<T> std::ops::DerefMut for Json<T> {
-    fn deref_mut(&mut self) -> &mut T {
-        &mut self.0
-    }
-}
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
 #[cfg_attr(
     any(feature = "full-stack", feature = "database"),
@@ -596,7 +565,6 @@ pub trait NodesDatabase {
 pub fn resolve_database_error_into_statuscode(error: DatabaseError) -> StatusCode {
     match error {
         DatabaseError::StatusCode(status_code) => status_code,
-        DatabaseError::String(output) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
