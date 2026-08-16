@@ -1,3 +1,4 @@
+use axum::response::IntoResponse;
 use general_networked_filesystem::{FileRequestExecutable, LsRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -909,7 +910,7 @@ impl StreamTransportable for CreateServerRequest {
             metadata: self.metadata.clone(),
             authcode: "".to_string(),
         });
-        if let Err(e) = msg {
+        if let Err(_) = msg {
             return Err("Failed to serialize".into());
         };
         let state = arc_state.write().await;
@@ -936,9 +937,15 @@ impl StreamTransportable for CreateServerRequest {
 
 // NodeTransportable
 
+// impl IntoResponse for CreateServerRequest {
+//     fn into_response(self) -> axum::response::Response {
+//         todo!()
+//     }
+// }
 
 pub struct StartServerRequest {
     // metadata: MetadataTypes
+    #[allow(unused)]
     pub stdin: Option<broadcast::Receiver<String>>
 }
 impl StreamTransportable for StartServerRequest {
@@ -952,7 +959,7 @@ impl StreamTransportable for StartServerRequest {
             message: "start_server".to_string(),
             authcode: "".to_string(),
         });
-        if let Err(e) = msg {
+        if let Err(_) = msg {
             return Err("Failed to serialize".into());
         };
         let state = arc_state.write().await;
@@ -989,7 +996,7 @@ impl NodeTransportable for StopServerRequest {
             message: "stop_server".to_string(),
             authcode: "".to_string(),
         });
-        if let Err(e) = msg {
+        if let Err(_) = msg {
             return Err("Failed to serialize".into());
         };
         let _ = state.connection_handler.proxy_tx.send(msg.unwrap());
@@ -1084,12 +1091,7 @@ impl NodeTransportable for ServerDataRequest {
 // }
 // NodeTransportable
 
-trait InternalTransportable {
-    async fn internal_transport(
-        &self,
-        state: &AppState,
-    ) -> Result<(), Box<dyn Error + Send + Sync>>;
-}
+
 pub struct FilterRequest {
     //pub(crate) //metadata: MetadataTypes
     pub(crate) filter: Filters,
@@ -1112,14 +1114,6 @@ impl NodeTransportable for FilterRequest {
         Ok(())
     }
 }
-impl InternalTransportable for FilterRequest {
-    async fn internal_transport(
-        &self,
-        state: &AppState,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        Ok(())
-    }
-}
 
 
 // }
@@ -1129,7 +1123,7 @@ impl NodeTransportable for Ping {
         let ping = SimpleMessage {
             message: "ping".to_string(),
         };
-        let res = state
+        let _ = state
             .connection_handler
             .proxy_tx
             .send(serde_json::to_vec(&ping).unwrap());
@@ -1137,14 +1131,7 @@ impl NodeTransportable for Ping {
     }
 }
 
-impl InternalTransportable for Ping {
-    async fn internal_transport(
-        &self,
-        state: &AppState,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        Ok(())
-    }
-}
+
 //InternalTransportable
 pub struct IntegrationKeyRequest {
     pub key: Value,
@@ -1173,14 +1160,7 @@ impl NodeTransportable for IntegrationKeyRequest {
         Ok(())
     }
 }
-impl InternalTransportable for IntegrationKeyRequest {
-    async fn internal_transport(
-        &self,
-        state: &AppState,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        Ok(())
-    }
-}
+
 //InternalTransportable
 pub struct ServerStateRequest {}
 impl NodeTransportable for ServerStateRequest {
@@ -1193,14 +1173,6 @@ impl NodeTransportable for ServerStateRequest {
         .unwrap();
         let _ = state.connection_handler.proxy_tx.send(msg);
 
-        Ok(())
-    }
-}
-impl InternalTransportable for ServerStateRequest {
-    async fn internal_transport(
-        &self,
-        state: &AppState,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         Ok(())
     }
 }

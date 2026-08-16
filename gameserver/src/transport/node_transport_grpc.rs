@@ -8,6 +8,7 @@ use std::{any::Any, error::Error};
 use tokio::sync::{broadcast, mpsc, RwLock};
 
 use crate::console_handler;
+use crate::transport::node_transport::proto::node_manage_server::NodeManage;
 use crate::transport::node_transport::proto::server_manage_server::{
     ServerManage, ServerManageServer,
 };
@@ -330,32 +331,7 @@ impl ServerManage for Connection {
             Err(tonic::Status::internal("Could not get response back at all"))
         }
     }
-    async fn name(
-        &self,
-        request: tonic::Request<proto::ServerNameRequest>,
-    ) -> std::result::Result<tonic::Response<proto::ServerNameResponse>, tonic::Status> {
-        let server_name_request = ServerNameRequest::default();
 
-        let mut router = self.router.lock().await;
-        let response_result = router.execute_handler_typed(server_name_request, "server_name".to_string()).await;
-        if let Ok(response) = response_result {
-            match response.try_into_response() {
-                Ok(boxed) => match boxed.downcast::<String>(){
-                    Ok(final_response) => {
-                        if let Ok(response) = serde_json::from_str::<proto::ServerNameResponse>(&*final_response){
-                            Ok(response.into())
-                        } else {
-                            return Err(tonic::Status::internal("Could not serialize response"));
-                        }
-                    }
-                    Err(_) => Err(tonic::Status::internal("Response did not come back as a string")),
-                },
-                Err(_) => Err(tonic::Status::internal("Failed during a response conversion")),
-            }
-        } else {
-            Err(tonic::Status::internal("Could not get response back at all"))
-        }
-    }
     async fn set(
         &self,
         request: tonic::Request<proto::SetServerRequest>,
@@ -418,6 +394,35 @@ impl ServerManage for Connection {
     }
 }
 
+#[tonic::async_trait]
+impl NodeManage for Connection {
+    async fn name(
+        &self,
+        request: tonic::Request<proto::ServerNameRequest>,
+    ) -> std::result::Result<tonic::Response<proto::ServerNameResponse>, tonic::Status> {
+        let server_name_request = ServerNameRequest::default();
+
+        let mut router = self.router.lock().await;
+        let response_result = router.execute_handler_typed(server_name_request, "server_name".to_string()).await;
+        if let Ok(response) = response_result {
+            match response.try_into_response() {
+                Ok(boxed) => match boxed.downcast::<String>(){
+                    Ok(final_response) => {
+                        if let Ok(response) = serde_json::from_str::<proto::ServerNameResponse>(&*final_response){
+                            Ok(response.into())
+                        } else {
+                            return Err(tonic::Status::internal("Could not serialize response"));
+                        }
+                    }
+                    Err(_) => Err(tonic::Status::internal("Response did not come back as a string")),
+                },
+                Err(_) => Err(tonic::Status::internal("Failed during a response conversion")),
+            }
+        } else {
+            Err(tonic::Status::internal("Could not get response back at all"))
+        }
+    }
+}
 // impl Into<crate::MetadataTypes> for proto::MetadataTypes {
 //     fn into(self) -> crate::MetadataTypes {
 //         serde_json::from_value(serde_json::to_value(self).unwrap()).unwrap()

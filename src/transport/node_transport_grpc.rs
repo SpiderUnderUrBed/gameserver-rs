@@ -7,8 +7,8 @@ use tokio::{
 };
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
-use crate::{transport::node_transport::proto::{ServerMessage, ServerNameRequest}, ConsoleData, CHANNEL_BUFFER_SIZE};
-use crate::{ApiCalls as ToplevelApiCalls, AuthTcpMessage, IncomingMessage, List, NodeAndTCP};
+use crate::{transport::node_transport::proto::{node_manage_client::NodeManageClient, ServerMessage, ServerNameRequest}, ConsoleData, CHANNEL_BUFFER_SIZE};
+use crate::{ApiCalls as ToplevelApiCalls, AuthTcpMessage, IncomingMessage, List, NodeWithStream};
 use crate::{
     AppState, CONNECTION_RETRY_DELAY, CONNECTION_TIMEOUT, MessagePayload,
     MessagePayloadWithMetadata, MetadataTypes, SimpleMessage, SrcAndDest, Status, StreamResult,
@@ -33,6 +33,7 @@ use proto::{
 #[derive(Clone)]
 pub struct Clients {
     general_client: GeneralClient<Channel>,
+    node_client: NodeManageClient<Channel>,
     server_manage_client: ServerManageClient<Channel>,
     server_edit_client: ServerEditClient<Channel>,
     filesystem_client: FilesystemClient<Channel>,
@@ -103,16 +104,16 @@ pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, url: String){
         message: "".to_string(),
         authcode: "0".to_string()
     };
-    match state.connection_handler.clients.as_mut().unwrap().server_manage_client.name(server_name_request).await {
+    match state.connection_handler.clients.as_mut().unwrap().node_client.name(server_name_request).await {
         Ok(server_name) => {
-            state.current_node = NodeAndTCP {
+            state.current_node = NodeWithStream {
                 name: server_name.get_ref().message.clone(),
                 ip: url,
                 ..Default::default()
             };
         }
         Err(e) => {
-            state.current_node = NodeAndTCP {
+            state.current_node = NodeWithStream {
                 name: "main".to_string(),
                 ip: url,
                 ..Default::default()
@@ -183,9 +184,11 @@ pub async fn connect_to_server(
     let filesystem_client = FilesystemClient::new(channel.clone());
     let server_edit_client = ServerEditClient::new(channel.clone());
     let server_manage_client = ServerManageClient::new(channel.clone());
-
+    let node_client = NodeManageClient::new(channel.clone());
+    
     state.connection_handler.clients = Some(Clients {
         general_client,
+        node_client,
         server_manage_client,
         server_edit_client,
         filesystem_client,
@@ -283,7 +286,7 @@ impl ImmediateTransportable for ServernameRequest {
             .await
             {
                 if let Ok(payload) = serde_json::from_slice::<IncomingMessage>(&bytes) {
-                    state.current_node = NodeAndTCP {
+                    state.current_node = NodeWithStream {
                         name: payload.message,
                         ip: self.ip.clone(),
                         ..Default::default()
@@ -291,7 +294,7 @@ impl ImmediateTransportable for ServernameRequest {
                     break 'name;
                 }
             }
-            state.current_node = NodeAndTCP {
+            state.current_node = NodeWithStream {
                 name: "main".to_string(),
                 ip: self.ip.clone(),
                 ..Default::default()
