@@ -3295,12 +3295,11 @@ mod tests {
 
     use super::*;
 
+    #[allow(unused)]
     async fn create_app_state_for_tests() -> Result<AppState, Box<dyn std::error::Error + Send + Sync>> {
 
-        println!("A");
         let conn = first_connection().await?;
         let database = database::Database::new(Some(conn));
-        println!("B");
 
         let database_conn_result = database.ensure_database_conn().await;
 
@@ -3621,6 +3620,11 @@ mod tests {
                 .await
                 .expect("Failed to ensure db structure");
             Ok(database)
+        }
+
+        async fn has_k8s_client(){
+            Client::try_default().await?;
+            assert!(true);
         }
 
         mod server {

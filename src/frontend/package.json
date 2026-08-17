@@ -6,6 +6,7 @@
 	"scripts": {
 		"dev": "vite dev",
 		"build": "vite build",
+		"test": "vitest",
 		"build-ts": "NODE_OPTIONS=--experimental-strip-types npm run build",
 		"watch": "vite build --watch",
 		"preview": "vite preview",
@@ -26,7 +27,8 @@
 		"tailwindcss": "^4.2.2",
 		"tsx": "^4.21.0",
 		"typescript": "^6.0.2",
-		"vite": "^8.0.3"
+		"vite": "^8.0.3",
+		"vitest": "^4.1.10"
 	},
 	"dependencies": {
 		"@lucide/svelte": "^1.7.0",
