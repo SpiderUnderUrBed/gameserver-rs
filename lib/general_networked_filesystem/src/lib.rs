@@ -10,7 +10,8 @@ use tokio::sync::Notify;
 // use serde_json::Value;
 
 #[allow(dead_code)]
-pub struct LocalState {
+#[derive(Default)]
+pub struct LocalCache {
     current_directory: Vec<FsItem>,
 }
 

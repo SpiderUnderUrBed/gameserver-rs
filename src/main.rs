@@ -13,6 +13,7 @@ use crate::database::databasespec::{
     Filters, IntoServer, ServerMetadata, resolve_database_error_into_statuscode,
 };
 use crate::database::{DatabaseError, Element};
+use crate::filesystem::FileSystemHandler;
 // use crate::filesystem::{execute_file_operation, FileOperations, TcpFileStream};
 // use crate::filesystem::{FsType, send_multipart_over_broadcast};
 use crate::http::HeaderMap;
@@ -135,6 +136,7 @@ use database::User;
 // mod transport;
 
 mod transport;
+mod filesystem;
 
 use crate::transport::node_transport::ConnectionHandler;
 use crate::transport::node_transport::try_initial_connection;
@@ -539,12 +541,7 @@ pub enum Status {
     Unhealthy,
 }
 
-#[allow(unused)]
-struct FileSystemHandler {
-    file_tx: RemoteFileSystem<TcpFsSender, FlumeFile>,
-    file_rx: RemoteFileSystem<TcpFsReceiver, FlumeFile>,
-    operations: FileOperations,
-}
+
 // AppState, this is a global struct which will be used to store data needed across the application like in routes and etc
 // which includes the sender and reciver to the tcp connection for gameserver, the websocket sender (receiver only needs to be managed by its own handler)
 // the base path like if all the routes are prefixed with something like /gameserver-rs which is the default for my testing deployment, and database as its needed frequently
@@ -727,13 +724,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let (fs_sender_tx, fs_sender_rx) = flume::unbounded();
     let (fs_receiver_tx, fs_receiver_rx) = flume::unbounded();
-    let fs_sender = TcpFsSender::new(fs_sender_rx, fs_sender_tx);
-    let fs_receiver = TcpFsReceiver::new(fs_receiver_tx, fs_receiver_rx);
-    let filesystem = FileSystemHandler {
-        file_tx: RemoteFileSystem::new(fs_sender),
-        file_rx: RemoteFileSystem::new(fs_receiver),
-        operations: FileOperations::new(),
-    };
+
+    let filesystem = FileSystemHandler::new(fs_sender_tx, fs_sender_rx, fs_receiver_tx, fs_receiver_rx);
 
     let cached_status_type = watch::channel(String::new()).0;
 
@@ -1156,6 +1148,7 @@ async fn upload(
     // request: Request,
     mut multipart: Multipart,
 ) -> StatusCode {
+    println!("got an upload request");
     let mut state = arc_state.write().await;
     let authorized = authorize(
         &state,
@@ -1167,15 +1160,44 @@ async fn upload(
     if !authorized {
         return StatusCode::UNAUTHORIZED;
     }
+    println!("passed auth");
     let (tx, rx) = flume::unbounded();
-    let filesystem_sender: &mut RemoteFileSystem<TcpFsSender, FlumeFile> =
-        &mut state.filesystem.file_tx;
-    let file = FlumeFile {
-        original_location: None,
-        final_location: "test.txt".to_string(),
-        content_stream: Some(rx),
-    };
-    filesystem_sender.append_files(file);
+    state.filesystem.send_flume_file(None, "test.txt".to_string(), Some(rx));
+    // let filesystem_sender: &mut RemoteFileSystem<TcpFsSender, FlumeFile> =
+    //     &mut state.filesystem.file_tx;
+    // let file = FlumeFile {
+    //     original_location: None,
+    //     final_location: "test.txt".to_string(),
+    //     content_stream: Some(rx),
+    // };
+    //filesystem_sender.append_files(file);
+    println!("appended the file");
+    drop(state);
+    let inner_arc_state = Arc::clone(&arc_state);
+    tokio::spawn(async move {
+        let mut state = inner_arc_state.write().await;
+        println!("past write lock");
+        let rx = state.filesystem.proxy_receiver().await;
+        println!("got the rx");
+        drop(state);
+        println!("past dropping state");
+        loop {
+            if let Ok(bytes) = rx.recv() {
+                println!("{:#?}", bytes);
+            } else {
+                println!("failed to get osme bytes");
+            }
+        }
+        //println!("past loop");
+    });
+    println!("past the first loop");
+    tokio::spawn(async move {
+        let mut state = arc_state.write().await;
+        state.filesystem.create_state(0, "/".to_string());
+        let res = state.filesystem.execute_operation(0).await;
+        println!("{:#?}", res);
+    });
+    println!("past the second");
     while let Some(mut field) = multipart.next_field().await.unwrap() {
         // let file_name = field.file_name().unwrap_or("upload.bin").to_string();
         // let mut file = File::create(format!("/tmp/{file_name}")).await.unwrap();
@@ -1183,6 +1205,7 @@ async fn upload(
         // `field` implements Stream<Item = Result<Bytes, MultipartError>>
         while let Some(chunk) = field.chunk().await.unwrap() {
             // file.write_all(&chunk).await.unwrap();
+            println!("sent some chunks");
             let _ = tx.send_async(chunk.to_vec()).await;
         }
     }
@@ -3368,13 +3391,9 @@ mod tests {
 
         let (fs_sender_tx, fs_sender_rx) = flume::unbounded();
         let (fs_receiver_tx, fs_receiver_rx) = flume::unbounded();
-        let fs_sender = TcpFsSender::new(fs_sender_rx, fs_sender_tx);
-        let fs_receiver = TcpFsReceiver::new(fs_receiver_tx, fs_receiver_rx);
-        let filesystem = FileSystemHandler {
-            file_tx: RemoteFileSystem::new(fs_sender),
-            file_rx: RemoteFileSystem::new(fs_receiver),
-            operations: FileOperations::new(),
-        };
+        let filesystem = FileSystemHandler::new(fs_sender_tx, fs_sender_rx, fs_receiver_tx, fs_receiver_rx);
+        // filesystem.set_start_delimiter("\\f".as_bytes().to_vec());
+        // filesystem.set_end_delimiter("//f".as_bytes().to_vec());
 
         let cached_status_type = watch::channel(String::new()).0;
 
