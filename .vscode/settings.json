@@ -2,7 +2,7 @@
     "nixEnvSelector.nixFile": "${workspaceFolder}/flake.nix",
     "rust-analyzer.cargo.features": [
         "grpc_experimental",
-
+        "full-stack"
     ],
     "rust-analyzer.diagnostics.disabled": [
         "unresolved-proc-macro"

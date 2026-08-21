@@ -28,6 +28,7 @@ RUN cargo install cargo-watch
 
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY lib ./lib
 COPY gameserver ./gameserver
 
 COPY --from=frontend-build /app/frontend/build ./src/frontend/build
