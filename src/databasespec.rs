@@ -208,6 +208,19 @@ pub enum K8sType {
     Unknown,
 }
 
+#[cfg(feature = "full-stack")]
+impl Into<K8sType> for k8s_orchestrator::kubernetes::K8sType {
+    fn into(self) -> K8sType {
+        match self {
+            k8s_orchestrator::kubernetes::K8sType::Node => K8sType::Node,
+            k8s_orchestrator::kubernetes::K8sType::Pod => K8sType::Pod,
+            k8s_orchestrator::kubernetes::K8sType::None => K8sType::None,
+            k8s_orchestrator::kubernetes::K8sType::Inbuilt => K8sType::Inbuilt,
+            k8s_orchestrator::kubernetes::K8sType::Unknown => K8sType::Unknown,
+        }
+    }
+}
+
 impl<'de> serde::Deserialize<'de> for NodeType {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let v = serde_json::Value::deserialize(d)?;
@@ -230,16 +243,16 @@ impl<'de> serde::Deserialize<'de> for NodeType {
 pub enum NodeType {
     #[default]
     Unknown,
-    Custom,
+    Custom(Option<String>),
     // CustomNode,
     // CustomPod,
-    CustomWithString(String),
+    // CustomWithString(String),
     // CustomPodWithString(String),
     // CustomNodeWithString(String),
     // InbuiltNodeWithString(String),
     // InbuiltPodWithString(String),
-    #[allow(unused)]
-    InbuiltWithString(String),
+    // #[allow(unused)]
+    // InbuiltWithString(String),
     // InbuiltNode,
     // InbuiltPod,
     Inbuilt,
@@ -271,10 +284,10 @@ impl<'q> Encode<'q, Postgres> for NodeType {
 impl From<String> for NodeType {
     fn from(s: String) -> Self {
         match s.as_str() {
-            "custom" => NodeType::Custom,
+            "custom" => NodeType::Custom(None),
             "inbuilt" => NodeType::Inbuilt,
             "main" => NodeType::Main,
-            other => NodeType::CustomWithString(other.to_string()),
+            other => NodeType::Custom(Some(other.to_string())),
         }
     }
 }
@@ -282,10 +295,10 @@ impl From<String> for NodeType {
 impl ToString for NodeType {
     fn to_string(&self) -> String {
         match self {
-            NodeType::Custom => "custom".to_string(),
+            NodeType::Custom(None) => "custom".to_string(),
+            NodeType::Custom(Some(custom)) => custom.to_string(),
             NodeType::Inbuilt => "inbuilt".to_string(),
             NodeType::Main => "main".to_string(),
-            NodeType::CustomWithString(s) => s.clone(),
             _ => String::new(),
         }
     }

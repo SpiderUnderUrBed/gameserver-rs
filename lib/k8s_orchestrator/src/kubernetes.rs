@@ -5,19 +5,37 @@ use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::Node;
 use k8s_openapi::api::core::v1::Pod;
 use k8s_openapi::api::core::v1::{PersistentVolume, PersistentVolumeClaim, Service};
-use serde_json::Value;
+// use serde_json::Value;
 
 use kube::Error::Api as ErrorApi;
 use kube::api::ListParams;
 use kube::api::PostParams;
-use kube::{Api, Client};
+use kube::{Api};
 
-use crate::K8sType;
-use crate::NodeWithStream;
-use crate::NodeType;
-use crate::Status;
+pub use kube::Client;
+// use crate::NodeWithStream;
+// use crate::NodeType;
+// use crate::Status;
 
-pub async fn list_node_info(client: Client) -> Result<Vec<NodeWithStream>, Box<dyn Error>> {
+#[derive(Default, Clone)]
+pub enum K8sType {
+    Node,
+    Pod,
+    #[default]
+    None,
+    Inbuilt,
+    Unknown,
+}
+
+pub struct K8sNode {
+    pub name: String,
+    pub ip: String,
+    pub gameserver: String,
+    pub k8s_type: K8sType,
+}
+
+
+pub async fn list_node_info(client: Client) -> Result<Vec<K8sNode>, Box<dyn Error + Send + Sync>> {
     let nodes: Api<Node> = Api::all(client);
     let node_list = nodes.list(&Default::default()).await?;
 
@@ -44,21 +62,21 @@ pub async fn list_node_info(client: Client) -> Result<Vec<NodeWithStream>, Box<d
                     }
 
                     if let Some(ip) = ip {
-                        let nodetype = node
-                            .metadata
-                            .labels
-                            .as_ref()
-                            .and_then(|labels| labels.get("kubernetes.io/role").cloned())
-                            .unwrap_or_else(|| "unknown".to_string());
+                        // let nodetype = node
+                        //     .metadata
+                        //     .labels
+                        //     .as_ref()
+                        //     .and_then(|labels| labels.get("kubernetes.io/role").cloned())
+                        //     .unwrap_or_else(|| "unknown".to_string());
 
-                        result.push(NodeWithStream {
+                        result.push(K8sNode {
                             name,
                             ip,
-                            gameserver: Value::String(String::new()),
-                            status: Status::Unknown,
-                            nodetype: NodeType::InbuiltWithString(nodetype),
-                            tx: None,
-                            rx: None,
+                            gameserver: String::new(),
+                            // status: Status::Unknown,
+                            // nodetype: NodeType::InbuiltWithString(nodetype),
+                            // tx: None,
+                            // rx: None,
                             k8s_type: K8sType::Unknown,
                         });
                     }
@@ -146,7 +164,7 @@ pub async fn get_avalible_gameserver(
 }
 
 pub async fn verify_is_k8s_gameserver(
-    _: crate::Client,
+    _: Client,
     _: String,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     Ok(true)
@@ -154,15 +172,16 @@ pub async fn verify_is_k8s_gameserver(
 
 pub async fn create_k8s_deployment(
     client: &Client,
+    deployment_yaml: String,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let deployment = if std::env::var("TESTING").is_ok() {
-        println!("Using dev deployment");
-        "deployment-dev.yaml"
-    } else {
-        "deployment.yaml"
-    };
+    // let deployment = if std::env::var("TESTING").is_ok() {
+    //     println!("Using dev deployment");
+    //     "deployment-dev.yaml"
+    // } else {
+    //     "deployment.yaml"
+    // };
 
-    let deployment_yaml = fs::read_to_string(format!("/usr/src/app/gameserver/{}", deployment))?;
+    //let deployment_yaml = fs::read_to_string(format!("/usr/src/app/gameserver/{}", deployment))?;
 
     for doc in deployment_yaml.split("---") {
         let trimmed = doc.trim();

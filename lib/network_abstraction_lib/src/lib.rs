@@ -7,6 +7,9 @@ use std::sync::Mutex;
 use futures::Stream;
 use serde::Serialize;
 
+pub mod erasure;
+pub mod general;
+
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + Sync>>;
 
 pub type BorrowedBoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + Sync + 'a>>;
@@ -175,6 +178,41 @@ pub enum ExtractorErrors {
     Err(String),
 }
 
+pub trait IntoRequest: Send + Sync {
+    fn as_any(&self) -> &dyn Any;
+    fn into_any(self: Box<Self>) -> Box<dyn Any>;
+    fn clone_box(&self) -> Box<dyn IntoRequest>;
+}
+
+pub trait IntoResponse<S>: Send + Sync {
+    fn try_into_response(&self) -> Result<S, ExtractorErrors>;
+}
+
+pub trait HandlerType<S>: Send + Sync
+where
+    S: Send + Sync,
+{
+    fn add_router(&self, router: &Router<S>);
+    fn try_predicate(
+        &mut self,
+        request: &dyn IntoRequest,
+    ) -> Result<Box<dyn IntoRequest>, RouterErrors>;
+    fn get_mapping(&self) -> Option<String>;
+    fn mapping(self, mapping: String) -> Self
+    where
+        Self: Sized;
+    fn execute<'a>(
+        &mut self,
+        state: &'a S,
+        request: Box<dyn IntoRequest>,
+    ) -> BorrowedBoxFuture<'a, Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>>;
+    fn try_direct(
+        &mut self,
+        _request: Box<dyn Any + Send + Sync>,
+    ) -> Result<Box<dyn IntoRequest>, RouterErrors> {
+        Err(RouterErrors::NoHandlerFound)
+    }
+}
 #[derive(Clone)]
 pub struct ValueRequest {
     pub value: serde_json::Value,
@@ -221,15 +259,7 @@ impl IntoRequest for BytesRequest {
     }
 }
 
-pub trait IntoRequest: Send + Sync {
-    fn as_any(&self) -> &dyn Any;
-    fn into_any(self: Box<Self>) -> Box<dyn Any>;
-    fn clone_box(&self) -> Box<dyn IntoRequest>;
-}
 
-pub trait IntoResponse<S>: Send + Sync {
-    fn try_into_response(&self) -> Result<S, ExtractorErrors>;
-}
 
 pub trait ExtractResponse {
     fn extract<T: 'static>(&self) -> Result<T, ExtractorErrors>;
@@ -245,31 +275,7 @@ impl ExtractResponse for dyn IntoResponse<Box<dyn Any + Send + Sync>> {
     }
 }
 
-pub trait HandlerType<S>: Send + Sync
-where
-    S: Send + Sync,
-{
-    fn add_router(&self, router: &Router<S>);
-    fn try_predicate(
-        &mut self,
-        request: &dyn IntoRequest,
-    ) -> Result<Box<dyn IntoRequest>, RouterErrors>;
-    fn get_mapping(&self) -> Option<String>;
-    fn mapping(self, mapping: String) -> Self
-    where
-        Self: Sized;
-    fn execute<'a>(
-        &mut self,
-        state: &'a S,
-        request: Box<dyn IntoRequest>,
-    ) -> BorrowedBoxFuture<'a, Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>>;
-    fn try_direct(
-        &mut self,
-        _request: Box<dyn Any + Send + Sync>,
-    ) -> Result<Box<dyn IntoRequest>, RouterErrors> {
-        Err(RouterErrors::NoHandlerFound)
-    }
-}
+
 
 impl<S: Send + Sync> HandlerType<S> for AnyHandler<S>
 where
@@ -395,23 +401,6 @@ impl IntoResponse<Box<dyn Any + Send + Sync>> for StringResponse {
     }
 }
 
-pub fn erase_string_wrapper<F, S, R, AppState>(f: F) -> ErasedHandler<AppState>
-where
-    F: for<'a> AsyncFnWrapper<'a, AppState, S, Output = R> + Send + Sync + 'static,
-    S: FromWire + Clone + Send + Sync + 'static,
-    R: serde::Serialize + Send + Sync + 'static,
-    AppState: Send + Sync + 'static,
-{
-    erase::<_, S, StringResponse, StringResponse, AppState>(MapOutput::new(
-        f,
-        |value: R| {
-            let json = serde_json::to_string(&value)
-                .unwrap_or_else(|e| format!(r#"{{"error":"serialization failed: {}"}}"#, e));
-            StringResponse(json)
-        },
-    ))
-}
-
 pub struct StreamResponse<Item> {
     inner: Mutex<Option<Pin<Box<dyn Stream<Item = Item> + Send + Sync>>>>,
 }
@@ -446,155 +435,7 @@ impl<Item: Send + Sync + 'static> IntoResponse<Box<dyn Any + Send + Sync>> for S
     }
 }
 
-pub fn erase_stream_wrapper<F, S, R, AppState>(f: F) -> ErasedHandler<AppState>
-where
-    F: for<'a> AsyncFnWrapper<'a, AppState, S, Output = R> + Send + Sync + 'static,
-    S: FromWire + Clone + Send + Sync + 'static,
-    R: Stream + Send + Sync + 'static,
-    <R as Stream>::Item: Send + Sync + 'static,
-    AppState: Send + Sync + 'static,
-{
-    erase::<F, S, R, StreamResponse<<R as Stream>::Item>, AppState>(f)
-}
 
-pub fn erase_stream_wrapper_result<F, S, Item, AppState>(f: F) -> ErasedHandler<AppState>
-where
-    F: for<'a> AsyncFnWrapper<'a, AppState, S, Output = Result<StreamResponse<Item>, ErrorResponse>>
-        + Send
-        + Sync
-        + 'static,
-    S: FromWire + Clone + Send + Sync + 'static,
-    Item: Send + Sync + 'static,
-    AppState: Send + Sync + 'static,
-{
-    erase::<
-        F,
-        S,
-        Result<StreamResponse<Item>, ErrorResponse>,
-        Result<StreamResponse<Item>, ErrorResponse>,
-        AppState,
-    >(f)
-}
-
-impl<S> HandlerType<S> for BytesHandler
-where
-    S: Send + Sync + Clone,
-{
-    fn add_router(&self, _router: &Router<S>) {
-        todo!()
-    }
-
-    fn try_predicate(
-        &mut self,
-        request: &dyn IntoRequest,
-    ) -> Result<Box<dyn IntoRequest>, RouterErrors> {
-        let concrete = request
-            .as_any()
-            .downcast_ref::<BytesRequest>()
-            .ok_or(RouterErrors::NoHandlerFound)?;
-        Ok(Box::new(concrete.clone()))
-    }
-
-    fn execute<'a>(
-        &mut self,
-        _state: &'a S,
-        request: Box<dyn IntoRequest>,
-    ) -> BorrowedBoxFuture<'a, Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>> {
-        (self.function)(request)
-    }
-
-    fn get_mapping(&self) -> Option<String> {
-        self.mapping.clone()
-    }
-
-    fn mapping(mut self, mapping: String) -> Self {
-        self.mapping = Some(mapping);
-        self
-    }
-}
-
-pub struct BytesHandler {
-    mapping: Option<String>,
-    function: Box<
-        dyn FnMut(Box<dyn IntoRequest>) -> BoxFuture<Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>>
-            + Send
-            + Sync,
-    >,
-}
-
-pub fn bytes_type<F, Fut>(mut f: F) -> BytesHandler
-where
-    F: FnMut(Box<dyn IntoRequest>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>> + Send + Sync + 'static,
-{
-    BytesHandler {
-        function: Box::new(move |req| Box::pin(f(req))),
-        mapping: None,
-    }
-}
-
-impl<S> HandlerType<S> for NoneHandler
-where
-    S: Send + Sync + Clone,
-{
-    fn add_router(&self, _router: &Router<S>) {
-        todo!()
-    }
-
-    fn try_predicate(
-        &mut self,
-        _request: &dyn IntoRequest,
-    ) -> Result<Box<dyn IntoRequest>, RouterErrors> {
-        Err(RouterErrors::NoHandlerFound)
-    }
-
-    fn execute<'a>(
-        &mut self,
-        _state: &'a S,
-        request: Box<dyn IntoRequest>,
-    ) -> BorrowedBoxFuture<'a, Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>> {
-        (self.function)(request)
-    }
-
-    fn get_mapping(&self) -> Option<String> {
-        self.mapping.clone()
-    }
-
-    fn mapping(mut self, mapping: String) -> Self {
-        self.mapping = Some(mapping);
-        self
-    }
-}
-
-pub struct NoneHandler {
-    mapping: Option<String>,
-    function: Box<
-        dyn FnMut(Box<dyn IntoRequest>) -> BoxFuture<Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>>
-            + Send
-            + Sync,
-    >,
-}
-
-pub fn none_type<F, Fut>(mut f: F) -> NoneHandler
-where
-    F: FnMut(Box<dyn IntoRequest>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>> + Send + Sync + 'static,
-{
-    NoneHandler {
-        function: Box::new(move |req| Box::pin(f(req))),
-        mapping: None,
-    }
-}
-
-pub struct ErasedHandler<S> {
-    inner: Box<dyn FnMut(&dyn IntoRequest) -> Option<Box<dyn IntoRequest>> + Send + Sync>,
-    direct: Box<dyn Fn(Box<dyn Any + Send + Sync>) -> Option<Box<dyn IntoRequest>> + Send + Sync>,
-    pub call: Box<
-        dyn for<'a> Fn(&'a S, Box<dyn IntoRequest>) -> BorrowedBoxFuture<'a, Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>>
-            + Send + Sync,
-    >,
-    mapping: Option<String>,
-}
 struct MapOutput<F, M> {
     f: F,
     map: M,
@@ -642,100 +483,12 @@ where
     }
 }
 
-pub fn erase<F, S, R, T, AppState>(f: F) -> ErasedHandler<AppState>
-where
-    F: for<'a> AsyncFnWrapper<'a, AppState, S, Output = R> + Send + Sync + 'static,
-    S: FromWire + Clone + Send + Sync + 'static,
-    R: Into<T> + 'static,
-    T: IntoResponse<Box<dyn Any + Send + Sync>> + 'static,
-    AppState: Send + Sync + 'static,
-{
-    ErasedHandler {
-        inner: Box::new(move |req: &dyn IntoRequest| {
-            let t = req.as_any().downcast_ref::<S::Request>()?;
-            S::from_wire(t.clone())
-                .ok()
-                .map(|s| Box::new(Erased(s)) as Box<dyn IntoRequest>)
-        }),
-        direct: Box::new(|any: Box<dyn Any + Send + Sync>| {
-            any.downcast::<S>()
-                .ok()
-                .map(|s| Box::new(Erased(*s)) as Box<dyn IntoRequest>)
-        }),
-        call: Box::new(move |state, req: Box<dyn IntoRequest>| {
-            let Erased(s) = *req
-                .into_any()
-                .downcast::<Erased<S>>()
-                .expect("execute called with mismatched request type");
-            let fut = f.call(state, s);
-            Box::pin(async move {
-                let response: T = fut.await.into();
-                Box::new(response) as Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>
-            })
-        }),
-        mapping: None,
-    }
-}
-
 pub trait FromWire: Sized {
     type Request: IntoRequest + Clone + 'static;
     type Error;
     fn from_wire(req: Self::Request) -> Result<Self, Self::Error>;
 }
 
-struct Erased<T>(T);
-
-impl<T: 'static + Send + Sync + Clone> IntoRequest for Erased<T> {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-    fn into_any(self: Box<Self>) -> Box<dyn Any> {
-        self
-    }
-    fn clone_box(&self) -> Box<dyn IntoRequest> {
-        Box::new(Erased(self.0.clone()))
-    }
-}
-
-impl<S> HandlerType<S> for ErasedHandler<S>
-where
-    S: Send + Sync,
-{
-    fn try_predicate(
-        &mut self,
-        request: &dyn IntoRequest,
-    ) -> Result<Box<dyn IntoRequest>, RouterErrors> {
-        (self.inner)(request).ok_or(RouterErrors::NoHandlerFound)
-    }
-
-    fn execute<'a>(
-        &mut self,
-        state: &'a S,
-        request: Box<dyn IntoRequest>,
-    ) -> BorrowedBoxFuture<'a, Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>> {
-        (self.call)(state, request)
-    }
-    
-    fn try_direct(                                                    
-        &mut self,
-        request: Box<dyn Any + Send + Sync>,
-    ) -> Result<Box<dyn IntoRequest>, RouterErrors> {
-        (self.direct)(request).ok_or(RouterErrors::NoHandlerFound)
-    }
-
-    fn get_mapping(&self) -> Option<String> {
-        self.mapping.clone()
-    }
-
-    fn mapping(mut self, mapping: String) -> Self {
-        self.mapping = Some(mapping);
-        self
-    }
-
-    fn add_router(&self, _router: &Router<S>) {
-        todo!()
-    }
-}
 
 impl<T, S: Send + Sync + IntoResponse<T>, E: Send + Sync + IntoResponse<T>> IntoResponse<T> for Result<S, E> {
     fn try_into_response(&self) -> Result<T, ExtractorErrors> {
@@ -746,25 +499,6 @@ impl<T, S: Send + Sync + IntoResponse<T>, E: Send + Sync + IntoResponse<T>> Into
     }
 }
 
-#[derive(Default, Serialize)]
-pub struct NoneResponse {}
-
-impl IntoResponse<NoneResponse> for NoneResponse {
-    fn try_into_response(&self) -> Result<NoneResponse, ExtractorErrors> {
-        unimplemented!("Cannot convert NoneResponse into anything")
-    }
-}
-
-#[derive(Default, Serialize)]
-pub struct ErrorResponse {
-    pub error: String,
-}
-
-impl<S> IntoResponse<S> for ErrorResponse {
-    fn try_into_response(&self) -> Result<S, ExtractorErrors> {
-        Err(ExtractorErrors::Err(self.error.clone()))
-    }
-}
 
 #[macro_export]
 macro_rules! owned_state {
@@ -782,6 +516,8 @@ mod tests {
 
     mod main {
         use std::sync::Arc;
+
+        use crate::general::NoneResponse;
 
         use super::*;
 
@@ -850,7 +586,7 @@ mod tests {
         #[tokio::test]
         async fn erasure() {
             let router: &mut Router<Arc<State>> = &mut Router::new(Arc::new(State::new()));
-            router.register_handler(erase::<_, BytesRequest, _, NoneResponse, Arc<State>>(
+            router.register_handler(erasure::erase::<_, BytesRequest, _, NoneResponse, Arc<State>>(
                 |_state: &Arc<State>, req: BytesRequest| async move { test_example(req) },
             ));
             let bytes = "test".as_bytes();
@@ -863,7 +599,7 @@ mod tests {
         #[tokio::test]
         async fn erasure_match() {
             let router: &mut Router<Arc<State>> = &mut Router::new(Arc::new(State::new()));
-            router.register_handler(erase::<_, MyPayload, _, NoneResponse, Arc<State>>(
+            router.register_handler(erasure::erase::<_, MyPayload, _, NoneResponse, Arc<State>>(
                 |_state: &Arc<State>, payload: MyPayload| async move {
                     println!("got {payload:?}");
                     NoneResponse {}
@@ -879,7 +615,7 @@ mod tests {
         #[tokio::test]
         async fn erasure_mismatch() {
             let router: &mut Router<Arc<State>> = &mut Router::new(Arc::new(State::new()));
-            router.register_handler(erase::<_, MyPayload, _, NoneResponse, Arc<State>>(
+            router.register_handler(erasure::erase::<_, MyPayload, _, NoneResponse, Arc<State>>(
                 |_state: &Arc<State>, payload: MyPayload| async move {
                     println!("got {payload:?}");
                     NoneResponse {}

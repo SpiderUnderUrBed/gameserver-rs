@@ -400,7 +400,7 @@ impl NodesDatabase for Database {
         if let Element::Node(Node { nodename, ip, nodetype, nodestatus, k8s_type }) = element.element {
             let mut database = self.get_database().await?;
     
-            if database.nodes.iter().any(|node| node.nodename == nodename) || (nodetype == NodeType::Custom && ip.is_empty()){
+            if database.nodes.iter().any(|node| node.nodename == nodename) || (matches!(nodetype, NodeType::Custom(_)) && ip.is_empty()){
                 return Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)));
             } else {
                 let final_node = Node {nodename,ip,nodetype, nodestatus, k8s_type };

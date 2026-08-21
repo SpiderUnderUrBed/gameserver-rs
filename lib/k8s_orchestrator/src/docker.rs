@@ -18,9 +18,10 @@ use tokio_util::codec::BytesCodec;
 use tokio_util::{bytes, codec::FramedRead};
 use walkdir::WalkDir;
 
-use axum::body::Bytes;
+// use axum::body::Bytes;
 use bollard::image::PushImageOptions;
 use bytes::Bytes as BytesRaw;
+use bytes::{Bytes, BytesMut};
 
 // TODO:
 // Manually parse or enter the .dockerignore and also
@@ -110,12 +111,17 @@ pub async fn build_docker_image() -> Result<(), Box<dyn std::error::Error + Send
     let framed: FramedRead<Cursor<Vec<u8>>, BytesCodec> =
         FramedRead::new(cursor, BytesCodec::new());
 
+    // let stream_converted = framed
+    //     .map_ok(|bytes_mut| {
+    //         let b: BytesRaw = bytes_mut.freeze();
+    //         Bytes::from(b)
+    //     })
+    //     .map_ok(|b: Bytes| Frame::data(b))
+    //     .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
+
     let stream_converted = framed
-        .map_ok(|bytes_mut| {
-            let b: BytesRaw = bytes_mut.freeze();
-            Bytes::from(b)
-        })
-        .map_ok(|b: Bytes| Frame::data(b))
+        .map_ok(|bytes_mut| bytes_mut.freeze())
+        .map_ok(Frame::data)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
 
     let boxed_stream: Pin<Box<dyn Stream<Item = Result<Frame<Bytes>, io::Error>> + Send>> =

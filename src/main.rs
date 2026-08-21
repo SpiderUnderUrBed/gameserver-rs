@@ -13,10 +13,12 @@ use crate::database::databasespec::{
     Filters, IntoServer, ServerMetadata, resolve_database_error_into_statuscode,
 };
 use crate::database::{DatabaseError, Element};
+use crate::docker::BuildImageRequest;
 use crate::filesystem::FileSystemHandler;
 // use crate::filesystem::{execute_file_operation, FileOperations, TcpFileStream};
 // use crate::filesystem::{FsType, send_multipart_over_broadcast};
 use crate::http::HeaderMap;
+use crate::kubernetes::{BuildDeploymentRequest, ListNodeInfoRequest};
 use crate::middleware::from_fn;
 use axum::Form;
 use axum::error_handling::HandleErrorLayer;
@@ -56,6 +58,7 @@ use axum_oidc::openidconnect::IssuerUrl;
 use axum_oidc::openidconnect::Scope;
 use general_networked_filesystem::flume_delimited::{FlumeFile, TcpFsReceiver, TcpFsSender};
 use general_networked_filesystem::{FileOperations, LsRequest, RemoteFileSystem};
+
 use tokio::sync::{watch, RwLock};
 
 use rcon::Connection;
@@ -150,16 +153,27 @@ use crate::transport::node_transport::{
 
 mod extra;
 
-// Docker AND kubernetes would be enabled with a standard deployment
-// as you wouldnt need the docker module (or the k8s module) for barebones testing
+// // Docker AND kubernetes would be enabled with a standard deployment
+// // as you wouldnt need the docker module (or the k8s module) for barebones testing
 #[cfg(feature = "full-stack")]
-mod docker;
+mod orchestrator;
 
 #[cfg(feature = "full-stack")]
-mod kubernetes;
+pub use orchestrator::docker;
+
+#[cfg(feature = "full-stack")]
+pub use orchestrator::kubernetes;
+
+#[cfg(feature = "full-stack")]
+pub use kubernetes::KubeLocalRequest;
+
+#[cfg(feature = "full-stack")]
+pub use docker::DockerLocalRequest;
 
 // Main has to store the client, so I would remove the client here if this is not in a standard deployment in favor
 // of a dummy one
+// #[cfg(feature = "full-stack")]
+// use k8s_orchestrator::{Client};
 #[cfg(feature = "full-stack")]
 use kube::Client;
 
@@ -351,7 +365,7 @@ pub enum StreamResult {
 
 // #[derive(PartialEq)]
 #[derive(Default)]
-struct NodeWithStream {
+pub struct NodeWithStream {
     name: String,
     ip: String,
     status: Status,
@@ -407,8 +421,20 @@ enum IntegrationCommands {
 }
 
 #[derive(Clone)]
+pub struct K8sClient {
+    k8s_client: Client,
+    docker_info: String,
+}
+
+#[derive(Clone)]
+struct K8sGrpcClients {
+
+}
+
+#[derive(Clone)]
 enum Clients {
-    K8s(Client),
+    K8sLocal(K8sClient),
+    K8sRemote(K8sGrpcClients),
     Docker(String),
     None,
 }
@@ -669,18 +695,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // which will set the k8s client
     let mut client: Clients = Clients::None;
     if enable_k8s_client && K8S_WORKS {
-        client = Clients::K8s(Client::try_default().await?);
+        client = Clients::K8sLocal(K8sClient {
+            k8s_client: Client::try_default().await?,
+            docker_info: String::new()
+        });
     }
 
     let mut node_url: String = config_node_url.to_string();
-    if !dont_override_conn_with_k8s && let Clients::K8s(ref inner_client) = client {
-        if let Ok(url_result) = &kubernetes::get_avalible_gameserver(&inner_client).await {
+    if !dont_override_conn_with_k8s && let Clients::K8sLocal(ref inner_client) = client {
+        let request = kubernetes::GetK8sGameserversRequest {
+            // connection: inner_client.clone(),
+        };
+        if let Ok(Some(url_result)) = request.execute_locally(inner_client.clone()).await {
             node_url = url_result.clone();
         } else {
             println!(
                 "Could not get a successful url for a existing gameserver, will try the fallback url"
-            )
+            )    
         }
+        // if let Ok(url_result) = &kubernetes::get_avalible_gameserver(&inner_client).await {
+        //     node_url = url_result.clone();
+        // } else {
+        //     println!(
+        //         "Could not get a successful url for a existing gameserver, will try the fallback url"
+        //     )
+        // }
     }
 
     let mut nodes: Vec<NodeWithStream> = vec![];
@@ -922,22 +961,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 println!("All initial connections failed");
             }
             if initial_connection_result.is_err() || force_rebuild {
-                if let Clients::K8s(client) = &inner_state.write().await.client {
+                if let Clients::K8sLocal(client) = &inner_state.write().await.client {
                     eprintln!(
                         "Initial connection failed or force rebuild enabled, will possibly enable auto-build (configurable)"
                     );
                     let mut unbuilt_img_was_the_issue = false;
                     if build_docker_image {
                         unbuilt_img_was_the_issue = true;
-                        if let Err(e) = docker::build_docker_image().await {
+                        let request = BuildImageRequest { client: client.clone() };
+                        if let Err(e) = request.execute_locally().await {
                             eprintln!("Failed to build docker image: {:#?}", e);
                         }
+                        // if let Err(e) = docker::build_docker_image().await {
+                        //     eprintln!("Failed to build docker image: {:#?}", e);
+                        // }
                     }
                     if build_deployment {
                         unbuilt_img_was_the_issue = true;
-                        if let Err(e) = kubernetes::create_k8s_deployment(&client).await {
+                        let deployment = if std::env::var("TESTING").is_ok() {
+                            println!("Using dev deployment");
+                            "deployment-dev.yaml"
+                        } else {
+                            "deployment.yaml"
+                        };
+
+
+                        let request = BuildDeploymentRequest { 
+                            // connection: client.clone(), 
+                            deployment: deployment.to_string()
+                        };
+                        if let Err(e) = request.execute_locally(client.clone()).await {
                             eprintln!("Failed to create k8s deployment: {:#?}", e);
-                        }
+                        };
+                        // if let Err(e) = kubernetes::create_k8s_deployment(&client).await {
+                        //     eprintln!("Failed to create k8s deployment: {:#?}", e);
+                        // }
                     }
                     if !unbuilt_img_was_the_issue {
                         // if let Some(initial_connection_result_string) = initial_connection_result.err().unwrap().to_string() {
@@ -2713,8 +2771,11 @@ async fn get_nodes(
 
     let mut node_list: Vec<NodeWithStream> = vec![];
 
-    if let Clients::K8s(client) = state.client.clone() {
-        match kubernetes::list_node_info(client).await {
+    if let Clients::K8sLocal(client) = state.client.clone() {
+        let request = ListNodeInfoRequest { 
+            // connection: client 
+        };
+        match request.execute_locally(client).await {
             Ok(nodes) => {
                 node_list.extend(nodes.clone());
             }
@@ -2722,6 +2783,14 @@ async fn get_nodes(
                 eprintln!("Error listing nodes: {}", err);
             }
         }
+        // match kubernetes::list_node_info(client).await {
+        //     Ok(nodes) => {
+        //         node_list.extend(nodes.clone());
+        //     }
+        //     Err(err) => {
+        //         eprintln!("Error listing nodes: {}", err);
+        //     }
+        // }
     }
 
     match state.database.fetch_all_nodes().await {
@@ -3335,7 +3404,12 @@ mod tests {
         // which will set the k8s client
         let mut client: Clients = Clients::None;
         if enable_k8s_client && K8S_WORKS {
-            client = Clients::K8s(Client::try_default().await?);
+            client = Clients::K8sLocal(
+                K8sClient { 
+                    k8s_client: Client::try_default().await?, 
+                    docker_info: String::new()
+                }
+            );
         }
 
         // let mut node_url: String = config_node_url.to_string();
@@ -3584,7 +3658,7 @@ mod tests {
                         nodename: "main".to_string(),
                         ip: STATIC_LOCAL_URL.to_string(),
                         nodestatus: NodeStatus::Unknown,
-                        nodetype: NodeType::Custom,
+                        nodetype: NodeType::Custom(None),
                         k8s_type: K8sType::Unknown,
                     }),
                     jwt: "".to_string(),
@@ -3622,10 +3696,12 @@ mod tests {
             Ok(database)
         }
 
-        async fn has_k8s_client(){
-            Client::try_default().await?;
-            assert!(true);
-        }
+        // #[tokio::test]
+        // #[serial]
+        // async fn has_k8s_client(){
+        //     Client::try_default().await?;
+        //     assert!(true);
+        // }
 
         mod server {
             use serial_test::serial;
@@ -3649,7 +3725,7 @@ mod tests {
                             nodename: "test".to_string(),
                             ip: "127.0.0.1:8080".to_string(),
                             nodestatus: NodeStatus::Unknown,
-                            nodetype: NodeType::Custom,
+                            nodetype: NodeType::Custom(None),
                             k8s_type: K8sType::Unknown,
                         },
                         server_metadata: ServerMetadata::default(),
@@ -3685,7 +3761,7 @@ mod tests {
                             nodename: "test".to_string(),
                             ip: "127.0.0.1:8080".to_string(),
                             nodestatus: NodeStatus::Unknown,
-                            nodetype: NodeType::Custom,
+                            nodetype: NodeType::Custom(None),
                             k8s_type: K8sType::Unknown,
                         },
                         server_metadata: ServerMetadata::default(),
