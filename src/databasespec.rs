@@ -208,17 +208,27 @@ pub enum K8sType {
     Unknown,
 }
 
-#[cfg(feature = "full-stack")]
-impl Into<K8sType> for k8s_orchestrator::kubernetes::K8sType {
-    fn into(self) -> K8sType {
-        match self {
-            k8s_orchestrator::kubernetes::K8sType::Node => K8sType::Node,
-            k8s_orchestrator::kubernetes::K8sType::Pod => K8sType::Pod,
-            k8s_orchestrator::kubernetes::K8sType::None => K8sType::None,
-            k8s_orchestrator::kubernetes::K8sType::Inbuilt => K8sType::Inbuilt,
-            k8s_orchestrator::kubernetes::K8sType::Unknown => K8sType::Unknown,
+
+impl TryFrom<String> for K8sType {
+    type Error = Box<dyn Error + Send + Sync>;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        match value.as_str() {
+            "None" => Ok(K8sType::None),
+            "Inbuilt" => Ok(K8sType::Inbuilt),
+            "Pod" => Ok(K8sType::Pod),
+            "Node" => Ok(K8sType::Node),
+            "Unknown" => Ok(K8sType::Unknown),
+            other => Err(format!("unknown K8sType: {other}").into()),
         }
     }
+}
+
+pub struct K8sNode {
+    pub name: String,
+    pub ip: String,
+    pub gameserver: String,
+    pub k8s_type: K8sType,
 }
 
 impl<'de> serde::Deserialize<'de> for NodeType {

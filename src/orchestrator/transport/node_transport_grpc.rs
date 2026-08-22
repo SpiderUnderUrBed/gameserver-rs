@@ -1,13 +1,15 @@
 
 use std::error::Error;
 
-use k8s_orchestrator::kubernetes::K8sNode;
-use k8s_orchestrator::kubernetes::K8sType;
+// use k8s_orchestrator::kubernetes::K8sNode;
+// use k8s_orchestrator::kubernetes::K8sType;
 use tonic::transport::Channel;
 
 use crate::database::databasespec::NodeType;
 use crate::{orchestrator::{kubernetes::{GetK8sTypeRequest, BuildDeploymentRequest, GetK8sGameserversRequest, ListNodeInfoRequest}, docker::BuildImageRequest}, NodeWithStream};
 use crate::{Status};
+use crate::database::databasespec::K8sNode;
+use crate::K8sType;
 
 mod proto {
     tonic::include_proto!("kube");
