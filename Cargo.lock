@@ -2018,6 +2018,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "k8s_orchestrator_node"
+version = "0.1.0"
+dependencies = [
+ "k8s_orchestrator",
+ "prost",
+ "prost-types",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+]
+
+[[package]]
 name = "kube"
 version = "0.99.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -2,7 +2,7 @@
 use std::error::Error;
 
 
-use crate::{orchestrator::kubernetes::{BuildDeploymentRequest, GetK8sGameserversRequest, ListNodeInfoRequest}, K8sClient, NodeWithStream};
+use crate::{database::databasespec::K8sType, kubernetes::{GetK8sTypeRequest, VerifyIsK8sGameserverRequest}, orchestrator::kubernetes::{BuildDeploymentRequest, GetK8sGameserversRequest, ListNodeInfoRequest}, K8sLocalClient, NodeWithStream};
 
 
 pub trait KubeLocalRequest {
@@ -10,16 +10,17 @@ pub trait KubeLocalRequest {
     async fn execute_locally(
         &self,
         // client: Client,
-        connection: K8sClient,
+        connection: K8sLocalClient,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>>;
 }
+
 impl KubeLocalRequest for GetK8sGameserversRequest {
     type Output = Option<String>;
 
     async fn execute_locally(
         &self,
         // client: Client,
-        connection: K8sClient,
+        connection: K8sLocalClient,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         Err("not enabled".into())
     }
@@ -29,7 +30,7 @@ impl KubeLocalRequest for BuildDeploymentRequest {
 
     async fn execute_locally(
         &self,
-        connection: K8sClient,
+        connection: K8sLocalClient,
         // client: Client,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         Err("not enabled".into())
@@ -40,10 +41,31 @@ impl KubeLocalRequest for ListNodeInfoRequest {
 
     async fn execute_locally(
         &self,
-        connection: K8sClient,
+        connection: K8sLocalClient,
         // client: Client,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         Err("not enabled".into())
     }
 }
+impl KubeLocalRequest for VerifyIsK8sGameserverRequest {
+    type Output = bool;
 
+    async fn execute_locally(
+        &self,
+        // client: Client,
+        connection: K8sLocalClient,
+    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
+        Err("not enabled".into())
+    }
+}
+impl KubeLocalRequest for GetK8sTypeRequest {
+    type Output = K8sType;
+
+    async fn execute_locally(
+        &self,
+        // client: Client,
+        connection: K8sLocalClient,
+    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
+        Err("not enabled".into())
+    }
+}

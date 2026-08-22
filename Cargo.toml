@@ -81,7 +81,7 @@ grpc_experimental = [
 [workspace]
 members = [
     "gameserver"
-, "lib/general_networked_filesystem", "lib/k8s_orchestrator"]
+, "k8s_orchestrator_node", "lib/general_networked_filesystem", "lib/k8s_orchestrator"]
 
 [[bin]]
 name = "gameserver-rs"

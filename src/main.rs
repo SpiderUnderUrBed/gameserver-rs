@@ -170,21 +170,13 @@ use kube::Client;
 use crate::orchestrator::kubernetes::local::K8sLocalClient;
 
 #[cfg(not(feature = "full-stack"))]
-struct Client {
-}
-
-#[cfg(not(feature = "full-stack"))]
-impl Client {
-    async fn try_default() -> Result<Client, Box<dyn Error + Send + Sync>> {
-        Ok(Client {})
-    }
-}
-#[cfg(not(feature = "full-stack"))]
+#[derive(Clone)]
 struct K8sLocalClient {
-
+    pub k8s_client: Client,
+    pub docker_info: String,
 }
 
-use crate::orchestrator::node_transport::node_transport::{K8sRemoteClient, KubeRemoteRequest};
+use crate::orchestrator::transport::node_transport::{K8sRemoteClient, KubeRemoteRequest};
 
 // This part would potentially be removed later
 // I like these defaults for testing, and for the moment I doubt anyone would object

@@ -1,0 +1,23 @@
+[package]
+name = "k8s_orchestrator_node"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+k8s_orchestrator = { path = "../lib/k8s_orchestrator" }
+tonic = { version = "0.14.6", optional = true }
+prost = { version = "0.14.4", optional = true }
+tonic-prost = { version = "0.14.6", optional = true }
+prost-types = { version = "0.14.4", optional = true }
+
+[build-dependencies]
+tonic-prost-build = { version = "0.14.6", optional = true }
+
+[features]
+grpc_experimental = [
+    "tonic",
+    "prost",
+    "tonic-prost",
+    "tonic-prost-build",
+    "prost-types"
+]
