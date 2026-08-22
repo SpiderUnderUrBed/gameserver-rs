@@ -999,13 +999,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         "Initial connection failed or force rebuild enabled, will possibly enable auto-build (configurable)"
                     );
                     let mut unbuilt_img_was_the_issue = false;
-                    if build_docker_image {
-                        unbuilt_img_was_the_issue = true;
-                        let request = BuildImageRequest { };
-                        if let Err(e) = request.execute_remote(client.clone()).await {
-                            eprintln!("Failed to build docker image: {:#?}", e);
-                        }
-                    }
+                    // TODO: consider how i can handle an orchestrator building the images when 
+                    // it does not have access to the gameserver files
+                    // if build_docker_image {
+                    //     unbuilt_img_was_the_issue = true;
+                    //     let request = BuildImageRequest { };
+                    //     if let Err(e) = request.execute_remote(client.clone()).await {
+                    //         eprintln!("Failed to build docker image: {:#?}", e);
+                    //     }
+                    // }
                     if build_deployment {
                         unbuilt_img_was_the_issue = true;
                         let deployment = if std::env::var("TESTING").is_ok() {

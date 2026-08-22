@@ -1153,7 +1153,6 @@ dependencies = [
  "axum-oidc",
  "base64 0.22.1",
  "bcrypt",
- "bollard",
  "bytes",
  "chrono",
  "env",
@@ -1164,7 +1163,6 @@ dependencies = [
  "http-body-util",
  "httpc-test",
  "jsonwebtoken",
- "k8s-openapi",
  "k8s_orchestrator",
  "kube",
  "mime_guess",
@@ -1179,7 +1177,6 @@ dependencies = [
  "serial_test",
  "sqlx",
  "sysinfo",
- "tar",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -1190,7 +1187,6 @@ dependencies = [
  "tower-http",
  "tower-sessions",
  "urlencoding",
- "walkdir",
 ]
 
 [[package]]
