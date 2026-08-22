@@ -1460,6 +1460,8 @@ async fn spawn_request_loop(
 
                         match feed_result {
                             Ok(response) => {
+                                use network_abstraction_lib::ExtractorErrors;
+
                                 match response.try_into_response() {
                                     Ok(boxed) => match boxed.downcast::<String>() {
                                         Ok(resp) => {

@@ -2,3 +2,55 @@ syntax = "proto3";
 
 package kube;
 
+message K8sType {
+    string kind = 1;
+    string type = 2;
+}
+
+message K8sNode {
+    string name = 1;
+    string ip = 2;
+    string gameserver = 3;
+    K8sType k8s_type = 4;
+}
+
+message GetGameserverRequest {
+
+}
+message BuildDepolymentRequest {
+    string deployment = 1;
+}
+message ListNodeInfoRequest {
+
+}
+message BuildImageRequest {
+ 
+}
+message GetK8sTypeRequest {
+    string server = 1;
+}
+
+
+message GetGameserverResponse {
+    string gameserver = 1;
+}
+message BuildDeploymentResponse {
+
+}
+message ListNodeInfoResponse {
+    repeated K8sNode k8s_nodes = 1;
+}
+message BuildImageResponse {
+
+}
+
+
+service K8S {
+    rpc get_gameservers(GetGameserverRequest) returns (GetGameserverResponse);
+    rpc build_deployment(BuildDepolymentRequest) returns (BuildDeploymentResponse);
+    rpc list_node_info(ListNodeInfoRequest) returns (ListNodeInfoResponse);
+    rpc get_k8s_type(GetK8sTypeRequest) returns (K8sType);
+}
+service DOCKER {
+    rpc build_image(BuildImageRequest) returns (BuildImageResponse);
+}

@@ -20,6 +20,7 @@ use crate::filesystem::FileSystemHandler;
 use crate::http::HeaderMap;
 use crate::kubernetes::{BuildDeploymentRequest, ListNodeInfoRequest};
 use crate::middleware::from_fn;
+
 use axum::Form;
 use axum::error_handling::HandleErrorLayer;
 use axum::extract::Multipart;
@@ -155,79 +156,35 @@ mod extra;
 
 // // Docker AND kubernetes would be enabled with a standard deployment
 // // as you wouldnt need the docker module (or the k8s module) for barebones testing
-#[cfg(feature = "full-stack")]
 mod orchestrator;
-
-#[cfg(feature = "full-stack")]
-pub use orchestrator::docker;
-
-#[cfg(feature = "full-stack")]
 pub use orchestrator::kubernetes;
+pub use orchestrator::docker;
+pub use kubernetes::local::KubeLocalRequest;
+pub use docker::local::DockerLocalRequest;
 
-#[cfg(feature = "full-stack")]
-pub use kubernetes::KubeLocalRequest;
 
-#[cfg(feature = "full-stack")]
-pub use docker::DockerLocalRequest;
-
-// Main has to store the client, so I would remove the client here if this is not in a standard deployment in favor
-// of a dummy one
-// #[cfg(feature = "full-stack")]
-// use k8s_orchestrator::{Client};
 #[cfg(feature = "full-stack")]
 use kube::Client;
 
-// build_docker_image and the functions from the kubernetes modules needs to be faked to make the compiler happy if this is not a standard deployment
-#[cfg(not(feature = "full-stack"))]
-mod docker {
-    pub async fn build_docker_image() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        Err("This should not be running".into())
-    }
-}
-#[cfg(not(feature = "full-stack"))]
-mod kubernetes {
-    use crate::NodeWithStream;
+#[cfg(feature = "full-stack")]
+use crate::orchestrator::kubernetes::local::K8sLocalClient;
 
-    pub async fn create_k8s_deployment(
-        _: &crate::Client,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        Err("This should not be running".into())
-    }
-    #[allow(unused)]
-    pub async fn list_node_names(
-        _: crate::Client,
-    ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-        Err("This should not be running".into())
-    }
-    pub async fn list_node_info(
-        _: crate::Client,
-    ) -> Result<Vec<NodeWithStream>, Box<dyn std::error::Error + Send + Sync>> {
-        Err("This should not be running".into())
-    }
-    pub async fn verify_is_k8s_gameserver(
-        _: crate::Client,
-        _: String,
-    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(false)
-    }
-    pub async fn get_avalible_gameserver(
-        _: &crate::Client,
-    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        Err("This should not be running in a non-k8s environemnt".into())
-    }
-    pub async fn verify_is_k8s_pod(
-        _client: &crate::Client,
-        _ip: String,
-    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(false)
-    }
-    pub async fn verify_is_k8s_node(
-        _client: &crate::Client,
-        _ip: String,
-    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(false)
+#[cfg(not(feature = "full-stack"))]
+struct Client {
+}
+
+#[cfg(not(feature = "full-stack"))]
+impl Client {
+    async fn try_default() -> Result<Client, Box<dyn Error + Send + Sync>> {
+        Ok(Client {})
     }
 }
+#[cfg(not(feature = "full-stack"))]
+struct K8sLocalClient {
+
+}
+
+use crate::orchestrator::node_transport::node_transport::{K8sRemoteClient, KubeRemoteRequest};
 
 // This part would potentially be removed later
 // I like these defaults for testing, and for the moment I doubt anyone would object
@@ -244,6 +201,8 @@ static K8S_WORKS: bool = false;
 // TODO: consider having some feature thats aware if docker is avalible or not
 #[cfg(not(feature = "docker"))]
 static DOCKER_WORKS: bool = false;
+
+static KUBE_ORCHESTRATOR_URL: &str = "gameserver-kube-orchestrator:8080";
 
 #[cfg(feature = "full-stack")]
 static STATIC_NODE_URL: &str = "gameserver-service:8080";
@@ -420,21 +379,25 @@ enum IntegrationCommands {
     MinecraftDisableRcon(serde_json::Value),
 }
 
-#[derive(Clone)]
-pub struct K8sClient {
-    k8s_client: Client,
-    docker_info: String,
-}
 
-#[derive(Clone)]
-struct K8sGrpcClients {
+// #[cfg(feature = "grpc_experimental")]
+// #[derive(Clone)]
+// struct K8sRemoteClient {
+    
+// }
 
-}
+// #[cfg(not(feature = "grpc_experimental"))]
+// #[derive(Clone)]
+// struct K8sRemoteClient {
+
+// }
+
+
 
 #[derive(Clone)]
 enum Clients {
-    K8sLocal(K8sClient),
-    K8sRemote(K8sGrpcClients),
+    K8sLocal(K8sLocalClient),
+    K8sRemote(K8sRemoteClient),
     Docker(String),
     None,
 }
@@ -691,37 +654,64 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // creates a websocket broadcase and tcp channels
     let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
 
-    // sets the client to be none by default unless this is ran the stanard way which will be ran with the appropriate feature-flag
-    // which will set the k8s client
+    // Sets the client to be None, unless there is an orchestrator configured or if the relevent feature flag is enabled
+    // for the orchestrator to work inbuilt to the server
     let mut client: Clients = Clients::None;
-    if enable_k8s_client && K8S_WORKS {
-        client = Clients::K8sLocal(K8sClient {
-            k8s_client: Client::try_default().await?,
-            docker_info: String::new()
-        });
+    if enable_k8s_client {
+        if let Ok(k8s_orchestrator_url) = env::var("K8S_ORCHESTRATOR_URL") {
+            match K8sRemoteClient::connect(k8s_orchestrator_url).await {
+                Ok(k8s_client) => {
+                    client = Clients::K8sRemote(k8s_client)
+                } 
+                Err(e) => {
+                    println!("{:#?}", e);
+                } 
+            } 
+        } else if K8S_WORKS {
+            // let k8s_orchestrator_location = get_env_var_or_arg("K8S_ORCHESTRTOR_TYPE", Some("Local".into())).unwrap();
+            // if k8s_orchestrator_location == "Local" {
+            client = Clients::K8sLocal(K8sLocalClient {
+                k8s_client: Client::try_default().await?,
+                docker_info: String::new()
+            });
+            // } else {
+            //     client = Clients::K8sRemote(K8sRemoteClient {
+            //     });
+            // }
+        } 
     }
 
     let mut node_url: String = config_node_url.to_string();
-    if !dont_override_conn_with_k8s && let Clients::K8sLocal(ref inner_client) = client {
+    if !dont_override_conn_with_k8s {
         let request = kubernetes::GetK8sGameserversRequest {
             // connection: inner_client.clone(),
         };
-        if let Ok(Some(url_result)) = request.execute_locally(inner_client.clone()).await {
-            node_url = url_result.clone();
-        } else {
-            println!(
-                "Could not get a successful url for a existing gameserver, will try the fallback url"
-            )    
+        if let Clients::K8sLocal(ref inner_client) = client {
+            if let Ok(Some(url_result)) = request.execute_locally(inner_client.clone()).await {
+                node_url = url_result.clone();
+            } else {
+                println!(
+                    "Could not get a successful url for a existing gameserver, will try the fallback url"
+                )    
+            }
+            // if let Ok(url_result) = &kubernetes::get_avalible_gameserver(&inner_client).await {
+            //     node_url = url_result.clone();
+            // } else {
+            //     println!(
+            //         "Could not get a successful url for a existing gameserver, will try the fallback url"
+            //     )
+            // }
         }
-        // if let Ok(url_result) = &kubernetes::get_avalible_gameserver(&inner_client).await {
-        //     node_url = url_result.clone();
-        // } else {
-        //     println!(
-        //         "Could not get a successful url for a existing gameserver, will try the fallback url"
-        //     )
-        // }
+        if let Clients::K8sRemote(ref inner_client) = client {
+            if let Ok(Some(url_result)) = request.execute_remote(inner_client.clone()).await {
+                node_url = url_result.clone();
+            } else {
+                println!(
+                    "Could not get a successful url for a existing gameserver, will try the fallback url"
+                )    
+            }
+        }
     }
-
     let mut nodes: Vec<NodeWithStream> = vec![];
     if let Ok(db_nodes) = database.fetch_all_nodes().await {
         nodes = db_nodes
@@ -968,8 +958,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     let mut unbuilt_img_was_the_issue = false;
                     if build_docker_image {
                         unbuilt_img_was_the_issue = true;
-                        let request = BuildImageRequest { client: client.clone() };
-                        if let Err(e) = request.execute_locally().await {
+                        let request = BuildImageRequest { };
+                        if let Err(e) = request.execute_locally(client.clone()).await {
                             eprintln!("Failed to build docker image: {:#?}", e);
                         }
                         // if let Err(e) = docker::build_docker_image().await {
@@ -996,6 +986,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         // if let Err(e) = kubernetes::create_k8s_deployment(&client).await {
                         //     eprintln!("Failed to create k8s deployment: {:#?}", e);
                         // }
+                    }
+                    if !unbuilt_img_was_the_issue {
+                        // if let Some(initial_connection_result_string) = initial_connection_result.err().unwrap().to_string() {
+                        if let Some(initial_connection_result_string) = initial_connection_result
+                            .as_ref()
+                            .err()
+                            .unwrap()
+                            .downcast_ref::<String>()
+                        {
+                            if !initial_connection_result_string.is_empty() {
+                                println!("{:#?}", initial_connection_result_string);
+                            }
+                        } else {
+                            println!("{:#?}", initial_connection_result.as_ref().err().unwrap());
+                        }
+                    }
+                } if let Clients::K8sRemote(client) = &inner_state.write().await.client { 
+                    eprintln!(
+                        "Initial connection failed or force rebuild enabled, will possibly enable auto-build (configurable)"
+                    );
+                    let mut unbuilt_img_was_the_issue = false;
+                    if build_docker_image {
+                        unbuilt_img_was_the_issue = true;
+                        let request = BuildImageRequest { };
+                        if let Err(e) = request.execute_remote(client.clone()).await {
+                            eprintln!("Failed to build docker image: {:#?}", e);
+                        }
+                    }
+                    if build_deployment {
+                        unbuilt_img_was_the_issue = true;
+                        let deployment = if std::env::var("TESTING").is_ok() {
+                            println!("Using dev deployment");
+                            "deployment-dev.yaml"
+                        } else {
+                            "deployment.yaml"
+                        };
+
+
+                        let request = BuildDeploymentRequest { 
+                            // connection: client.clone(), 
+                            deployment: deployment.to_string()
+                        };
+                        if let Err(e) = request.execute_remote(client.clone()).await {
+                            eprintln!("Failed to create k8s deployment: {:#?}", e);
+                        };
                     }
                     if !unbuilt_img_was_the_issue {
                         // if let Some(initial_connection_result_string) = initial_connection_result.err().unwrap().to_string() {
@@ -2791,6 +2826,18 @@ async fn get_nodes(
         //         eprintln!("Error listing nodes: {}", err);
         //     }
         // }
+    } else if let Clients::K8sRemote(client) = state.client.clone() {
+        let request = ListNodeInfoRequest { 
+            // connection: client 
+        };
+        match request.execute_remote(client).await {
+            Ok(nodes) => {
+                node_list.extend(nodes.clone());
+            }
+            Err(err) => {
+                eprintln!("Error listing nodes: {}", err);
+            }
+        }
     }
 
     match state.database.fetch_all_nodes().await {
@@ -3405,7 +3452,7 @@ mod tests {
         let mut client: Clients = Clients::None;
         if enable_k8s_client && K8S_WORKS {
             client = Clients::K8sLocal(
-                K8sClient { 
+                K8sLocalClient { 
                     k8s_client: Client::try_default().await?, 
                     docker_info: String::new()
                 }

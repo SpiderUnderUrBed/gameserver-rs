@@ -10,7 +10,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{database::{databasespec::{K8sType, NodeStatus, NodeType}, Element, ModifyElementData, Node, NodesDatabase}, extra::value_from_line, get_env_var_or_arg, kubernetes::{self, verify_is_k8s_gameserver}, ApiCalls as ToplevelApiCalls, AuthTcpMessage, Clients, ConsoleData, IncomingMessage, IntegrationCommands, List, LogLine, NodeWithStream};
+use crate::{database::{databasespec::{K8sType, NodeStatus, NodeType}, Element, ModifyElementData, Node, NodesDatabase}, extra::value_from_line, get_env_var_or_arg, kubernetes::{self, GetK8sTypeRequest, VerifyIsK8sGameserverRequest}, ApiCalls as ToplevelApiCalls, AuthTcpMessage, Clients, ConsoleData, IncomingMessage, IntegrationCommands, KubeLocalRequest, List, LogLine, NodeWithStream};
 use crate::{
     AppState, CHANNEL_BUFFER_SIZE, CONNECTION_RETRY_DELAY, CONNECTION_TIMEOUT, MessagePayload,
     MessagePayloadWithMetadata, MetadataTypes, SimpleMessage, SrcAndDest, Status, StreamResult,
@@ -325,12 +325,15 @@ async fn handle_all_stream_values(
                     };
 
                     if let Ok(nodes) = database.fetch_all_nodes().await {
-                        let node_status = if let Clients::K8s(client) = client_option {
-                            let client_clone = client.clone();
+                        let node_status = if let Clients::K8sLocal(client) = client_option {
+                            // let client_clone = client.clone();
                             let ip_clone = ip.to_string();
+                            let request = VerifyIsK8sGameserverRequest {
+                                server: ip_clone,
+                            };
                             match tokio::time::timeout(
                                 std::time::Duration::from_millis(100),
-                                verify_is_k8s_gameserver(client_clone, ip_clone),
+                                request.execute_locally(client.clone()),
                             )
                             .await
                             {
@@ -346,50 +349,37 @@ async fn handle_all_stream_values(
                             nodename: inner_msg.message,
                             nodetype: {
                                 let state_guard = arc_state.read().await;
-                                if let Clients::K8s(client) = &state_guard.client {
-                                    if kubernetes::verify_is_k8s_gameserver(
-                                        client.clone(),
-                                        ip.to_string(),
-                                    )
-                                    .await?
+                                if let Clients::K8sLocal(client) = &state_guard.client {
+                                    let request = VerifyIsK8sGameserverRequest {
+                                        server: ip.to_string(),
+                                    };
+                                    if request.execute_locally(client.clone()).await?
                                     {
                                         NodeType::Inbuilt
                                     } else {
-                                        NodeType::Custom
+                                        NodeType::Custom(None)
                                     }
                                 } else {
-                                    NodeType::Custom
+                                    NodeType::Custom(None)
                                 }
                             },
                             nodestatus: node_status,
                             k8s_type: {
                                 let state_guard = arc_state.read().await;
-                                if let Clients::K8s(client) = &state_guard.client {
-                                    if kubernetes::verify_is_k8s_gameserver(
-                                        client.clone(),
-                                        ip.to_string(),
-                                    )
+                                if let Clients::K8sLocal(client) = &state_guard.client {
+                                    let request = VerifyIsK8sGameserverRequest {
+                                        server: ip.to_string(),
+                                    };
+                                    if request.execute_locally(client.clone())
                                     .await?
-                                    {
-                                        if kubernetes::verify_is_k8s_pod(client, ip.to_string())
-                                            .await?
-                                        {
-                                            K8sType::Pod
-                                        } else if kubernetes::verify_is_k8s_node(
-                                            client,
-                                            ip.to_string(),
-                                        )
-                                        .await?
-                                        {
-                                            K8sType::Node
-                                        } else {
-                                            K8sType::Unknown
-                                        }
+                                    { 
+                                        let request = GetK8sTypeRequest { server: ip.to_string() };
+                                        request.execute_locally(client.clone()).await?.into()
                                     } else {
-                                        K8sType::None
+                                        K8sType::Unknown
                                     }
                                 } else {
-                                    K8sType::Unknown
+                                    K8sType::None
                                 }
                             },
                         };

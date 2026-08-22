@@ -7,10 +7,13 @@ use k8s_openapi::api::core::v1::Pod;
 use k8s_openapi::api::core::v1::{PersistentVolume, PersistentVolumeClaim, Service};
 // use serde_json::Value;
 
+use kube::client;
+// use k8s_openapi::chrono::serde;
 use kube::Error::Api as ErrorApi;
 use kube::api::ListParams;
 use kube::api::PostParams;
 use kube::{Api};
+// use serde;
 
 pub use kube::Client;
 // use crate::NodeWithStream;
@@ -25,6 +28,21 @@ pub enum K8sType {
     None,
     Inbuilt,
     Unknown,
+}
+
+impl TryFrom<String> for K8sType {
+    type Error = Box<dyn Error + Send + Sync>;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        match value.as_str() {
+            "None" => Ok(K8sType::None),
+            "Inbuilt" => Ok(K8sType::Inbuilt),
+            "Pod" => Ok(K8sType::Pod),
+            "Node" => Ok(K8sType::Node),
+            "Unknown" => Ok(K8sType::Unknown),
+            other => Err(format!("unknown K8sType: {other}").into()),
+        }
+    }
 }
 
 pub struct K8sNode {
@@ -88,10 +106,7 @@ pub async fn list_node_info(client: Client) -> Result<Vec<K8sNode>, Box<dyn Erro
     Ok(result)
 }
 
-pub async fn verify_is_k8s_node(
-    client: &Client,
-    ip: String,
-) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+pub async fn get_k8s_type(client: &Client, ip: String) -> Result<K8sType, Box<dyn std::error::Error + Send + Sync>> {
     let nodes: Api<Node> = Api::all(client.clone());
     let node_list = nodes.list(&Default::default()).await?;
 
@@ -102,20 +117,12 @@ pub async fn verify_is_k8s_node(
                     if (addr.type_ == "InternalIP" || addr.type_ == "ExternalIP")
                         && addr.address == ip
                     {
-                        return Ok(true);
+                        return Ok(K8sType::Node);
                     }
                 }
             }
         }
     }
-
-    Ok(false)
-}
-
-pub async fn verify_is_k8s_pod(
-    client: &Client,
-    ip: String,
-) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     let pods: Api<Pod> = Api::all(client.clone());
     let pod_list = pods.list(&Default::default()).await?;
 
@@ -123,25 +130,70 @@ pub async fn verify_is_k8s_pod(
         if let Some(status) = pod.status {
             if let Some(pod_ip) = status.pod_ip {
                 if pod_ip == ip {
-                    return Ok(true);
+                    return Ok(K8sType::Pod);
                 }
             }
         }
     }
 
-    Ok(false)
+    return Ok(K8sType::Unknown)
+
 }
 
-pub async fn list_node_names(client: Client) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let nodes: Api<Node> = Api::all(client);
-    let node_list = nodes.list(&Default::default()).await?;
-    let names = node_list
-        .items
-        .into_iter()
-        .filter_map(|node| node.metadata.name)
-        .collect();
-    Ok(names)
-}
+// pub async fn verify_is_k8s_node(
+//     client: &Client,
+//     ip: String,
+// ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+//     let nodes: Api<Node> = Api::all(client.clone());
+//     let node_list = nodes.list(&Default::default()).await?;
+
+//     for node in node_list.items {
+//         if let Some(status) = node.status {
+//             if let Some(addresses) = status.addresses {
+//                 for addr in addresses {
+//                     if (addr.type_ == "InternalIP" || addr.type_ == "ExternalIP")
+//                         && addr.address == ip
+//                     {
+//                         return Ok(true);
+//                     }
+//                 }
+//             }
+//         }
+//     }
+
+//     Ok(false)
+// }
+
+// pub async fn verify_is_k8s_pod(
+//     client: &Client,
+//     ip: String,
+// ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+//     let pods: Api<Pod> = Api::all(client.clone());
+//     let pod_list = pods.list(&Default::default()).await?;
+
+//     for pod in pod_list.items {
+//         if let Some(status) = pod.status {
+//             if let Some(pod_ip) = status.pod_ip {
+//                 if pod_ip == ip {
+//                     return Ok(true);
+//                 }
+//             }
+//         }
+//     }
+
+//     Ok(false)
+// }
+
+// pub async fn list_node_names(client: Client) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+//     let nodes: Api<Node> = Api::all(client);
+//     let node_list = nodes.list(&Default::default()).await?;
+//     let names = node_list
+//         .items
+//         .into_iter()
+//         .filter_map(|node| node.metadata.name)
+//         .collect();
+//     Ok(names)
+// }
 
 pub async fn get_avalible_gameserver(
     client: &Client,

@@ -2009,6 +2009,7 @@ dependencies = [
  "http-body-util",
  "k8s-openapi",
  "kube",
+ "serde",
  "serde_yaml",
  "tar",
  "tokio",
