@@ -37,7 +37,7 @@ axum-oidc = { git = "https://github.com/pfzetto/axum-oidc" }
 tower = "0.5.3"
 base64 = "0.22.1"
 general_networked_filesystem = { path = "lib/general_networked_filesystem" }
-k8s_orchestrator = { path = "lib/k8s_orchestrator" }
+k8s_orchestrator = { path = "lib/k8s_orchestrator", optional = true  }
 multer = "3.1.0"
 tonic = { version = "0.14.6", optional = true }
 prost = { version = "0.14.4", optional = true }
@@ -60,7 +60,8 @@ docker = [
 full-stack = [
     "kube",
     "serde_yaml",
-    "sqlx"
+    "sqlx",
+    "k8s_orchestrator"
 ]
 grpc_experimental = [
     "tonic",
