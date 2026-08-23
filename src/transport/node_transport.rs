@@ -11,6 +11,19 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{database::{databasespec::{K8sType, NodeStatus, NodeType}, Element, ModifyElementData, Node, NodesDatabase}, extra::value_from_line, get_env_var_or_arg, kubernetes::{self, GetK8sTypeRequest, VerifyIsK8sGameserverRequest}, ApiCalls as ToplevelApiCalls, AuthTcpMessage, Clients, ConsoleData, IncomingMessage, IntegrationCommands, KubeLocalRequest, List, LogLine, NodeWithStream};
+use crate::transport::node_transport_spec::DeleteServerRequest;
+use crate::transport::node_transport_spec::CapabilitiesRequest;
+use crate::transport::node_transport_spec::CreateServerRequest;
+use crate::transport::node_transport_spec::StartServerRequest;
+use crate::transport::node_transport_spec::SetServerRequest;
+use crate::transport::node_transport_spec::StopServerRequest;
+use crate::transport::node_transport_spec::MigrateRequest;
+use crate::transport::node_transport_spec::ServerDataRequest;
+use crate::transport::node_transport_spec::FilterRequest;
+use crate::transport::node_transport_spec::Ping;
+use crate::transport::node_transport_spec::IntegrationKeyRequest;
+use crate::transport::node_transport_spec::ServernameRequest;
+use crate::transport::node_transport_spec::ServerStateRequest;
 use crate::{
     AppState, CHANNEL_BUFFER_SIZE, CONNECTION_RETRY_DELAY, CONNECTION_TIMEOUT, MessagePayload,
     MessagePayloadWithMetadata, MetadataTypes, SimpleMessage, SrcAndDest, Status, StreamResult,
@@ -28,12 +41,8 @@ use std::{
 pub struct PasswordRequest {
     pub password: String,
 }
-pub struct CapabilitiesRequest {
-    pub capabilities: Vec<String>,
-}
-pub struct ServernameRequest {
-    pub ip: String,
-}
+
+
 pub trait ImmediateTransportable {
     async fn immediate_transport(
         &self,
@@ -798,9 +807,7 @@ impl NodeTransportable for LsRequest {
     }
 }
 
-pub struct DeleteServerRequest {
-    pub metadata: MetadataTypes,
-}
+
 // NodeTransportable
 impl NodeTransportable for DeleteServerRequest {
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -884,9 +891,6 @@ pub trait StreamTransportable {
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>>;
 }
 
-pub struct CreateServerRequest {
-    pub metadata: MetadataTypes,
-}
 
 impl StreamTransportable for CreateServerRequest {
     type Output = mpsc::Receiver<ConsoleData>;
@@ -933,11 +937,7 @@ impl StreamTransportable for CreateServerRequest {
 //     }
 // }
 
-pub struct StartServerRequest {
-    // metadata: MetadataTypes
-    #[allow(unused)]
-    pub stdin: Option<broadcast::Receiver<String>>
-}
+
 impl StreamTransportable for StartServerRequest {
     type Output = mpsc::Receiver<ConsoleData>;
     async fn stream_transport(
@@ -976,9 +976,7 @@ impl StreamTransportable for StartServerRequest {
 
 
 
-pub struct StopServerRequest {
-    // metadata: MetadataTypes
-}
+
 impl NodeTransportable for StopServerRequest {
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         let msg = serde_json::to_vec(&MessagePayload {
@@ -995,11 +993,7 @@ impl NodeTransportable for StopServerRequest {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct MigrateRequest {
-    #[serde(flatten)]
-    pub common: SrcAndDest,
-}
+
 impl NodeTransportable for MigrateRequest {
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         match serde_json::to_vec(&self.common) {
@@ -1015,9 +1009,7 @@ impl NodeTransportable for MigrateRequest {
     }
 }
 
-pub struct SetServerRequest {
-    pub(crate) metadata: MetadataTypes,
-}
+
 impl NodeTransportable for SetServerRequest {
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         let msg = MessagePayloadWithMetadata {
@@ -1041,9 +1033,7 @@ impl NodeTransportable for SetServerRequest {
 }
 // NodeTransportable
 
-pub struct ServerDataRequest {
-    pub(crate) metadata: MetadataTypes,
-}
+
 impl NodeTransportable for ServerDataRequest {
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         let msg = MessagePayloadWithMetadata {
@@ -1082,10 +1072,7 @@ impl NodeTransportable for ServerDataRequest {
 // NodeTransportable
 
 
-pub struct FilterRequest {
-    //pub(crate) //metadata: MetadataTypes
-    pub(crate) filter: Filters,
-}
+
 //InternalTransportable
 // struct FilterRequest impl NodeTransportable {
 impl NodeTransportable for FilterRequest {
@@ -1107,7 +1094,7 @@ impl NodeTransportable for FilterRequest {
 
 
 // }
-pub struct Ping {}
+
 impl NodeTransportable for Ping {
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         let ping = SimpleMessage {
@@ -1122,10 +1109,7 @@ impl NodeTransportable for Ping {
 }
 
 
-//InternalTransportable
-pub struct IntegrationKeyRequest {
-    pub key: Value,
-}
+
 impl NodeTransportable for IntegrationKeyRequest {
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         match serde_json::to_vec(&self.key) {
@@ -1152,7 +1136,7 @@ impl NodeTransportable for IntegrationKeyRequest {
 }
 
 //InternalTransportable
-pub struct ServerStateRequest {}
+
 impl NodeTransportable for ServerStateRequest {
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         let msg = serde_json::to_vec(&MessagePayload {

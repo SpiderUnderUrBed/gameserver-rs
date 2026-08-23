@@ -7,6 +7,19 @@ use tokio::{
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 use crate::{transport::node_transport::proto::{node_manage_client::NodeManageClient, ServerMessage}, ConsoleData, CHANNEL_BUFFER_SIZE};
+use crate::transport::node_transport_spec::DeleteServerRequest;
+use crate::transport::node_transport_spec::CapabilitiesRequest;
+use crate::transport::node_transport_spec::CreateServerRequest;
+use crate::transport::node_transport_spec::StartServerRequest;
+use crate::transport::node_transport_spec::SetServerRequest;
+use crate::transport::node_transport_spec::StopServerRequest;
+use crate::transport::node_transport_spec::MigrateRequest;
+use crate::transport::node_transport_spec::ServerDataRequest;
+use crate::transport::node_transport_spec::FilterRequest;
+use crate::transport::node_transport_spec::Ping;
+use crate::transport::node_transport_spec::IntegrationKeyRequest;
+use crate::transport::node_transport_spec::ServernameRequest;
+use crate::transport::node_transport_spec::ServerStateRequest;
 use crate::{ApiCalls as ToplevelApiCalls, AuthTcpMessage, IncomingMessage, List, NodeWithStream};
 use crate::{
     AppState, MessagePayload,
@@ -233,12 +246,7 @@ pub trait ImmediateTransportable {
 pub struct PasswordRequest {
     pub password: String,
 }
-pub struct CapabilitiesRequest {
-    pub capabilities: Vec<String>,
-}
-pub struct ServernameRequest {
-    pub ip: String,
-}
+
 impl ImmediateTransportable for PasswordRequest {
     async fn immediate_transport(
         &self,
@@ -304,9 +312,7 @@ impl ImmediateTransportable for ServernameRequest {
     }
 }
 
-pub struct DeleteServerRequest {
-    pub metadata: MetadataTypes,
-}
+
 
 // NodeTransportable
 impl NodeTransportable for DeleteServerRequest {
@@ -330,9 +336,7 @@ impl NodeTransportable for DeleteServerRequest {
     }
 }
 
-pub struct CreateServerRequest {
-    pub metadata: MetadataTypes,
-}
+
 impl NodeTransportable for CreateServerRequest {
     type Output = ();
     async fn node_transport(
@@ -406,10 +410,6 @@ pub trait StreamTransportable {
         state: Arc<RwLock<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>>;
 }
-pub struct StartServerRequest {
-    // metadata: MetadataTypes
-    pub stdin: Option<broadcast::Receiver<String>>
-}
 impl StreamTransportable for StartServerRequest {
     type Output = mpsc::Receiver<ConsoleData>;
     async fn stream_transport(
@@ -470,9 +470,6 @@ impl StreamTransportable for StartServerRequest {
 }
 }
 
-pub struct StopServerRequest {
-    // metadata: MetadataTypes
-}
 impl NodeTransportable for StopServerRequest {
     type Output = ();
     async fn node_transport(
@@ -493,11 +490,7 @@ impl NodeTransportable for StopServerRequest {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct MigrateRequest {
-    #[serde(flatten)]
-    pub common: SrcAndDest,
-}
+
 // TODO: impliment this
 impl NodeTransportable for MigrateRequest {
     type Output = ();
@@ -518,9 +511,7 @@ impl NodeTransportable for MigrateRequest {
     }
 }
 
-pub struct SetServerRequest {
-    pub(crate) metadata: MetadataTypes,
-}
+
 impl NodeTransportable for SetServerRequest {
     type Output = ();
     async fn node_transport(
@@ -546,9 +537,6 @@ impl NodeTransportable for SetServerRequest {
 }
 // NodeTransportable
 
-pub struct ServerDataRequest {
-    pub(crate) metadata: MetadataTypes,
-}
 impl NodeTransportable for ServerDataRequest {
     type Output = ();
     async fn node_transport(
@@ -590,9 +578,7 @@ trait InternalTransportable {
         state: &AppState,
     ) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
-pub struct FilterRequest {
-    pub(crate) filter: Filters,
-}
+
 //InternalTransportable
 // TODO: impliment this
 impl NodeTransportable for FilterRequest {
@@ -624,9 +610,6 @@ impl InternalTransportable for FilterRequest {
     }
 }
 
-// }
-// TODO: impliment this
-pub struct Ping {}
 impl NodeTransportable for Ping {
     type Output = ();
     async fn node_transport(
@@ -653,9 +636,7 @@ impl InternalTransportable for Ping {
     }
 }
 //InternalTransportable
-pub struct IntegrationKeyRequest {
-    pub key: Value,
-}
+
 // TODO: impliment this
 impl NodeTransportable for IntegrationKeyRequest {
     type Output = ();
@@ -694,7 +675,6 @@ impl InternalTransportable for IntegrationKeyRequest {
     }
 }
 //InternalTransportable
-pub struct ServerStateRequest {}
 impl NodeTransportable for ServerStateRequest {
     type Output = Status;
     async fn node_transport(

@@ -12,5 +12,6 @@ pub mod node_transport;
 #[path = "node_transport_grpc.rs"]
 pub mod node_transport;
 
+pub mod node_transport_spec;
 // #[cfg(feature = "grpc_experimental")]
 // pub use node_transport_grpc as node_transport;

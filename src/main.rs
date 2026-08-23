@@ -145,12 +145,15 @@ mod filesystem;
 use crate::transport::node_transport::ConnectionHandler;
 use crate::transport::node_transport::try_initial_connection;
 use crate::transport::node_transport::{
-    CreateServerRequest, DeleteServerRequest, FilterRequest,
-    IntegrationKeyRequest, MigrateRequest, NodeTransportable, StreamTransportable,
-    Ping, ServerDataRequest, 
-    SetServerRequest, StartServerRequest, StopServerRequest, check_channel_health,
+    check_channel_health,
     connect_to_server,
+    NodeTransportable,
+    StreamTransportable
 };
+use crate::transport::node_transport_spec::{CreateServerRequest, DeleteServerRequest, FilterRequest,
+    IntegrationKeyRequest, MigrateRequest,
+    Ping, ServerDataRequest, 
+    SetServerRequest, StartServerRequest, StopServerRequest};
 
 mod extra;
 

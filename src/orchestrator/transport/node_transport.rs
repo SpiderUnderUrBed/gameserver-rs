@@ -1,8 +1,6 @@
 use std::error::Error;
 
-use k8s_orchestrator::kubernetes::K8sType;
-
-use crate::{orchestrator::{docker::BuildImageRequest, kubernetes::{BuildDeploymentRequest, GetK8sGameserversRequest, GetK8sTypeRequest, ListNodeInfoRequest}}, NodeWithStream};
+use crate::{database::databasespec::K8sType, orchestrator::{docker::BuildImageRequest, kubernetes::{BuildDeploymentRequest, GetK8sGameserversRequest, GetK8sTypeRequest, ListNodeInfoRequest}}, NodeWithStream};
 
 #[derive(Clone)]
 pub struct K8sRemoteClient {
