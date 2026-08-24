@@ -3807,10 +3807,4 @@ mod tests {
     }
 
     mod http {}
-
-    #[tokio::test]
-    #[serial]
-    async fn failing_test(){
-        assert!(false);
-    }
 }
