@@ -24,7 +24,7 @@ jobs:
       - name: Initialize submodules (redundant but safe)
         run: |
           git submodule sync --recursive
-          git submodule update --init --recursive
+          git submodule update --init --remote --recursive
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -99,7 +99,7 @@ jobs:
       - name: Initialize submodules (redundant but safe)
         run: |
           git submodule sync --recursive
-          git submodule update --init --recursive
+          git submodule update --init --remote --recursive
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
