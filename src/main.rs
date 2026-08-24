@@ -3366,6 +3366,8 @@ fn get_auth_bearer(headers: HeaderMap) -> Option<String> {
 mod tests {
     //use std::any::Any;
 
+    use serial_test::serial;
+
     use super::*;
 
     #[allow(unused)]
@@ -3805,4 +3807,10 @@ mod tests {
     }
 
     mod http {}
+
+    #[tokio::test]
+    #[serial]
+    async fn failing_test(){
+        assert!(false);
+    }
 }
