@@ -1,21 +1,28 @@
-
 use std::error::Error;
 
 // use k8s_orchestrator::kubernetes::K8sNode;
 // use k8s_orchestrator::kubernetes::K8sType;
 use tonic::transport::Channel;
 
-use crate::database::databasespec::NodeType;
-use crate::{orchestrator::{kubernetes::{GetK8sTypeRequest, BuildDeploymentRequest, GetK8sGameserversRequest, ListNodeInfoRequest}, docker::BuildImageRequest}, NodeWithStream};
-use crate::{Status};
-use crate::database::databasespec::K8sNode;
 use crate::K8sType;
+use crate::Status;
+use crate::database::databasespec::K8sNode;
+use crate::database::databasespec::NodeType;
+use crate::{
+    NodeWithStream,
+    orchestrator::{
+        docker::BuildImageRequest,
+        kubernetes::{
+            BuildDeploymentRequest, GetK8sGameserversRequest, GetK8sTypeRequest,
+            ListNodeInfoRequest,
+        },
+    },
+};
 
 mod proto {
     tonic::include_proto!("kube");
 }
-use proto::{k8s_client::K8sClient, docker_client::DockerClient};
-
+use proto::{docker_client::DockerClient, k8s_client::K8sClient};
 
 pub trait KubeRemoteRequest {
     type Output;
@@ -29,7 +36,7 @@ pub trait KubeRemoteRequest {
 #[derive(Clone)]
 pub struct K8sRemoteClient {
     kubernetes_client: K8sClient<Channel>,
-    docker_client: DockerClient<Channel>
+    docker_client: DockerClient<Channel>,
 }
 impl K8sRemoteClient {
     pub async fn connect(url: String) -> Result<K8sRemoteClient, Box<dyn Error + Send + Sync>> {
@@ -37,9 +44,9 @@ impl K8sRemoteClient {
         let kubernetes_client: K8sClient<Channel> = K8sClient::new(channel.clone());
         let docker_client: DockerClient<Channel> = DockerClient::new(channel.clone());
 
-        Ok(K8sRemoteClient {  
+        Ok(K8sRemoteClient {
             kubernetes_client,
-            docker_client
+            docker_client,
         })
     }
 }
@@ -66,7 +73,10 @@ impl KubeRemoteRequest for BuildDeploymentRequest {
         let request = proto::BuildDepolymentRequest {
             deployment: self.deployment.clone(),
         };
-        connection.kubernetes_client.build_deployment(request).await?;
+        connection
+            .kubernetes_client
+            .build_deployment(request)
+            .await?;
         Ok(())
     }
 }
@@ -78,7 +88,10 @@ impl KubeRemoteRequest for GetK8sGameserversRequest {
         mut connection: K8sRemoteClient,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         let request = proto::GetGameserverRequest {};
-        let response = connection.kubernetes_client.get_gameservers(request).await?;
+        let response = connection
+            .kubernetes_client
+            .get_gameservers(request)
+            .await?;
         Ok(Some(response.get_ref().gameserver.clone()))
     }
 }
@@ -88,9 +101,9 @@ impl KubeRemoteRequest for GetK8sTypeRequest {
         &self,
         // client: Client,
         mut connection: K8sRemoteClient,
-    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>>{
+    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         let request = proto::GetK8sTypeRequest {
-            server: self.server.clone()
+            server: self.server.clone(),
         };
         let response = connection.kubernetes_client.get_k8s_type(request).await?;
         Ok(K8sType::try_from(response.get_ref().clone().kind)?)
@@ -102,7 +115,7 @@ impl KubeRemoteRequest for ListNodeInfoRequest {
         &self,
         // client: Client,
         mut connection: K8sRemoteClient,
-    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>>{
+    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         let request = proto::ListNodeInfoRequest {};
         let response = connection.kubernetes_client.list_node_info(request).await?;
 
@@ -113,22 +126,21 @@ impl KubeRemoteRequest for ListNodeInfoRequest {
             .into_iter()
             .map(K8sNode::try_from)
             .filter_map(|node_result| {
-                    if let Ok(node) = node_result {
-                        Some(NodeWithStream {
-                            name: node.name,
-                            ip: node.ip,
-                            status: Status::Unknown,
-                            nodetype: NodeType::Inbuilt,
-                            k8s_type: node.k8s_type.into(),
-                            gameserver: serde_json::Value::String(node.gameserver),
-                            tx: None,
-                            rx: None,
-                        })
-                    } else {
-                        None
-                    }
+                if let Ok(node) = node_result {
+                    Some(NodeWithStream {
+                        name: node.name,
+                        ip: node.ip,
+                        status: Status::Unknown,
+                        nodetype: NodeType::Inbuilt,
+                        k8s_type: node.k8s_type.into(),
+                        gameserver: serde_json::Value::String(node.gameserver),
+                        tx: None,
+                        rx: None,
+                    })
+                } else {
+                    None
                 }
-            )
+            })
             .collect::<Vec<_>>();
 
         Ok(nodes)
@@ -138,14 +150,17 @@ impl TryFrom<proto::K8sNode> for K8sNode {
     type Error = Box<dyn Error + Send + Sync>;
 
     fn try_from(node: proto::K8sNode) -> Result<Self, Self::Error> {
-        Ok(K8sNode { name: node.name, ip: node.ip, gameserver: node.gameserver, k8s_type: 
-            {
+        Ok(K8sNode {
+            name: node.name,
+            ip: node.ip,
+            gameserver: node.gameserver,
+            k8s_type: {
                 if let Some(node_type) = node.k8s_type {
                     K8sType::try_from(node_type.kind)?
                 } else {
-                    return Err("cannot parse".into())
+                    return Err("cannot parse".into());
                 }
-            }
+            },
         })
     }
 }

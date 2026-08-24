@@ -2,7 +2,7 @@ use std::error::Error;
 
 use crate::K8sLocalClient;
 
-use crate::{orchestrator::docker::BuildImageRequest};
+use crate::orchestrator::docker::BuildImageRequest;
 
 pub trait DockerLocalRequest {
     type Output;
@@ -24,4 +24,3 @@ impl DockerLocalRequest for BuildImageRequest {
         Err("not implimented".into())
     }
 }
-

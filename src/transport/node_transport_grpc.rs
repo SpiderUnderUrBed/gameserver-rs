@@ -1,45 +1,34 @@
-use serde::{Deserialize, Serialize};
-use serde_json::{Value};
-use tokio::{
-    sync::{broadcast, mpsc, RwLock},
-    time::{timeout},
-};
-use tokio_stream::wrappers::ReceiverStream;
-use tokio_stream::StreamExt;
-use crate::{transport::node_transport::proto::{node_manage_client::NodeManageClient, ServerMessage}, ConsoleData, CHANNEL_BUFFER_SIZE};
-use crate::transport::node_transport_spec::DeleteServerRequest;
-use crate::transport::node_transport_spec::CapabilitiesRequest;
-use crate::transport::node_transport_spec::CreateServerRequest;
-use crate::transport::node_transport_spec::StartServerRequest;
-use crate::transport::node_transport_spec::SetServerRequest;
-use crate::transport::node_transport_spec::StopServerRequest;
-use crate::transport::node_transport_spec::MigrateRequest;
-use crate::transport::node_transport_spec::ServerDataRequest;
-use crate::transport::node_transport_spec::FilterRequest;
-use crate::transport::node_transport_spec::Ping;
-use crate::transport::node_transport_spec::IntegrationKeyRequest;
-use crate::transport::node_transport_spec::ServernameRequest;
-use crate::transport::node_transport_spec::ServerStateRequest;
+use crate::transport::node_transport_spec::{CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FileTransferRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, Ping, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StopServerRequest};
 use crate::{ApiCalls as ToplevelApiCalls, AuthTcpMessage, IncomingMessage, List, NodeWithStream};
 use crate::{
-    AppState, MessagePayload,
-    MessagePayloadWithMetadata, MetadataTypes, SimpleMessage, SrcAndDest, Status,
-    database::databasespec::Filters,
+    AppState, MessagePayload, MessagePayloadWithMetadata, MetadataTypes, SimpleMessage, SrcAndDest,
+    Status, database::databasespec::Filters,
 };
+use crate::{
+    CHANNEL_BUFFER_SIZE, ConsoleData,
+    transport::node_transport::proto::{ServerMessage, node_manage_client::NodeManageClient},
+};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use tokio::{
+    sync::{RwLock, broadcast, mpsc},
+    time::timeout,
+};
+use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
 
-use std::time::Duration;
-use std::{error::Error, net::SocketAddr, sync::Arc};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
+use std::{error::Error, net::SocketAddr, sync::Arc};
 
-use tonic::{transport::Channel};
+use tonic::transport::Channel;
 mod proto {
     tonic::include_proto!("main");
 }
 use proto::{
-    filesystem_client::FilesystemClient,
-    general_client::GeneralClient, server_edit_client::ServerEditClient,
-    server_manage_client::ServerManageClient,
+    filesystem_client::FilesystemClient, general_client::GeneralClient,
+    server_edit_client::ServerEditClient, server_manage_client::ServerManageClient,
 };
 
 #[derive(Clone)]
@@ -104,19 +93,25 @@ impl Clone for ConnectionHandler {
         }
     }
 }
-pub async fn check_channel_health(
-    _state: &AppState,
-) -> bool {
+pub async fn check_channel_health(_state: &AppState) -> bool {
     true
 }
-pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, url: String){
+pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, url: String) {
     let mut state = arc_state.write().await;
     let server_name_request = proto::ServerNameRequest {
         r#type: "server_name".to_string(),
         message: "".to_string(),
-        authcode: "0".to_string()
+        authcode: "0".to_string(),
     };
-    match state.connection_handler.clients.as_mut().unwrap().node_client.name(server_name_request).await {
+    match state
+        .connection_handler
+        .clients
+        .as_mut()
+        .unwrap()
+        .node_client
+        .name(server_name_request)
+        .await
+    {
         Ok(server_name) => {
             state.current_node = NodeWithStream {
                 name: server_name.get_ref().message.clone(),
@@ -161,7 +156,7 @@ pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, url: String){
                         match server_state_request.node_transport(&mut state).await {
                             Ok(res) => {
                                 state.current_node.status = res;
-                            },
+                            }
                             Err(_) => {
                                 break;
                             }
@@ -197,7 +192,7 @@ pub async fn connect_to_server(
     let server_edit_client = ServerEditClient::new(channel.clone());
     let server_manage_client = ServerManageClient::new(channel.clone());
     let node_client = NodeManageClient::new(channel.clone());
-    
+
     state.connection_handler.clients = Some(Clients {
         general_client,
         node_client,
@@ -210,7 +205,6 @@ pub async fn connect_to_server(
 
     Ok(None)
 }
-
 
 // this is where it determines wether or not to try and create the container and deployment, as attempt_connection itself is used in various diffrent contexts (like it will constantly
 // try to connect upon failing but it should not try to create the container and deployment every time it fails)
@@ -312,8 +306,6 @@ impl ImmediateTransportable for ServernameRequest {
     }
 }
 
-
-
 // NodeTransportable
 impl NodeTransportable for DeleteServerRequest {
     type Output = ();
@@ -335,7 +327,6 @@ impl NodeTransportable for DeleteServerRequest {
         Ok(())
     }
 }
-
 
 impl NodeTransportable for CreateServerRequest {
     type Output = ();
@@ -364,17 +355,16 @@ impl StreamTransportable for CreateServerRequest {
         state: Arc<RwLock<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         let request = proto::CreateServerRequest {
-            metadata: Some(self.metadata.clone().into())
+            metadata: Some(self.metadata.clone().into()),
         };
         let (server_out_tx, server_out_rx) = tokio::sync::mpsc::channel(32);
         let mut clients = {
             let guard = state.read().await;
             guard.connection_handler.clients.clone().unwrap()
-        }; 
+        };
         println!("about to call create");
         match clients.server_edit_client.create(request).await {
-            Ok(response_stream) => 
-            {
+            Ok(response_stream) => {
                 //drop(state);
                 println!("before creating stream");
                 let mut stream = response_stream.into_inner();
@@ -383,23 +373,26 @@ impl StreamTransportable for CreateServerRequest {
                         match result {
                             Ok(message) => {
                                 //println!("got a message {:#?}", message);
-                                let _ = server_out_tx.send(
-                                    ConsoleData { authcode: "0".to_string(), data: message.data, r#type: message.r#type }
-                                ).await;
-                            },
-                            Err(e) => {
+                                let _ = server_out_tx
+                                    .send(ConsoleData {
+                                        authcode: "0".to_string(),
+                                        data: message.data,
+                                        r#type: message.r#type,
+                                    })
+                                    .await;
                             }
+                            Err(e) => {}
                         }
                     }
                 });
                 Ok(server_out_rx)
-            },
+            }
             Err(e) => {
                 println!("{:#?}", e);
                 Err("error".into())
             }
         }
-}
+    }
 }
 
 //
@@ -424,13 +417,13 @@ impl StreamTransportable for StartServerRequest {
             tokio::spawn(async move {
                 loop {
                     if let Ok(data) = stdin.recv().await {
-                        let _ = server_in_tx.send(
-                            ServerMessage { 
-                                authcode: "0".to_string(), 
-                                data, 
-                                r#type: "console".to_string()
-                            }
-                        ).await;
+                        let _ = server_in_tx
+                            .send(ServerMessage {
+                                authcode: "0".to_string(),
+                                data,
+                                r#type: "console".to_string(),
+                            })
+                            .await;
                     } else {
                         break;
                     }
@@ -440,7 +433,7 @@ impl StreamTransportable for StartServerRequest {
         let mut clients = {
             let guard = state.read().await;
             guard.connection_handler.clients.clone().unwrap()
-        }; 
+        };
 
         if let Ok(response_stream) = clients.server_edit_client.start(outbound_stream).await {
             {
@@ -452,22 +445,26 @@ impl StreamTransportable for StartServerRequest {
                         match result {
                             Ok(message) => {
                                 //println!("got a message {:#?}", message);
-                                let _ = server_out_tx.send(
-                                    ConsoleData { authcode: "0".to_string(), data: message.data, r#type: message.r#type }
-                                ).await;
-                            },
+                                let _ = server_out_tx
+                                    .send(ConsoleData {
+                                        authcode: "0".to_string(),
+                                        data: message.data,
+                                        r#type: message.r#type,
+                                    })
+                                    .await;
+                            }
                             Err(e) => {
                                 println!("got an err");
                             }
                         }
                     }
                 });
-            } 
-        Ok(server_out_rx)
-    } else {
-        Err("error".into())
+            }
+            Ok(server_out_rx)
+        } else {
+            Err("error".into())
+        }
     }
-}
 }
 
 impl NodeTransportable for StopServerRequest {
@@ -490,7 +487,6 @@ impl NodeTransportable for StopServerRequest {
     }
 }
 
-
 // TODO: impliment this
 impl NodeTransportable for MigrateRequest {
     type Output = ();
@@ -511,7 +507,6 @@ impl NodeTransportable for MigrateRequest {
     }
 }
 
-
 impl NodeTransportable for SetServerRequest {
     type Output = ();
     async fn node_transport(
@@ -524,13 +519,14 @@ impl NodeTransportable for SetServerRequest {
             metadata: Some(self.metadata.clone().into()),
             authcode: "0".to_string(),
         };
-        let _  = state
+        let _ = state
             .connection_handler
             .clients
             .as_mut()
             .unwrap()
             .server_manage_client
-            .set(set_server_request).await;
+            .set(set_server_request)
+            .await;
 
         Ok(())
     }
@@ -698,8 +694,8 @@ impl NodeTransportable for ServerStateRequest {
                 } else {
                     Ok(Status::Down)
                 }
-            },
-            Err(e) => Err(Box::new(e))
+            }
+            Err(e) => Err(Box::new(e)),
         }
     }
 }
@@ -711,23 +707,40 @@ impl InternalTransportable for ServerStateRequest {
         Ok(())
     }
 }
+impl NodeTransportable for FileTransferRequest {
+    type Output = ();
+    async fn node_transport(
+        &self,
+        state: &mut AppState,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        
+        Ok(())
+    }
+}
+
 impl Into<proto::MetadataTypes> for MetadataTypes {
     fn into(self) -> proto::MetadataTypes {
-        // TODO: remove hardcoding of server for 
+        // TODO: remove hardcoding of server for
         // metadata conversion?
         match self {
-            MetadataTypes::Server { servername, provider, providertype, location, sandbox, server_metadata } => {
-                proto::MetadataTypes {
-                    kind: "Server".to_string(),
-                    data: serde_json::to_string(&MetadataTypes::Server {
-                        servername: servername,
-                        provider: provider,
-                        providertype: providertype,
-                        location: location,
-                        sandbox: sandbox,
-                        server_metadata: server_metadata
-                    }).unwrap(),
-                }
+            MetadataTypes::Server {
+                servername,
+                provider,
+                providertype,
+                location,
+                sandbox,
+                server_metadata,
+            } => proto::MetadataTypes {
+                kind: "Server".to_string(),
+                data: serde_json::to_string(&MetadataTypes::Server {
+                    servername: servername,
+                    provider: provider,
+                    providertype: providertype,
+                    location: location,
+                    sandbox: sandbox,
+                    server_metadata: server_metadata,
+                })
+                .unwrap(),
             },
             _ => {
                 println!("{:#?}", self);
@@ -738,4 +751,3 @@ impl Into<proto::MetadataTypes> for MetadataTypes {
         }
     }
 }
-

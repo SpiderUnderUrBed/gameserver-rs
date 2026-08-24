@@ -42,9 +42,8 @@ where
     S: Send + Sync,
 {
     state: S,
-    middleware: Option<
-        Box<dyn for<'a> Fn(String, &'a dyn IntoRequest) -> MiddlewareAction + Send + Sync>,
-    >,
+    middleware:
+        Option<Box<dyn for<'a> Fn(String, &'a dyn IntoRequest) -> MiddlewareAction + Send + Sync>>,
     registry: HashMap<String, Box<dyn HandlerType<S>>>,
 }
 
@@ -125,7 +124,7 @@ impl<S: Send + Sync> Router<S> {
             if let Some(ref middleware) = self.middleware {
                 match (middleware)(mapping.to_string(), request) {
                     MiddlewareAction::SkipPredicate => {
-                        return Ok(handler.execute(state, request.clone_box()).await)
+                        return Ok(handler.execute(state, request.clone_box()).await);
                     }
                     MiddlewareAction::ReassignValue(value) => request = value,
                     MiddlewareAction::Continue => continue,
@@ -154,7 +153,7 @@ impl<S: Send + Sync> Router<S> {
             if let Some(ref middleware) = self.middleware {
                 match (middleware)(mapping.to_string(), request) {
                     MiddlewareAction::SkipPredicate => {
-                        return Ok(handler.execute(state, request.clone_box()).await)
+                        return Ok(handler.execute(state, request.clone_box()).await);
                     }
                     MiddlewareAction::ReassignValue(value) => request = value,
                     MiddlewareAction::Continue => continue,
@@ -259,8 +258,6 @@ impl IntoRequest for BytesRequest {
     }
 }
 
-
-
 pub trait ExtractResponse {
     fn extract<T: 'static>(&self) -> Result<T, ExtractorErrors>;
 }
@@ -274,8 +271,6 @@ impl ExtractResponse for dyn IntoResponse<Box<dyn Any + Send + Sync>> {
             .map_err(|_| ExtractorErrors::FailedToExtract)
     }
 }
-
-
 
 impl<S: Send + Sync> HandlerType<S> for AnyHandler<S>
 where
@@ -313,7 +308,10 @@ where
 pub struct AnyHandler<AppState> {
     mapping: Option<String>,
     function: Box<
-        dyn FnMut(&AppState, Box<dyn IntoRequest>) -> BoxFuture<Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>>
+        dyn FnMut(
+                &AppState,
+                Box<dyn IntoRequest>,
+            ) -> BoxFuture<Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>>
             + Send
             + Sync,
     >,
@@ -370,7 +368,10 @@ where
 pub struct StringHandler<AppState> {
     mapping: Option<String>,
     function: Box<
-        dyn FnMut(&AppState, Box<dyn IntoRequest>) -> BoxFuture<Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>>
+        dyn FnMut(
+                &AppState,
+                Box<dyn IntoRequest>,
+            ) -> BoxFuture<Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>>
             + Send
             + Sync,
     >,
@@ -423,7 +424,9 @@ where
     }
 }
 
-impl<Item: Send + Sync + 'static> IntoResponse<Box<dyn Any + Send + Sync>> for StreamResponse<Item> {
+impl<Item: Send + Sync + 'static> IntoResponse<Box<dyn Any + Send + Sync>>
+    for StreamResponse<Item>
+{
     fn try_into_response(&self) -> Result<Box<dyn Any + Send + Sync>, ExtractorErrors> {
         let taken = self
             .inner
@@ -434,7 +437,6 @@ impl<Item: Send + Sync + 'static> IntoResponse<Box<dyn Any + Send + Sync>> for S
         Ok(Box::new(taken) as Box<dyn Any + Send + Sync>)
     }
 }
-
 
 struct MapOutput<F, M> {
     f: F,
@@ -473,7 +475,10 @@ where
     M: Fn(Fut::Output) -> R2,
 {
     type Output = R2;
-    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+    fn poll(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
         let inner = unsafe { Pin::new_unchecked(&mut this.inner) };
         match inner.poll(cx) {
@@ -489,8 +494,9 @@ pub trait FromWire: Sized {
     fn from_wire(req: Self::Request) -> Result<Self, Self::Error>;
 }
 
-
-impl<T, S: Send + Sync + IntoResponse<T>, E: Send + Sync + IntoResponse<T>> IntoResponse<T> for Result<S, E> {
+impl<T, S: Send + Sync + IntoResponse<T>, E: Send + Sync + IntoResponse<T>> IntoResponse<T>
+    for Result<S, E>
+{
     fn try_into_response(&self) -> Result<T, ExtractorErrors> {
         match self {
             Ok(result) => result.try_into_response(),
@@ -498,7 +504,6 @@ impl<T, S: Send + Sync + IntoResponse<T>, E: Send + Sync + IntoResponse<T>> Into
         }
     }
 }
-
 
 #[macro_export]
 macro_rules! owned_state {
@@ -586,9 +591,11 @@ mod tests {
         #[tokio::test]
         async fn erasure() {
             let router: &mut Router<Arc<State>> = &mut Router::new(Arc::new(State::new()));
-            router.register_handler(erasure::erase::<_, BytesRequest, _, NoneResponse, Arc<State>>(
-                |_state: &Arc<State>, req: BytesRequest| async move { test_example(req) },
-            ));
+            router.register_handler(
+                erasure::erase::<_, BytesRequest, _, NoneResponse, Arc<State>>(
+                    |_state: &Arc<State>, req: BytesRequest| async move { test_example(req) },
+                ),
+            );
             let bytes = "test".as_bytes();
             match router.feed_bytes(bytes.to_vec()).await {
                 Ok(_) => assert!(true),

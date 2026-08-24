@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{ops::ControlFlow, sync::Arc};
 
 use crate::{AppState, MessagePayload};
 use network_abstraction_lib::{FromWire, Router, ValueRequest};
@@ -9,16 +9,15 @@ use tokio::{
     net::{
         tcp::{OwnedReadHalf, OwnedWriteHalf},
         TcpListener, TcpStream,
-    }, sync::Mutex,
+    },
+    sync::Mutex,
 };
 
 use crate::{GetState, IncomingMessage, IncomingMessageWithMetadata, SimpleMessage};
 
-
-
 pub struct ConnectionManager {
     listner: TcpListener,
-    router: Arc<Mutex<Router<Arc<AppState>>>>
+    router: Arc<Mutex<Router<Arc<AppState>>>>,
 }
 impl ConnectionManager {
     pub async fn serve(
@@ -40,18 +39,33 @@ impl ConnectionManager {
             stream: Some(socket),
             read_buf: vec![],
             newline_pos: 0,
+            bytes_filter_method: BytesFilterMethod::Line
         };
         Ok((handler, Some(addr.to_string())))
     }
-    pub async fn get_arc_mutex_router(&self) -> Arc<Mutex<Router<Arc<AppState>>>>{
-       self.router.clone()
+    pub async fn get_arc_mutex_router(&self) -> Arc<Mutex<Router<Arc<AppState>>>> {
+        self.router.clone()
     }
+}
+
+static FILE_STARTING_DELIMITER: &str = "\\\\f";
+
+enum BytesFilterMethod {
+    Line, 
+    All
+}
+
+enum Protocol {
+    Json(usize),
+    FileTransfer(usize),
+    Continue(usize)
 }
 
 pub struct ConnectionHandler {
     stream: Option<TcpStream>,
     read_buf: Vec<u8>,
     newline_pos: usize,
+    bytes_filter_method: BytesFilterMethod
 }
 
 impl ConnectionHandler {
@@ -76,13 +90,43 @@ impl ConnectionHandler {
         }
     }
     pub async fn next(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if self.read_buf.len() > 0 {
-        }
-        if let Some(pos) = self.read_buf.iter().position(|&b| b == b'\n') {
-            self.newline_pos = pos;
-            Ok(())
+        if self.read_buf.len() == 0 {
+            return Err("empty buffer".into())
+        };
+
+        if matches!(self.bytes_filter_method, BytesFilterMethod::Line) {
+            let position = self.read_buf
+                .windows(FILE_STARTING_DELIMITER.len())
+                .enumerate()
+                .try_fold(0usize, |_acc, (i, bytes)| {
+                    if bytes == FILE_STARTING_DELIMITER.as_bytes() {
+                        ControlFlow::Break(Protocol::FileTransfer(i))
+                    } else if let Some(pos) = bytes.iter().position(|b| *b == b'\n') {
+                        ControlFlow::Break(Protocol::Json(i + pos))
+                    } else {
+                        ControlFlow::Continue(i + 1)
+                    }
+                });
+            if let ControlFlow::Break(protocol) = position {
+                match protocol {
+                    Protocol::Json(pos) => {
+                        self.newline_pos = pos;
+                    },
+                    Protocol::FileTransfer(pos) => {
+                        self.bytes_filter_method = BytesFilterMethod::All;
+                        self.newline_pos = pos;
+                    },
+                    Protocol::Continue(_) => {
+                        println!("continuing");
+                    },
+                }
+
+                Ok(())
+            } else {
+                Err("Did not find next position".into())
+            }
         } else {
-            Err("Did not find next position".into())
+            Ok(())
         }
     }
     pub fn recv_bytes(&mut self) -> Vec<u8> {
@@ -91,6 +135,10 @@ impl ConnectionHandler {
         bytes
     }
     pub async fn recv_line(&mut self) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        if matches!(self.bytes_filter_method, BytesFilterMethod::All){
+            return Err("Cannot receive line when receiving all bytes".into());
+        }
+
         let newline_pos = self.newline_pos.clone();
         let line = &self.read_buf[..newline_pos];
 
@@ -151,9 +199,7 @@ impl Reader {
         let mut temp_buf = vec![0u8; 4096];
         let n = {
             match self.read_half.read(&mut temp_buf).await {
-                Ok(n) => {
-                    n
-                },
+                Ok(n) => n,
                 Err(_) => {
                     return Err("failed to read".into());
                 }

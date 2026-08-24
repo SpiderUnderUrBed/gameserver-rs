@@ -60,7 +60,7 @@ use axum_oidc::openidconnect::Scope;
 use general_networked_filesystem::flume_delimited::{FlumeFile, TcpFsReceiver, TcpFsSender};
 use general_networked_filesystem::{FileOperations, LsRequest, RemoteFileSystem};
 
-use tokio::sync::{watch, RwLock};
+use tokio::sync::{RwLock, watch};
 
 use rcon::Connection;
 use tokio_util::sync::CancellationToken;
@@ -92,14 +92,14 @@ use mime_guess::from_path;
 use futures_util::{Stream, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::time::{interval};
+use tokio::sync::Notify;
+use tokio::time::interval;
 use tokio::{
     fs as tokio_fs,
     net::{TcpListener, TcpStream},
     sync::{Mutex, broadcast},
-    time::{Duration},
+    time::Duration,
 };
-use tokio::sync::Notify;
 use tower_http::cors::{Any as CorsAny, CorsLayer};
 
 use std::error::Error;
@@ -139,32 +139,27 @@ use database::User;
 // #[cfg(feature = "grpc_experimental")]
 // mod transport;
 
-mod transport;
 mod filesystem;
+mod transport;
 
 use crate::transport::node_transport::ConnectionHandler;
 use crate::transport::node_transport::try_initial_connection;
 use crate::transport::node_transport::{
-    check_channel_health,
-    connect_to_server,
-    NodeTransportable,
-    StreamTransportable
+    NodeTransportable, StreamTransportable, check_channel_health, connect_to_server,
 };
-use crate::transport::node_transport_spec::{CreateServerRequest, DeleteServerRequest, FilterRequest,
-    IntegrationKeyRequest, MigrateRequest,
-    Ping, ServerDataRequest, 
-    SetServerRequest, StartServerRequest, StopServerRequest};
+use crate::transport::node_transport_spec::{
+    CreateServerRequest, DeleteServerRequest, FileTransferRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, Ping, ServerDataRequest, SetServerRequest, StartServerRequest, StopServerRequest
+};
 
 mod extra;
 
 // // Docker AND kubernetes would be enabled with a standard deployment
 // // as you wouldnt need the docker module (or the k8s module) for barebones testing
 mod orchestrator;
-pub use orchestrator::kubernetes;
-pub use orchestrator::docker;
-pub use kubernetes::local::KubeLocalRequest;
 pub use docker::local::DockerLocalRequest;
-
+pub use kubernetes::local::KubeLocalRequest;
+pub use orchestrator::docker;
+pub use orchestrator::kubernetes;
 
 #[cfg(feature = "full-stack")]
 use kube::Client;
@@ -374,21 +369,6 @@ enum IntegrationCommands {
     MinecraftDisableRcon(serde_json::Value),
 }
 
-
-// #[cfg(feature = "grpc_experimental")]
-// #[derive(Clone)]
-// struct K8sRemoteClient {
-    
-// }
-
-// #[cfg(not(feature = "grpc_experimental"))]
-// #[derive(Clone)]
-// struct K8sRemoteClient {
-
-// }
-
-
-
 #[derive(Clone)]
 enum Clients {
     K8sLocal(K8sLocalClient),
@@ -525,7 +505,6 @@ pub enum Status {
     Unhealthy,
 }
 
-
 // AppState, this is a global struct which will be used to store data needed across the application like in routes and etc
 // which includes the sender and reciver to the tcp connection for gameserver, the websocket sender (receiver only needs to be managed by its own handler)
 // the base path like if all the routes are prefixed with something like /gameserver-rs which is the default for my testing deployment, and database as its needed frequently
@@ -555,8 +534,6 @@ pub struct AppState {
     lock: bool,
     filesystem: FileSystemHandler, // filesystem: Option<RemoteFileSystem<TcpFs>>
 }
-
-
 
 // Looks for a env varible, if its not found, try the specified default, if none is found it will use the default of whatever that type is
 fn get_env_var_or_arg<T>(env_var: &str, default: Option<T>) -> Option<T>
@@ -655,25 +632,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if enable_k8s_client {
         if let Ok(k8s_orchestrator_url) = env::var("K8S_ORCHESTRATOR_URL") {
             match K8sRemoteClient::connect(k8s_orchestrator_url).await {
-                Ok(k8s_client) => {
-                    client = Clients::K8sRemote(k8s_client)
-                } 
+                Ok(k8s_client) => client = Clients::K8sRemote(k8s_client),
                 Err(e) => {
                     println!("{:#?}", e);
-                } 
-            } 
+                }
+            }
         } else if K8S_WORKS {
             // let k8s_orchestrator_location = get_env_var_or_arg("K8S_ORCHESTRTOR_TYPE", Some("Local".into())).unwrap();
             // if k8s_orchestrator_location == "Local" {
             client = Clients::K8sLocal(K8sLocalClient {
                 k8s_client: Client::try_default().await?,
-                docker_info: String::new()
+                docker_info: String::new(),
             });
             // } else {
             //     client = Clients::K8sRemote(K8sRemoteClient {
             //     });
             // }
-        } 
+        }
     }
 
     let mut node_url: String = config_node_url.to_string();
@@ -687,15 +662,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             } else {
                 println!(
                     "Could not get a successful url for a existing gameserver, will try the fallback url"
-                )    
+                )
             }
-            // if let Ok(url_result) = &kubernetes::get_avalible_gameserver(&inner_client).await {
-            //     node_url = url_result.clone();
-            // } else {
-            //     println!(
-            //         "Could not get a successful url for a existing gameserver, will try the fallback url"
-            //     )
-            // }
         }
         if let Clients::K8sRemote(ref inner_client) = client {
             if let Ok(Some(url_result)) = request.execute_remote(inner_client.clone()).await {
@@ -703,7 +671,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             } else {
                 println!(
                     "Could not get a successful url for a existing gameserver, will try the fallback url"
-                )    
+                )
             }
         }
     }
@@ -749,7 +717,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (fs_sender_tx, fs_sender_rx) = flume::unbounded();
     let (fs_receiver_tx, fs_receiver_rx) = flume::unbounded();
 
-    let filesystem = FileSystemHandler::new(fs_sender_tx, fs_sender_rx, fs_receiver_tx, fs_receiver_rx);
+    let filesystem =
+        FileSystemHandler::new(fs_sender_tx, fs_sender_rx, fs_receiver_tx, fs_receiver_rx);
 
     let cached_status_type = watch::channel(String::new()).0;
 
@@ -953,13 +922,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     let mut unbuilt_img_was_the_issue = false;
                     if build_docker_image {
                         unbuilt_img_was_the_issue = true;
-                        let request = BuildImageRequest { };
+                        let request = BuildImageRequest {};
                         if let Err(e) = request.execute_locally(client.clone()).await {
                             eprintln!("Failed to build docker image: {:#?}", e);
                         }
-                        // if let Err(e) = docker::build_docker_image().await {
-                        //     eprintln!("Failed to build docker image: {:#?}", e);
-                        // }
                     }
                     if build_deployment {
                         unbuilt_img_was_the_issue = true;
@@ -970,10 +936,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             "deployment.yaml"
                         };
 
-
-                        let request = BuildDeploymentRequest { 
-                            // connection: client.clone(), 
-                            deployment: deployment.to_string()
+                        let request = BuildDeploymentRequest {
+                            // connection: client.clone(),
+                            deployment: deployment.to_string(),
                         };
                         if let Err(e) = request.execute_locally(client.clone()).await {
                             eprintln!("Failed to create k8s deployment: {:#?}", e);
@@ -997,12 +962,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             println!("{:#?}", initial_connection_result.as_ref().err().unwrap());
                         }
                     }
-                } if let Clients::K8sRemote(client) = &inner_state.write().await.client { 
+                }
+                if let Clients::K8sRemote(client) = &inner_state.write().await.client {
                     eprintln!(
                         "Initial connection failed or force rebuild enabled, will possibly enable auto-build (configurable)"
                     );
                     let mut unbuilt_img_was_the_issue = false;
-                    // TODO: consider how i can handle an orchestrator building the images when 
+                    // TODO: consider how i can handle an orchestrator building the images when
                     // it does not have access to the gameserver files
                     // if build_docker_image {
                     //     unbuilt_img_was_the_issue = true;
@@ -1020,10 +986,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             "deployment.yaml"
                         };
 
-
-                        let request = BuildDeploymentRequest { 
-                            // connection: client.clone(), 
-                            deployment: deployment.to_string()
+                        let request = BuildDeploymentRequest {
+                            // connection: client.clone(),
+                            deployment: deployment.to_string(),
                         };
                         if let Err(e) = request.execute_remote(client.clone()).await {
                             eprintln!("Failed to create k8s deployment: {:#?}", e);
@@ -1119,8 +1084,6 @@ pub async fn set_lock(
         StatusCode::UNPROCESSABLE_ENTITY
     }
 }
-
-
 
 pub async fn stop_server(
     State(arc_state): State<Arc<RwLock<AppState>>>,
@@ -1252,7 +1215,9 @@ async fn upload(
     }
     println!("passed auth");
     let (tx, rx) = flume::unbounded();
-    state.filesystem.send_flume_file(None, "test.txt".to_string(), Some(rx));
+    state
+        .filesystem
+        .send_flume_file(None, "test.txt".to_string(), Some(rx));
     // let filesystem_sender: &mut RemoteFileSystem<TcpFsSender, FlumeFile> =
     //     &mut state.filesystem.file_tx;
     // let file = FlumeFile {
@@ -1268,16 +1233,20 @@ async fn upload(
         let mut state = inner_arc_state.write().await;
         println!("past write lock");
         let rx = state.filesystem.proxy_receiver().await;
-        println!("got the rx");
         drop(state);
-        println!("past dropping state");
-        loop {
-            if let Ok(bytes) = rx.recv() {
-                println!("{:#?}", bytes);
-            } else {
-                println!("failed to get osme bytes");
-            }
-        }
+        let request = FileTransferRequest { stream: rx };
+        let _ = request.stream_transport(inner_arc_state).await;
+        // println!("got the rx");
+        // drop(state);
+        // println!("past dropping state");
+        
+        // loop {
+        //     if let Ok(bytes) = rx.recv() {
+        //         println!("{:#?}", bytes);
+        //     } else {
+        //         println!("failed to get osme bytes");
+        //     }
+        // }
         //println!("past loop");
     });
     println!("past the first loop");
@@ -1526,7 +1495,6 @@ pub struct LogLine {
     pub data: String,
 }
 
-
 async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
     // Acquire lock just to get needed data
     let conn_id = { CONNECTION_COUNTER.fetch_add(1, Ordering::SeqCst) };
@@ -1553,7 +1521,7 @@ async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
             } else {
                 None
             }
-        }; 
+        };
 
         if let Some(notify) = notify {
             notify.notified().await;
@@ -1564,9 +1532,8 @@ async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
         drop(state);
         while let Ok(msg) = server_receiver.recv().await {
             let _ = sender.send(Message::Text(msg.into())).await;
-        };
+        }
     });
-
 
     // Main receive loop
     while let Some(Ok(message)) = receiver.next().await {
@@ -1994,9 +1961,7 @@ async fn ongoing_server_status(
             let status = {
                 let state = arc_state.write().await;
                 let status_type = state.cached_status_type.borrow().to_string();
-                if status_type.is_empty()
-                    || status_type == "server-keyword"
-                {
+                if status_type.is_empty() || status_type == "server-keyword" {
                     state.current_node.status.clone()
                 } else if status_type == "server-process" {
                     state.poll_server_event.notify_waiters();
@@ -2153,22 +2118,26 @@ pub async fn start_server(
         stdin: Some(state.ws_tx.subscribe()),
     };
     drop(state);
-    if let Ok(mut stream) = start_server_request.stream_transport(arc_state.clone()).await {
+    if let Ok(mut stream) = start_server_request
+        .stream_transport(arc_state.clone())
+        .await
+    {
         let mut state = arc_state.write().await;
-        let server_console: broadcast::Sender<String> = if let Some(console) = state.server_console.as_ref() {
-            console.clone()
-        } else {
-            let (server_console_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
-            state.server_console = Some(server_console_tx);
-            state.server_start_event.notify_waiters();
-            state.server_console.as_ref().unwrap().clone()
-        };
+        let server_console: broadcast::Sender<String> =
+            if let Some(console) = state.server_console.as_ref() {
+                console.clone()
+            } else {
+                let (server_console_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
+                state.server_console = Some(server_console_tx);
+                state.server_start_event.notify_waiters();
+                state.server_console.as_ref().unwrap().clone()
+            };
         drop(state);
-         tokio::spawn(async move {
+        tokio::spawn(async move {
             while let Some(data) = stream.recv().await {
                 let _ = server_console.send(serde_json::to_string(&data).unwrap());
             }
-         });
+        });
     };
 
     StatusCode::CREATED.into_response()
@@ -2248,23 +2217,27 @@ async fn add_server(
         },
     };
     println!("about to initialize the stream");
-    if let Ok(mut stream) = create_server_request.stream_transport(arc_state.clone()).await {
+    if let Ok(mut stream) = create_server_request
+        .stream_transport(arc_state.clone())
+        .await
+    {
         let mut state = arc_state.write().await;
-        let server_console: broadcast::Sender<String> = if let Some(console) = state.server_console.as_ref() {
-            console.clone()
-        } else {
-            let (server_console_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
-            state.server_console = Some(server_console_tx);
-            state.server_start_event.notify_waiters();
-            state.server_console.as_ref().unwrap().clone()
-        };
+        let server_console: broadcast::Sender<String> =
+            if let Some(console) = state.server_console.as_ref() {
+                console.clone()
+            } else {
+                let (server_console_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
+                state.server_console = Some(server_console_tx);
+                state.server_start_event.notify_waiters();
+                state.server_console.as_ref().unwrap().clone()
+            };
         drop(state);
-         tokio::spawn(async move {
+        tokio::spawn(async move {
             while let Some(data) = stream.recv().await {
                 println!("got message {:#?}", data);
                 let _ = server_console.send(serde_json::to_string(&data).unwrap());
             }
-         });
+        });
     };
     let set_server_request = SetServerRequest {
         metadata: MetadataTypes::Server {
@@ -2771,13 +2744,8 @@ async fn change_node(
             // }
 
             tokio::spawn(async move {
-                let _ = connect_to_server(
-                    arc_state.clone(),
-                    node.ip.clone(),
-                    ws_tx.clone(),
-                    false,
-                )
-                .await;
+                let _ = connect_to_server(arc_state.clone(), node.ip.clone(), ws_tx.clone(), false)
+                    .await;
             });
         }
 
@@ -2815,14 +2783,6 @@ async fn get_nodes(
                 eprintln!("Error listing nodes: {}", err);
             }
         }
-        // match kubernetes::list_node_info(client).await {
-        //     Ok(nodes) => {
-        //         node_list.extend(nodes.clone());
-        //     }
-        //     Err(err) => {
-        //         eprintln!("Error listing nodes: {}", err);
-        //     }
-        // }
     } else if let Clients::K8sRemote(client) = state.client.clone() {
         let request = ListNodeInfoRequest { 
             // connection: client 
@@ -3228,6 +3188,7 @@ async fn get_files_content(
 
 // Gets a list of files and return to to things like the filebrowser
 #[allow(unused)]
+#[axum::debug_handler]
 pub async fn get_files(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     headers: HeaderMap,
@@ -3235,23 +3196,23 @@ pub async fn get_files(
     Json(request): Json<IncomingMessage>,
 ) -> impl IntoResponse {
     let state = arc_state.write().await;
+    // let mut location = self.location.clone();
+    // if !(location.starts_with("server") || location.starts_with("/server")){
+    //     location = format!("./server/{}", location);
+    // }
     let request = LsRequest {
         id: 0,
-        location: "/home/projects/gameserver-rs/gameserver".to_string(),
-
+        location: "server/".to_string(),
     };
-    // match request.node_transport(&state).await {
-    //     Ok(()) => {
-    //         println!("successfully sent it");
-    //     }
-    //     Err(_) => todo!(),
-    // }
-
-    StatusCode::SERVICE_UNAVAILABLE.into_response()
-    // Json(List {
-    //     list: ApiCalls::FileDataList(items),
-    // })
-    // .into_response()
+    match request.node_transport(&state).await {
+        Ok(response) => {
+            Json(response).into_response()
+        }
+        Err(e) => {
+            println!("Got an error in get_files {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        },
+    }
 }
 
 fn get_auth_bearer(headers: HeaderMap) -> Option<String> {
@@ -3261,7 +3222,6 @@ fn get_auth_bearer(headers: HeaderMap) -> Option<String> {
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(|token| token.to_string())
 }
-
 
 // pub async fn stream_file_download(
 //     State(arc_state): State<Arc<RwLock<AppState>>>,
@@ -3409,8 +3369,8 @@ mod tests {
     use super::*;
 
     #[allow(unused)]
-    async fn create_app_state_for_tests() -> Result<AppState, Box<dyn std::error::Error + Send + Sync>> {
-
+    async fn create_app_state_for_tests()
+    -> Result<AppState, Box<dyn std::error::Error + Send + Sync>> {
         let conn = first_connection().await?;
         let database = database::Database::new(Some(conn));
 
@@ -3437,7 +3397,6 @@ mod tests {
             })
             .unwrap_or_default();
 
-
         // Overrides for testing or specific cases where how it works a setup may be diffrent
         let enable_k8s_client: bool = get_env_var_or_arg("ENABLE_K8S_CLIENT", Some(true)).unwrap();
 
@@ -3448,24 +3407,11 @@ mod tests {
         // which will set the k8s client
         let mut client: Clients = Clients::None;
         if enable_k8s_client && K8S_WORKS {
-            client = Clients::K8sLocal(
-                K8sLocalClient { 
-                    k8s_client: Client::try_default().await?, 
-                    docker_info: String::new()
-                }
-            );
+            client = Clients::K8sLocal(K8sLocalClient {
+                k8s_client: Client::try_default().await?,
+                docker_info: String::new(),
+            });
         }
-
-        // let mut node_url: String = config_node_url.to_string();
-        // if !dont_override_conn_with_k8s && let Clients::K8s(ref inner_client) = client {
-        //     if let Ok(url_result) = &kubernetes::get_avalible_gameserver(&inner_client).await {
-        //         node_url = url_result.clone();
-        //     } else {
-        //         println!(
-        //             "Could not get a successful url for a existing gameserver, will try the fallback url"
-        //         )
-        //     }
-        // }
 
         let mut nodes: Vec<NodeWithStream> = vec![];
         if let Ok(db_nodes) = database.fetch_all_nodes().await {
@@ -3508,7 +3454,8 @@ mod tests {
 
         let (fs_sender_tx, fs_sender_rx) = flume::unbounded();
         let (fs_receiver_tx, fs_receiver_rx) = flume::unbounded();
-        let filesystem = FileSystemHandler::new(fs_sender_tx, fs_sender_rx, fs_receiver_tx, fs_receiver_rx);
+        let filesystem =
+            FileSystemHandler::new(fs_sender_tx, fs_sender_rx, fs_receiver_tx, fs_receiver_rx);
         // filesystem.set_start_delimiter("\\f".as_bytes().to_vec());
         // filesystem.set_end_delimiter("//f".as_bytes().to_vec());
 
@@ -3830,7 +3777,8 @@ mod tests {
                 let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
                 let (tx, _) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
 
-                let node_url = get_env_var_or_arg("TCPURL", Some(STATIC_NODE_URL.to_string())).unwrap();
+                let node_url =
+                    get_env_var_or_arg("TCPURL", Some(STATIC_NODE_URL.to_string())).unwrap();
 
                 let initial_connection_attempts: u64 =
                     get_env_var_or_arg("INITIAL_CONNECTION_ATTEMPTS", Some(5)).unwrap();

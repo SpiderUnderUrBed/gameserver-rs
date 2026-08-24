@@ -9,10 +9,10 @@ use k8s_openapi::api::core::v1::{PersistentVolume, PersistentVolumeClaim, Servic
 
 use kube::client;
 // use k8s_openapi::chrono::serde;
+use kube::Api;
 use kube::Error::Api as ErrorApi;
 use kube::api::ListParams;
 use kube::api::PostParams;
-use kube::{Api};
 // use serde;
 
 pub use kube::Client;
@@ -51,7 +51,6 @@ pub struct K8sNode {
     pub gameserver: String,
     pub k8s_type: K8sType,
 }
-
 
 pub async fn list_node_info(client: Client) -> Result<Vec<K8sNode>, Box<dyn Error + Send + Sync>> {
     let nodes: Api<Node> = Api::all(client);
@@ -106,7 +105,10 @@ pub async fn list_node_info(client: Client) -> Result<Vec<K8sNode>, Box<dyn Erro
     Ok(result)
 }
 
-pub async fn get_k8s_type(client: &Client, ip: String) -> Result<K8sType, Box<dyn std::error::Error + Send + Sync>> {
+pub async fn get_k8s_type(
+    client: &Client,
+    ip: String,
+) -> Result<K8sType, Box<dyn std::error::Error + Send + Sync>> {
     let nodes: Api<Node> = Api::all(client.clone());
     let node_list = nodes.list(&Default::default()).await?;
 
@@ -136,8 +138,7 @@ pub async fn get_k8s_type(client: &Client, ip: String) -> Result<K8sType, Box<dy
         }
     }
 
-    return Ok(K8sType::Unknown)
-
+    return Ok(K8sType::Unknown);
 }
 
 // pub async fn verify_is_k8s_node(

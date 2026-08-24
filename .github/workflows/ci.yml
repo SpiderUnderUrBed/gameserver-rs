@@ -244,6 +244,27 @@ jobs:
 
           curl -s http://localhost:5002/v2/gameserver/tags/list
 
+      # - name: Build and push frontend testing image
+      #   run: |
+      #     docker build -f src/frontend/tests/Dockerfile -t localhost:5002/frontend:latest .
+
+      #     IMAGE_CMD=$(docker inspect localhost:5002/frontend:latest | jq -r '.[0].Config.Cmd | join(" ")')
+      #     echo "CMD: $IMAGE_CMD"
+
+      #     docker run --rm localhost:5002/frontend:latest
+      #     # if docker run --rm localhost:5002/frontend:latest test -x /app/gameserver-node; then
+      #     #   echo "Binary found at /app/gameserver-node"
+      #     # else
+      #     #   echo "Binary NOT found at /app/gameserver-node"
+      #     #   docker run --rm localhost:5002/gameserver:latest ls -la /app/ 2>/dev/null || echo "No /app directory"
+      #     #   docker run --rm localhost:5002/gameserver:latest find / -name "gameserver*" -type f 2>/dev/null || true
+      #     #   exit 1
+      #     # fi
+
+          # docker push localhost:5002/frontend:latest
+
+          # curl -s http://localhost:5002/v2/frontend/tags/list
+
       - name: Deploy inner gameserver manifest
         run: |
           mkdir -p /tmp/gameserver-rs
@@ -307,10 +328,10 @@ jobs:
       - name: Wait for gameserver rollout
         run: kubectl rollout status deployment/gameserver --timeout=120s
 
-      - name: Run tests (full-stack feature) with gameserver port-forwarded
+      - name: Run backend tests (full-stack feature) with gameserver port-forwarded
         run: |
           kubectl port-forward svc/gameserver-service 8080:8080 &
-          PF_PID=$!
+          echo "PF_PID=$!" >> $GITHUB_ENV
 
           for i in $(seq 1 30); do
             if (exec 3<>/dev/tcp/localhost/8080) 2>/dev/null; then
@@ -323,18 +344,38 @@ jobs:
 
             if [ $i -eq 30 ]; then
               echo "Port-forward failed to become ready within timeout"
-              kill $PF_PID 2>/dev/null || true
+              kill $! 2>/dev/null || true
               exit 1
             fi
           done
 
           cargo test --features full-stack
-          TEST_EXIT=$?
 
-          kill $PF_PID 2>/dev/null || true
-          wait $PF_PID 2>/dev/null || true
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: src/frontend/package-lock.json
 
-          exit $TEST_EXIT
+      - name: Install frontend deps
+        working-directory: src/frontend
+        run: npm ci
+
+      - name: Run frontend tests
+        working-directory: src/frontend
+        env:
+          TESTING: "true"
+          GAMESERVER_PORT: 8080
+        run: npm run test:ci
+
+      - name: Stop port-forward
+        if: always()
+        run: |
+          if [ -n "$PF_PID" ]; then
+            kill $PF_PID 2>/dev/null || true
+            wait $PF_PID 2>/dev/null || true
+          fi
 
       - name: Dump logs on failure
         if: failure()

@@ -1,9 +1,13 @@
-
 use std::error::Error;
 
-
-use crate::{database::databasespec::K8sType, kubernetes::{GetK8sTypeRequest, VerifyIsK8sGameserverRequest}, orchestrator::kubernetes::{BuildDeploymentRequest, GetK8sGameserversRequest, ListNodeInfoRequest}, K8sLocalClient, NodeWithStream};
-
+use crate::{
+    K8sLocalClient, NodeWithStream,
+    database::databasespec::K8sType,
+    kubernetes::{GetK8sTypeRequest, VerifyIsK8sGameserverRequest},
+    orchestrator::kubernetes::{
+        BuildDeploymentRequest, GetK8sGameserversRequest, ListNodeInfoRequest,
+    },
+};
 
 pub trait KubeLocalRequest {
     type Output;

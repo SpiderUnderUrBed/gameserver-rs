@@ -2,16 +2,24 @@ use std::any::Any;
 
 use futures::Stream;
 
-use crate::general::ErrorResponse;
-use crate::{AsyncFnWrapper, FromWire, HandlerType, IntoRequest, IntoResponse, MapOutput, Router, RouterErrors, StreamResponse, StringResponse};
 use crate::BorrowedBoxFuture;
+use crate::general::ErrorResponse;
+use crate::{
+    AsyncFnWrapper, FromWire, HandlerType, IntoRequest, IntoResponse, MapOutput, Router,
+    RouterErrors, StreamResponse, StringResponse,
+};
 
 pub struct ErasedHandler<S> {
     inner: Box<dyn FnMut(&dyn IntoRequest) -> Option<Box<dyn IntoRequest>> + Send + Sync>,
     direct: Box<dyn Fn(Box<dyn Any + Send + Sync>) -> Option<Box<dyn IntoRequest>> + Send + Sync>,
     pub call: Box<
-        dyn for<'a> Fn(&'a S, Box<dyn IntoRequest>) -> BorrowedBoxFuture<'a, Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>>
-            + Send + Sync,
+        dyn for<'a> Fn(
+                &'a S,
+                Box<dyn IntoRequest>,
+            )
+                -> BorrowedBoxFuture<'a, Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>>
+            + Send
+            + Sync,
     >,
     mapping: Option<String>,
 }
@@ -29,8 +37,12 @@ where
 
 pub fn erase_stream_wrapper_result<F, S, Item, AppState>(f: F) -> ErasedHandler<AppState>
 where
-    F: for<'a> AsyncFnWrapper<'a, AppState, S, Output = Result<StreamResponse<Item>, ErrorResponse>>
-        + Send
+    F: for<'a> AsyncFnWrapper<
+            'a,
+            AppState,
+            S,
+            Output = Result<StreamResponse<Item>, ErrorResponse>,
+        > + Send
         + Sync
         + 'static,
     S: FromWire + Clone + Send + Sync + 'static,
@@ -113,8 +125,8 @@ where
     ) -> BorrowedBoxFuture<'a, Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>> {
         (self.call)(state, request)
     }
-    
-    fn try_direct(                                                    
+
+    fn try_direct(
         &mut self,
         request: Box<dyn Any + Send + Sync>,
     ) -> Result<Box<dyn IntoRequest>, RouterErrors> {
@@ -135,7 +147,6 @@ where
     }
 }
 
-
 pub fn erase_string_wrapper<F, S, R, AppState>(f: F) -> ErasedHandler<AppState>
 where
     F: for<'a> AsyncFnWrapper<'a, AppState, S, Output = R> + Send + Sync + 'static,
@@ -143,12 +154,9 @@ where
     R: serde::Serialize + Send + Sync + 'static,
     AppState: Send + Sync + 'static,
 {
-    erase::<_, S, StringResponse, StringResponse, AppState>(MapOutput::new(
-        f,
-        |value: R| {
-            let json = serde_json::to_string(&value)
-                .unwrap_or_else(|e| format!(r#"{{"error":"serialization failed: {}"}}"#, e));
-            StringResponse(json)
-        },
-    ))
+    erase::<_, S, StringResponse, StringResponse, AppState>(MapOutput::new(f, |value: R| {
+        let json = serde_json::to_string(&value)
+            .unwrap_or_else(|e| format!(r#"{{"error":"serialization failed: {}"}}"#, e));
+        StringResponse(json)
+    }))
 }

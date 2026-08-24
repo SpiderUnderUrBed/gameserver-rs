@@ -1,7 +1,9 @@
+use std::sync::mpsc;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{database::databasespec::Filters, MetadataTypes, SrcAndDest};
+use crate::{MetadataTypes, SrcAndDest, database::databasespec::Filters};
 use tokio::sync::broadcast;
 pub struct ServernameRequest {
     pub ip: String,
@@ -16,7 +18,7 @@ pub struct CreateServerRequest {
 pub struct StartServerRequest {
     // metadata: MetadataTypes
     #[allow(unused)]
-    pub stdin: Option<broadcast::Receiver<String>>
+    pub stdin: Option<broadcast::Receiver<String>>,
 }
 pub struct StopServerRequest {
     // metadata: MetadataTypes
@@ -52,3 +54,7 @@ pub struct IntegrationKeyRequest {
 }
 
 pub struct ServerStateRequest {}
+
+pub struct FileTransferRequest {
+    pub(crate) stream: flume::Receiver<Vec<u8>>
+}

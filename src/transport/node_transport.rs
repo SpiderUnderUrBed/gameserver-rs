@@ -1,29 +1,26 @@
 use axum::response::IntoResponse;
-use general_networked_filesystem::{FileRequestExecutable, LsRequest};
+use general_networked_filesystem::{DirectoryResponse, FileRequest, FileRequestExecutable, LsRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::TcpStream,
-    sync::{broadcast, mpsc, RwLock},
+    sync::{RwLock, broadcast, mpsc},
     time::{sleep, timeout},
 };
 use tokio_util::sync::CancellationToken;
-
-use crate::{database::{databasespec::{K8sType, NodeStatus, NodeType}, Element, ModifyElementData, Node, NodesDatabase}, extra::value_from_line, get_env_var_or_arg, kubernetes::{self, GetK8sTypeRequest, VerifyIsK8sGameserverRequest}, ApiCalls as ToplevelApiCalls, AuthTcpMessage, Clients, ConsoleData, IncomingMessage, IntegrationCommands, KubeLocalRequest, List, LogLine, NodeWithStream};
-use crate::transport::node_transport_spec::DeleteServerRequest;
-use crate::transport::node_transport_spec::CapabilitiesRequest;
-use crate::transport::node_transport_spec::CreateServerRequest;
-use crate::transport::node_transport_spec::StartServerRequest;
-use crate::transport::node_transport_spec::SetServerRequest;
-use crate::transport::node_transport_spec::StopServerRequest;
-use crate::transport::node_transport_spec::MigrateRequest;
-use crate::transport::node_transport_spec::ServerDataRequest;
-use crate::transport::node_transport_spec::FilterRequest;
-use crate::transport::node_transport_spec::Ping;
-use crate::transport::node_transport_spec::IntegrationKeyRequest;
-use crate::transport::node_transport_spec::ServernameRequest;
-use crate::transport::node_transport_spec::ServerStateRequest;
+use crate::transport::node_transport_spec::{CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FileTransferRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, Ping, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StopServerRequest};
+use crate::{
+    ApiCalls as ToplevelApiCalls, AuthTcpMessage, Clients, ConsoleData, IncomingMessage,
+    IntegrationCommands, KubeLocalRequest, List, LogLine, NodeWithStream,
+    database::{
+        Element, ModifyElementData, Node, NodesDatabase,
+        databasespec::{K8sType, NodeStatus, NodeType},
+    },
+    extra::value_from_line,
+    get_env_var_or_arg,
+    kubernetes::{self, GetK8sTypeRequest, VerifyIsK8sGameserverRequest},
+};
 use crate::{
     AppState, CHANNEL_BUFFER_SIZE, CONNECTION_RETRY_DELAY, CONNECTION_TIMEOUT, MessagePayload,
     MessagePayloadWithMetadata, MetadataTypes, SimpleMessage, SrcAndDest, Status, StreamResult,
@@ -33,15 +30,16 @@ use anyhow::anyhow;
 use std::{
     error::Error,
     net::SocketAddr,
-    sync::{atomic::{AtomicBool, Ordering}, Arc},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
-
 
 pub struct PasswordRequest {
     pub password: String,
 }
-
 
 pub trait ImmediateTransportable {
     async fn immediate_transport(
@@ -49,7 +47,6 @@ pub trait ImmediateTransportable {
         state: &mut AppState,
     ) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
-
 
 impl ImmediateTransportable for PasswordRequest {
     async fn immediate_transport(
@@ -116,7 +113,6 @@ impl ImmediateTransportable for ServernameRequest {
         Ok(())
     }
 }
-
 
 // What this does is that it will go over the lines retrived from the TCP stream
 // and try parsing them into serveral objects, then it will put them in ConsoleData for it to be extracted and processed
@@ -337,9 +333,7 @@ async fn handle_all_stream_values(
                         let node_status = if let Clients::K8sLocal(client) = client_option {
                             // let client_clone = client.clone();
                             let ip_clone = ip.to_string();
-                            let request = VerifyIsK8sGameserverRequest {
-                                server: ip_clone,
-                            };
+                            let request = VerifyIsK8sGameserverRequest { server: ip_clone };
                             match tokio::time::timeout(
                                 std::time::Duration::from_millis(100),
                                 request.execute_locally(client.clone()),
@@ -362,8 +356,7 @@ async fn handle_all_stream_values(
                                     let request = VerifyIsK8sGameserverRequest {
                                         server: ip.to_string(),
                                     };
-                                    if request.execute_locally(client.clone()).await?
-                                    {
+                                    if request.execute_locally(client.clone()).await? {
                                         NodeType::Inbuilt
                                     } else {
                                         NodeType::Custom(None)
@@ -379,10 +372,10 @@ async fn handle_all_stream_values(
                                     let request = VerifyIsK8sGameserverRequest {
                                         server: ip.to_string(),
                                     };
-                                    if request.execute_locally(client.clone())
-                                    .await?
-                                    { 
-                                        let request = GetK8sTypeRequest { server: ip.to_string() };
+                                    if request.execute_locally(client.clone()).await? {
+                                        let request = GetK8sTypeRequest {
+                                            server: ip.to_string(),
+                                        };
                                         request.execute_locally(client.clone()).await?.into()
                                     } else {
                                         K8sType::Unknown
@@ -410,7 +403,6 @@ async fn handle_all_stream_values(
             }
         }
     }
-
 
     Ok(false)
 }
@@ -452,7 +444,7 @@ async fn process_stream_data(
     Ok(false)
 }
 
-pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, ip: String){
+pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, ip: String) {
     let mut state = arc_state.write().await;
     let initial_node_password: String =
         get_env_var_or_arg("INITIAL_NODE_PASSWORD", Some(String::default())).unwrap();
@@ -515,7 +507,6 @@ pub async fn handle_stream(
     ip: String,
     ws_tx: broadcast::Sender<String>,
 ) -> Result<StreamResult, Box<dyn std::error::Error + Send + Sync>> {
-
     let mut server_start_keyword = String::new();
     let mut server_stop_keyword = String::new();
 
@@ -570,12 +561,10 @@ pub async fn handle_stream(
                 break;
             }
         }
-
     }
 
     Ok(StreamResult::Done)
 }
-
 
 // does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
 // Changelog:
@@ -666,13 +655,8 @@ pub async fn connect_to_server(
                     }
                 });
 
-                let result = handle_stream(
-                    Arc::clone(&arc_state),
-                    &mut proxy_rx,
-                    ip,
-                    ws_tx.clone(),
-                )
-                .await;
+                let result =
+                    handle_stream(Arc::clone(&arc_state), &mut proxy_rx, ip, ws_tx.clone()).await;
 
                 match result {
                     Ok(StreamResult::Reconnect(_, _)) => {}
@@ -788,49 +772,8 @@ pub(crate) async fn try_initial_connection(
 }
 
 pub trait NodeTransportable {
-    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>>;
-}
-impl NodeTransportable for LsRequest {
-    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let mut bytes = Vec::new();
-        bytes.push(LsRequest::item_id());
-        bytes.push(self.id);
-        match serde_json::to_vec(&self) {
-            Ok(b) => bytes.extend(b),
-            Err(e) => {
-                eprintln!("Serialization error: {}", e);
-                return Err("Failed to serialize".into());
-            }
-        };
-        let _ = state.connection_handler.proxy_tx.send(bytes);
-        Ok(())
-    }
-}
-
-
-// NodeTransportable
-impl NodeTransportable for DeleteServerRequest {
-    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let msg = MessagePayloadWithMetadata {
-            r#type: "command".to_string(),
-            message: "delete_server".to_string(),
-            authcode: "0".to_string(),
-            metadata: self.metadata.clone(),
-        };
-
-        let mut bytes = match serde_json::to_vec(&msg) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("Serialization error: {}", e);
-                return Err("Failed to serialize".into());
-            }
-        };
-        bytes.push(b'\n');
-
-        let _ = state.connection_handler.proxy_tx.send(bytes);
-
-        Ok(())
-    }
+    type Output;
+    async fn node_transport(&self, state: &AppState) -> Result<Self::Output, Box<dyn Error + Send + Sync>>;
 }
 
 pub struct ConnectionHandler {
@@ -883,6 +826,60 @@ impl Clone for ConnectionHandler {
     }
 }
 
+
+impl NodeTransportable for LsRequest {
+    type Output = DirectoryResponse;
+    async fn node_transport(&self, state: &AppState) -> Result<DirectoryResponse, Box<dyn Error + Send + Sync>> {
+        let file_req_traint: &dyn FileRequest = self; 
+        let mut bytes = Vec::new();
+        match serde_json::to_vec(&file_req_traint) {
+            Ok(b) => bytes.extend(b),
+            Err(e) => {
+                eprintln!("Serialization error: {}", e);
+                return Err("Failed to serialize".into());
+            }
+        };
+        let _ = state.connection_handler.proxy_tx.send(bytes);
+        let mut proxy_rx = state.connection_handler.proxy_rx.resubscribe();
+        loop {
+            if let Ok(bytes) = proxy_rx.recv().await {
+                if let Ok(response) = serde_json::from_slice::<DirectoryResponse>(&bytes) {
+                    return Ok(response)
+                }
+            } else {
+                return Err("Receiver failed".into());
+            }
+        }
+    }
+}
+
+// NodeTransportable
+impl NodeTransportable for DeleteServerRequest {
+    type Output = ();
+    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let msg = MessagePayloadWithMetadata {
+            r#type: "command".to_string(),
+            message: "delete_server".to_string(),
+            authcode: "0".to_string(),
+            metadata: self.metadata.clone(),
+        };
+
+        let mut bytes = match serde_json::to_vec(&msg) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("Serialization error: {}", e);
+                return Err("Failed to serialize".into());
+            }
+        };
+        bytes.push(b'\n');
+
+        let _ = state.connection_handler.proxy_tx.send(bytes);
+
+        Ok(())
+    }
+}
+
+
 pub trait StreamTransportable {
     type Output;
     async fn stream_transport(
@@ -890,7 +887,6 @@ pub trait StreamTransportable {
         state: Arc<RwLock<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>>;
 }
-
 
 impl StreamTransportable for CreateServerRequest {
     type Output = mpsc::Receiver<ConsoleData>;
@@ -915,15 +911,14 @@ impl StreamTransportable for CreateServerRequest {
         tokio::spawn(async move {
             loop {
                 if let Ok(bytes) = proxy_rx.recv().await {
-                    if let Ok(value) = serde_json::from_slice::<ConsoleData>(&bytes){
+                    if let Ok(value) = serde_json::from_slice::<ConsoleData>(&bytes) {
                         let _ = server_tx.send(value).await;
-                    } 
+                    }
                 } else {
                     break;
                 }
             }
         });
-
 
         Ok(server_rx)
     }
@@ -936,7 +931,6 @@ impl StreamTransportable for CreateServerRequest {
 //         todo!()
 //     }
 // }
-
 
 impl StreamTransportable for StartServerRequest {
     type Output = mpsc::Receiver<ConsoleData>;
@@ -960,24 +954,21 @@ impl StreamTransportable for StartServerRequest {
         tokio::spawn(async move {
             loop {
                 if let Ok(bytes) = proxy_rx.recv().await {
-                    if let Ok(value) = serde_json::from_slice::<ConsoleData>(&bytes){
+                    if let Ok(value) = serde_json::from_slice::<ConsoleData>(&bytes) {
                         let _ = server_tx.send(value).await;
-                    } 
+                    }
                 } else {
                     break;
                 }
             }
         });
 
-
         Ok(server_rx)
     }
 }
 
-
-
-
 impl NodeTransportable for StopServerRequest {
+    type Output = ();
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         let msg = serde_json::to_vec(&MessagePayload {
             r#type: "command".to_string(),
@@ -993,8 +984,8 @@ impl NodeTransportable for StopServerRequest {
     }
 }
 
-
 impl NodeTransportable for MigrateRequest {
+    type Output = ();
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         match serde_json::to_vec(&self.common) {
             Ok(bytes) => {
@@ -1009,8 +1000,8 @@ impl NodeTransportable for MigrateRequest {
     }
 }
 
-
 impl NodeTransportable for SetServerRequest {
+    type Output = ();
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         let msg = MessagePayloadWithMetadata {
             r#type: "command".to_string(),
@@ -1033,8 +1024,8 @@ impl NodeTransportable for SetServerRequest {
 }
 // NodeTransportable
 
-
 impl NodeTransportable for ServerDataRequest {
+    type Output = ();
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         let msg = MessagePayloadWithMetadata {
             r#type: "command".to_string(),
@@ -1071,11 +1062,10 @@ impl NodeTransportable for ServerDataRequest {
 // }
 // NodeTransportable
 
-
-
 //InternalTransportable
 // struct FilterRequest impl NodeTransportable {
 impl NodeTransportable for FilterRequest {
+    type Output = ();
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         let filter_request = MessagePayloadWithMetadata {
             r#type: "command".to_string(),
@@ -1092,10 +1082,10 @@ impl NodeTransportable for FilterRequest {
     }
 }
 
-
 // }
 
 impl NodeTransportable for Ping {
+    type Output = ();
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         let ping = SimpleMessage {
             message: "ping".to_string(),
@@ -1108,9 +1098,8 @@ impl NodeTransportable for Ping {
     }
 }
 
-
-
 impl NodeTransportable for IntegrationKeyRequest {
+    type Output = ();
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         match serde_json::to_vec(&self.key) {
             Ok(mut bytes) => {
@@ -1138,6 +1127,7 @@ impl NodeTransportable for IntegrationKeyRequest {
 //InternalTransportable
 
 impl NodeTransportable for ServerStateRequest {
+    type Output = ();
     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         let msg = serde_json::to_vec(&MessagePayload {
             r#type: "command".to_string(),
@@ -1145,11 +1135,30 @@ impl NodeTransportable for ServerStateRequest {
             authcode: "0".to_string(),
         })
         .unwrap();
-        let _ = state.connection_handler.proxy_tx.send(msg);
+        
 
         Ok(())
     }
 }
+
+impl StreamTransportable for FileTransferRequest {
+    type Output = ();
+    async fn stream_transport(
+        &self,
+        arc_state: Arc<RwLock<AppState>>,
+    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
+        let state = arc_state.write().await;
+        let tx = state.connection_handler.proxy_tx.clone();
+        drop(state);
+
+        while let Ok(bytes) = self.stream.recv() {
+            println!("sending bytes");
+            let _ = tx.send(bytes);
+        }
+        Ok(())
+    }
+}
+
 
 // NoteTransportable
 //InternalTransportable

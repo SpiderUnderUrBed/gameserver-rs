@@ -1,10 +1,12 @@
-
 use std::any::Any;
 
 use serde::{Deserialize, Serialize};
 
 //#[cfg(feature = "grpc_experimental")]
-use crate::{MessagePayload, IncomingMessage, IncomingMessageWithMetadata, SimpleMessage, GetState, ValueRequest};
+use crate::{
+    GetState, IncomingMessage, IncomingMessageWithMetadata, MessagePayload, SimpleMessage,
+    ValueRequest,
+};
 use network_abstraction_lib::{FromWire, IntoRequest};
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -22,7 +24,6 @@ impl FromWire for ConsoleRequest {
     }
 }
 
-
 impl IntoRequest for ConsoleRequest {
     fn as_any(&self) -> &dyn Any {
         self
@@ -35,7 +36,6 @@ impl IntoRequest for ConsoleRequest {
         Box::new(self.clone())
     }
 }
-
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct ServerStateRequest {
@@ -55,7 +55,6 @@ impl IntoRequest for ServerStateRequest {
         Box::new(self.clone())
     }
 }
-
 
 impl FromWire for ServerStateRequest {
     type Request = ValueRequest;
@@ -109,8 +108,6 @@ impl IntoRequest for StopServerRequest {
         Box::new(self.clone())
     }
 }
-
-
 
 impl FromWire for StopServerRequest {
     type Request = ValueRequest;
@@ -180,7 +177,6 @@ impl Default for ServerNameRequest {
     }
 }
 
-
 impl IntoRequest for ServerNameRequest {
     fn as_any(&self) -> &dyn Any {
         self
@@ -232,7 +228,6 @@ impl FromWire for ServerDataRequest {
     }
 }
 
-
 impl IntoRequest for ServerDataRequest {
     fn as_any(&self) -> &dyn Any {
         self
@@ -245,7 +240,6 @@ impl IntoRequest for ServerDataRequest {
         Box::new(self.clone())
     }
 }
-
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct CreateServerRequest {
@@ -281,7 +275,6 @@ pub struct DeleteServerRequest {
     pub common: IncomingMessageWithMetadata,
 }
 
-
 impl IntoRequest for DeleteServerRequest {
     fn as_any(&self) -> &dyn Any {
         self
@@ -311,7 +304,6 @@ pub struct SetServerRequest {
     pub common: IncomingMessageWithMetadata,
 }
 
-
 impl IntoRequest for SetServerRequest {
     fn as_any(&self) -> &dyn Any {
         self
@@ -340,7 +332,6 @@ pub struct SetFilterRequest {
     #[serde(flatten)]
     pub common: IncomingMessageWithMetadata,
 }
-
 
 impl IntoRequest for SetFilterRequest {
     fn as_any(&self) -> &dyn Any {
@@ -384,7 +375,6 @@ impl IntoRequest for Ping {
     }
 }
 
-
 impl FromWire for Ping {
     type Request = ValueRequest;
 
@@ -394,7 +384,6 @@ impl FromWire for Ping {
         serde_json::from_value(req.value)
     }
 }
-
 
 #[derive(Serialize)]
 pub struct ServerDataResponse {

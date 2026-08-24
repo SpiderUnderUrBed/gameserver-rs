@@ -13,7 +13,6 @@ pub trait DockerLocalRequest {
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>>;
 }
 
-
 impl DockerLocalRequest for BuildImageRequest {
     type Output = ();
 
@@ -25,4 +24,3 @@ impl DockerLocalRequest for BuildImageRequest {
         build_docker_image().await
     }
 }
-

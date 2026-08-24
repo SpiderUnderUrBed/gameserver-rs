@@ -7,6 +7,7 @@
 		"dev": "vite dev",
 		"build": "vite build",
 		"test": "vitest",
+		"test:ci": "vitest run",
 		"build-ts": "NODE_OPTIONS=--experimental-strip-types npm run build",
 		"watch": "vite build --watch",
 		"preview": "vite preview",

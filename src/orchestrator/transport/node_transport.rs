@@ -1,13 +1,21 @@
 use std::error::Error;
 
-use crate::{database::databasespec::K8sType, orchestrator::{docker::BuildImageRequest, kubernetes::{BuildDeploymentRequest, GetK8sGameserversRequest, GetK8sTypeRequest, ListNodeInfoRequest}}, NodeWithStream};
+use crate::{
+    NodeWithStream,
+    database::databasespec::K8sType,
+    orchestrator::{
+        docker::BuildImageRequest,
+        kubernetes::{
+            BuildDeploymentRequest, GetK8sGameserversRequest, GetK8sTypeRequest,
+            ListNodeInfoRequest,
+        },
+    },
+};
 
 #[derive(Clone)]
-pub struct K8sRemoteClient {
-
-}
+pub struct K8sRemoteClient {}
 impl K8sRemoteClient {
-    pub async fn connect(_url: String) -> Result<K8sRemoteClient, Box<dyn Error + Send + Sync>>{
+    pub async fn connect(_url: String) -> Result<K8sRemoteClient, Box<dyn Error + Send + Sync>> {
         Ok(K8sRemoteClient {})
     }
 }

@@ -5,6 +5,7 @@ use futures::Stream;
 use futures::StreamExt;
 use general_networked_filesystem::FileRequest;
 use general_networked_filesystem::FileRequestExecutable;
+use general_networked_filesystem::{FileOperationResult, FileOperations};
 use network_abstraction_lib::erasure::erase_stream_wrapper_result;
 use network_abstraction_lib::erasure::erase_string_wrapper;
 use network_abstraction_lib::general::ErrorResponse;
@@ -14,10 +15,7 @@ use network_abstraction_lib::IntoRequest;
 use network_abstraction_lib::MiddlewareAction;
 use network_abstraction_lib::StreamResponse;
 use network_abstraction_lib::ValueRequest;
-use serde_json::{Value};
-use tokio::net::TcpStream;
-use tokio::sync::broadcast::Receiver;
-use tokio::time::sleep;
+use serde_json::Value;
 use std::convert::TryFrom;
 use std::path::Path;
 use std::pin::Pin;
@@ -27,8 +25,11 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::fs;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpStream;
 use tokio::process::{ChildStdin, Command as TokioCommand};
+use tokio::sync::broadcast::Receiver;
 use tokio::sync::{mpsc, Mutex};
+use tokio::time::sleep;
 use tokio::time::Duration;
 
 use crate::broadcast::Sender;
@@ -58,9 +59,9 @@ use crate::transport::node_transport_spec::ServerNameResponse;
 use crate::transport::node_transport_spec::ServerStateRequest;
 use crate::transport::node_transport_spec::ServerStateResponse;
 use crate::transport::node_transport_spec::SetFilterRequest;
+use crate::transport::node_transport_spec::SetServerRequest;
 use crate::transport::node_transport_spec::StartServerRequest;
 use crate::transport::node_transport_spec::StopServerRequest;
-use crate::transport::node_transport_spec::SetServerRequest;
 
 use std::net::SocketAddr;
 use tokio::sync::broadcast;
@@ -135,7 +136,7 @@ struct SimpleMessage {
     message: String,
 }
 
-// Used for transmitting stderr and stdout 
+// Used for transmitting stderr and stdout
 // back to the main server and then to the client
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct ConsoleData {
@@ -485,7 +486,7 @@ fn process_hook(
 }
 enum ProcessErrors {
     IOError(std::io::Error),
-    Timeout
+    Timeout,
 }
 
 // runs a command and forwards the output of the command to the given channel, which in this case would be back to
@@ -500,7 +501,7 @@ async fn run_command_live_output(
     sender: Option<mpsc::Sender<String>>,
     stdin_arc: Option<Arc<Mutex<Option<ChildStdin>>>>,
     timeout: Option<u64>,
-    status: Option<Arc<AtomicBool>>
+    status: Option<Arc<AtomicBool>>,
 ) -> Result<(), ProcessErrors> {
     let db = state.db.lock().await;
     let current_filter = db.filter.clone();
@@ -522,10 +523,7 @@ async fn run_command_live_output(
     println!("Befre process hook");
     process_hook(state, provider, sandbox, Some(location), &mut tokio_cmd);
     println!("After process hook");
-    let mut child = tokio_cmd.spawn()
-        .map_err(|e| ProcessErrors::IOError(e))?;
-
-
+    let mut child = tokio_cmd.spawn().map_err(|e| ProcessErrors::IOError(e))?;
 
     if let Some(stdin_slot) = stdin_arc {
         let child_stdin = child.stdin.take();
@@ -554,7 +552,8 @@ async fn run_command_live_output(
                         authcode: "0".to_string(),
                         data: format!("[{}] {}", lbl, line),
                         r#type: "console".to_string(),
-                    }).unwrap();
+                    })
+                    .unwrap();
                     let _ = tx.try_send(msg);
                 }
             }
@@ -583,7 +582,8 @@ async fn run_command_live_output(
                         authcode: "0".to_string(),
                         data: format!("[{}] {}", lbl, line),
                         r#type: "console".to_string(),
-                    }).unwrap();
+                    })
+                    .unwrap();
                     let _ = tx.try_send(msg);
                 }
             }
@@ -762,7 +762,10 @@ fn get_env_var_or_arg<T: std::str::FromStr>(env_var: &str, default: Option<T>) -
         .or(default)
 }
 
-async fn create_server_handler(state: &Arc<AppState>, req: CreateServerRequest) -> Result<StreamResponse<String>, ErrorResponse> {
+async fn create_server_handler(
+    state: &Arc<AppState>,
+    req: CreateServerRequest,
+) -> Result<StreamResponse<String>, ErrorResponse> {
     let cmd_tx_arc = state.cmd_tx.lock().await.clone().unwrap();
     let cmd_tx = cmd_tx_arc;
 
@@ -784,10 +787,15 @@ async fn create_server_handler(state: &Arc<AppState>, req: CreateServerRequest) 
         println!("returning the stream finally");
         Ok(StreamResponse::new(stream))
     } else {
-        Err(ErrorResponse { error: "stream taken".to_string() })
+        Err(ErrorResponse {
+            error: "stream taken".to_string(),
+        })
     }
-} 
-async fn start_server_handler(state: &Arc<AppState>, _req: StartServerRequest) -> Result<StreamResponse<String>, ErrorResponse> {
+}
+async fn start_server_handler(
+    state: &Arc<AppState>,
+    _req: StartServerRequest,
+) -> Result<StreamResponse<String>, ErrorResponse> {
     //let current_server = state.current_server.lock().await;
     let stdin_ref = &state.stdin_ref;
     let cmd_tx_arc = state.cmd_tx.lock().await.clone().unwrap();
@@ -933,7 +941,7 @@ async fn start_server_handler(state: &Arc<AppState>, _req: StartServerRequest) -
                             Some((*tx).clone()),
                             Some(stdin_clone.clone()),
                             None,
-                            Some(status)
+                            Some(status),
                         )
                         .await;
                         {
@@ -946,18 +954,17 @@ async fn start_server_handler(state: &Arc<AppState>, _req: StartServerRequest) -
                                 let (cmd_tx, cmd_rx) = mpsc::channel::<String>(10_000);
                                 *arc_state_for_stdin.cmd_tx.lock().await = Some(Arc::new(cmd_tx));
                                 *arc_state_for_stdin.cmd_rx.lock().await = Some(cmd_rx);
-                                arc_state_for_stdin.server_running.store(false, Ordering::SeqCst);
+                                arc_state_for_stdin
+                                    .server_running
+                                    .store(false, Ordering::SeqCst);
                             }
-                            Err(e) => {
-                                match e {
-                                    ProcessErrors::IOError(error) => {
-                                        let _ = tx.send(format!("Server process failed: {}", error)).await;
-                                    },
-                                    _ => {
-                                        
-                                    }
+                            Err(e) => match e {
+                                ProcessErrors::IOError(error) => {
+                                    let _ =
+                                        tx.send(format!("Server process failed: {}", error)).await;
                                 }
-                            }
+                                _ => {}
+                            },
                         }
                     });
                     //println!("will say server started");
@@ -986,7 +993,9 @@ async fn start_server_handler(state: &Arc<AppState>, _req: StartServerRequest) -
         });
         Ok(StreamResponse::new(stream))
     } else {
-        Err(ErrorResponse { error: "stream taken".to_string() })
+        Err(ErrorResponse {
+            error: "stream taken".to_string(),
+        })
     }
     //NoneResponse {}
 }
@@ -1055,7 +1064,9 @@ async fn stop_server_handler(
 
         Ok(NoneResponse {})
     } else {
-        Err(ErrorResponse { error: "could not stop server".to_string() })
+        Err(ErrorResponse {
+            error: "could not stop server".to_string(),
+        })
     }
 }
 async fn delete_server_handler(state: &Arc<AppState>, req: DeleteServerRequest) -> NoneResponse {
@@ -1234,7 +1245,7 @@ async fn ping_handler(_state: &Arc<AppState>, _req: Ping) -> SimpleMessage {
     println!("got ping request");
     //         //let out_tx_clone = out_tx.clone();
     let pong = SimpleMessage {
-            message: "pong".to_string(),
+        message: "pong".to_string(),
     };
     pong
 }
@@ -1246,13 +1257,16 @@ async fn server_state_handler(
     let server_state_response = ServerStateResponse {
         message: MessagePayload {
             r#type: "server_state".to_string(),
-            message:  status.to_string(),
+            message: status.to_string(),
             authcode: "0".to_string(),
         },
     };
     server_state_response
 }
-async fn server_name_handler(_state: &Arc<AppState>, _req: ServerNameRequest) -> ServerNameResponse {
+async fn server_name_handler(
+    _state: &Arc<AppState>,
+    _req: ServerNameRequest,
+) -> ServerNameResponse {
     println!("Got a server name request");
     // let hostname_str = match hostname_ref.clone() {
     //     Ok(os) => os.to_string_lossy().to_string(),
@@ -1270,7 +1284,11 @@ async fn server_name_handler(_state: &Arc<AppState>, _req: ServerNameRequest) ->
 }
 
 #[cfg(not(feature = "grpc_experimental"))]
-async fn check_server(arc_state: &Arc<AppState>, server_output_rx: &mut Option<Receiver<String>>, needs_server_status_check: &mut bool) -> Option<String> {
+async fn check_server(
+    arc_state: &Arc<AppState>,
+    server_output_rx: &mut Option<Receiver<String>>,
+    needs_server_status_check: &mut bool,
+) -> Option<String> {
     if *needs_server_status_check {
         let server_running = arc_state.server_running.load(Ordering::SeqCst);
         let output_tx_lock = arc_state.server_output_tx.lock().await;
@@ -1310,8 +1328,8 @@ async fn spawn_request_loop(
     //arc_state: Arc<AppState>,
     _conn_handler: &mut ConnectionHandler,
     _router: Arc<Mutex<Router<Arc<AppState>>>>,
-    //cmd_rx: &mut mpsc::Receiver<String>, 
-    _addr: String
+    //cmd_rx: &mut mpsc::Receiver<String>,
+    _addr: String,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
@@ -1355,7 +1373,12 @@ async fn spawn_request_loop(
     let inner_out_tx = out_tx.clone();
     tokio::spawn(async move {
         loop {
-            check_server(&inner_arc_state.clone(), &mut server_output_rx, &mut needs_server_status_check).await;
+            check_server(
+                &inner_arc_state.clone(),
+                &mut server_output_rx,
+                &mut needs_server_status_check,
+            )
+            .await;
             let server_msg = async {
                 if let Some(rx) = &mut server_output_rx {
                     rx.recv().await
@@ -1398,7 +1421,10 @@ async fn spawn_request_loop(
 
             result = reader.handle_request(conn_handler) => {
                 if let Err(e) = result {
-                    eprintln!("[{}] Connection closed: {}", addr, e);
+                    // TODO: with tracing consider printing this to stderr, or with a feature flag, otherwise
+                    // it messes with tests
+                    println!("[{}] Connection closed: {}", addr, e);
+                    // eprintln!("[{}] Connection closed: {}", addr, e);
                     break 'outer;
                 }
             },
@@ -1455,7 +1481,7 @@ async fn spawn_request_loop(
 
                         let feed_result = {
                             let mut router_guard = router.lock().await;
-                            router_guard.feed_value(json_value).await
+                            router_guard.feed_value(json_value.clone()).await
                         };
 
                         match feed_result {
@@ -1463,24 +1489,38 @@ async fn spawn_request_loop(
                                 use network_abstraction_lib::ExtractorErrors;
 
                                 match response.try_into_response() {
-                                    Ok(boxed) => match boxed.downcast::<String>() {
-                                        Ok(resp) => {
-                                            println!("got resp: {}", *resp);
-                                            let _ = out_tx.send(*resp).await;
-                                        },
-                                        Err(boxed) => match boxed.downcast::<Pin<Box<dyn Stream<Item = String> + Send + Sync>>>() {
-                                            Ok(stream_box) => {
-                                                let mut stream = *stream_box;
-                                                let inner_out_tx = out_tx.clone();
-                                                tokio::spawn(async move {
-                                                    while let Some(item) = stream.next().await {
-                                                        let _ = inner_out_tx.clone().send(item).await;
-                                                    }
-                                                });
+                                    Ok(boxed) => {
+                                        match boxed.downcast::<String>() {
+                                            Ok(resp) => {
+                                                println!("got resp: {}", *resp);
+                                                let _ = out_tx.send(*resp).await;
                                             }
-                                            Err(_) => println!("resp error: dont know this response type"),
-                                        },
-                                    },
+                                            Err(boxed) => {
+                                                match boxed.downcast::<Pin<
+                                                    Box<dyn Stream<Item = String> + Send + Sync>,
+                                                >>(
+                                                ) {
+                                                    Ok(stream_box) => {
+                                                        let mut stream = *stream_box;
+                                                        let inner_out_tx = out_tx.clone();
+                                                        tokio::spawn(async move {
+                                                            while let Some(item) =
+                                                                stream.next().await
+                                                            {
+                                                                let _ = inner_out_tx
+                                                                    .clone()
+                                                                    .send(item)
+                                                                    .await;
+                                                            }
+                                                        });
+                                                    }
+                                                    Err(_) => println!(
+                                                        "resp error: dont know this response type"
+                                                    ),
+                                                }
+                                            }
+                                        }
+                                    }
                                     Err(e) => match e {
                                         ExtractorErrors::Err(value) => {
                                             println!("got err: {}", value);
@@ -1493,7 +1533,19 @@ async fn spawn_request_loop(
                             }
                             Err(e) => match e {
                                 network_abstraction_lib::RouterErrors::NoHandlerFound => {
-                                    println!("no handler found");
+                                    if let Ok(request) = FileOperations::from_tagged_request(serde_json::to_vec(&json_value).unwrap()) {
+                                        if let Ok(mut bytes) = request.execute_bytes() {
+                                            bytes.extend("\n".as_bytes());
+                                            if let Err(e) = writer.send(bytes).await {
+                                                println!("Got error with file request {}", e);
+                                            }
+                                        } else {
+                                            println!("Error with the file operation");
+                                        }
+                                    } else {
+                                        println!("No handler found, nor any file operation coorosponded with the request");
+                                    }
+                                    
                                 }
                             },
                         }
@@ -1505,12 +1557,10 @@ async fn spawn_request_loop(
                     }
                     conn_handler.end_clean_hook().await;
                 } else {
+                    
                     let bytes = conn_handler.recv_bytes();
-                    if let Ok(request) = FileRequest::from_request(bytes) {
-                        if let Ok(bytes) = request.execute_bytes() {
-                            let _ = writer.send(bytes).await;
-                        }
-                    }
+                    println!("{:?}", bytes);
+
                 }
             }
             if !found_message {
@@ -1521,20 +1571,20 @@ async fn spawn_request_loop(
     Ok(())
 }
 
-fn spawn_middlewares(router: &mut Router<Arc<AppState>>){
+fn spawn_middlewares(router: &mut Router<Arc<AppState>>) {
     router.add_middleware(|mapping: String, request: &dyn IntoRequest| {
         if let Some(value_request) = request.as_any().downcast_ref::<ValueRequest>() {
             if let Some(Value::String(message)) = value_request.value.get("message") {
-                if let Some(Value::String(message_type)) = value_request.value.get("type"){
+                if let Some(Value::String(message_type)) = value_request.value.get("type") {
                     if message_type == "console" && *message_type == mapping {
-                        return MiddlewareAction::ReassignValue(request)
-                    } 
-                } 
+                        return MiddlewareAction::ReassignValue(request);
+                    }
+                }
                 if *message == mapping {
                     // if *message == "start_server".to_string() {
                     //     MiddlewareAction::SkipPredicate
                     // } else {
-                        MiddlewareAction::ReassignValue(request)
+                    MiddlewareAction::ReassignValue(request)
                     // }
                 } else {
                     MiddlewareAction::Continue
@@ -1546,8 +1596,7 @@ fn spawn_middlewares(router: &mut Router<Arc<AppState>>){
             MiddlewareAction::Continue
         }
     });
-} 
-
+}
 
 async fn ensure_server_directory() {}
 
@@ -1608,20 +1657,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut router = Router::new(Arc::clone(&arc_state));
 
-    router.register_handler(erase_stream_wrapper_result(start_server_handler).mapping("start_server".to_string()));
-    router.register_handler(erase_string_wrapper(stop_server_handler).mapping("stop_server".to_string()));
-    router.register_handler(erase_string_wrapper(delete_server_handler).mapping("delete_server".to_string()));
-    router.register_handler(erase_string_wrapper(set_server_handler).mapping("set_server".to_string()));
-    router.register_handler(erase_string_wrapper(set_filter_handler).mapping("set_filter".to_string()));
+    router.register_handler(
+        erase_stream_wrapper_result(start_server_handler).mapping("start_server".to_string()),
+    );
+    router.register_handler(
+        erase_string_wrapper(stop_server_handler).mapping("stop_server".to_string()),
+    );
+    router.register_handler(
+        erase_string_wrapper(delete_server_handler).mapping("delete_server".to_string()),
+    );
+    router.register_handler(
+        erase_string_wrapper(set_server_handler).mapping("set_server".to_string()),
+    );
+    router.register_handler(
+        erase_string_wrapper(set_filter_handler).mapping("set_filter".to_string()),
+    );
     router.register_handler(erase_string_wrapper(console_handler).mapping("console".to_string()));
-    router.register_handler(erase_string_wrapper(server_data_handler).mapping("server_data".to_string()));
+    router.register_handler(
+        erase_string_wrapper(server_data_handler).mapping("server_data".to_string()),
+    );
     router.register_handler(erase_string_wrapper(ping_handler).mapping("ping".to_string()));
-    router.register_handler(erase_string_wrapper(server_state_handler).mapping("server_state".to_string()));
-    router.register_handler(erase_string_wrapper(server_name_handler).mapping("server_name".to_string()));
-    router.register_handler(erase_stream_wrapper_result(create_server_handler).mapping("create_server".to_string()));
+    router.register_handler(
+        erase_string_wrapper(server_state_handler).mapping("server_state".to_string()),
+    );
+    router.register_handler(
+        erase_string_wrapper(server_name_handler).mapping("server_name".to_string()),
+    );
+    router.register_handler(
+        erase_stream_wrapper_result(create_server_handler).mapping("create_server".to_string()),
+    );
 
     spawn_middlewares(&mut router);
-        
 
     let state = Arc::clone(&router.get_state());
     let mut listener = ConnectionManager::serve(router, config_local_url.clone().unwrap()).await?;
@@ -1638,7 +1704,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let arc_state = Arc::new(state);
 
-  
     // tokio::spawn(async move {
     //     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
     //     loop {
@@ -1661,7 +1726,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     //                         let mut server_process =
     //                             health_monitor_state.server_process.lock().await;
     //                         *server_process = None;
-
 
     //                         println!("Server state reset due to process exit");
     //                     }
@@ -1699,21 +1763,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     *arc_state.cmd_rx.lock().await = Some(cmd_rx);
     //let conn_state = Mutex::new(arc_state);
 
-    
+    loop {
+        let (mut conn_handler, addr_option) = listener.accept_connection().await?;
+        let addr = addr_option.unwrap_or("unknown".to_string());
+        println!("{}", addr);
 
-loop {
-    let (mut conn_handler, addr_option) = listener.accept_connection().await?;
-    let addr = addr_option.unwrap_or("unknown".to_string());
-    println!("{}", addr);
+        let router_clone = listener.get_arc_mutex_router().await;
 
-    let router_clone = listener.get_arc_mutex_router().await;
-
-    tokio::spawn(async move {
-        spawn_request_loop(&mut conn_handler, router_clone, addr).await
-    });
+        tokio::spawn(
+            async move { spawn_request_loop(&mut conn_handler, router_clone, addr).await },
+        );
+    }
 }
-}
-
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 struct AuthTcpMessage {
@@ -1967,73 +2028,73 @@ async fn create_server(
                 );
                 let inner_cmd_tx = cmd_tx.clone();
                 tokio::spawn(async move {
-                if let Some(cmd) = prov.pre_hook() {
-                    println!("[create_server] running pre_hook: {cmd:?}");
-                    let sandbox = resolve_sandbox(&state).await;
-                    let path = resolve_path(&state, &servername).await;
-                    run_command_live_output(
-                        &state,
-                        cmd,
-                        sandbox,
-                        path.unwrap_or(String::new()),
-                        provider_config.clone().unwrap(),
-                        "Pre-hook".into(),
-                        Some(inner_cmd_tx.clone()),
-                        None,
-                        Some(60000),
-                        None
-                    )
-                    .await
-                    .ok();
-                    println!("[create_server] pre_hook done");
-                } else {
-                    println!("[create_server] no pre_hook");
-                }
-                if let Some(cmd) = prov.install() {
-                    println!("[create_server] running install: {cmd:?}");
-                    let sandbox = resolve_sandbox(&state).await;
-                    let path = resolve_path(&state, &servername).await;
-                    run_command_live_output(
-                        &state,
-                        cmd,
-                        sandbox,
-                        path.unwrap_or(String::new()),
-                        provider_config.clone().unwrap(),
-                        "Install".into(),
-                        Some(inner_cmd_tx.clone()),
-                        None,
-                        Some(60000),
-                        None
-                    )
-                    .await
-                    .ok();
-                    println!("[create_server] install done");
-                } else {
-                    println!("[create_server] no install cmd");
-                }
+                    if let Some(cmd) = prov.pre_hook() {
+                        println!("[create_server] running pre_hook: {cmd:?}");
+                        let sandbox = resolve_sandbox(&state).await;
+                        let path = resolve_path(&state, &servername).await;
+                        run_command_live_output(
+                            &state,
+                            cmd,
+                            sandbox,
+                            path.unwrap_or(String::new()),
+                            provider_config.clone().unwrap(),
+                            "Pre-hook".into(),
+                            Some(inner_cmd_tx.clone()),
+                            None,
+                            Some(60000),
+                            None,
+                        )
+                        .await
+                        .ok();
+                        println!("[create_server] pre_hook done");
+                    } else {
+                        println!("[create_server] no pre_hook");
+                    }
+                    if let Some(cmd) = prov.install() {
+                        println!("[create_server] running install: {cmd:?}");
+                        let sandbox = resolve_sandbox(&state).await;
+                        let path = resolve_path(&state, &servername).await;
+                        run_command_live_output(
+                            &state,
+                            cmd,
+                            sandbox,
+                            path.unwrap_or(String::new()),
+                            provider_config.clone().unwrap(),
+                            "Install".into(),
+                            Some(inner_cmd_tx.clone()),
+                            None,
+                            Some(60000),
+                            None,
+                        )
+                        .await
+                        .ok();
+                        println!("[create_server] install done");
+                    } else {
+                        println!("[create_server] no install cmd");
+                    }
 
-                if let Some(cmd) = prov.post_hook() {
-                    println!("[create_server] running post_hook: {cmd:?}");
-                    let sandbox = resolve_sandbox(&state).await;
-                    let path = resolve_path(&state, &servername).await;
-                    run_command_live_output(
-                        &state,
-                        cmd,
-                        sandbox,
-                        path.unwrap_or(String::new()),
-                        provider_config.clone().unwrap(),
-                        "Post-hook".into(),
-                        Some(inner_cmd_tx.clone()),
-                        None,
-                        Some(60000),
-                        None
-                    )
-                    .await
-                    .ok();
-                    println!("[create_server] post_hook done");
-                } else {
-                    println!("[create_server] no post_hook");
-                }
+                    if let Some(cmd) = prov.post_hook() {
+                        println!("[create_server] running post_hook: {cmd:?}");
+                        let sandbox = resolve_sandbox(&state).await;
+                        let path = resolve_path(&state, &servername).await;
+                        run_command_live_output(
+                            &state,
+                            cmd,
+                            sandbox,
+                            path.unwrap_or(String::new()),
+                            provider_config.clone().unwrap(),
+                            "Post-hook".into(),
+                            Some(inner_cmd_tx.clone()),
+                            None,
+                            Some(60000),
+                            None,
+                        )
+                        .await
+                        .ok();
+                        println!("[create_server] post_hook done");
+                    } else {
+                        println!("[create_server] no post_hook");
+                    }
                 });
                 println!("about to return");
             } else {

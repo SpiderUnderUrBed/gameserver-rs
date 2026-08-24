@@ -2,8 +2,11 @@ use std::any::Any;
 
 use serde::Serialize;
 
-use crate::{BorrowedBoxFuture, BytesRequest, ExtractorErrors, HandlerType, IntoRequest, IntoResponse, Router, RouterErrors};
 use crate::BoxFuture;
+use crate::{
+    BorrowedBoxFuture, BytesRequest, ExtractorErrors, HandlerType, IntoRequest, IntoResponse,
+    Router, RouterErrors,
+};
 
 impl<S> HandlerType<S> for BytesHandler
 where
@@ -45,7 +48,9 @@ where
 pub struct BytesHandler {
     mapping: Option<String>,
     function: Box<
-        dyn FnMut(Box<dyn IntoRequest>) -> BoxFuture<Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>>
+        dyn FnMut(
+                Box<dyn IntoRequest>,
+            ) -> BoxFuture<Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>>
             + Send
             + Sync,
     >,
@@ -98,7 +103,9 @@ where
 pub struct NoneHandler {
     mapping: Option<String>,
     function: Box<
-        dyn FnMut(Box<dyn IntoRequest>) -> BoxFuture<Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>>
+        dyn FnMut(
+                Box<dyn IntoRequest>,
+            ) -> BoxFuture<Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>>
             + Send
             + Sync,
     >,
