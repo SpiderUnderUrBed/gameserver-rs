@@ -174,7 +174,7 @@ if $INSTALL_PANEL; then
     fi
 
     read -rp "Enter LOCALURL value for $MAIN_SERVICE_NAME (leave blank for none): " LOCALURL_MAIN
-    read -rp "Enter TCPURL value for $MAIN_SERVICE_NAME (leave blank for none): " TCPURL_MAIN
+    read -rp "Enter NODEURL value for $MAIN_SERVICE_NAME (leave blank for none): " NODEURL_MAIN
 fi
 
 if $INSTALL_NODE; then
@@ -198,7 +198,7 @@ Restart=on-failure
 EOF
 
     [ -n "$LOCALURL_MAIN" ] && echo "Environment=\"LOCALURL=$LOCALURL_MAIN\"" >> "$MAIN_SERVICE_FILE"
-    [ -n "$TCPURL_MAIN" ]   && echo "Environment=\"TCPURL=$TCPURL_MAIN\""     >> "$MAIN_SERVICE_FILE"
+    [ -n "$NODEURL_MAIN" ]   && echo "Environment=\"NODEURL=$NODEURL_MAIN\""     >> "$MAIN_SERVICE_FILE"
 
     echo "[Install]
 WantedBy=multi-user.target" >> "$MAIN_SERVICE_FILE"

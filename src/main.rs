@@ -601,7 +601,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         })
         .unwrap_or_default();
 
-    let config_node_url = get_env_var_or_arg("TCPURL", Some(STATIC_NODE_URL.to_string())).unwrap();
+    let config_node_url = get_env_var_or_arg("NODEURL", Some(STATIC_NODE_URL.to_string())).unwrap();
     let config_local_url =
         get_env_var_or_arg("LOCALURL", Some(STATIC_LOCAL_URL.to_string())).unwrap();
 
@@ -1719,7 +1719,7 @@ async fn get_oidc_layer() -> Result<
     ),
     Box<dyn Error + Send + Sync>,
 > {
-    // get_env_var_or_arg("TCPURL", Some(StaticTcpUrl.to_string())).unwrap();
+    // get_env_var_or_arg("NODEURL", Some(StaticNODEURL.to_string())).unwrap();
 
     // TODO: maybe make a function which trims the last / in a url
     let local_url = get_env_var_or_arg("LOCALURL", Some(STATIC_LOCAL_URL.to_string())).unwrap();
@@ -3780,7 +3780,7 @@ mod tests {
                 let (tx, _) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
 
                 let node_url =
-                    get_env_var_or_arg("TCPURL", Some(STATIC_NODE_URL.to_string())).unwrap();
+                    get_env_var_or_arg("NODEURL", Some(STATIC_NODE_URL.to_string())).unwrap();
 
                 let initial_connection_attempts: u64 =
                     get_env_var_or_arg("INITIAL_CONNECTION_ATTEMPTS", Some(5)).unwrap();
@@ -3806,5 +3806,4 @@ mod tests {
         }
     }
 
-    mod http {}
 }

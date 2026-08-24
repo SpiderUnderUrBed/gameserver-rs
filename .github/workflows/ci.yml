@@ -69,6 +69,25 @@ jobs:
       - name: Run main server tests
         run: cargo test
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: src/frontend/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: src/frontend
+        run: npm ci
+
+      - name: Run frontend tests
+        working-directory: src/frontend
+        env:
+          TESTING: "true"
+          GAMESERVER_PORT: 8080
+        run: npm run test:ci
+
+
       - name: Ensure gameserver is stopped
         if: always()
         run: |
@@ -243,27 +262,6 @@ jobs:
           docker push localhost:5002/gameserver:latest
 
           curl -s http://localhost:5002/v2/gameserver/tags/list
-
-      # - name: Build and push frontend testing image
-      #   run: |
-      #     docker build -f src/frontend/tests/Dockerfile -t localhost:5002/frontend:latest .
-
-      #     IMAGE_CMD=$(docker inspect localhost:5002/frontend:latest | jq -r '.[0].Config.Cmd | join(" ")')
-      #     echo "CMD: $IMAGE_CMD"
-
-      #     docker run --rm localhost:5002/frontend:latest
-      #     # if docker run --rm localhost:5002/frontend:latest test -x /app/gameserver-node; then
-      #     #   echo "Binary found at /app/gameserver-node"
-      #     # else
-      #     #   echo "Binary NOT found at /app/gameserver-node"
-      #     #   docker run --rm localhost:5002/gameserver:latest ls -la /app/ 2>/dev/null || echo "No /app directory"
-      #     #   docker run --rm localhost:5002/gameserver:latest find / -name "gameserver*" -type f 2>/dev/null || true
-      #     #   exit 1
-      #     # fi
-
-          # docker push localhost:5002/frontend:latest
-
-          # curl -s http://localhost:5002/v2/frontend/tags/list
 
       - name: Deploy inner gameserver manifest
         run: |

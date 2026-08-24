@@ -20,6 +20,7 @@
       rust-analyzer
       ripgrep
       act
+      playwright-driver.browsers
     ];
     
     commonNativeBuildInputs = with pkgs; [
@@ -48,6 +49,7 @@
     '';
     
   in {
+    # export PLAYWRIGHT_LAUNCH_OPTIONS_EXECUTABLE_PATH = "${pkgs-playwright.playwright.browsers}/chromium-${chromium-rev}/chrome-linux/chrome"
     
     devShells."x86_64-linux" = {
       # Standard secure shell (default)
@@ -68,12 +70,21 @@
         env = commonEnv;
         
         shellHook = commonShellHook + ''
+          # export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+          export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
+          export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true
+          export PLAYWRIGHT_LAUNCH_OPTIONS_EXECUTABLE_PATH="${pkgs.playwright-driver.browsers}/chromium-${
+            (builtins.head (builtins.filter (x: x.name == "chromium")
+              (builtins.fromJSON (builtins.readFile "${pkgs.playwright-driver}/browsers.json")).browsers
+            )).revision
+          }/chrome-linux/chrome"
+          export TMPDIR=/var/tmp
+
           export ENABLE_ADMIN_USER="true"
           export ADMIN_USER="testing"
           export ADMIN_PASSWORD="test"
           export SECRET=ejCrnROblT0sRX6OQCLrANXtCxkeyUgG
           echo "Testing environment enabled (INSECURE)" 
-          export TMPDIR=/var/tmp
           echo "ADMIN_USER=$ADMIN_USER"
           echo "ADMIN_PASSWORD=$ADMIN_PASSWORD"
         '';

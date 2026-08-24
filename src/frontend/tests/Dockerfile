@@ -1,3 +1,5 @@
+# TODO: consider if a dockerfile for frontend tests is nessesary
+
 FROM node:22-alpine as builder
 WORKDIR /app
 COPY . .
