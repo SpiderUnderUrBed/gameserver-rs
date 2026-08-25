@@ -1213,11 +1213,13 @@ async fn upload(
     if !authorized {
         return StatusCode::UNAUTHORIZED;
     }
-    println!("passed auth");
+
+    state.filesystem.create_state(0, "/".to_string());
+
     let (tx, rx) = flume::unbounded();
-    state
-        .filesystem
-        .send_flume_file(None, "test.txt".to_string(), Some(rx));
+    // state
+    //     .filesystem
+    //     .send_flume_file(None, "test.txt".to_string(), Some(rx));
     // let filesystem_sender: &mut RemoteFileSystem<TcpFsSender, FlumeFile> =
     //     &mut state.filesystem.file_tx;
     // let file = FlumeFile {
@@ -1249,14 +1251,22 @@ async fn upload(
         // }
         //println!("past loop");
     });
+    // let file = FlumeFile { original_location: None, final_location:  "test.txt".to_string(), content_stream: Some(rx) };
     println!("past the first loop");
     tokio::spawn(async move {
         let mut state = arc_state.write().await;
         state.filesystem.create_state(0, "/".to_string());
-        let res = state.filesystem.execute_operation(0).await;
+        let mut filesystem = state.filesystem.clone();
+        drop(state);
+        let res = filesystem.send_flume_file(None, Some(rx)).await;
         println!("{:#?}", res);
+        //let res = filesystem.execute_operation(0).await;
+        //println!("got a res: {:#?}", res);
+        
     });
     println!("past the second");
+
+    //tokio::time::sleep(Duration::from_millis(1000)).await;
     while let Some(mut field) = multipart.next_field().await.unwrap() {
         // let file_name = field.file_name().unwrap_or("upload.bin").to_string();
         // let mut file = File::create(format!("/tmp/{file_name}")).await.unwrap();

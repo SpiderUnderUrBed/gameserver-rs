@@ -12,10 +12,9 @@ pub enum FilesystemErrors {
 }
 
 #[allow(unused)]
-#[derive(Clone)]
 pub struct FileSystemHandler {
     pub file_tx: RemoteFileSystem<TcpFsSender, FlumeFile>,
-    file_rx: RemoteFileSystem<TcpFsReceiver, FlumeFile>,
+    pub file_rx: RemoteFileSystem<TcpFsReceiver, FlumeFile>,
     operations: FileOperations,
 }
 impl FileSystemHandler {
@@ -37,25 +36,7 @@ impl FileSystemHandler {
             operations: FileOperations::new(),
         }
     }
-    pub async fn send_flume_file(
-        &mut self,
-        original_location: Option<String>,
-        content_stream: Option<flume::Receiver<Vec<u8>>>,
-    ) -> Result<(), StreamableFileSystemErrors> {
-        // let filesystem_sender: &mut RemoteFileSystem<TcpFsSender, FlumeFile> =
-        //     &mut self.file_tx;
-        let file = FlumeFile {
-            original_location,
-            final_location: String::new(),
-            content_stream,
-        };
-        self.file_tx.set_codec(Codec::RawContinues);
-        self.file_tx.set_direction(Direction::Server);
-        let _ = self.file_tx.set_operation(Operation::Move);
-        self.file_tx.send_file(file).await?;
-        Ok(())
-    }
-    pub fn add_flume_file(
+    pub fn send_flume_file(
         &mut self,
         original_location: Option<String>,
         final_location: String,
@@ -79,7 +60,7 @@ impl FileSystemHandler {
     ) -> Result<(), StreamableFileSystemErrors> {
         // self.file_tx.execute_operation(state_id).await
         //     .map_err(|e| FilesystemErrors::Any(Box::new(e)))
-        self.file_tx.clone().execute_operation(state_id).await
+        self.file_tx.execute_operation(state_id).await
     }
     pub async fn proxy_receiver(&mut self) -> flume::Receiver<Vec<u8>> {
         self.file_tx.inner_mut().rx.clone()
@@ -87,6 +68,9 @@ impl FileSystemHandler {
     pub fn create_state(&mut self, state_id: u8, location: String) {
         self.file_tx.create_state(state_id, LocalState { location });
     }
+    // pub fn create_file_receiver(&mut self, file_stream: flume::Receiver<Vec<u8>>) {
+    //     self.file_rx
+    // }
     // pub fn set_start_delimiter(&mut self, start_delimiter: Vec<u8>){
     //     let tx = self.file_tx.inner_mut();
     //     let rx = self.file_rx.inner_mut();

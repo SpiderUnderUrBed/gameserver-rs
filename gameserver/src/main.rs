@@ -6,6 +6,7 @@ use futures::StreamExt;
 use general_networked_filesystem::FileRequest;
 use general_networked_filesystem::FileRequestExecutable;
 use general_networked_filesystem::{FileOperationResult, FileOperations};
+use general_networked_filesystem::LocalState;
 use network_abstraction_lib::erasure::erase_stream_wrapper_result;
 use network_abstraction_lib::erasure::erase_string_wrapper;
 use network_abstraction_lib::general::ErrorResponse;
@@ -23,6 +24,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use tokio::fs;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
@@ -35,6 +37,7 @@ use tokio::time::Duration;
 use crate::broadcast::Sender;
 use crate::databasespec::Filters;
 use crate::databasespec::ServerMetadata;
+use crate::filesystem::FileSystemHandler;
 // use crate::filesystem::cleanup_end_file_markers;
 // use crate::filesystem::execute_file_operation;
 // use crate::filesystem::get_files_content;
@@ -74,7 +77,7 @@ mod databasespec;
 mod intergrations;
 mod jsondatabase;
 mod providers;
-
+mod filesystem;
 mod transport;
 
 use databasespec::ServerIndex;
@@ -677,6 +680,7 @@ struct AppState {
     db: Arc<Mutex<databasespec::Database>>,
     #[allow(unused)]
     db_conn: Arc<Mutex<Option<DbConn>>>,
+    filesystem: RwLock<FileSystemHandler>
 }
 
 // Will remove this, this was kept because at a time there was a issue with the channels reciving messages they sent, so
@@ -1370,6 +1374,22 @@ async fn spawn_request_loop(
     let mut needs_server_status_check = server_output_rx.is_none();
 
     let inner_arc_state = arc_state.clone();
+    tokio::spawn(async move {
+        
+        let filesystem_reader = inner_arc_state.filesystem.write().await;
+        let file_rx = &mut filesystem_reader.file_rx.clone();
+        file_rx.create_state(0, LocalState {
+            location: "/home/spiderunderurbed/projects/gameserver-rs/gameserver/server/test1.txt".to_owned(),
+        });
+        drop(filesystem_reader);
+        println!("about to enter loop");
+        loop {
+            let res = file_rx.receive_operation(0).await;
+            println!("got a receive {:#?}", res);
+        }
+    });
+
+    let inner_arc_state = arc_state.clone();
     let inner_out_tx = out_tx.clone();
     tokio::spawn(async move {
         loop {
@@ -1560,7 +1580,9 @@ async fn spawn_request_loop(
                     
                     let bytes = conn_handler.recv_bytes();
                     println!("{:?}", bytes);
-
+                    let mut filesystem_writer = inner_arc_state.filesystem.write().await;
+                    let res = filesystem_writer.file_rx.inner_mut().tx.send(bytes);
+                    println!("got a send {:#?}", res);
                 }
             }
             if !found_message {
@@ -1637,8 +1659,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     ensure_server_directory().await;
 
-    // state.cmd_tx = cmd_tx;
-
+    let (fs_sender_tx, fs_sender_rx) = flume::unbounded();
+    let (fs_receiver_tx, fs_receiver_rx) = flume::unbounded();
     let state = AppState {
         current_server: Arc::new(Mutex::new(None)),
         jailed_user: "server".to_string(),
@@ -1652,6 +1674,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         last_updated: Arc::new(Mutex::new(None)),
         db_conn: Arc::new(Mutex::new(Some(DbConn::first_connection().await))),
         db: Arc::clone(&arc_db),
+        filesystem: RwLock::new(FileSystemHandler::new(fs_sender_tx, fs_sender_rx, fs_receiver_tx, fs_receiver_rx))
     };
     let arc_state = Arc::new(state);
 
@@ -1703,65 +1726,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
 
     let arc_state = Arc::new(state);
-
-    // tokio::spawn(async move {
-    //     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
-    //     loop {
-    //         interval.tick().await;
-
-    //         let server_running = health_monitor_state.server_running.lock().await;
-    //         let mut server_process = health_monitor_state.server_process.lock().await;
-
-    //         if *server_running {
-    //             if let Some(process) = server_process.as_mut() {
-    //                 match process.try_wait() {
-    //                     Ok(Some(_)) => {
-    //                         drop(server_running);
-    //                         drop(server_process);
-
-    //                         let mut server_running =
-    //                             health_monitor_state.server_running.lock().await;
-    //                         *server_running = false;
-
-    //                         let mut server_process =
-    //                             health_monitor_state.server_process.lock().await;
-    //                         *server_process = None;
-
-    //                         println!("Server state reset due to process exit");
-    //                     }
-    //                     Ok(None) => {}
-    //                     Err(e) => {
-    //                         eprintln!("Error checking server process: {}", e);
-    //                     }
-    //                 }
-    //             } else {
-    //                 drop(server_running);
-    //                 drop(server_process);
-
-    //                 let mut server_running = health_monitor_state.server_running.lock().await;
-    //                 *server_running = false;
-
-    //             }
-    //         }
-    //     }
-    // });
-
-    // {
-    //     let mut server_running = arc_state.server_running.lock().await;
-    //     *server_running = true;
-    // }
-
-    // {
-    //     let mut server_running = arc_state.server_running.lock().await;
-    //     *server_running = false;
-    // }
-
     let (cmd_tx, cmd_rx) = mpsc::channel::<String>(10_000);
 
-    // let conn_state = arc_state;
     *arc_state.cmd_tx.lock().await = Some(Arc::new(cmd_tx.clone()));
     *arc_state.cmd_rx.lock().await = Some(cmd_rx);
-    //let conn_state = Mutex::new(arc_state);
 
     loop {
         let (mut conn_handler, addr_option) = listener.accept_connection().await?;
@@ -1836,18 +1804,6 @@ async fn fix_path(path: String) -> String {
 
     canonical_forced.to_string_lossy().into_owned()
 }
-
-// // this is a function which will look for a small slice (needle) in a bigger slice (haystack)
-// // if it finds it, it will return where it starts, otherwise returns None
-// fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-//     if needle.is_empty() || haystack.len() < needle.len() {
-//         return None;
-//     }
-
-//     haystack
-//         .windows(needle.len())
-//         .position(|window| window == needle)
-// }
 
 // this function takes a tcp stream and forwards the data from that to the sender it returns, used a few times
 pub async fn tcp_to_writer(stream: TcpStream) -> mpsc::Sender<Vec<u8>> {

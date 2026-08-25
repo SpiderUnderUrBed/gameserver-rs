@@ -4,7 +4,6 @@ import { playwright } from '@vitest/browser-playwright'
 import process from 'node:process'
 
 const execPath = process.env.PLAYWRIGHT_LAUNCH_OPTIONS_EXECUTABLE_PATH
-console.log('DEBUG executablePath at config-eval:', execPath)
 
 export default defineConfig({
   plugins: [svelte()],

@@ -13,15 +13,16 @@ use tokio::sync::Notify;
 
 
 #[allow(dead_code)]
+#[derive(Clone)]
 pub struct FileOperations {
     state: HashMap<u64, LocalState>,
-    update: Notify,
+    //update: Notify,
 }
 impl FileOperations {
     pub fn new() -> FileOperations {
         FileOperations {
             state: HashMap::new(),
-            update: Notify::new(),
+            //update: Notify::new(),
         }
     }
     pub fn from_raw_bytes_request(

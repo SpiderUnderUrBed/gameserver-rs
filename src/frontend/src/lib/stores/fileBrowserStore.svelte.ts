@@ -31,7 +31,7 @@ export class FileBrowserStore {
 		const data = await this.processResponse(response);
 		return data;
 	}
-	public async fetchFiles(path: string = this.path) {
+	public async fetchFiles(path: string = this.path): Promise<void>{
 		this.loading = true;
 		this.error = null;
 		this.fileContent = '';
