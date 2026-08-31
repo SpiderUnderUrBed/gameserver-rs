@@ -181,6 +181,9 @@ if $INSTALL_NODE; then
     read -rp "Enter LOCALURL value for $NODE_SERVICE_NAME (leave blank for none): " LOCALURL_NODE
 fi
 
+git submodule sync --recursive
+git submodule update --init --remote --recursive
+
 cargo build --release "${CARGO_FEATURE_ARGS[@]}"
 
 if $INSTALL_PANEL; then

@@ -15,12 +15,17 @@ RUN npm run build
 FROM rust:1.76-slim AS rust-builder
 WORKDIR /app
 # Install build dependencies (linker, etc.)
-RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y git pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 # Copy the entire project
 COPY . .
 # Copy the built assets from the frontend stage (if Rust needs to embed them)
 COPY --from=frontend-builder /app/build ./src/frontend/build
 # Build the production binary
+
+
+RUN git submodule sync --recursive
+RUN git submodule update --init --remote --recursive
+
 RUN cargo build --release --features full-stack
 
 # Final Runntime

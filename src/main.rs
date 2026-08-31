@@ -1198,7 +1198,6 @@ async fn upload(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
-    // request: Request,
     mut multipart: Multipart,
 ) -> StatusCode {
     println!("got an upload request");
@@ -1216,20 +1215,28 @@ async fn upload(
 
     state.filesystem.create_state(0, "/".to_string());
 
-    let (tx, rx) = flume::unbounded();
-    // state
-    //     .filesystem
-    //     .send_flume_file(None, "test.txt".to_string(), Some(rx));
-    // let filesystem_sender: &mut RemoteFileSystem<TcpFsSender, FlumeFile> =
-    //     &mut state.filesystem.file_tx;
-    // let file = FlumeFile {
-    //     original_location: None,
-    //     final_location: "test.txt".to_string(),
-    //     content_stream: Some(rx),
-    // };
-    //filesystem_sender.append_files(file);
-    println!("appended the file");
+    let total_bytes = headers
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(1024 * 1024); 
+
+    const TARGET_CHUNKS: usize = 100;
+    let chunk_size = (total_bytes / TARGET_CHUNKS)
+        .max(1024)
+        .min(4 * 1024 * 1024); 
+
+    let delay_ms = ((chunk_size / 1024) as u64) 
+        .max(5)   
+        .min(200); 
+    let send_delay = Duration::from_millis(delay_ms);
+
+    let (tx, rx): (flume::Sender<Vec<u8>>, flume::Receiver<Vec<u8>>) = flume::unbounded();
+    let (chunked_tx, chunked_rx): (flume::Sender<Vec<u8>>, flume::Receiver<Vec<u8>>) =
+        flume::unbounded();
+
     drop(state);
+
     let inner_arc_state = Arc::clone(&arc_state);
     tokio::spawn(async move {
         let mut state = inner_arc_state.write().await;
@@ -1238,50 +1245,65 @@ async fn upload(
         drop(state);
         let request = FileTransferRequest { stream: rx };
         let _ = request.stream_transport(inner_arc_state).await;
-        // println!("got the rx");
-        // drop(state);
-        // println!("past dropping state");
-        
-        // loop {
-        //     if let Ok(bytes) = rx.recv() {
-        //         println!("{:#?}", bytes);
-        //     } else {
-        //         println!("failed to get osme bytes");
-        //     }
-        // }
-        //println!("past loop");
     });
-    // let file = FlumeFile { original_location: None, final_location:  "test.txt".to_string(), content_stream: Some(rx) };
-    println!("past the first loop");
+
+    tokio::spawn(async move {
+        let mut buffer: Vec<u8> = Vec::with_capacity(chunk_size * 2);
+
+        while let Ok(bytes) = rx.recv_async().await {
+            buffer.extend_from_slice(&bytes);
+
+            while buffer.len() >= chunk_size {
+                let to_send: Vec<u8> = buffer.drain(..chunk_size).collect();
+
+                if send_delay > Duration::ZERO {
+                    tokio::time::sleep(send_delay).await;
+                }
+
+                if chunked_tx.send_async(to_send).await.is_err() {
+                    return;
+                }
+            }
+        }
+
+        if !buffer.is_empty() {
+            let _ = chunked_tx.send_async(buffer).await;
+        }
+    });
+
     tokio::spawn(async move {
         let mut state = arc_state.write().await;
         state.filesystem.create_state(0, "/".to_string());
         let mut filesystem = state.filesystem.clone();
         drop(state);
-        let res = filesystem.send_flume_file(None, Some(rx)).await;
+        let res = filesystem.send_flume_file(None, Some(chunked_rx)).await;
         println!("{:#?}", res);
-        //let res = filesystem.execute_operation(0).await;
-        //println!("got a res: {:#?}", res);
-        
     });
-    println!("past the second");
 
-    //tokio::time::sleep(Duration::from_millis(1000)).await;
-    while let Some(mut field) = multipart.next_field().await.unwrap() {
-        // let file_name = field.file_name().unwrap_or("upload.bin").to_string();
-        // let mut file = File::create(format!("/tmp/{file_name}")).await.unwrap();
-
-        // `field` implements Stream<Item = Result<Bytes, MultipartError>>
-        while let Some(chunk) = field.chunk().await.unwrap() {
-            // file.write_all(&chunk).await.unwrap();
-            println!("sent some chunks");
-            let _ = tx.send_async(chunk.to_vec()).await;
+    'multipart: while let Ok(field) = multipart.next_field().await {
+        let Some(mut field) = field else { break };
+        loop {
+            match field.chunk().await {
+                Ok(Some(chunk)) => {
+                    println!("sent chunk: {} bytes", chunk.len());
+                    if tx.send_async(chunk.to_vec()).await.is_err() {
+                        eprintln!("chunked_tx receiver dropped");
+                        break 'multipart;
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    eprintln!("multipart chunk error: {:?}", e);
+                    break 'multipart;
+                }
+            }
         }
     }
 
     StatusCode::OK
 }
-//SrcAndDest
+
+// SrcAndDest
 async fn migrate(
     State(arc_state): State<Arc<RwLock<AppState>>>,
     auth_session: AuthSession,

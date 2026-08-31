@@ -24,6 +24,11 @@ RUN apt-get update && apt-get install -y bubblewrap && rm -rf /var/lib/apt/lists
 
 WORKDIR /usr/src/app
 
+# Assume in the development environment that the developer
+# would be playing around with the submodules
+# RUN git submodule sync --recursive
+# RUN git submodule update --init --remote --recursive
+
 RUN cargo install cargo-watch
 
 COPY Cargo.toml Cargo.lock ./
