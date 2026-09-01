@@ -23,7 +23,7 @@ use crate::middleware::from_fn;
 
 use axum::Form;
 use axum::error_handling::HandleErrorLayer;
-use axum::extract::Multipart;
+use axum::extract::{DefaultBodyLimit, Multipart};
 use axum::middleware::{self, Next};
 use axum::response::Redirect;
 use axum::response::Response;
@@ -307,9 +307,13 @@ struct UnauthenticatedMessagePayload {
     message: String,
 }
 
+#[derive(Debug)]
 pub enum StreamResult {
+    Init,
     Done,
+    Active,
     Reconnect(String, String),
+    Error(Box<dyn Error + Send + Sync>)
 }
 
 // #[derive(PartialEq)]
@@ -748,7 +752,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         filesystem,
     };
     state.conn_status = {
-        if check_channel_health(&state).await {
+        if check_channel_health(&mut state).await {
             Status::Up
         } else {
             Status::Down
@@ -830,6 +834,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/createuser", post(create_user))
         .route("/api/deleteuser", post(delete_user))
         .route("/api/setlock", post(set_lock))
+        .layer(DefaultBodyLimit::max(500 * 1024 * 1024)) 
         .merge(fallback_router)
         .with_state(multifaceted_state.clone());
 
@@ -908,7 +913,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 &state_clone,
                 node_url_clone,
                 &ws_tx_clone,
-                tx_clone,
             )
             .await;
             if initial_connection_result.is_err() {
@@ -1029,25 +1033,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             // internal for things like terminating a connection to a node locally, or forwarding said message to node
             if initial_connection_result.is_ok() {
                 println!("Creating a new connection");
-                let (new_tx, new_rx) = broadcast::channel::<Vec<u8>>(100);
+                let (new_tx, mut new_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
                 let (internal_tx, internal_rx) = broadcast::channel::<Vec<u8>>(100);
 
                 {
                     let mut state = inner_state.write().await;
-                    state.connection_handler.tx = new_tx.clone();
-                    state.connection_handler.rx = new_rx.resubscribe();
+                    state.connection_handler = ConnectionHandler::new();
                     state.internal_tx = Some(internal_tx);
                     state.internal_rx = Some(internal_rx.resubscribe());
                 }
+                // println!("after state");
 
                 let bridge_tx = inner_state.read().await.ws_tx.clone();
-
-                let connect_to_server_result =
-                    connect_to_server(inner_state, node_url, bridge_tx, true).await;
-                if let Err(_) = connect_to_server_result {
-                    // println", err);
-                    println!("got an error connecting to server");
-                }
+                
+                // tokio::spawn(async move {
+                    let connect_to_server_result =
+                        connect_to_server(inner_state, node_url, bridge_tx, true).await;
+                    println!("After connect server");
+                    if let Err(_) = connect_to_server_result {
+                        // println", err);
+                        println!("got an error connecting to server");
+                    }
+                // });
             }
         });
         // This will make sure that the results of the initial connections attempt to build a docker image, or create a k8s deployment succeeded
@@ -1193,6 +1200,7 @@ async fn file_operations(
 
     StatusCode::CREATED
 }
+
 #[axum::debug_handler]
 async fn upload(
     State(arc_state): State<Arc<RwLock<AppState>>>,
@@ -1272,12 +1280,16 @@ async fn upload(
     });
 
     tokio::spawn(async move {
+        println!("getting a state lock");
         let mut state = arc_state.write().await;
+        println!("got a state lock");
         state.filesystem.create_state(0, "/".to_string());
         let mut filesystem = state.filesystem.clone();
         drop(state);
-        let res = filesystem.send_flume_file(None, Some(chunked_rx)).await;
-        println!("{:#?}", res);
+        //loop {
+            let res = filesystem.send_flume_file(None, Some(chunked_rx.clone())).await;
+            println!("got an error in sending: {:#?}", res);
+        // }
     });
 
     'multipart: while let Ok(field) = multipart.next_field().await {
@@ -1344,7 +1356,7 @@ async fn refresh_status(
     // }
     // if !authorized {
     state.conn_status = {
-        if check_channel_health(&state).await {
+        if check_channel_health(&mut state).await {
             Status::Up
         } else {
             Status::Down
@@ -3227,7 +3239,7 @@ pub async fn get_files(
     auth_session: AuthSession,
     Json(request): Json<IncomingMessage>,
 ) -> impl IntoResponse {
-    let state = arc_state.write().await;
+    let mut state = arc_state.write().await;
     // let mut location = self.location.clone();
     // if !(location.starts_with("server") || location.starts_with("/server")){
     //     location = format!("./server/{}", location);
@@ -3236,7 +3248,7 @@ pub async fn get_files(
         id: 0,
         location: "server/".to_string(),
     };
-    match request.node_transport(&state).await {
+    match request.node_transport(&mut state).await {
         Ok(response) => {
             Json(response).into_response()
         }

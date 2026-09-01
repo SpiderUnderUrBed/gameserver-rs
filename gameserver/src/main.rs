@@ -34,7 +34,6 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::time::sleep;
 use tokio::time::Duration;
 
-use crate::broadcast::Sender;
 use crate::databasespec::Filters;
 use crate::databasespec::ServerMetadata;
 use crate::filesystem::FileSystemHandler;
@@ -680,7 +679,8 @@ struct AppState {
     db: Arc<Mutex<databasespec::Database>>,
     #[allow(unused)]
     db_conn: Arc<Mutex<Option<DbConn>>>,
-    filesystem: RwLock<FileSystemHandler>
+    filesystem: RwLock<FileSystemHandler>,
+    filesystem_consumer_started: AtomicBool
 }
 
 // Will remove this, this was kept because at a time there was a issue with the channels reciving messages they sent, so
@@ -721,42 +721,6 @@ pub async fn unsure_ip_or_port_tcp_conn(
     Ok(stream)
 }
 
-// Takes a regular tcp stream and converts it to a broadcast channel
-// forwards the messages from the stream to a broadcast
-pub async fn tcp_to_broadcast(stream: TcpStream) -> Sender<Vec<u8>> {
-    let (tx, rx) = broadcast::channel::<Vec<u8>>(16);
-
-    let (mut reader, mut writer) = stream.into_split();
-
-    let mut broadcast_rx = rx.resubscribe();
-    tokio::spawn(async move {
-        while let Ok(msg) = broadcast_rx.recv().await {
-            if let Err(e) = writer.write_all(&msg).await {
-                eprintln!("[tcp_to_broadcast] Failed to write to socket: {}", e);
-                break;
-            }
-        }
-    });
-
-    let tx_clone = tx.clone();
-    tokio::spawn(async move {
-        let mut buf = [0u8; 1024];
-        loop {
-            match reader.read(&mut buf).await {
-                Ok(0) => break,
-                Ok(n) => {
-                    let _ = tx_clone.send(buf[..n].to_vec());
-                }
-                Err(e) => {
-                    eprintln!("[tcp_to_broadcast] TCP read error: {}", e);
-                    break;
-                }
-            }
-        }
-    });
-
-    tx
-}
 
 // Looks for a env varible, if its not found, try the specified default, if none is found it will use the default of whatever that type is
 fn get_env_var_or_arg<T: std::str::FromStr>(env_var: &str, default: Option<T>) -> Option<T> {
@@ -1374,20 +1338,49 @@ async fn spawn_request_loop(
     let mut needs_server_status_check = server_output_rx.is_none();
 
     let inner_arc_state = arc_state.clone();
-    tokio::spawn(async move {
-        
-        let filesystem_reader = inner_arc_state.filesystem.write().await;
-        let file_rx = &mut filesystem_reader.file_rx.clone();
-        file_rx.create_state(0, LocalState {
-            location: "/home/spiderunderurbed/projects/gameserver-rs/gameserver/server/test1.txt".to_owned(),
+
+    if inner_arc_state
+        .filesystem_consumer_started
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+    {
+        tokio::spawn(async move {
+            use general_networked_filesystem::{chain::ChainBuilder, FileFrame};
+            use std::sync::atomic::{AtomicU64, Ordering};
+            use std::sync::Arc;
+
+            let filesystem_reader = inner_arc_state.filesystem.write().await;
+            let file_rx = &mut filesystem_reader.file_rx.clone();
+            file_rx.create_state(0, LocalState {
+                location: "/home/spiderunderurbed/projects/gameserver-rs/gameserver/server/test1.txt".to_owned(),
+            });
+            drop(filesystem_reader);
+            println!("about to enter loop");
+
+            let mut chain_builder = ChainBuilder::new(file_rx);
+            let mut chain = chain_builder
+                .chain::<FileFrame, _, _>(move |_, mut f, fs| {
+                    Box::pin(async move {
+                        let frame_bytes = f.chunks.len() as u64;
+                        
+                        FileFrame::write_at_location(
+                            &mut f,
+                            fs,
+                            "/home/spiderunderurbed/projects/gameserver-rs/gameserver/server/test1.txt".to_string(),
+                        )
+                    })
+                });
+
+            loop {
+                let res = chain.run(0).await;
+                println!("got a receive {:#?}", res);
+
+                if res.is_err() {
+                    break;
+                }
+            }
         });
-        drop(filesystem_reader);
-        println!("about to enter loop");
-        loop {
-            let res = file_rx.receive_operation(0).await;
-            println!("got a receive {:#?}", res);
-        }
-    });
+    }
 
     let inner_arc_state = arc_state.clone();
     let inner_out_tx = out_tx.clone();
@@ -1430,6 +1423,7 @@ async fn spawn_request_loop(
     let mut tick = tokio::time::interval(tokio::time::Duration::from_secs(1));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+    let mut pending_buf: Vec<u8> = Vec::new();
     'outer: loop {
         tokio::select! {
             Some(out) = out_rx.recv() => {
@@ -1674,7 +1668,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         last_updated: Arc::new(Mutex::new(None)),
         db_conn: Arc::new(Mutex::new(Some(DbConn::first_connection().await))),
         db: Arc::clone(&arc_db),
-        filesystem: RwLock::new(FileSystemHandler::new(fs_sender_tx, fs_sender_rx, fs_receiver_tx, fs_receiver_rx))
+        filesystem: RwLock::new(FileSystemHandler::new(fs_sender_tx, fs_sender_rx, fs_receiver_tx, fs_receiver_rx)),
+        filesystem_consumer_started: AtomicBool::new(false)
     };
     let arc_state = Arc::new(state);
 
@@ -1731,13 +1726,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     *arc_state.cmd_tx.lock().await = Some(Arc::new(cmd_tx.clone()));
     *arc_state.cmd_rx.lock().await = Some(cmd_rx);
 
+
     loop {
         let (mut conn_handler, addr_option) = listener.accept_connection().await?;
         let addr = addr_option.unwrap_or("unknown".to_string());
         println!("{}", addr);
 
         let router_clone = listener.get_arc_mutex_router().await;
-
+        
         tokio::spawn(
             async move { spawn_request_loop(&mut conn_handler, router_clone, addr).await },
         );
