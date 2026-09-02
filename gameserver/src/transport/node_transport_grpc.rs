@@ -37,7 +37,7 @@ pub enum BackgroundTaskUpdates {
     NoMoreFileTransfer
 }
 
-pub async fn spawn_conn_background_tasks(_arc_state: Arc<AppState>){
+pub async fn spawn_conn_background_tasks(arc_state: Arc<AppState>, arc_conn_manager: Arc<Mutex<ConnectionManager>>) {
 }
 pub struct ConnectionManager {
     url: String,
