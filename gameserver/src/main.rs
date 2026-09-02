@@ -1345,6 +1345,7 @@ async fn spawn_request_loop(
         .is_ok()
     {
         tokio::spawn(async move {
+            use general_networked_filesystem::SetFrame;
             use general_networked_filesystem::{chain::ChainBuilder, FileFrame};
             use std::sync::atomic::{AtomicU64, Ordering};
             use std::sync::Arc;
@@ -1352,24 +1353,45 @@ async fn spawn_request_loop(
             let filesystem_reader = inner_arc_state.filesystem.write().await;
             let file_rx = &mut filesystem_reader.file_rx.clone();
             file_rx.create_state(0, LocalState {
-                location: "/home/spiderunderurbed/projects/gameserver-rs/gameserver/server/test1.txt".to_owned(),
+                location: "server/".to_owned(),
             });
             drop(filesystem_reader);
             println!("about to enter loop");
 
             let mut chain_builder = ChainBuilder::new(file_rx);
-            let mut chain = chain_builder
+
+            let arc_location = Arc::new(Mutex::new(String::new()));
+            let inner_location = Arc::clone(&arc_location);
+            let mut binding = chain_builder
                 .chain::<FileFrame, _, _>(move |_, mut f, fs| {
+                    let inner_location = inner_location.clone();
                     Box::pin(async move {
-                        let frame_bytes = f.chunks.len() as u64;
-                        
+                        let location = inner_location.lock().await;
+                        println!("current location is {}", location);
                         FileFrame::write_at_location(
                             &mut f,
                             fs,
-                            "/home/spiderunderurbed/projects/gameserver-rs/gameserver/server/test1.txt".to_string(),
+                            location.to_string(),
                         )
                     })
                 });
+            let mut chain = binding.chain::<SetFrame, _, _>(move |_, mut s, fs| {
+                Box::pin({
+                let inner_location = arc_location.clone();
+                async move {
+                    println!("got chunks: {:?}", s.chunks);
+                    if let Ok(location_from_chunks) = String::from_utf8(s.chunks){
+                        println!("setting location to {}", location_from_chunks);
+                        *inner_location.lock().await = location_from_chunks;
+                        Ok(())
+                    } else {
+                        use general_networked_filesystem::FileHandleStatus;
+                        println!("returning err");
+                        Err(FileHandleStatus::IncorrectData)
+                    }
+                }
+                })
+            });
 
             loop {
                 let res = chain.run(0).await;

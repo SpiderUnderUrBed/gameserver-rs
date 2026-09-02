@@ -788,6 +788,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (fallback_router, maybe_oidc_layer) =
         routes_static(multifaceted_state.clone(), auth_layer.clone()).await;
 
+    let upload_router = Router::new()
+        .route("/api/upload", post(upload))
+        .layer(DefaultBodyLimit::max(500 * 1024 * 1024));
+
     // the main route, this serves all the api stuff that wont be behind a login, but I handle the main routes in routes_static for better control
     // over the authentication flow, if the api could be publically accessible in the future, you would need a diffrent way to authenticate with a api
     let inner = Router::new()
@@ -796,7 +800,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/servers", get(get_servers))
         .route("/api/users", get(users))
         .route("/api/ws", get(ws_handler))
-        .route("/api/upload", post(upload))
         // .route("/api/download/{*wildcard}", get(stream_file_download))
         .route("/api/fileoperations", post(file_operations))
         .route("/api/statistics", get(statistics))
@@ -834,7 +837,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/createuser", post(create_user))
         .route("/api/deleteuser", post(delete_user))
         .route("/api/setlock", post(set_lock))
-        .layer(DefaultBodyLimit::max(500 * 1024 * 1024)) 
+        .merge(upload_router) 
         .merge(fallback_router)
         .with_state(multifaceted_state.clone());
 
@@ -1248,7 +1251,6 @@ async fn upload(
     let inner_arc_state = Arc::clone(&arc_state);
     tokio::spawn(async move {
         let mut state = inner_arc_state.write().await;
-        println!("past write lock");
         let rx = state.filesystem.proxy_receiver().await;
         drop(state);
         let request = FileTransferRequest { stream: rx };
@@ -1279,21 +1281,22 @@ async fn upload(
         }
     });
 
+    let arc_location = Arc::new(Mutex::new(String::new()));
+    let inner_location = Arc::clone(&arc_location);
     tokio::spawn(async move {
-        println!("getting a state lock");
         let mut state = arc_state.write().await;
-        println!("got a state lock");
         state.filesystem.create_state(0, "/".to_string());
         let mut filesystem = state.filesystem.clone();
         drop(state);
-        //loop {
-            let res = filesystem.send_flume_file(None, Some(chunked_rx.clone())).await;
-            println!("got an error in sending: {:#?}", res);
-        // }
+        filesystem.add_flume_file(None, inner_location.lock().await.to_string(), Some(chunked_rx.clone()));
+        let _ = filesystem.execute_operation(0).await;
     });
 
     'multipart: while let Ok(field) = multipart.next_field().await {
         let Some(mut field) = field else { break };
+        if let Some(name) = field.file_name(){
+            *arc_location.lock().await = format!("server/{}", name.to_string());
+        }
         loop {
             match field.chunk().await {
                 Ok(Some(chunk)) => {
