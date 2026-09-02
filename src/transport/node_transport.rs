@@ -37,78 +37,6 @@ pub struct PasswordRequest {
     pub password: String,
 }
 
-pub trait ImmediateTransportable {
-    async fn immediate_transport(
-        &self,
-        state: &mut AppState,
-    ) -> Result<(), Box<dyn Error + Send + Sync>>;
-}
-
-// impl ImmediateTransportable for PasswordRequest {
-//     async fn immediate_transport(
-//         &self,
-//         state: &mut AppState,
-//     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-//         let auth_msg = serde_json::to_vec(&AuthTcpMessage {
-//             password: self.password.clone(),
-//         })?;
-//         let _ = state.connection_handler.proxy_tx.send(auth_msg);
-//         Ok(())
-//     }
-// }
-// impl ImmediateTransportable for CapabilitiesRequest {
-//     async fn immediate_transport(
-//         &self,
-//         state: &mut AppState,
-//     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-//         let capability_msg = serde_json::to_vec(&List {
-//             list: ToplevelApiCalls::Capabilities(self.capabilities.clone()),
-//         })?;
-//         let _ = state.connection_handler.proxy_tx.send(capability_msg);
-//         Ok(())
-//     }
-// }
-
-// impl ImmediateTransportable for ServernameRequest {
-//     async fn immediate_transport(
-//         &self,
-//         state: &mut AppState,
-//     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-//         let cmd_msg = serde_json::to_vec(&MessagePayload {
-//             r#type: "command".to_string(),
-//             message: "server_name".to_string(),
-//             authcode: "0".to_string(),
-//         })?;
-//         let _ = state.connection_handler.proxy_tx.send(cmd_msg);
-//         // writer.write_all(cmd_msg.as_bytes()).await?;
-
-//         'name: {
-//             // let mut state = arc_state.write().await;
-//             if let Ok(Ok(bytes)) = timeout(
-//                 Duration::from_millis(1000),
-//                 state.connection_handler.rx.recv(),
-//             )
-//             .await
-//             {
-//                 if let Ok(payload) = serde_json::from_slice::<IncomingMessage>(&bytes) {
-//                     state.current_node = NodeWithStream {
-//                         name: payload.message,
-//                         ip: self.ip.clone(),
-//                         ..Default::default()
-//                     };
-//                     break 'name;
-//                 }
-//             }
-//             state.current_node = NodeWithStream {
-//                 name: "main".to_string(),
-//                 ip: self.ip.clone(),
-//                 ..Default::default()
-//             };
-//         }
-
-//         Ok(())
-//     }
-// }
 
 impl NodeTransportable for ServernameRequest {
     type Output = ();
@@ -662,24 +590,6 @@ pub async fn connect_to_server(
     ws_tx: broadcast::Sender<String>,
     end_if_timeout: bool,
 ) -> Result<watch::Receiver<StreamResult>, Box<dyn Error + Send + Sync>> {
-    let mut last_peer: Option<SocketAddr>;
-    // let (proxy_tx, mut proxy_rx) = {
-    //     let state_guard = arc_state.write().await;
-    //     (
-    //         state_guard.connection_handler.proxy_tx.clone(),
-    //         state_guard.connection_handler.proxy_rx.resubscribe(),
-    //     )
-    // };
-
-    // let state = arc_state.write().await;
-    // let proxy_rx = state.connection_handler.proxy_rx;
-    // // let (tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-    // let share_tx_guard = state.connection_handler.share_tx.clone();
-    // drop(state);
-    // let mut share_tx = share_tx_guard.lock().await;
-    // let index = share_tx.len();
-    // share_tx.insert(index, tx);
-    // drop(share_tx);
 
     loop {
         let deadline = Instant::now() + CONNECTION_TIMEOUT;
@@ -690,27 +600,20 @@ pub async fn connect_to_server(
 
         match timeout(remaining, TcpStream::connect(&tcp_url)).await {
             Ok(Ok(stream)) => {
-                let peer = stream.peer_addr()?;
-                last_peer = Some(peer);
+                // let peer = stream.peer_addr()?;
+       
                 let cancel_token = CancellationToken::new();
                 
                 let mut state = arc_state.write().await;
-                //state_guard.connection_handler.stream = Some(&stream);
                 state.cancel_current_conn = cancel_token.clone();
                 state.conn_status = Status::Up;
-                // let proxy_rx = state_guard.connection_handler.proxy_rx.take();
-
+                let current_active_priority = Arc::clone(&state.connection_handler.current_active_priority);
                 let ip = stream.peer_addr()?.ip().to_string();
 
                 let (reader, mut writer) = stream.into_split();
                 let buf_reader = BufReader::new(reader);
                 let mut lines = buf_reader.lines();
 
-                // let mut proxy_rx_clone = proxy_rx.resubscribe();
-                // let proxy_tx_clone = proxy_tx.clone();
-                //let mut rx_clone = rx.resubscribe();
-
-                // let arc_state_clone = arc_state.clone();
                 let share_tx_guard = state.connection_handler.share_tx.clone();
                 let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
                 state.connection_handler.proxy_tx = Some(tx);
@@ -730,12 +633,9 @@ pub async fn connect_to_server(
                                         let bytes = line.as_bytes();
                                         
                                         let share_tx = share_tx_guard.lock().await;
-                                        println!("got the share tx lock");
                                         for (_, tx) in share_tx.iter() {
-                                            let res = tx.send(bytes.to_vec());
-                                            println!("{:#?}", res);
+                                            let _ = tx.send(bytes.to_vec());
                                         }
-                                        // let _ = tx.send(bytes.to_vec());
                                     },
                                     Ok(None) => {
                                         break;
@@ -753,9 +653,13 @@ pub async fn connect_to_server(
                                     if let Err(e) = writer.write_all(&bytes).await {
                                         println!("Error writing {}", e);
                                     }
-                                    if let Err(e) = writer.write_all(b"\n").await {
-                                        println!("Error writing {}", e);
-                                    };
+
+                                    if *current_active_priority.lock().await == 0 {
+                                        if let Err(e) = writer.write_all(b"\n").await {
+                                            println!("Error writing {}", e);
+                                        };
+                                    }
+
                                     if let Err(e) = writer.flush().await {
                                         println!("Error flushing writer: {}", e);
                                     };
@@ -865,11 +769,6 @@ pub(crate) async fn try_initial_connection(
                 // when I only create the initial tcp stream within the main function, it would involve either a thread here, or in the main function
                 // and i rather keep this function focused on testing the connection (there might be a very NICHE case for making a handler here, but if there isnt ill remove it)
                 if create_handler {
-                    // let (_, temp_rx) =
-                    //     tokio::sync::broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
-                    // let (_, temp_rx) =
-                    //     tokio::sync::mpsc::unbounded_channel();
-                    // let mut temp_rx = temp_rx;
 
                     let state = arc_state.write().await;
                     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
@@ -891,12 +790,6 @@ pub(crate) async fn try_initial_connection(
                             final_error = anyhow!("Stream ended unexpectedly: {:#?}", stream_result);
                         }
                     }
-                    // if stream_result.is_ok() {
-                    //     println!("Stream finished");
-                    //     return Ok(());
-                    // } else {
-                    //     final_error = anyhow!(stream_result.err().unwrap())
-                    // }
                 } else {
                     return Ok(());
                 }
@@ -918,92 +811,69 @@ pub trait NodeTransportable {
 pub struct ConnectionHandler {
     //stream: Option<&'static TcpStream>,
     pub(crate) proxy_tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
-    pub(crate) proxy_rx: Option<tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>>,
     pub(crate) share_tx: Arc<Mutex<HashMap<usize, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>>>,
-    pub(crate) tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
-    pub(crate) rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    pub(crate) current_active_priority: Arc<Mutex<usize>>,
 }
 impl ConnectionHandler {
     pub fn new() -> Self {
-        // let (tx, rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
-        // let (proxy_tx, proxy_rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-        let (proxy_tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-
         ConnectionHandler {
             //stream: None,
             proxy_tx: None,
-            proxy_rx: None,
             share_tx: Arc::new(Mutex::new(HashMap::new())),
-            tx,
-            rx,
+            current_active_priority: Arc::new(Mutex::new(0)),
         }
     }
 }
 impl Default for ConnectionHandler {
     fn default() -> Self {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-        let (proxy_tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-
         ConnectionHandler {
             //stream: None,
             proxy_tx: None,
-            proxy_rx: None,
             share_tx: Arc::new(Mutex::new(HashMap::new())),
-            tx,
-            rx,
+            current_active_priority: Arc::new(Mutex::new(0)),
         }
     }
 }
-// impl Clone for ConnectionHandler {
-//     fn clone(&self) -> Self {
-//         ConnectionHandler {
-//             //stream: None,
-//             proxy_tx: self.proxy_tx.clone(),
-//             proxy_rx: self.proxy_rx.resubscribe(),
-//             tx: self.tx.clone(),
-//             rx: self.rx.resubscribe(),
-//         }
-//     }
-// }
-
 
 impl NodeTransportable for LsRequest {
     type Output = DirectoryResponse;
     async fn node_transport(&self, state: &mut AppState) -> Result<DirectoryResponse, Box<dyn Error + Send + Sync>> {
-        Err("test".into())
-        // let file_req_traint: &dyn FileRequest = self; 
-        // let mut bytes = Vec::new();
-        // match serde_json::to_vec(&file_req_traint) {
-        //     Ok(b) => bytes.extend(b),
-        //     Err(e) => {
-        //         eprintln!("Serialization error: {}", e);
-        //         return Err("Failed to serialize".into());
-        //     }
-        // };
-        // if state.connection_handler.proxy_tx.is_none(){
-        //     return Err("no stream".into());
-        // }
-        // let _ = state.connection_handler.proxy_tx.clone().unwrap().send(bytes);
-        // let (tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-        // let share_tx_guard = state.connection_handler.share_tx.clone();
-        // drop(state);
-        // let mut share_tx = share_tx_guard.lock().await;
-        // let index = share_tx.len();
-        // share_tx.insert(index, tx);
-        // drop(share_tx);
-        // //let mut proxy_rx = state.connection_handler.proxy_rx.resubscribe();
-        // loop {
-        //     if let Some(bytes) = proxy_rx.recv().await {
-        //         if let Ok(response) = serde_json::from_slice::<DirectoryResponse>(&bytes) {
-        //             let mut share_tx = share_tx_guard.lock().await;
-        //             share_tx.remove(&index);
-        //             return Ok(response)
-        //         }
-        //     } else {
-        //         return Err("Receiver failed".into());
-        //     }
-        // }
+        if *state.connection_handler.current_active_priority.lock().await > 0 {
+            return Err("high priority task is occuring and cant be interfered with".into())
+        }
+
+        let file_req_traint: &dyn FileRequest = self; 
+        let mut bytes = Vec::new();
+        match serde_json::to_vec(&file_req_traint) {
+            Ok(b) => bytes.extend(b),
+            Err(e) => {
+                eprintln!("Serialization error: {}", e);
+                return Err("Failed to serialize".into());
+            }
+        };
+        if state.connection_handler.proxy_tx.is_none(){
+            return Err("no stream".into());
+        }
+        let _ = state.connection_handler.proxy_tx.clone().unwrap().send(bytes);
+        let (tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let share_tx_guard = state.connection_handler.share_tx.clone();
+        drop(state);
+        let mut share_tx = share_tx_guard.lock().await;
+        let index = share_tx.len();
+        share_tx.insert(index, tx);
+        drop(share_tx);
+        //let mut proxy_rx = state.connection_handler.proxy_rx.resubscribe();
+        loop {
+            if let Some(bytes) = proxy_rx.recv().await {
+                if let Ok(response) = serde_json::from_slice::<DirectoryResponse>(&bytes) {
+                    let mut share_tx = share_tx_guard.lock().await;
+                    share_tx.remove(&index);
+                    return Ok(response)
+                }
+            } else {
+                return Err("Receiver failed".into());
+            }
+        }
     }
 }
 
@@ -1011,6 +881,10 @@ impl NodeTransportable for LsRequest {
 impl NodeTransportable for DeleteServerRequest {
     type Output = ();
     async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+        if *state.connection_handler.current_active_priority.lock().await > 0 {
+            return Err("high priority task is occuring and cant be interfered with".into())
+        }
+
         let msg = MessagePayloadWithMetadata {
             r#type: "command".to_string(),
             message: "delete_server".to_string(),
@@ -1092,13 +966,6 @@ impl StreamTransportable for CreateServerRequest {
     }
 }
 
-// NodeTransportable
-
-// impl IntoResponse for CreateServerRequest {
-//     fn into_response(self) -> axum::response::Response {
-//         todo!()
-//     }
-// }
 
 impl StreamTransportable for StartServerRequest {
     type Output = mpsc::Receiver<ConsoleData>;
@@ -1106,6 +973,7 @@ impl StreamTransportable for StartServerRequest {
         &self,
         arc_state: Arc<RwLock<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
+
         let msg = serde_json::to_vec(&MessagePayload {
             r#type: "command".to_string(),
             message: "start_server".to_string(),
@@ -1114,7 +982,12 @@ impl StreamTransportable for StartServerRequest {
         if let Err(_) = msg {
             return Err("Failed to serialize".into());
         };
-        let mut state = arc_state.write().await;
+        let state = arc_state.write().await;
+
+        if *state.connection_handler.current_active_priority.lock().await > 0 {
+            return Err("high priority task is occuring and cant be interfered with".into())
+        }
+
         if state.connection_handler.proxy_tx.is_none(){
             return Err("no stream".into());
         }
@@ -1149,6 +1022,10 @@ impl StreamTransportable for StartServerRequest {
 impl NodeTransportable for StopServerRequest {
     type Output = ();
     async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+        if *state.connection_handler.current_active_priority.lock().await > 0 {
+            return Err("high priority task is occuring and cant be interfered with".into())
+        }
+
         let msg = serde_json::to_vec(&MessagePayload {
             r#type: "command".to_string(),
             message: "stop_server".to_string(),
@@ -1168,6 +1045,10 @@ impl NodeTransportable for StopServerRequest {
 impl NodeTransportable for MigrateRequest {
     type Output = ();
     async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+        if *state.connection_handler.current_active_priority.lock().await > 0 {
+            return Err("high priority task is occuring and cant be interfered with".into())
+        }
+
         match serde_json::to_vec(&self.common) {
             Ok(bytes) => {
                 if state.connection_handler.proxy_tx.is_none(){
@@ -1187,6 +1068,11 @@ impl NodeTransportable for MigrateRequest {
 impl NodeTransportable for SetServerRequest {
     type Output = ();
     async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+        if *state.connection_handler.current_active_priority.lock().await > 0 {
+            // if *state.connection_handler.current_active_priority.lock().await > 0 {
+            return Err("high priority task is occuring and cant be interfered with".into())
+        }
+
         let msg = MessagePayloadWithMetadata {
             r#type: "command".to_string(),
             message: "set_server".to_string(),
@@ -1215,6 +1101,10 @@ impl NodeTransportable for SetServerRequest {
 impl NodeTransportable for ServerDataRequest {
     type Output = ();
     async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+        if *state.connection_handler.current_active_priority.lock().await > 0 {
+            return Err("high priority task is occuring and cant be interfered with".into())
+        }
+
         let msg = MessagePayloadWithMetadata {
             r#type: "command".to_string(),
             message: "server_data".to_string(),
@@ -1238,26 +1128,14 @@ impl NodeTransportable for ServerDataRequest {
     }
 }
 
-// struct ServerState
-// NodeTransportable
 
-// pub struct RawBytes {
-//     pub(crate) bytes: Vec<u8>,
-// }
-
-// impl NodeTransportable for RawBytes {
-//     async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
-//         let _ = state.connection_handler.proxy_tx.send(self.bytes.clone());
-//         Ok(())
-//     }
-// }
-// NodeTransportable
-
-//InternalTransportable
-// struct FilterRequest impl NodeTransportable {
 impl NodeTransportable for FilterRequest {
     type Output = ();
     async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+        if *state.connection_handler.current_active_priority.lock().await > 0 {
+            return Err("high priority task is occuring and cant be interfered with".into())
+        }
+
         let filter_request = MessagePayloadWithMetadata {
             r#type: "command".to_string(),
             message: "set_filter".to_string(),
@@ -1266,7 +1144,9 @@ impl NodeTransportable for FilterRequest {
         };
         let _ = state
             .connection_handler
-            .tx
+            .proxy_tx
+            .clone()
+            .unwrap()
             .send(serde_json::to_vec(&filter_request).unwrap());
 
         Ok(())
@@ -1278,12 +1158,19 @@ impl NodeTransportable for FilterRequest {
 impl NodeTransportable for Ping {
     type Output = ();
     async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+        println!("got ping request");
+        if *state.connection_handler.current_active_priority.lock().await > 0 {
+            println!("high priority");
+            return Err("high priority task is occuring and cant be interfered with".into())
+        }
+
         let ping = SimpleMessage {
             message: "ping".to_string(),
         };
         if state.connection_handler.proxy_tx.is_none(){
             return Err("no stream".into());
         }
+        println!("sending ping");
         let _ = state
             .connection_handler
             .proxy_tx
@@ -1297,6 +1184,10 @@ impl NodeTransportable for Ping {
 impl NodeTransportable for IntegrationKeyRequest {
     type Output = ();
     async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+        if *state.connection_handler.current_active_priority.lock().await > 0 {
+            return Err("high priority task is occuring and cant be interfered with".into())
+        }
+
         match serde_json::to_vec(&self.key) {
             Ok(mut bytes) => {
                 // Add newline delimiter for TCP stream parsing
@@ -1319,12 +1210,15 @@ impl NodeTransportable for IntegrationKeyRequest {
     }
 }
 
-//InternalTransportable
 
 impl NodeTransportable for ServerStateRequest {
     type Output = ();
     async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let msg = serde_json::to_vec(&MessagePayload {
+        if *state.connection_handler.current_active_priority.lock().await > 0 {
+            return Err("high priority task is occuring and cant be interfered with".into())
+        }
+
+        let _ = serde_json::to_vec(&MessagePayload {
             r#type: "command".to_string(),
             message: "server_state".to_string(),
             authcode: "0".to_string(),
@@ -1336,46 +1230,55 @@ impl NodeTransportable for ServerStateRequest {
     }
 }
 
+struct PriorityGuard {
+    priority: Arc<tokio::sync::Mutex<usize>>,
+}
+
+impl Drop for PriorityGuard {
+    fn drop(&mut self) {
+        if let Ok(mut p) = self.priority.try_lock() {
+            *p = 0;
+        } else {
+            let priority = self.priority.clone();
+            tokio::spawn(async move {
+                *priority.lock().await = 0;
+            });
+        }
+    }
+}
+
 impl StreamTransportable for FileTransferRequest {
     type Output = ();
-    async fn stream_transport(
-        &self,
-        arc_state: Arc<RwLock<AppState>>,
-    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
-        println!("before state lock");
-        let state = arc_state.write().await;
-        // drop(state);
-        println!("before has stream");
-        if state.connection_handler.proxy_tx.is_none(){
-            return Err("no stream".into());
+async fn stream_transport(
+    &self,
+    arc_state: Arc<RwLock<AppState>>,
+) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
+    let state = arc_state.write().await;
+    if state.connection_handler.proxy_tx.is_none() {
+        return Err("no stream".into());
+    }
+    let priority_handle = state.connection_handler.current_active_priority.clone();
+    *priority_handle.lock().await = 1;
+    drop(state);
+
+    let _guard = PriorityGuard { priority: priority_handle };
+
+    while let Ok(bytes) = self.stream.recv_async().await {
+        let tx = {
+            let state = arc_state.read().await;
+            state.connection_handler.proxy_tx.clone()
+        };
+        let Some(tx) = tx else {
+            println!("proxy_tx dropped");
+            return Err("proxy_tx dropped mid-transfer".into());
+        };
+        if let Err(e) = tx.send(bytes) {
+            println!("send failed");
+            return Err("send failed mid-transfer".into());
         }
-        drop(state);
-        println!("before loop");
-while let Ok(bytes) = self.stream.recv_async().await {
-    let tx = {
-        let state = arc_state.read().await;  
-        state.connection_handler.proxy_tx.clone()
-    };
-    let Some(tx) = tx else {
-        eprintln!("proxy_tx gone mid-transfer, aborting");
-        return Err("proxy_tx dropped mid-transfer".into());
-    };
-    if let Err(e) = tx.send(bytes) {
-        eprintln!("write to node failed mid-transfer: {:?}", e);
-        return Err("send failed mid-transfer".into());
     }
+    println!("stream is over");
+    Ok(())
 }
-        Ok(())
-    }
 }
 
-
-// NoteTransportable
-//InternalTransportable
-// struct SrcAndDestFsRequest {
-//     src: String,
-//     dest: String
-// }
-//InternalTransportable
-// async fn send_request_to_node(){
-// }

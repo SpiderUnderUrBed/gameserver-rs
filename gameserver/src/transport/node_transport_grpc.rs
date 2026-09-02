@@ -33,6 +33,12 @@ use crate::transport::node_transport::node_transport_spec::SetServerRequest;
 use crate::transport::node_transport::node_transport_spec::StartServerRequest;
 use crate::transport::node_transport::node_transport_spec::StopServerRequest;
 
+pub enum BackgroundTaskUpdates {
+    NoMoreFileTransfer
+}
+
+pub async fn spawn_conn_background_tasks(_arc_state: Arc<AppState>){
+}
 pub struct ConnectionManager {
     url: String,
     accepted_connection: bool,

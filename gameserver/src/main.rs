@@ -7,6 +7,9 @@ use general_networked_filesystem::FileRequest;
 use general_networked_filesystem::FileRequestExecutable;
 use general_networked_filesystem::{FileOperationResult, FileOperations};
 use general_networked_filesystem::LocalState;
+use general_networked_filesystem::FileHandleStatus;
+use general_networked_filesystem::SetFrame;
+use general_networked_filesystem::{chain::ChainBuilder, FileFrame};
 use network_abstraction_lib::erasure::erase_stream_wrapper_result;
 use network_abstraction_lib::erasure::erase_string_wrapper;
 use network_abstraction_lib::general::ErrorResponse;
@@ -48,6 +51,7 @@ use crate::filesystem::FileSystemHandler;
 // use crate::filesystem::FileChunk;
 // use crate::filesystem::FileOperations;
 use crate::providers::{Custom, Platforms, Provider, ProviderConfig, ProviderDbList, ProviderGame};
+use crate::transport::node_transport::spawn_conn_background_tasks;
 use crate::transport::node_transport::ConnectionHandler;
 use crate::transport::node_transport::ConnectionManager;
 use crate::transport::node_transport_spec::ConsoleRequest;
@@ -680,7 +684,6 @@ struct AppState {
     #[allow(unused)]
     db_conn: Arc<Mutex<Option<DbConn>>>,
     filesystem: RwLock<FileSystemHandler>,
-    filesystem_consumer_started: AtomicBool
 }
 
 // Will remove this, this was kept because at a time there was a issue with the channels reciving messages they sent, so
@@ -1317,7 +1320,6 @@ async fn spawn_request_loop(
 
     let (out_tx, mut out_rx) = mpsc::channel::<String>(128);
     if let Ok(mut guard) = arc_state.output_tx.try_lock() {
-        println!("assigning out_tx");
         *guard = Some(out_tx.clone());
     }
 
@@ -1337,72 +1339,7 @@ async fn spawn_request_loop(
     let mut retry_interval = tokio::time::interval(tokio::time::Duration::from_secs(2));
     let mut needs_server_status_check = server_output_rx.is_none();
 
-    let inner_arc_state = arc_state.clone();
-
-    if inner_arc_state
-        .filesystem_consumer_started
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_ok()
-    {
-        tokio::spawn(async move {
-            use general_networked_filesystem::SetFrame;
-            use general_networked_filesystem::{chain::ChainBuilder, FileFrame};
-            use std::sync::atomic::{AtomicU64, Ordering};
-            use std::sync::Arc;
-
-            let filesystem_reader = inner_arc_state.filesystem.write().await;
-            let file_rx = &mut filesystem_reader.file_rx.clone();
-            file_rx.create_state(0, LocalState {
-                location: "server/".to_owned(),
-            });
-            drop(filesystem_reader);
-            println!("about to enter loop");
-
-            let mut chain_builder = ChainBuilder::new(file_rx);
-
-            let arc_location = Arc::new(Mutex::new(String::new()));
-            let inner_location = Arc::clone(&arc_location);
-            let mut binding = chain_builder
-                .chain::<FileFrame, _, _>(move |_, mut f, fs| {
-                    let inner_location = inner_location.clone();
-                    Box::pin(async move {
-                        let location = inner_location.lock().await;
-                        println!("current location is {}", location);
-                        FileFrame::write_at_location(
-                            &mut f,
-                            fs,
-                            location.to_string(),
-                        )
-                    })
-                });
-            let mut chain = binding.chain::<SetFrame, _, _>(move |_, mut s, fs| {
-                Box::pin({
-                let inner_location = arc_location.clone();
-                async move {
-                    println!("got chunks: {:?}", s.chunks);
-                    if let Ok(location_from_chunks) = String::from_utf8(s.chunks){
-                        println!("setting location to {}", location_from_chunks);
-                        *inner_location.lock().await = location_from_chunks;
-                        Ok(())
-                    } else {
-                        use general_networked_filesystem::FileHandleStatus;
-                        println!("returning err");
-                        Err(FileHandleStatus::IncorrectData)
-                    }
-                }
-                })
-            });
-
-            loop {
-                let res = chain.run(0).await;
-                println!("got a receive {:#?}", res);
-
-                if res.is_err() {
-                    break;
-                }
-            }
-        });
-    }
+   // let inner_arc_state = arc_state.clone();
 
     let inner_arc_state = arc_state.clone();
     let inner_out_tx = out_tx.clone();
@@ -1593,12 +1530,9 @@ async fn spawn_request_loop(
                     }
                     conn_handler.end_clean_hook().await;
                 } else {
-                    
                     let bytes = conn_handler.recv_bytes();
-                    println!("{:?}", bytes);
                     let mut filesystem_writer = inner_arc_state.filesystem.write().await;
-                    let res = filesystem_writer.file_rx.inner_mut().tx.send(bytes);
-                    println!("got a send {:#?}", res);
+                    let _ = filesystem_writer.file_rx.inner_mut().tx.send(bytes);
                 }
             }
             if !found_message {
@@ -1608,6 +1542,8 @@ async fn spawn_request_loop(
     }
     Ok(())
 }
+
+
 
 fn spawn_middlewares(router: &mut Router<Arc<AppState>>) {
     router.add_middleware(|mapping: String, request: &dyn IntoRequest| {
@@ -1691,7 +1627,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         db_conn: Arc::new(Mutex::new(Some(DbConn::first_connection().await))),
         db: Arc::clone(&arc_db),
         filesystem: RwLock::new(FileSystemHandler::new(fs_sender_tx, fs_sender_rx, fs_receiver_tx, fs_receiver_rx)),
-        filesystem_consumer_started: AtomicBool::new(false)
     };
     let arc_state = Arc::new(state);
 
@@ -1730,7 +1665,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     spawn_middlewares(&mut router);
 
     let state = Arc::clone(&router.get_state());
-    let mut listener = ConnectionManager::serve(router, config_local_url.clone().unwrap()).await?;
+    let mut arc_conn_manager = Arc::new(Mutex::new(ConnectionManager::serve(router, config_local_url.clone().unwrap()).await?));
     //TcpListener::bind(config_local_url.clone().unwrap()).await?;
     println!("Listening on {}", config_local_url.unwrap());
 
@@ -1742,19 +1677,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         None
     };
 
-    let arc_state = Arc::new(state);
     let (cmd_tx, cmd_rx) = mpsc::channel::<String>(10_000);
 
-    *arc_state.cmd_tx.lock().await = Some(Arc::new(cmd_tx.clone()));
-    *arc_state.cmd_rx.lock().await = Some(cmd_rx);
+    *state.cmd_tx.lock().await = Some(Arc::new(cmd_tx.clone()));
+    *state.cmd_rx.lock().await = Some(cmd_rx);
 
-
+    spawn_conn_background_tasks(state, Arc::clone(&arc_conn_manager)).await;
     loop {
-        let (mut conn_handler, addr_option) = listener.accept_connection().await?;
+        let mut conn_manager = arc_conn_manager.lock().await;
+        let (mut conn_handler, addr_option) = conn_manager.accept_connection().await?;
+
         let addr = addr_option.unwrap_or("unknown".to_string());
         println!("{}", addr);
 
-        let router_clone = listener.get_arc_mutex_router().await;
+        let router_clone = conn_manager.get_arc_mutex_router().await;
         
         tokio::spawn(
             async move { spawn_request_loop(&mut conn_handler, router_clone, addr).await },

@@ -903,7 +903,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         println!("Trying initial connection...");
         let state_clone = inner_state.clone();
         let ws_tx_clone = ws_tx.clone();
-        let tx_clone = inner_state.write().await.connection_handler.tx.clone();
         let node_url_clone = node_url.to_string();
 
         // TODO: Since I never create a handler with initial connections, should i take it out of the thread?, or rather,
@@ -1248,13 +1247,24 @@ async fn upload(
 
     drop(state);
 
+    let mut state = arc_state.write().await;
+    let fs_rx = state.filesystem.proxy_receiver().await;
+    drop(state);
+
+    let end_of_file_task = Arc::new(Notify::new());
+
+    let inner_end_of_file_task = Arc::clone(&end_of_file_task);
     let inner_arc_state = Arc::clone(&arc_state);
     tokio::spawn(async move {
-        let mut state = inner_arc_state.write().await;
-        let rx = state.filesystem.proxy_receiver().await;
-        drop(state);
-        let request = FileTransferRequest { stream: rx };
-        let _ = request.stream_transport(inner_arc_state).await;
+        let request = FileTransferRequest { stream: fs_rx };
+        
+        tokio::select! {
+            _ = request.stream_transport(inner_arc_state) => {},
+            _ = async move { 
+                inner_end_of_file_task.notified().await;
+                tokio::time::sleep(Duration::from_millis(10000)).await;
+            } => {}
+        }
     });
 
     tokio::spawn(async move {
@@ -1314,7 +1324,8 @@ async fn upload(
             }
         }
     }
-
+    end_of_file_task.notify_one();
+    
     StatusCode::OK
 }
 
