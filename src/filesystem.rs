@@ -5,6 +5,7 @@ use general_networked_filesystem::{
     StreamableFileSystemErrors,
     flume_delimited::{FlumeFile, TcpFsReceiver, TcpFsSender},
 };
+use tokio::sync::watch;
 
 #[derive(Debug)]
 pub enum FilesystemErrors {
@@ -86,6 +87,9 @@ impl FileSystemHandler {
     }
     pub fn create_state(&mut self, state_id: u8, location: String) {
         self.file_tx.create_state(state_id, LocalState { location });
+    }
+    pub fn get_operation_event(&self) -> watch::Receiver<Operation> {
+        self.file_tx.get_operation_event()
     }
     // pub fn set_start_delimiter(&mut self, start_delimiter: Vec<u8>){
     //     let tx = self.file_tx.inner_mut();

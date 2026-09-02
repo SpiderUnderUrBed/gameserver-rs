@@ -58,7 +58,7 @@ use axum_oidc::openidconnect::ClientSecret;
 use axum_oidc::openidconnect::IssuerUrl;
 use axum_oidc::openidconnect::Scope;
 use general_networked_filesystem::flume_delimited::{FlumeFile, TcpFsReceiver, TcpFsSender};
-use general_networked_filesystem::{FileOperations, LsRequest, RemoteFileSystem};
+use general_networked_filesystem::{FileOperations, LsRequest, Operation, RemoteFileSystem};
 
 use tokio::sync::{RwLock, watch};
 
@@ -1249,11 +1249,9 @@ async fn upload(
 
     let mut state = arc_state.write().await;
     let fs_rx = state.filesystem.proxy_receiver().await;
+    let mut update_operation_event = state.filesystem.get_operation_event();
     drop(state);
 
-    let end_of_file_task = Arc::new(Notify::new());
-
-    let inner_end_of_file_task = Arc::clone(&end_of_file_task);
     let inner_arc_state = Arc::clone(&arc_state);
     tokio::spawn(async move {
         let request = FileTransferRequest { stream: fs_rx };
@@ -1261,8 +1259,13 @@ async fn upload(
         tokio::select! {
             _ = request.stream_transport(inner_arc_state) => {},
             _ = async move { 
-                inner_end_of_file_task.notified().await;
-                tokio::time::sleep(Duration::from_millis(10000)).await;
+                loop { 
+                    let _ = update_operation_event.changed().await;
+                    if matches!(*update_operation_event.borrow(), Operation::Eof){
+                        break;
+                    }
+                }
+                // tokio::time::sleep(Duration::from_millis(10000)).await;
             } => {}
         }
     });
@@ -1324,8 +1327,7 @@ async fn upload(
             }
         }
     }
-    end_of_file_task.notify_one();
-    
+
     StatusCode::OK
 }
 

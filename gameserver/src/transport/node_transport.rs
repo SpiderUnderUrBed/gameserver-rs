@@ -73,11 +73,11 @@ pub async fn spawn_conn_background_tasks(arc_state: Arc<AppState>, arc_conn_mana
             }
             })
         });
-        let mut chain = chain.chain::<EofFrame, _, _>(move |state_id, mut eof, fs| {
+        let mut chain = chain.chain::<EofFrame, _, _>(move |state_id, eof, fs| {
             Box::pin({
                 let inner_watch_tx = watch_tx.clone();
                 async move {
-                    let res = inner_watch_tx.send(BackgroundTaskUpdates::NoMoreFileTransfer);
+                    let _ = inner_watch_tx.send(BackgroundTaskUpdates::NoMoreFileTransfer);
                     let _ = EofFrame::handle(eof, state_id, fs).await;
                     Ok(())
                 }
