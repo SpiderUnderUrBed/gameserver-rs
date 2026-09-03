@@ -719,10 +719,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let connection_handler = ConnectionHandler::new();
 
     let (fs_sender_tx, fs_sender_rx) = flume::unbounded();
-    let (fs_receiver_tx, fs_receiver_rx) = flume::unbounded();
+    //let (fs_receiver_tx, fs_receiver_rx) = flume::unbounded();
 
     let filesystem =
-        FileSystemHandler::new(fs_sender_tx, fs_sender_rx, fs_receiver_tx, fs_receiver_rx);
+        FileSystemHandler::new(fs_sender_tx, fs_sender_rx);
 
     let cached_status_type = watch::channel(String::new()).0;
 
@@ -1223,7 +1223,7 @@ async fn upload(
         return StatusCode::UNAUTHORIZED;
     }
 
-    state.filesystem.create_state(0, "/".to_string());
+    state.filesystem.create_state(0, "/".to_string()).await;
 
     let total_bytes = headers
         .get("content-length")
@@ -1249,7 +1249,7 @@ async fn upload(
 
     let mut state = arc_state.write().await;
     let fs_rx = state.filesystem.proxy_receiver().await;
-    let mut update_operation_event = state.filesystem.get_operation_event();
+    let mut update_operation_event = state.filesystem.get_operation_event().await;
     drop(state);
 
     let inner_arc_state = Arc::clone(&arc_state);
@@ -3289,8 +3289,10 @@ pub async fn stream_file_download(
     axum::extract::Path(file_path): axum::extract::Path<String>,
 ) -> impl IntoResponse {
     let mut state: tokio::sync::RwLockWriteGuard<'_, AppState> = arc_state.write().await;
-    let fs_rx = state.filesystem.proxy_receiver().await;
-
+    //let fs_rx = state.filesystem.proxy_receiver().await;
+    state.filesystem.upload().await;
+    //s
+    
     StatusCode::OK.into_response()
 }
 // pub async fn stream_file_download(
@@ -3525,9 +3527,8 @@ mod tests {
         let connection_handler = ConnectionHandler::new();
 
         let (fs_sender_tx, fs_sender_rx) = flume::unbounded();
-        let (fs_receiver_tx, fs_receiver_rx) = flume::unbounded();
         let filesystem =
-            FileSystemHandler::new(fs_sender_tx, fs_sender_rx, fs_receiver_tx, fs_receiver_rx);
+            FileSystemHandler::new(fs_sender_tx, fs_sender_rx);
         // filesystem.set_start_delimiter("\\f".as_bytes().to_vec());
         // filesystem.set_end_delimiter("//f".as_bytes().to_vec());
 

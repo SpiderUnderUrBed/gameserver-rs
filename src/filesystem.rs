@@ -1,12 +1,10 @@
 use std::any::Any;
-
+use std::sync::Arc;
 use general_networked_filesystem::{
-    Codec, Direction, FileOperations, LocalState, Operation, RemoteFileSystem,
-    StreamableFileSystemErrors,
-    flume_delimited::{FlumeFile, TcpFsReceiver, TcpFsSender},
+    flume_delimited::{FlumeFile, TcpFsBidirectional, TcpFsReceiver, TcpFsSender}, Codec, Direction, FileOperations, LocalState, Operation, RemoteFileSystem, StreamableFileSystemErrors
 };
 use tokio::sync::watch;
-
+use tokio::sync::Mutex;
 #[derive(Debug)]
 pub enum FilesystemErrors {
     Any(Box<dyn Any + Sync + Send>),
@@ -15,28 +13,34 @@ pub enum FilesystemErrors {
 #[allow(unused)]
 #[derive(Clone)]
 pub struct FileSystemHandler {
-    pub file_tx: RemoteFileSystem<TcpFsSender, FlumeFile>,
-    file_rx: RemoteFileSystem<TcpFsReceiver, FlumeFile>,
+    pub arc_file_tx: Arc<Mutex<RemoteFileSystem<TcpFsBidirectional, FlumeFile>>>,
     operations: FileOperations,
 }
 impl FileSystemHandler {
     pub fn new(
-        fs_sender_tx: flume::Sender<Vec<u8>>,
-        fs_sender_rx: flume::Receiver<Vec<u8>>,
-        fs_receiver_tx: flume::Sender<Vec<u8>>,
-        fs_receiver_rx: flume::Receiver<Vec<u8>>,
+        fs_tx: flume::Sender<Vec<u8>>,
+        fs_rx: flume::Receiver<Vec<u8>>,
+        // fs_receiver_tx: flume::Sender<Vec<u8>>,
+        // fs_receiver_rx: flume::Receiver<Vec<u8>>,
     ) -> FileSystemHandler {
-        let mut fs_sender = TcpFsSender::new(fs_sender_rx, fs_sender_tx);
-        let mut fs_receiver = TcpFsReceiver::new(fs_receiver_tx, fs_receiver_rx);
-        fs_sender.set_start_delimiter(r"\\\\f".as_bytes().to_vec());
-        fs_sender.set_end_delimiter("////f".as_bytes().to_vec());
-        fs_receiver.set_start_delimiter(r"\\\\f".as_bytes().to_vec());
-        fs_receiver.set_end_delimiter("////f".as_bytes().to_vec());
+        let mut file_tx = TcpFsBidirectional::new(fs_rx, fs_tx);
+        file_tx.set_start_delimiter(r"\\\\f".as_bytes().to_vec());
+        file_tx.set_end_delimiter("////f".as_bytes().to_vec());
         FileSystemHandler {
-            file_tx: RemoteFileSystem::new(fs_sender),
-            file_rx: RemoteFileSystem::new(fs_receiver),
+            arc_file_tx: Arc::new(Mutex::new(RemoteFileSystem::new(file_tx))),
             operations: FileOperations::new(),
         }
+    }
+    pub async fn upload(&self){
+        //arc_file_tx: Arc<Mutex<self>>
+        // self.file_tx.set_codec(Codec::RawContinues);
+        // self.file_tx.set_direction(Direction::Server);
+        let mut file_tx = self.arc_file_tx.lock().await;
+        let _ = file_tx.set_operation(Operation::Move);
+        drop(file_tx);
+        RemoteFileSystem::create_bidirectional_handler(self.arc_file_tx.clone(), 0, None).await;
+        
+
     }
     pub async fn send_flume_file(
         &mut self,
@@ -45,18 +49,19 @@ impl FileSystemHandler {
     ) -> Result<(), StreamableFileSystemErrors> {
         // let filesystem_sender: &mut RemoteFileSystem<TcpFsSender, FlumeFile> =
         //     &mut self.file_tx;
+        let mut file_tx = self.arc_file_tx.lock().await;
         let file = FlumeFile {
             original_location,
             final_location: String::new(),
             content_stream,
         };
-        self.file_tx.set_codec(Codec::RawContinues);
-        self.file_tx.set_direction(Direction::Server);
-        let _ = self.file_tx.set_operation(Operation::Move);
-        self.file_tx.send_file(file).await?;
+        file_tx.set_codec(Codec::RawContinues);
+        file_tx.set_direction(Direction::Server);
+        let _ = file_tx.set_operation(Operation::Move);
+        file_tx.send_file(file).await?;
         Ok(())
     }
-    pub fn add_flume_file(
+    pub async fn add_flume_file(
         &mut self,
         original_location: Option<String>,
         final_location: String,
@@ -64,15 +69,16 @@ impl FileSystemHandler {
     ) {
         // let filesystem_sender: &mut RemoteFileSystem<TcpFsSender, FlumeFile> =
         //     &mut self.file_tx;
+        let file_tx = self.arc_file_tx.lock().await;
         let file = FlumeFile {
             original_location,
             final_location,
             content_stream,
         };
-        self.file_tx.set_codec(Codec::RawContinues);
-        self.file_tx.set_direction(Direction::Server);
-        let _ = self.file_tx.set_operation(Operation::Move);
-        self.file_tx.append_files(file);
+        file_tx.set_codec(Codec::RawContinues);
+        file_tx.set_direction(Direction::Server);
+        let _ = file_tx.set_operation(Operation::Move);
+        file_tx.append_files(file);
     }
     pub async fn execute_operation(
         &mut self,
@@ -80,16 +86,20 @@ impl FileSystemHandler {
     ) -> Result<(), StreamableFileSystemErrors> {
         // self.file_tx.execute_operation(state_id).await
         //     .map_err(|e| FilesystemErrors::Any(Box::new(e)))
-        self.file_tx.clone().execute_operation(state_id).await
+        let file_tx = self.arc_file_tx.lock().await;
+        file_tx.clone().execute_operation(state_id).await
     }
     pub async fn proxy_receiver(&mut self) -> flume::Receiver<Vec<u8>> {
-        self.file_tx.inner_mut().rx.clone()
+        let mut file_tx = self.arc_file_tx.lock().await;
+        file_tx.inner_mut().rx.clone()
     }
-    pub fn create_state(&mut self, state_id: u8, location: String) {
-        self.file_tx.create_state(state_id, LocalState { location });
+    pub async fn create_state(&mut self, state_id: u8, location: String) {
+        let mut file_tx = self.arc_file_tx.lock().await;
+        file_tx.create_state(state_id, LocalState { location });
     }
-    pub fn get_operation_event(&self) -> watch::Receiver<Operation> {
-        self.file_tx.get_operation_event()
+    pub async fn get_operation_event(&self) -> watch::Receiver<Operation> {
+        let file_tx = self.arc_file_tx.lock().await;
+        file_tx.get_operation_event()
     }
     // pub fn set_start_delimiter(&mut self, start_delimiter: Vec<u8>){
     //     let tx = self.file_tx.inner_mut();

@@ -4,20 +4,13 @@
   
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
-    rust-overlay.url = "github:oxalica/rust-overlay";
   };
   
-  outputs = { self, nixpkgs, rust-overlay }: let
-    pkgs = import nixpkgs {
-      system = "x86_64-linux";
-      overlays = [ rust-overlay.overlays.default ];
-    };
-    rustToolchain = pkgs.rust-bin.fromRustupToolchainFile
-      ./rust-toolchain.toml;
-      
+  outputs = { self, nixpkgs }: let
+    pkgs = nixpkgs.legacyPackages."x86_64-linux";
+    
     # Common packages for both shells
     commonBuildInputs = with pkgs; [
-      rustToolchain
       cargo
       rustc
       rustfmt
