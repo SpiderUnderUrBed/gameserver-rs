@@ -800,7 +800,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/servers", get(get_servers))
         .route("/api/users", get(users))
         .route("/api/ws", get(ws_handler))
-        // .route("/api/download/{*wildcard}", get(stream_file_download))
+        .route("/api/download/{*wildcard}", get(stream_file_download))
         .route("/api/fileoperations", post(file_operations))
         .route("/api/statistics", get(statistics))
         .route("/api/getsettings", get(get_settings))
@@ -3282,7 +3282,17 @@ fn get_auth_bearer(headers: HeaderMap) -> Option<String> {
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(|token| token.to_string())
 }
+pub async fn stream_file_download(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    auth_session: AuthSession,
+    headers: HeaderMap,
+    axum::extract::Path(file_path): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let mut state: tokio::sync::RwLockWriteGuard<'_, AppState> = arc_state.write().await;
+    let fs_rx = state.filesystem.proxy_receiver().await;
 
+    StatusCode::OK.into_response()
+}
 // pub async fn stream_file_download(
 //     State(arc_state): State<Arc<RwLock<AppState>>>,
 //     auth_session: AuthSession,

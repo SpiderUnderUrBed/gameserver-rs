@@ -23,7 +23,9 @@ pub enum BackgroundTaskUpdates {
     None,
     NoMoreFileTransfer
 }
+// struct Test {
 
+// }
 pub async fn spawn_conn_background_tasks(arc_state: Arc<AppState>, arc_conn_manager: Arc<Mutex<ConnectionManager>>) {
     let (watch_tx, watch_rx) = watch::channel(BackgroundTaskUpdates::None);
     let mut conn_manager = arc_conn_manager.lock().await;
@@ -78,7 +80,7 @@ pub async fn spawn_conn_background_tasks(arc_state: Arc<AppState>, arc_conn_mana
                 let inner_watch_tx = watch_tx.clone();
                 async move {
                     let _ = inner_watch_tx.send(BackgroundTaskUpdates::NoMoreFileTransfer);
-                    let _ = EofFrame::handle(eof, state_id, fs).await;
+                    let _ = EofFrame::handle::<_, _>(eof, state_id, fs).await;
                     Ok(())
                 }
             })

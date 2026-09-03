@@ -550,13 +550,3 @@ impl ConnectionHandler {
     }
 }
 
-// TODO: work on a macro which leads to GRPC skipping the event loop
-// the test the implimentation, find a way to directly connect the GRPC code here
-// to the functional code defined in main
-//inventory
-macro_rules! connection {
-    () => {};
-}
-macro_rules! register_request {
-    ($arg1:ty => $arg2:ident) => {};
-}

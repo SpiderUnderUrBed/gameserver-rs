@@ -1,4 +1,5 @@
 use crate::transport::node_transport_spec::{CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FileTransferRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, Ping, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StopServerRequest};
+
 use crate::{ApiCalls as ToplevelApiCalls, AuthTcpMessage, IncomingMessage, List, NodeWithStream};
 use crate::{
     AppState, MessagePayload, MessagePayloadWithMetadata, MetadataTypes, SimpleMessage, SrcAndDest,
@@ -21,6 +22,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::{error::Error, net::SocketAddr, sync::Arc};
+
+use general_networked_filesystem::LsRequest;
+use general_networked_filesystem::DirectoryResponse;
 
 use tonic::transport::Channel;
 mod proto {
@@ -216,7 +220,6 @@ pub async fn try_initial_connection(
     _state: &Arc<RwLock<AppState>>,
     _tcp_url: String,
     _ws_tx: &broadcast::Sender<String>,
-    _tx: tokio::sync::broadcast::Sender<Vec<u8>>,
 ) -> Result<(), anyhow::Error> {
     Ok(())
 }
@@ -707,6 +710,16 @@ impl InternalTransportable for ServerStateRequest {
         Ok(())
     }
 }
+
+
+impl NodeTransportable for LsRequest {
+    type Output = DirectoryResponse;
+    async fn node_transport(&self, state: &mut AppState) -> Result<DirectoryResponse, Box<dyn Error + Send + Sync>> {
+        Err("not implimented".into())
+    }
+}
+
+
 impl NodeTransportable for FileTransferRequest {
     type Output = ();
     async fn node_transport(
@@ -717,6 +730,18 @@ impl NodeTransportable for FileTransferRequest {
         Ok(())
     }
 }
+
+impl StreamTransportable for FileTransferRequest {
+    type Output = ();
+    async fn stream_transport(
+        &self,
+        arc_state: Arc<RwLock<AppState>>,
+    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
+        Ok(())
+    }
+}
+
+
 
 impl Into<proto::MetadataTypes> for MetadataTypes {
     fn into(self) -> proto::MetadataTypes {
@@ -751,3 +776,5 @@ impl Into<proto::MetadataTypes> for MetadataTypes {
         }
     }
 }
+
+

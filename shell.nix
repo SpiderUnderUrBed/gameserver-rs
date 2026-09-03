@@ -9,6 +9,8 @@ pkgs.mkShell {
     postgresql 
     mariadb.client 
   ];
+  rustToolchain = pkgs.rust-bin.fromRustupToolchainFile
+    ./rust-toolchain.toml;
 
   shellHook = ''
     export PKG_CONFIG_PATH="${pkgs.openssl.dev}/lib/pkgconfig"
