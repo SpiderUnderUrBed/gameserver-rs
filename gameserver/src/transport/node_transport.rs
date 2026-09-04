@@ -1,11 +1,14 @@
+use std::fs::File;
+use std::io::{BufReader, Read};
 use std::{ops::ControlFlow, sync::Arc};
 
 use crate::{AppState, MessagePayload};
 use general_networked_filesystem::{chain::ChainBuilder, FileFrame, FileHandleStatus, LocalState, SetFrame};
-use general_networked_filesystem::{EofFrame, FrameCommons};
+use general_networked_filesystem::{DrainFrame, EofFrame, FrameCommons};
 use network_abstraction_lib::{FromWire, Router, ValueRequest};
 use serde::{Deserialize, Serialize};
 
+use tokio::sync::Notify;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{
@@ -14,6 +17,7 @@ use tokio::{
     },
     sync::{watch, Mutex},
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::{GetState, IncomingMessage, IncomingMessageWithMetadata, SimpleMessage};
 
@@ -35,7 +39,7 @@ pub async fn spawn_conn_background_tasks(arc_state: Arc<AppState>, arc_conn_mana
     tokio::spawn(async move {
         
         let filesystem_reader = arc_state.filesystem.write().await;
-        let file_rx = &mut filesystem_reader.file_rx.clone();
+        let file_rx = &mut filesystem_reader.arc_file_tx.lock().await.clone();
         file_rx.create_state(0, LocalState {
             location: "server/".to_owned(),
         });
@@ -59,9 +63,10 @@ pub async fn spawn_conn_background_tasks(arc_state: Arc<AppState>, arc_conn_mana
                 })
             });
         let inner_watch_tx = watch_tx.clone();
+        let arc_location_clone = Arc::clone(&arc_location);
         let mut chain = chain.chain::<SetFrame, _, _>(move |_, mut s, fs| {
             Box::pin({
-            let inner_location = arc_location.clone();
+            let inner_location = arc_location_clone.clone();
             let inner_watch_tx = inner_watch_tx.clone();
             async move {
                 let _ = inner_watch_tx.send(BackgroundTaskUpdates::None);
@@ -81,6 +86,78 @@ pub async fn spawn_conn_background_tasks(arc_state: Arc<AppState>, arc_conn_mana
                 async move {
                     let _ = inner_watch_tx.send(BackgroundTaskUpdates::NoMoreFileTransfer);
                     let _ = EofFrame::handle::<_, _>(eof, state_id, fs).await;
+                    Ok(())
+                }
+            })
+        });
+        let out_tx = arc_state.output_tx.clone();
+        let file_rx = arc_state.filesystem.write().await.proxy_receiver().await.clone();
+        let mut chain = chain.chain::<DrainFrame, _, _>(move |state_id, drain, fs| {
+            Box::pin({
+                let inner_location = arc_location.clone();
+                let inner_out_tx = out_tx.clone();
+                let inner_file_rx = file_rx.clone();
+                async move {
+                    // let location = "server/Children.of.Men.2006.1080p.BrRip.x264.BOKUTOX.YIFY.srt";
+                    let location = "server/forge-1.20.6-50.1.0-installer.jar";
+                    let file = File::open(location.to_string())
+                        .map_err(|e| FileHandleStatus::Any(Box::new(e)))?;
+
+                    let file_reader_task = Arc::new(CancellationToken::new());
+
+                    let inner_out_tx = inner_out_tx.lock().await.as_mut().unwrap().clone();
+                    let inner_file_reader_task = file_reader_task.clone();
+                    let mut fs_clone = fs.clone();
+                    tokio::spawn(async move {
+                        loop {
+                            tokio::select! {
+                                Ok(bytes) = inner_file_rx.recv_async() => {
+                                    let _ = inner_out_tx
+                                        .send(bytes)
+                                        .await;
+                                }
+                                _ = inner_file_reader_task.cancelled() => {
+ 
+                                    break;
+                                }
+                            };
+                        }
+                        let bytes = EofFrame::raw_output_with_delims(&mut fs_clone);
+                        let _ = inner_out_tx
+                            .send(bytes)
+                            .await;
+                    });
+
+                    let mut reader = BufReader::new(file);
+                    let mut chunk = vec![0u8; 1000];
+                    let (tx, rx) = flume::unbounded();
+   
+                    tokio::spawn(async move {
+                        loop {
+                            let n = reader.read(&mut chunk);
+                            match n {
+                                Ok(0) => {
+                                    println!("EOF reached");
+                                    break;
+                                }
+                                Ok(n) => {
+                                    println!("sending segment of {}", n);
+                                    if let Err(e) = tx.send(chunk[..n].to_vec()) {
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    println!("read error: {:#?}", e);
+                                    break;
+                                }
+                            }
+                        }
+                    });
+                    let mut rx_stream = rx.into_stream();
+                    let mut fs_clone = fs.clone();
+                    tokio::spawn(async move {
+                        let _: Result<(), FileHandleStatus> = DrainFrame::write_from_stream_with_delims(drain, state_id, &mut fs_clone, &mut Some(&mut rx_stream)).await;
+                    });
                     Ok(())
                 }
             })

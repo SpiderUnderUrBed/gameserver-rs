@@ -665,12 +665,12 @@ struct AppState {
     // current_server has to be an arc mutex because you cant assign data to an arc
     current_server: Arc<Mutex<Option<String>>>,
     //server_index: HashMap<String, ServerIndex>,
-    // TODO: consider if I want to add jailed user support
+    // TODO: consider if I want to add jailed usezr support
     #[allow(unused)]
     jailed_user: String,
     authenticated_origins: Arc<Mutex<Vec<String>>>,
     server_running: Arc<AtomicBool>,
-    output_tx: Arc<Mutex<Option<mpsc::Sender<String>>>>,
+    output_tx: Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>,
     server_output_tx: Arc<Mutex<Option<broadcast::Sender<String>>>>,
     cmd_rx: Mutex<Option<mpsc::Receiver<String>>>,
     cmd_tx: Mutex<Option<Arc<mpsc::Sender<String>>>>,
@@ -1318,7 +1318,7 @@ async fn spawn_request_loop(
         Arc::clone(router_guard.get_state())
     };
 
-    let (out_tx, mut out_rx) = mpsc::channel::<String>(128);
+    let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(128);
     if let Ok(mut guard) = arc_state.output_tx.try_lock() {
         *guard = Some(out_tx.clone());
     }
@@ -1361,7 +1361,7 @@ async fn spawn_request_loop(
             };
             match server_msg.await {
                 Ok(msg) => {
-                    if let Err(e) = inner_out_tx.send(msg).await {
+                    if let Err(e) = inner_out_tx.send(msg.into()).await {
                         eprintln!("Write error: {}", e);
                         break;
                     }
@@ -1385,8 +1385,9 @@ async fn spawn_request_loop(
     let mut pending_buf: Vec<u8> = Vec::new();
     'outer: loop {
         tokio::select! {
-            Some(out) = out_rx.recv() => {
-                if let Err(e) = writer.send((out + "\n").as_bytes().to_vec()).await {
+            Some(mut out) = out_rx.recv() => {
+                out.extend("\n".as_bytes().to_vec());
+                if let Err(e) = writer.send(out).await {
                     eprintln!("[{}] Write error: {}", addr, e);
                     break 'outer;
                 };
@@ -1406,7 +1407,8 @@ async fn spawn_request_loop(
         }
 
         let inner_arc_state = arc_state.clone();
-
+        let mut filesystem_writer = inner_arc_state.filesystem.write().await;
+        let file_sender = filesystem_writer.arc_file_tx.lock().await.inner_mut().tx.clone();
         loop {
             let mut found_message = false;
             while let Ok(_) = conn_handler.next().await {
@@ -1466,7 +1468,7 @@ async fn spawn_request_loop(
                                         match boxed.downcast::<String>() {
                                             Ok(resp) => {
                                                 println!("got resp: {}", *resp);
-                                                let _ = out_tx.send(*resp).await;
+                                                let _ = out_tx.send((*resp).into()).await;
                                             }
                                             Err(boxed) => {
                                                 match boxed.downcast::<Pin<
@@ -1482,7 +1484,7 @@ async fn spawn_request_loop(
                                                             {
                                                                 let _ = inner_out_tx
                                                                     .clone()
-                                                                    .send(item)
+                                                                    .send(item.into())
                                                                     .await;
                                                             }
                                                         });
@@ -1531,8 +1533,7 @@ async fn spawn_request_loop(
                     conn_handler.end_clean_hook().await;
                 } else {
                     let bytes = conn_handler.recv_bytes();
-                    let mut filesystem_writer = inner_arc_state.filesystem.write().await;
-                    let _ = filesystem_writer.file_rx.inner_mut().tx.send(bytes);
+                    let _ = file_sender.clone().send(bytes);
                 }
             }
             if !found_message {
@@ -1611,8 +1612,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     ensure_server_directory().await;
 
-    let (fs_sender_tx, fs_sender_rx) = flume::unbounded();
-    let (fs_receiver_tx, fs_receiver_rx) = flume::unbounded();
+    let (fs_tx, fs_rx) = flume::unbounded();
     let state = AppState {
         current_server: Arc::new(Mutex::new(None)),
         jailed_user: "server".to_string(),
@@ -1626,7 +1626,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         last_updated: Arc::new(Mutex::new(None)),
         db_conn: Arc::new(Mutex::new(Some(DbConn::first_connection().await))),
         db: Arc::clone(&arc_db),
-        filesystem: RwLock::new(FileSystemHandler::new(fs_sender_tx, fs_sender_rx, fs_receiver_tx, fs_receiver_rx)),
+        filesystem: RwLock::new(FileSystemHandler::new(fs_tx, fs_rx)),
     };
     let arc_state = Arc::new(state);
 

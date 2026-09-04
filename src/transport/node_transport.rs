@@ -1,15 +1,17 @@
 use axum::response::IntoResponse;
+use futures_util::stream::BoxStream;
 use general_networked_filesystem::{DirectoryResponse, FileRequest, FileRequestExecutable, LsRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::TcpStream,
-    sync::{broadcast, mpsc, watch, Mutex, RwLock},
+    sync::{broadcast, mpsc::{self, UnboundedReceiver}, watch, Mutex, RwLock},
     time::{sleep, timeout},
 };
+use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::sync::CancellationToken;
-use crate::transport::node_transport_spec::{CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FileTransferRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, Ping, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StopServerRequest};
+use crate::transport::node_transport_spec::{CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, Ping, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StopServerRequest};
 use crate::{
     ApiCalls as ToplevelApiCalls, AuthTcpMessage, Clients, ConsoleData, IncomingMessage,
     IntegrationCommands, KubeLocalRequest, List, LogLine, NodeWithStream,
@@ -26,12 +28,13 @@ use crate::{
     MessagePayloadWithMetadata, MetadataTypes, SimpleMessage, SrcAndDest, Status, StreamResult,
     database::databasespec::Filters,
 };
-use anyhow::anyhow;
 use std::{
     collections::HashMap, error::Error, net::SocketAddr, sync::{
         atomic::{AtomicBool, Ordering}, Arc
     }, time::{Duration, Instant}
 };
+use tokio_stream::StreamExt;
+use anyhow::anyhow;
 
 pub struct PasswordRequest {
     pub password: String,
@@ -634,6 +637,7 @@ pub async fn connect_to_server(
                                         
                                         let share_tx = share_tx_guard.lock().await;
                                         for (_, tx) in share_tx.iter() {
+                                            // println!("sharing with one dest");
                                             let _ = tx.send(bytes.to_vec());
                                         }
                                     },
@@ -682,7 +686,7 @@ pub async fn connect_to_server(
                     let stream_result =
                         handle_stream(Arc::clone(&arc_state), &mut rx, ip, ws_tx.clone()).await;
                     
-                    watch_tx.send(stream_result);
+                    let _ = watch_tx.send(stream_result);
                 });
                 return Ok(watch_rx);
             }
@@ -1247,38 +1251,106 @@ impl Drop for PriorityGuard {
     }
 }
 
-impl StreamTransportable for FileTransferRequest {
+impl StreamTransportable for FileUploadRequest {
     type Output = ();
-async fn stream_transport(
-    &self,
-    arc_state: Arc<RwLock<AppState>>,
-) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
-    let state = arc_state.write().await;
-    if state.connection_handler.proxy_tx.is_none() {
-        return Err("no stream".into());
-    }
-    let priority_handle = state.connection_handler.current_active_priority.clone();
-    *priority_handle.lock().await = 1;
-    drop(state);
-
-    let _guard = PriorityGuard { priority: priority_handle };
-
-    while let Ok(bytes) = self.stream.recv_async().await {
-        let tx = {
-            let state = arc_state.read().await;
-            state.connection_handler.proxy_tx.clone()
-        };
-        let Some(tx) = tx else {
-            println!("proxy_tx dropped");
-            return Err("proxy_tx dropped mid-transfer".into());
-        };
-        if let Err(e) = tx.send(bytes) {
-            println!("send failed");
-            return Err("send failed mid-transfer".into());
+    async fn stream_transport(
+        &self,
+        arc_state: Arc<RwLock<AppState>>,
+    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
+        println!("XX");
+        let state = arc_state.write().await;
+        println!("NN");
+        if state.connection_handler.proxy_tx.is_none() {
+            println!("No stream");
+            return Err("no stream".into());
         }
+        let priority_handle = state.connection_handler.current_active_priority.clone();
+        *priority_handle.lock().await = 1;
+        drop(state);
+
+        let _guard = PriorityGuard { priority: priority_handle };
+        println!("LL");
+        while let Ok(bytes) = self.stream.recv_async().await {
+            println!("sending bytes: {:?}", bytes);
+            let tx = {
+                let state = arc_state.read().await;
+                state.connection_handler.proxy_tx.clone()
+            };
+            let Some(tx) = tx else {
+                println!("proxy_tx dropped");
+                return Err("proxy_tx dropped mid-transfer".into());
+            };
+            if let Err(e) = tx.send(bytes) {
+                println!("send failed");
+                return Err("send failed mid-transfer".into());
+            }
+        }
+        println!("stream is over");
+        Ok(())
     }
-    println!("stream is over");
-    Ok(())
 }
+
+impl StreamTransportable for FileDownloadRequest {
+    // type Output = BoxStream<'static, Result<Vec<u8>, std::io::Error>>;
+    type Output = flume::Receiver<Vec<u8>>;
+    async fn stream_transport(
+        &self,
+        arc_state: Arc<RwLock<AppState>>,
+    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
+        println!("L");
+        let state = arc_state.write().await;
+        println!("CT");
+        if state.connection_handler.proxy_tx.is_none() {
+            return Err("no stream".into());
+        }
+        let priority_handle = state.connection_handler.current_active_priority.clone();
+        *priority_handle.lock().await = 1;
+        drop(state);
+
+        let _guard = PriorityGuard { priority: priority_handle };
+        let stream = self.stream.clone();
+        let inner_arc_state = arc_state.clone();
+        println!("N");
+        tokio::spawn(async move {
+            while let Ok(bytes) = stream.recv_async().await {
+                println!("sending bytes: {:?}", bytes);
+                let tx = {
+                    let state = inner_arc_state.read().await;
+                    state.connection_handler.proxy_tx.clone()
+                };
+                if let Some(tx) = tx {
+                    if let Err(e) = tx.send(bytes){
+                        println!("{:#?}", e);
+                    }
+                } else {
+                    println!("is breaking here");
+                    break;
+                }
+            }
+            println!("exited task 1");
+        });
+
+        println!("stream is over");
+        let state = arc_state.write().await;
+        let (tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let share_tx_guard = state.connection_handler.share_tx.clone();
+        drop(state);
+        let mut share_tx = share_tx_guard.lock().await;
+        let index = share_tx.len();
+        share_tx.insert(index, tx);
+        drop(share_tx);
+        let (flume_tx, flume_rx) = flume::unbounded();
+        tokio::spawn(async move {
+            while let Some(bytes) = proxy_rx.recv().await {
+                let _ = flume_tx.send_async(bytes).await;
+            }
+            println!("exited task 2");
+        });
+        // let stream = UnboundedReceiverStream::new(proxy_rx)
+        //     .map(Ok::<Vec<u8>, std::io::Error>);
+        // Ok(Box::pin(stream))
+        println!("returning here");
+        Ok(flume_rx)
+    }
 }
 

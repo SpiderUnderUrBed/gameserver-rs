@@ -21,6 +21,9 @@ use crate::http::HeaderMap;
 use crate::kubernetes::{BuildDeploymentRequest, ListNodeInfoRequest};
 use crate::middleware::from_fn;
 
+use bytes::Bytes;
+
+use axum::http::header;
 use axum::Form;
 use axum::error_handling::HandleErrorLayer;
 use axum::extract::{DefaultBodyLimit, Multipart};
@@ -148,7 +151,7 @@ use crate::transport::node_transport::{
     NodeTransportable, StreamTransportable, check_channel_health, connect_to_server,
 };
 use crate::transport::node_transport_spec::{
-    CreateServerRequest, DeleteServerRequest, FileTransferRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, Ping, ServerDataRequest, SetServerRequest, StartServerRequest, StopServerRequest
+    CreateServerRequest, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, Ping, ServerDataRequest, SetServerRequest, StartServerRequest, StopServerRequest
 };
 
 mod extra;
@@ -1254,7 +1257,7 @@ async fn upload(
 
     let inner_arc_state = Arc::clone(&arc_state);
     tokio::spawn(async move {
-        let request = FileTransferRequest { stream: fs_rx };
+        let request = FileUploadRequest { stream: fs_rx };
         
         tokio::select! {
             _ = request.stream_transport(inner_arc_state) => {},
@@ -1298,10 +1301,10 @@ async fn upload(
     let inner_location = Arc::clone(&arc_location);
     tokio::spawn(async move {
         let mut state = arc_state.write().await;
-        state.filesystem.create_state(0, "/".to_string());
+        state.filesystem.create_state(0, "/".to_string()).await;
         let mut filesystem = state.filesystem.clone();
         drop(state);
-        filesystem.add_flume_file(None, inner_location.lock().await.to_string(), Some(chunked_rx.clone()));
+        filesystem.add_flume_file(None, inner_location.lock().await.to_string(), Some(chunked_rx.clone())).await;
         let _ = filesystem.execute_operation(0).await;
     });
 
@@ -1330,6 +1333,177 @@ async fn upload(
 
     StatusCode::OK
 }
+pub async fn stream_file_download(
+    State(arc_state): State<Arc<RwLock<AppState>>>,
+    auth_session: AuthSession,
+    mut headers: HeaderMap,
+    axum::extract::Path(file_path): axum::extract::Path<String>,
+) -> Result<Response<Body>, StatusCode> {
+    println!("A");
+    let mut state = arc_state.write().await;
+    state.filesystem.create_state(0, "/".to_string()).await;
+    //let fs_rx = state.filesystem.proxy_receiver().await;
+    let fs_rx = state.filesystem.proxy_receiver().await;
+    //let mut update_operation_event = state.filesystem.get_operation_event().await;
+    println!("T");
+    drop(state);
+
+    let inner_arc_state = Arc::clone(&arc_state);
+    let request = FileDownloadRequest { stream: fs_rx };
+    // let stream = request.stream_transport(inner_arc_state).await
+    //     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    //     .map(|chunk| { println!("got bytes in stream"); Ok::<_, std::io::Error>(Bytes::from(chunk
+    //     .map_err(|e| {
+    //         println!("{:#?}", e);
+    //         e
+    //     })?)) });
+    let raw_stream = request.stream_transport(inner_arc_state).await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let stream = FileSystemHandler::create_basic_file_stream(raw_stream)
+        .await
+        .into_stream()
+        .map(|chunk: Vec<u8>| {
+            println!("got bytes in stream");
+            Ok::<_, std::io::Error>(Bytes::from(chunk))
+        });
+
+    let mut state = arc_state.write().await;
+    let filesystem = state.filesystem.clone();
+    tokio::spawn(async move {
+        // loop {
+        let _ = filesystem.download().await;
+        println!("After download task");
+        //}
+    });
+    println!("out of download task");
+    // tokio::spawn(async move {
+    //     let request = FileDownloadRequest { stream: fs_rx };
+        
+    //     tokio::select! {
+    //         _ = request.stream_transport(inner_arc_state) => {
+    //             println!("finished stream transport");
+    //         },
+    //         // _ = async move { 
+    //         //     loop { 
+    //         //         let _ = update_operation_event.changed().await;
+    //         //         if matches!(*update_operation_event.borrow(), Operation::Eof){
+    //         //             break;
+    //         //         }
+    //         //     }
+    //         //     // tokio::time::sleep(Duration::from_millis(10000)).await;
+    //         // } => {}
+    //     }
+    // });
+    headers.insert(
+        header::CONTENT_TYPE, 
+        "application/octet-stream".parse().unwrap(),
+    );
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        format!("attachment; filename=\"{}\"", "test.sh")
+            .parse()
+            .unwrap(),
+    );
+
+    // if let Some(size) = file_size {
+    //     headers.insert(header::CONTENT_LENGTH, size.to_string().parse().unwrap());
+    // } else {
+    //     headers.insert(header::TRANSFER_ENCODING, "chunked".parse().unwrap());
+    // }
+    let body = Body::from_stream(stream);
+    let mut response = Response::new(body);
+    *response.headers_mut() = headers;
+
+    println!("K");
+    Ok(response)
+}
+
+// pub async fn stream_file_download(
+//     State(arc_state): State<Arc<RwLock<AppState>>>,
+//     auth_session: AuthSession,
+//     headers: HeaderMap,
+//     axum::extract::Path(file_path): axum::extract::Path<String>,
+// ) -> Result<Response<Body>, StatusCode> {
+//     let state = arc_state.read().await;
+//     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
+//     if !authorized {
+//         return Err(StatusCode::UNAUTHORIZED);
+//     }
+//     drop(state);
+
+//     let tcp_fs = {
+//         let state = arc_state.read().await;
+//         let (tx, rx) = state.connection_handler.get_filesystem_stream();
+//         //(state.connection_handler.proxy_tx.clone(), state.connection_handler.proxy_rx.resubscribe());
+//         Arc::new(Mutex::new(TcpFs::new(tx, rx)))
+//     };
+
+//     let decoded_path = urlencoding::decode(&file_path)
+//         .map_err(|_| StatusCode::BAD_REQUEST)?
+//         .to_string();
+
+//     let normalized_path = normalize_and_secure_path(&decoded_path)?;
+
+//     let metadata = {
+//         let fs = tcp_fs.lock().await;
+//         let mut remote_fs = RemoteFileSystem::new(&normalized_path, Some((*fs).clone()));
+
+//         let is_file = remote_fs.is_file().await.map_err(|e| {
+//             eprintln!("Error checking if path is file: {}", e);
+//             StatusCode::NOT_FOUND
+//         })?;
+
+//         if !is_file {
+//             return Err(StatusCode::BAD_REQUEST);
+//         }
+
+//         remote_fs.ensure_metadata().await.map_err(|e| {
+//             eprintln!("Error getting metadata: {}", e);
+//             StatusCode::INTERNAL_SERVER_ERROR
+//         })?;
+
+//         remote_fs.cached_metadata.clone()
+//     };
+
+//     let file_size = metadata.as_ref().and_then(|m| m.file_size);
+//     let chunk_size = 64 * 1024;
+
+//     let stream = TcpFileStream::new(
+//         tcp_fs.clone(),
+//         normalized_path.clone(),
+//         file_size,
+//         chunk_size,
+//     );
+
+//     let body = Body::from_stream(stream);
+
+//     let filename = std::path::Path::new(&normalized_path)
+//         .file_name()
+//         .and_then(|n| n.to_str())
+//         .unwrap_or("download");
+
+//     let mut response = Response::new(body);
+//     let headers = response.headers_mut();
+
+//     headers.insert(
+//         header::CONTENT_TYPE,
+//         "application/octet-stream".parse().unwrap(),
+//     );
+//     headers.insert(
+//         header::CONTENT_DISPOSITION,
+//         format!("attachment; filename=\"{}\"", filename)
+//             .parse()
+//             .unwrap(),
+//     );
+
+//     if let Some(size) = file_size {
+//         headers.insert(header::CONTENT_LENGTH, size.to_string().parse().unwrap());
+//     } else {
+//         headers.insert(header::TRANSFER_ENCODING, "chunked".parse().unwrap());
+//     }
+
+//     Ok(response)
+// }
 
 // SrcAndDest
 async fn migrate(
@@ -3282,105 +3456,7 @@ fn get_auth_bearer(headers: HeaderMap) -> Option<String> {
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(|token| token.to_string())
 }
-pub async fn stream_file_download(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
-    auth_session: AuthSession,
-    headers: HeaderMap,
-    axum::extract::Path(file_path): axum::extract::Path<String>,
-) -> impl IntoResponse {
-    let mut state: tokio::sync::RwLockWriteGuard<'_, AppState> = arc_state.write().await;
-    //let fs_rx = state.filesystem.proxy_receiver().await;
-    state.filesystem.upload().await;
-    //s
-    
-    StatusCode::OK.into_response()
-}
-// pub async fn stream_file_download(
-//     State(arc_state): State<Arc<RwLock<AppState>>>,
-//     auth_session: AuthSession,
-//     headers: HeaderMap,
-//     axum::extract::Path(file_path): axum::extract::Path<String>,
-// ) -> Result<Response<Body>, StatusCode> {
-//     let state = arc_state.read().await;
-//     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
-//     if !authorized {
-//         return Err(StatusCode::UNAUTHORIZED);
-//     }
-//     drop(state);
 
-//     let tcp_fs = {
-//         let state = arc_state.read().await;
-//         let (tx, rx) = state.connection_handler.get_filesystem_stream();
-//         //(state.connection_handler.proxy_tx.clone(), state.connection_handler.proxy_rx.resubscribe());
-//         Arc::new(Mutex::new(TcpFs::new(tx, rx)))
-//     };
-
-//     let decoded_path = urlencoding::decode(&file_path)
-//         .map_err(|_| StatusCode::BAD_REQUEST)?
-//         .to_string();
-
-//     let normalized_path = normalize_and_secure_path(&decoded_path)?;
-
-//     let metadata = {
-//         let fs = tcp_fs.lock().await;
-//         let mut remote_fs = RemoteFileSystem::new(&normalized_path, Some((*fs).clone()));
-
-//         let is_file = remote_fs.is_file().await.map_err(|e| {
-//             eprintln!("Error checking if path is file: {}", e);
-//             StatusCode::NOT_FOUND
-//         })?;
-
-//         if !is_file {
-//             return Err(StatusCode::BAD_REQUEST);
-//         }
-
-//         remote_fs.ensure_metadata().await.map_err(|e| {
-//             eprintln!("Error getting metadata: {}", e);
-//             StatusCode::INTERNAL_SERVER_ERROR
-//         })?;
-
-//         remote_fs.cached_metadata.clone()
-//     };
-
-//     let file_size = metadata.as_ref().and_then(|m| m.file_size);
-//     let chunk_size = 64 * 1024;
-
-//     let stream = TcpFileStream::new(
-//         tcp_fs.clone(),
-//         normalized_path.clone(),
-//         file_size,
-//         chunk_size,
-//     );
-
-//     let body = Body::from_stream(stream);
-
-//     let filename = std::path::Path::new(&normalized_path)
-//         .file_name()
-//         .and_then(|n| n.to_str())
-//         .unwrap_or("download");
-
-//     let mut response = Response::new(body);
-//     let headers = response.headers_mut();
-
-//     headers.insert(
-//         header::CONTENT_TYPE,
-//         "application/octet-stream".parse().unwrap(),
-//     );
-//     headers.insert(
-//         header::CONTENT_DISPOSITION,
-//         format!("attachment; filename=\"{}\"", filename)
-//             .parse()
-//             .unwrap(),
-//     );
-
-//     if let Some(size) = file_size {
-//         headers.insert(header::CONTENT_LENGTH, size.to_string().parse().unwrap());
-//     } else {
-//         headers.insert(header::TRANSFER_ENCODING, "chunked".parse().unwrap());
-//     }
-
-//     Ok(response)
-// }
 // fn normalize_and_secure_path(path: &str) -> Result<String, StatusCode> {
 //     use std::path::{Component, PathBuf};
 

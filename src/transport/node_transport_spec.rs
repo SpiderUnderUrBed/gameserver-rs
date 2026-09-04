@@ -55,6 +55,10 @@ pub struct IntegrationKeyRequest {
 
 pub struct ServerStateRequest {}
 
-pub struct FileTransferRequest {
+pub struct FileUploadRequest {
+    pub(crate) stream: flume::Receiver<Vec<u8>>
+}
+
+pub struct FileDownloadRequest {
     pub(crate) stream: flume::Receiver<Vec<u8>>
 }
