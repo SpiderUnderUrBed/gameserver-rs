@@ -30,6 +30,9 @@ pub enum BackgroundTaskUpdates {
 // struct Test {
 
 // }
+// struct Test {
+
+// }
 pub async fn spawn_conn_background_tasks(arc_state: Arc<AppState>, arc_conn_manager: Arc<Mutex<ConnectionManager>>) {
     let (watch_tx, watch_rx) = watch::channel(BackgroundTaskUpdates::None);
     let mut conn_manager = arc_conn_manager.lock().await;
@@ -98,41 +101,21 @@ pub async fn spawn_conn_background_tasks(arc_state: Arc<AppState>, arc_conn_mana
                 let inner_out_tx = out_tx.clone();
                 let inner_file_rx = file_rx.clone();
                 async move {
-                    // let location = "server/Children.of.Men.2006.1080p.BrRip.x264.BOKUTOX.YIFY.srt";
-                    let location = "server/forge-1.20.6-50.1.0-installer.jar";
+                    let location = "server/Children.of.Men.2006.1080p.BrRip.x264.BOKUTOX.YIFY.srt";
+                    // let location = "server/forge-1.20.6-50.1.0-installer.jar";
                     let file = File::open(location.to_string())
                         .map_err(|e| FileHandleStatus::Any(Box::new(e)))?;
 
                     let file_reader_task = Arc::new(CancellationToken::new());
 
                     let inner_out_tx = inner_out_tx.lock().await.as_mut().unwrap().clone();
-                    let inner_file_reader_task = file_reader_task.clone();
-                    let mut fs_clone = fs.clone();
-                    tokio::spawn(async move {
-                        loop {
-                            tokio::select! {
-                                Ok(bytes) = inner_file_rx.recv_async() => {
-                                    let _ = inner_out_tx
-                                        .send(bytes)
-                                        .await;
-                                }
-                                _ = inner_file_reader_task.cancelled() => {
- 
-                                    break;
-                                }
-                            };
-                        }
-                        let bytes = EofFrame::raw_output_with_delims(&mut fs_clone);
-                        let _ = inner_out_tx
-                            .send(bytes)
-                            .await;
-                    });
+
 
                     let mut reader = BufReader::new(file);
                     let mut chunk = vec![0u8; 1000];
                     let (tx, rx) = flume::unbounded();
    
-                    tokio::spawn(async move {
+                    tokio::task::spawn_blocking(move || {
                         loop {
                             let n = reader.read(&mut chunk);
                             match n {
@@ -155,8 +138,11 @@ pub async fn spawn_conn_background_tasks(arc_state: Arc<AppState>, arc_conn_mana
                     });
                     let mut rx_stream = rx.into_stream();
                     let mut fs_clone = fs.clone();
+                    // tokio::spawn(async move {
+                    //     conn_manager.listner.
+                    // })
                     tokio::spawn(async move {
-                        let _: Result<(), FileHandleStatus> = DrainFrame::write_from_stream_with_delims(drain, state_id, &mut fs_clone, &mut Some(&mut rx_stream)).await;
+                        let _: Result<(), FileHandleStatus> = DrainFrame::write_from_custom_stream_with_delims(drain, state_id, &mut fs_clone, &mut Some(&mut rx_stream), inner_out_tx).await;
                     });
                     Ok(())
                 }
@@ -174,6 +160,7 @@ pub async fn spawn_conn_background_tasks(arc_state: Arc<AppState>, arc_conn_mana
     });
     // Arc::new(watch_rx)
 }
+
 
 pub struct ConnectionManager {
     listner: TcpListener,
