@@ -75,7 +75,6 @@ pub async fn spawn_conn_background_tasks(arc_state: Arc<AppState>, arc_conn_mana
                 let _ = inner_watch_tx.send(BackgroundTaskUpdates::None);
                 if let Ok(location_from_chunks) = String::from_utf8(s.chunks){
                     *inner_location.lock().await = location_from_chunks;
-                    println!("past location set");
                     Ok(())
                 } else {
                     Err(FileHandleStatus::IncorrectData)
@@ -99,15 +98,12 @@ pub async fn spawn_conn_background_tasks(arc_state: Arc<AppState>, arc_conn_mana
             Box::pin({
                 let inner_location = arc_location.clone();
                 let inner_out_tx = out_tx.clone();
-                let inner_file_rx = file_rx.clone();
                 async move {
-                    //let location = "server/Children.of.Men.2006.1080p.BrRip.x264.BOKUTOX.YIFY.srt";
-                    let location = "server/forge-1.20.6-50.1.0-installer.jar";
+                    let location = inner_location.lock().await;
                     let file = File::open(location.to_string())
                         .map_err(|e| FileHandleStatus::Any(Box::new(e)))?;
 
-                    let file_reader_task = Arc::new(CancellationToken::new());
-
+         
                     let inner_out_tx = inner_out_tx.lock().await.as_mut().unwrap().clone();
 
 
@@ -120,11 +116,9 @@ pub async fn spawn_conn_background_tasks(arc_state: Arc<AppState>, arc_conn_mana
                             let n = reader.read(&mut chunk);
                             match n {
                                 Ok(0) => {
-                                    println!("EOF reached");
                                     break;
                                 }
                                 Ok(n) => {
-                                    println!("sending segment of {}", n);
                                     if let Err(e) = tx.send(chunk[..n].to_vec()) {
                                         break;
                                     }
@@ -138,9 +132,6 @@ pub async fn spawn_conn_background_tasks(arc_state: Arc<AppState>, arc_conn_mana
                     });
                     let mut rx_stream = rx.into_stream();
                     let mut fs_clone = fs.clone();
-                    // tokio::spawn(async move {
-                    //     conn_manager.listner.
-                    // })
                     tokio::spawn(async move {
                         let _: Result<(), FileHandleStatus> = DrainFrame::write_from_custom_stream_with_delims(drain, state_id, &mut fs_clone, &mut Some(&mut rx_stream), inner_out_tx).await;
                     });
@@ -151,7 +142,6 @@ pub async fn spawn_conn_background_tasks(arc_state: Arc<AppState>, arc_conn_mana
 
         loop {
             let res = chain.run(0).await;
-            println!("got a receive {:#?}", res);
 
             if res.is_err() {
                 break;
@@ -279,7 +269,6 @@ impl ConnectionHandler {
                         self.newline_pos = pos;
                     },
                     Protocol::Continue(_) => {
-                        println!("continuing");
                     },
                 }
 

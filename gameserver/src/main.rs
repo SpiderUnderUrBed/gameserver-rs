@@ -1386,7 +1386,7 @@ async fn spawn_request_loop(
     'outer: loop {
         tokio::select! {
             Some(mut out) = out_rx.recv() => {
-                out.extend("\n".as_bytes().to_vec());
+                out.push(b'\n');
                 if let Err(e) = writer.send(out).await {
                     eprintln!("[{}] Write error: {}", addr, e);
                     break 'outer;

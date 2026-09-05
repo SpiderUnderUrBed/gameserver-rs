@@ -42,19 +42,11 @@ impl FileSystemHandler {
         full_remote_fs
     }
     // pub async fn create_basic_file_stream(&self, mut raw_rx: mpsc::UnboundedReceiver<Vec<u8>>) -> mpsc::UnboundedReceiver<Vec<u8>> {
-    pub async fn create_basic_file_stream(mut raw_rx: flume::Receiver<Vec<u8>>) -> flume::Receiver<Vec<u8>> {
-        // let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    pub async fn create_basic_file_stream(mut raw_rx: flume::Receiver<Vec<u8>>, end_file_task: Arc<CancellationToken>) -> flume::Receiver<Vec<u8>> {
         let (fs_out_tx, fs_out_rx) = flume::unbounded();
 
-        //let inner_fs_out_rx = fs_out_rx.clone();
-        // let inner_end_file_task = end_file_task.clone();
         tokio::spawn(async move {
-            // while let Ok(bytes) = raw_rx.recv_async().await {
-            //     fs_in_tx.send(bytes);
-            // } 
             let (fs_in_tx, fs_in_rx) = flume::unbounded();
-            let end_file_task = Arc::new(CancellationToken::new());
-
             let mut handler = FileSystemHandler::create_file_handler(fs_in_tx.clone(), fs_in_rx.clone());
             let mut chain_builder = ChainBuilder::new(&mut handler);
             let mut chain = chain_builder
@@ -62,7 +54,6 @@ impl FileSystemHandler {
                     let inner_fs_out_tx = fs_out_tx.clone();
                     Box::pin(async move {
                         let res = inner_fs_out_tx.send_async(f.chunks).await;
-                        println!("sending finished file chunks res: {:#?}", res);
                         Ok(())
                     })
                 });
@@ -71,33 +62,22 @@ impl FileSystemHandler {
                 .chain::<EofFrame, _, _>(move |_, mut e, fs| {
                     let inner_end_file_task = inner_end_file_task.clone();
                     Box::pin(async move {
-                        println!("notifying and ending transfer");
                         inner_end_file_task.cancel();
                         Ok(())
                     })
                 });
             loop {
                 tokio::select! {
-                    // biased;
                     Ok(bytes) = raw_rx.recv_async() => {
-                        println!("raw bytes: {:?}", bytes);
-                        //let _ = fs_in_tx.send_async(bytes).await;
                         let remainder = &mut 0;
                         tokio::select! {
                             _ = chain.decode_bytes(0, bytes, remainder) => {},
                             _ = end_file_task.cancelled() => {
-                                println!("breaking");
                                 break;
                             }
                         }
                     }
-                    // _ = chain.run(0) => {
-                    //     println!("ended chain run");
-                    // }
-                    // Ok(bytes) = inner_fs_out_rx.recv_async() => {
-                    // }
                     _ = end_file_task.cancelled() => {
-                        println!("breaking");
                         break;
                     }
                 }
@@ -105,28 +85,17 @@ impl FileSystemHandler {
         });
         fs_out_rx
     }
-    pub async fn download(&self){
-        //arc_file_tx: Arc<Mutex<self>>
-        // self.file_tx.set_codec(Codec::RawContinues);
-        // self.file_tx.set_direction(Direction::Server);
+
+    pub async fn download(&self, location: String){
+        self.set_location(location).await;
         let mut file_tx = self.arc_file_tx.lock().await.clone();
         let _ = file_tx.set_operation(Operation::Drain);
-        // drop(file_tx);
-        // let mut file_tx = self.arc_file_tx.lock().await;
-        tokio::spawn(async move {
-            // let _ = file_tx.set_operation(Operation::Drain);
-            println!("before execute");
-            let res = RemoteFileSystem::execute_operation_bidirectionally(&mut file_tx, 0).await;
-            println!("execute res: {:#?}", res);
-        });
-        // tokio::spawn(async move {
-        // RemoteFileSystem::create_bidirectional_handler(self.arc_file_tx.clone(), 0, None).await;
-        // RemoteFileSystem::receive_operation_bidirectionally(&mut file_tx, 0, None).await;
-        //});
-        // let mut file_tx = self.arc_file_tx.lock().await;
-        // let _ = file_tx.set_operation(Operation::Drain);
-        // file_tx.execute_operation(0).await;
-        // drop(file_tx);
+
+        let _ = RemoteFileSystem::execute_operation_bidirectionally(&mut file_tx, 0).await;
+    }
+    pub async fn set_location(&self, location: String){
+        let mut file_tx = self.arc_file_tx.lock().await.clone();
+        let _ = file_tx.set_location(0, location).await;
     }
     pub async fn send_flume_file(
         &mut self,

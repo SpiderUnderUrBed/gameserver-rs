@@ -1,10 +1,11 @@
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
 use crate::{MetadataTypes, SrcAndDest, database::databasespec::Filters};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Notify};
 pub struct ServernameRequest {
     pub ip: String,
 }
@@ -60,5 +61,6 @@ pub struct FileUploadRequest {
 }
 
 pub struct FileDownloadRequest {
-    pub(crate) stream: flume::Receiver<Vec<u8>>
+    pub(crate) stream: flume::Receiver<Vec<u8>>,
+    pub(crate) task_end: Arc<CancellationToken>
 }

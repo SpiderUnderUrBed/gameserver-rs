@@ -432,11 +432,19 @@ async fn process_stream_data(
     server_stop_keyword: &mut String,
 ) -> StreamResult {
     if let Ok(text) = std::str::from_utf8(raw_data) {
-        println!("got text {:#?}", text);
         let line_content = text.trim();
         if line_content.is_empty() {
             return StreamResult::Active;
         }
+        // let state = arc_state.write().await;
+        // {
+        //     let arc_byte_filter_method = state.connection_handler.byte_filter_method.clone();
+        //     let byte_filter_method = &*arc_byte_filter_method.lock().await;
+        //     if matches!(byte_filter_method, BytesFilterMethod::Line){
+        //         println!("got text {:#?}", text);
+        //     }
+        // }
+        println!("got text {:#?}", text);
 
         let final_data: Vec<Value> = get_all_stream_data_parsed(line_content).await;
 
@@ -645,20 +653,11 @@ pub async fn connect_to_server(
                                         let bytes_filter_method = arc_bytes_filter_method.lock().await;
                                         match *bytes_filter_method {
                                             BytesFilterMethod::Line => {
-                                                // let buf_reader = BufReader::new(&mut read_buf);
                                                 read_buf.extend_from_slice(&temp_buf);
                                                 if read_buf.is_empty(){
                                                     continue;
                                                 }
-                                                // println!("{:?}", read_buf);
-                                                if let Some(pos) = read_buf.windows(2).enumerate().find_map(|(i, segment)| if segment == "\n".as_bytes(){ Some(i) } else if let Some(pos) = segment.iter().position(|b| *b == b'\n') { Some(i + pos) } else { None }){
-                                                    // let pos = read_buf
-                                                    //             .windows(2)
-                                                    //             .enumerate()
-                                                    //             .try_fold(0usize, |acc, (i, bytes)| {
-
-                                                    //             });
-                                                    println!("got a line");
+                                                if let Some(pos) = read_buf.iter().position(|b| *b == b'\n'){
                                                     let full_segment: &Vec<u8> = &read_buf.drain(..=pos).collect();
                                                     let share_tx = share_tx_guard.lock().await;
                                                     for (_, tx) in share_tx.iter() {
@@ -680,26 +679,7 @@ pub async fn connect_to_server(
                                     },
                                 }
                             }
-                            // read_result = lines.next_line() => {
-                            //     match read_result {
-                            //         Ok(Some(line)) => {
-                            //             println!("Got line: {:#?}", line.clone());
-                            //             let bytes = line.as_bytes();
-                                        
-                            //             let share_tx = share_tx_guard.lock().await;
-                            //             for (_, tx) in share_tx.iter() {
-                            //                 // println!("sharing with one dest");
-                            //                 let _ = tx.send(bytes.to_vec());
-                            //             }
-                            //         },
-                            //         Ok(None) => {
-                            //             break;
-                            //         }
-                            //         Err(_) => {
-                            //             break;
-                            //         },
-                            //     }
-                            // }
+  
                             receive_result = rx.recv() => {
                                 if let Some(bytes) = receive_result {
                                     if let Ok(utf8_string) = String::from_utf8(bytes.clone()){
@@ -1309,17 +1289,31 @@ impl Drop for PriorityGuard {
     }
 }
 
+struct BytesFilterMethodGuard {
+    bytes_filter_method: Arc<tokio::sync::Mutex<BytesFilterMethod>>,
+}
+
+impl Drop for BytesFilterMethodGuard {
+    fn drop(&mut self) {
+        if let Ok(mut p) = self.bytes_filter_method.try_lock() {
+            *p = BytesFilterMethod::Line;
+        } else {
+            let priority = self.bytes_filter_method.clone();
+            tokio::spawn(async move {
+                *priority.lock().await = BytesFilterMethod::Line;
+            });
+        }
+    }
+}
+
 impl StreamTransportable for FileUploadRequest {
     type Output = ();
     async fn stream_transport(
         &self,
         arc_state: Arc<RwLock<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
-        println!("XX");
         let state = arc_state.write().await;
-        println!("NN");
         if state.connection_handler.proxy_tx.is_none() {
-            println!("No stream");
             return Err("no stream".into());
         }
         let priority_handle = state.connection_handler.current_active_priority.clone();
@@ -1327,23 +1321,18 @@ impl StreamTransportable for FileUploadRequest {
         drop(state);
 
         let _guard = PriorityGuard { priority: priority_handle };
-        println!("LL");
         while let Ok(bytes) = self.stream.recv_async().await {
-            println!("sending bytes: {:?}", bytes);
             let tx = {
                 let state = arc_state.read().await;
                 state.connection_handler.proxy_tx.clone()
             };
             let Some(tx) = tx else {
-                println!("proxy_tx dropped");
                 return Err("proxy_tx dropped mid-transfer".into());
             };
             if let Err(e) = tx.send(bytes) {
-                println!("send failed");
                 return Err("send failed mid-transfer".into());
             }
         }
-        println!("stream is over");
         Ok(())
     }
 }
@@ -1355,24 +1344,27 @@ impl StreamTransportable for FileDownloadRequest {
         &self,
         arc_state: Arc<RwLock<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
-        println!("L");
         let state = arc_state.write().await;
-        println!("CT");
         if state.connection_handler.proxy_tx.is_none() {
             return Err("no stream".into());
         }
-        *state.connection_handler.byte_filter_method.lock().await = BytesFilterMethod::All;
+        let byte_filter_method_handle = state.connection_handler.byte_filter_method.clone();
         let priority_handle = state.connection_handler.current_active_priority.clone();
+        *byte_filter_method_handle.lock().await = BytesFilterMethod::All;
         *priority_handle.lock().await = 1;
         drop(state);
 
-        let _guard = PriorityGuard { priority: priority_handle };
+        let inner_task_end = self.task_end.clone();
+        tokio::spawn(async move {
+            let _bytes_filter_method_guard = BytesFilterMethodGuard { bytes_filter_method: byte_filter_method_handle };
+            let _priority_guard = PriorityGuard { priority: priority_handle };
+            inner_task_end.cancelled().await;
+        });
+
         let stream = self.stream.clone();
         let inner_arc_state = arc_state.clone();
-        println!("N");
         tokio::spawn(async move {
             while let Ok(bytes) = stream.recv_async().await {
-                println!("sending bytes: {:?}", bytes);
                 let tx = {
                     let state = inner_arc_state.read().await;
                     state.connection_handler.proxy_tx.clone()
@@ -1382,14 +1374,11 @@ impl StreamTransportable for FileDownloadRequest {
                         println!("{:#?}", e);
                     }
                 } else {
-                    println!("is breaking here");
                     break;
                 }
             }
-            println!("exited task 1");
         });
 
-        println!("stream is over");
         let state = arc_state.write().await;
         let (tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
         let share_tx_guard = state.connection_handler.share_tx.clone();
@@ -1398,17 +1387,13 @@ impl StreamTransportable for FileDownloadRequest {
         let index = share_tx.len();
         share_tx.insert(index, tx);
         drop(share_tx);
-        let (flume_tx, flume_rx) = flume::unbounded();
+        let (flume_tx, flume_rx) = flume::bounded(32);
         tokio::spawn(async move {
             while let Some(bytes) = proxy_rx.recv().await {
+                println!("got bytes");
                 let _ = flume_tx.send_async(bytes).await;
             }
-            println!("exited task 2");
         });
-        // let stream = UnboundedReceiverStream::new(proxy_rx)
-        //     .map(Ok::<Vec<u8>, std::io::Error>);
-        // Ok(Box::pin(stream))
-        println!("returning here");
         Ok(flume_rx)
     }
 }
