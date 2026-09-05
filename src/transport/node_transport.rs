@@ -33,6 +33,7 @@ use std::{
         atomic::{AtomicBool, Ordering}, Arc
     }, time::{Duration, Instant}
 };
+use tokio::io::AsyncReadExt;
 use tokio_stream::StreamExt;
 use anyhow::anyhow;
 
@@ -613,13 +614,18 @@ pub async fn connect_to_server(
                 let current_active_priority = Arc::clone(&state.connection_handler.current_active_priority);
                 let ip = stream.peer_addr()?.ip().to_string();
 
-                let (reader, mut writer) = stream.into_split();
-                let buf_reader = BufReader::new(reader);
-                let mut lines = buf_reader.lines();
+                let (mut reader, mut writer) = stream.into_split();
+
+                // let buf_reader = BufReader::new(reader);
+                // let mut lines = buf_reader.lines();
 
                 let share_tx_guard = state.connection_handler.share_tx.clone();
                 let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
                 state.connection_handler.proxy_tx = Some(tx);
+                let arc_bytes_filter_method = state.connection_handler.byte_filter_method.clone();
+                //let current_active_priority = state.connection_handler.current_active_priority.clone();
+                let mut read_buf: Vec<u8> = Vec::new();
+                let mut temp_buf = vec![0u8; 8192];
                 drop(state);
                 
                 tokio::spawn(async move {
@@ -629,26 +635,71 @@ pub async fn connect_to_server(
                                 let _ = writer.shutdown();
                                 break;
                             },
-                            read_result = lines.next_line() => {
-                                match read_result {
-                                    Ok(Some(line)) => {
-                                        println!("Got line: {:#?}", line.clone());
-                                        let bytes = line.as_bytes();
-                                        
-                                        let share_tx = share_tx_guard.lock().await;
-                                        for (_, tx) in share_tx.iter() {
-                                            // println!("sharing with one dest");
-                                            let _ = tx.send(bytes.to_vec());
+                            read_res = reader.read(&mut temp_buf) => {
+                                match read_res {
+                                    Ok(0) => {
+                                        println!("closed conn");
+                                        break;
+                                    },
+                                    Ok(n) => {
+                                        let bytes_filter_method = arc_bytes_filter_method.lock().await;
+                                        match *bytes_filter_method {
+                                            BytesFilterMethod::Line => {
+                                                // let buf_reader = BufReader::new(&mut read_buf);
+                                                read_buf.extend_from_slice(&temp_buf);
+                                                if read_buf.is_empty(){
+                                                    continue;
+                                                }
+                                                // println!("{:?}", read_buf);
+                                                if let Some(pos) = read_buf.windows(2).enumerate().find_map(|(i, segment)| if segment == "\n".as_bytes(){ Some(i) } else if let Some(pos) = segment.iter().position(|b| *b == b'\n') { Some(i + pos) } else { None }){
+                                                    // let pos = read_buf
+                                                    //             .windows(2)
+                                                    //             .enumerate()
+                                                    //             .try_fold(0usize, |acc, (i, bytes)| {
+
+                                                    //             });
+                                                    println!("got a line");
+                                                    let full_segment: &Vec<u8> = &read_buf.drain(..=pos).collect();
+                                                    let share_tx = share_tx_guard.lock().await;
+                                                    for (_, tx) in share_tx.iter() {
+                                                        let _ = tx.send(full_segment.clone());
+                                                    }
+                                                }
+                                            },
+                                            BytesFilterMethod::All => {
+                                                let share_tx = share_tx_guard.lock().await;
+                                                for (_, tx) in share_tx.iter() {
+                                                    let _ = tx.send(temp_buf[..n].to_vec());
+                                                }
+                                            },
                                         }
                                     },
-                                    Ok(None) => {
-                                        break;
-                                    }
-                                    Err(_) => {
+                                    Err(e) => {
+                                        println!("Read error: {:#?}", e);
                                         break;
                                     },
                                 }
                             }
+                            // read_result = lines.next_line() => {
+                            //     match read_result {
+                            //         Ok(Some(line)) => {
+                            //             println!("Got line: {:#?}", line.clone());
+                            //             let bytes = line.as_bytes();
+                                        
+                            //             let share_tx = share_tx_guard.lock().await;
+                            //             for (_, tx) in share_tx.iter() {
+                            //                 // println!("sharing with one dest");
+                            //                 let _ = tx.send(bytes.to_vec());
+                            //             }
+                            //         },
+                            //         Ok(None) => {
+                            //             break;
+                            //         }
+                            //         Err(_) => {
+                            //             break;
+                            //         },
+                            //     }
+                            // }
                             receive_result = rx.recv() => {
                                 if let Some(bytes) = receive_result {
                                     if let Ok(utf8_string) = String::from_utf8(bytes.clone()){
@@ -812,11 +863,16 @@ pub trait NodeTransportable {
     async fn node_transport(&self, state: &mut AppState) -> Result<Self::Output, Box<dyn Error + Send + Sync>>;
 }
 
+enum BytesFilterMethod {
+    Line, 
+    All
+}
 pub struct ConnectionHandler {
     //stream: Option<&'static TcpStream>,
     pub(crate) proxy_tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
     pub(crate) share_tx: Arc<Mutex<HashMap<usize, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>>>,
     pub(crate) current_active_priority: Arc<Mutex<usize>>,
+    pub(crate) byte_filter_method: Arc<Mutex<BytesFilterMethod>>,
 }
 impl ConnectionHandler {
     pub fn new() -> Self {
@@ -825,6 +881,7 @@ impl ConnectionHandler {
             proxy_tx: None,
             share_tx: Arc::new(Mutex::new(HashMap::new())),
             current_active_priority: Arc::new(Mutex::new(0)),
+            byte_filter_method: Arc::new(Mutex::new(BytesFilterMethod::Line)),
         }
     }
 }
@@ -835,6 +892,7 @@ impl Default for ConnectionHandler {
             proxy_tx: None,
             share_tx: Arc::new(Mutex::new(HashMap::new())),
             current_active_priority: Arc::new(Mutex::new(0)),
+            byte_filter_method: Arc::new(Mutex::new(BytesFilterMethod::Line)),
         }
     }
 }
@@ -1303,6 +1361,7 @@ impl StreamTransportable for FileDownloadRequest {
         if state.connection_handler.proxy_tx.is_none() {
             return Err("no stream".into());
         }
+        *state.connection_handler.byte_filter_method.lock().await = BytesFilterMethod::All;
         let priority_handle = state.connection_handler.current_active_priority.clone();
         *priority_handle.lock().await = 1;
         drop(state);
