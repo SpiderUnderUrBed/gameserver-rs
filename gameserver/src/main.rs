@@ -3,13 +3,10 @@ use chrono::Local;
 use futures::stream::unfold;
 use futures::Stream;
 use futures::StreamExt;
-use general_networked_filesystem::FileRequest;
-use general_networked_filesystem::FileRequestExecutable;
-use general_networked_filesystem::{FileOperationResult, FileOperations};
-use general_networked_filesystem::LocalState;
-use general_networked_filesystem::FileHandleStatus;
-use general_networked_filesystem::SetFrame;
-use general_networked_filesystem::{chain::ChainBuilder, FileFrame};
+use general_networked_filesystem::core::Direction;
+use general_networked_filesystem::core::FileRequestExecutable;
+use general_networked_filesystem::core::FileOperations;
+use general_networked_filesystem::wrapper::FileSystemHandler;
 use network_abstraction_lib::erasure::erase_stream_wrapper_result;
 use network_abstraction_lib::erasure::erase_string_wrapper;
 use network_abstraction_lib::general::ErrorResponse;
@@ -29,7 +26,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::fs;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::process::{ChildStdin, Command as TokioCommand};
 use tokio::sync::broadcast::Receiver;
@@ -39,7 +36,6 @@ use tokio::time::Duration;
 
 use crate::databasespec::Filters;
 use crate::databasespec::ServerMetadata;
-use crate::filesystem::FileSystemHandler;
 // use crate::filesystem::cleanup_end_file_markers;
 // use crate::filesystem::execute_file_operation;
 // use crate::filesystem::get_files_content;
@@ -80,7 +76,6 @@ mod databasespec;
 mod intergrations;
 mod jsondatabase;
 mod providers;
-mod filesystem;
 mod transport;
 
 use databasespec::ServerIndex;
@@ -1509,6 +1504,7 @@ async fn spawn_request_loop(
                             Err(e) => match e {
                                 network_abstraction_lib::RouterErrors::NoHandlerFound => {
                                     if let Ok(request) = FileOperations::from_tagged_request(serde_json::to_vec(&json_value).unwrap()) {
+
                                         if let Ok(mut bytes) = request.execute_bytes() {
                                             bytes.extend("\n".as_bytes());
                                             if let Err(e) = writer.send(bytes).await {
@@ -1626,7 +1622,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         last_updated: Arc::new(Mutex::new(None)),
         db_conn: Arc::new(Mutex::new(Some(DbConn::first_connection().await))),
         db: Arc::clone(&arc_db),
-        filesystem: RwLock::new(FileSystemHandler::new(fs_tx, fs_rx)),
+        filesystem: RwLock::new(FileSystemHandler::new(fs_tx, fs_rx, Direction::Local)),
     };
     let arc_state = Arc::new(state);
 

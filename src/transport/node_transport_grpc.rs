@@ -1,16 +1,16 @@
-use crate::transport::node_transport_spec::{CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FileTransferRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, Ping, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StopServerRequest};
+use crate::transport::node_transport_spec::{CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FileUploadRequest, FileDownloadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, Ping, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StopServerRequest};
 
 use crate::{ApiCalls as ToplevelApiCalls, AuthTcpMessage, IncomingMessage, List, NodeWithStream};
 use crate::{
-    AppState, MessagePayload, MessagePayloadWithMetadata, MetadataTypes, SimpleMessage, SrcAndDest,
-    Status, database::databasespec::Filters,
+    AppState, MessagePayload, MessagePayloadWithMetadata, MetadataTypes, SimpleMessage,
+    Status
 };
 use crate::{
     CHANNEL_BUFFER_SIZE, ConsoleData,
     transport::node_transport::proto::{ServerMessage, node_manage_client::NodeManageClient},
 };
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use general_networked_filesystem::core::LsRequest;
+use general_networked_filesystem::core::DirectoryResponse;
 use tokio::{
     sync::{RwLock, broadcast, mpsc},
     time::timeout,
@@ -22,9 +22,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::{error::Error, net::SocketAddr, sync::Arc};
-
-use general_networked_filesystem::LsRequest;
-use general_networked_filesystem::DirectoryResponse;
 
 use tonic::transport::Channel;
 mod proto {
@@ -720,18 +717,18 @@ impl NodeTransportable for LsRequest {
 }
 
 
-impl NodeTransportable for FileTransferRequest {
-    type Output = ();
-    async fn node_transport(
-        &self,
-        state: &mut AppState,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+// impl NodeTransportable for FileUploadRequest {
+//     type Output = ();
+//     async fn node_transport(
+//         &self,
+//         state: &mut AppState,
+//     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         
-        Ok(())
-    }
-}
+//         Ok(())
+//     }
+// }
 
-impl StreamTransportable for FileTransferRequest {
+impl StreamTransportable for FileUploadRequest {
     type Output = ();
     async fn stream_transport(
         &self,
@@ -741,6 +738,15 @@ impl StreamTransportable for FileTransferRequest {
     }
 }
 
+impl StreamTransportable for FileDownloadRequest {
+    type Output = ();
+    async fn stream_transport(
+        &self,
+        arc_state: Arc<RwLock<AppState>>,
+    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
+        Ok(())
+    }
+}
 
 
 impl Into<proto::MetadataTypes> for MetadataTypes {

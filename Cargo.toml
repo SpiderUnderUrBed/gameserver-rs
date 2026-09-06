@@ -34,7 +34,7 @@ tower-sessions = "0.14.0"
 axum-oidc = { git = "https://github.com/pfzetto/axum-oidc" }
 tower = "0.5.3"
 base64 = "0.22.1"
-general_networked_filesystem = { path = "lib/general_networked_filesystem" }
+general_networked_filesystem = { path = "lib/general_networked_filesystem", default-features = false }
 k8s_orchestrator = { path = "lib/k8s_orchestrator", optional = true  }
 multer = "3.1.0"
 tonic = { version = "0.14.6", optional = true }
@@ -67,7 +67,8 @@ grpc_experimental = [
     "prost",
     "tonic-prost",
     "tonic-prost-build",
-    "prost-types"
+    "prost-types",
+    "general_networked_filesystem/stub"
 ]
 
 [workspace]

@@ -1,17 +1,16 @@
-use std::any::Any;
-use std::sync::Arc;
-use general_networked_filesystem::{
-    chain::ChainBuilder, flume_delimited::{FlumeFile, TcpFsBidirectional, TcpFsReceiver, TcpFsSender}, Codec, Direction, EofFrame, FileFrame, FileOperations, LocalState, Operation, RemoteFileSystem, StreamableFileSystemErrors
-};
-use tokio::sync::{mpsc, watch, Notify};
-use tokio::sync::Mutex;
+use std::{any::Any, sync::Arc};
+use networked_filesystem::{chain::ChainBuilder, flume_delimited::{FlumeFile, TcpFsBidirectional}, Codec, EofFrame, FileFrame, LocalState, Operation, RemoteFileSystem, StreamableFileSystemErrors};
+use tokio::sync::{watch, Mutex};
 use tokio_util::sync::CancellationToken;
+use crate::core::FileOperations;
+
+pub use networked_filesystem::Direction;
+
 #[derive(Debug)]
 pub enum FilesystemErrors {
     Any(Box<dyn Any + Sync + Send>),
 }
 
-#[allow(unused)]
 #[derive(Clone)]
 pub struct FileSystemHandler {
     pub arc_file_tx: Arc<Mutex<RemoteFileSystem<TcpFsBidirectional, FlumeFile>>>,
@@ -21,16 +20,18 @@ impl FileSystemHandler {
     pub fn new(
         fs_tx: flume::Sender<Vec<u8>>,
         fs_rx: flume::Receiver<Vec<u8>>,
+        direction: Direction,
         // fs_receiver_tx: flume::Sender<Vec<u8>>,
         // fs_receiver_rx: flume::Receiver<Vec<u8>>,
     ) -> FileSystemHandler {
-        let full_remote_fs = FileSystemHandler::create_file_handler(fs_tx, fs_rx);
+        let full_remote_fs = FileSystemHandler::create_file_handler(direction, fs_tx, fs_rx);
         FileSystemHandler {
             arc_file_tx: Arc::new(Mutex::new(full_remote_fs)),
             operations: FileOperations::new(),
         }
     }
     fn create_file_handler(
+        direction: Direction,
         fs_tx: flume::Sender<Vec<u8>>,
         fs_rx: flume::Receiver<Vec<u8>>,
     ) -> RemoteFileSystem<TcpFsBidirectional, FlumeFile> {
@@ -38,28 +39,37 @@ impl FileSystemHandler {
         file_tx.set_start_delimiter(r"\\\\f".as_bytes().to_vec());
         file_tx.set_end_delimiter("////f".as_bytes().to_vec());
         let mut full_remote_fs = RemoteFileSystem::new(file_tx);
-        full_remote_fs.set_direction(Direction::Server);
+        full_remote_fs.set_direction(direction);
         full_remote_fs
     }
+    pub async fn wait_for_eof(&self) {
+        let mut update_operation_event = self.arc_file_tx.lock().await.get_operation_event().clone();
+        loop {
+            let _ = update_operation_event.changed().await;
+            if matches!(*update_operation_event.borrow(), Operation::Eof){
+                break;
+            }
+        }
+    }
     // pub async fn create_basic_file_stream(&self, mut raw_rx: mpsc::UnboundedReceiver<Vec<u8>>) -> mpsc::UnboundedReceiver<Vec<u8>> {
-    pub async fn create_basic_file_stream(mut raw_rx: flume::Receiver<Vec<u8>>, end_file_task: Arc<CancellationToken>) -> flume::Receiver<Vec<u8>> {
+    pub async fn create_basic_file_stream(raw_rx: flume::Receiver<Vec<u8>>, direction: Direction, end_file_task: Arc<CancellationToken>) -> flume::Receiver<Vec<u8>> {
         let (fs_out_tx, fs_out_rx) = flume::unbounded();
 
         tokio::spawn(async move {
             let (fs_in_tx, fs_in_rx) = flume::unbounded();
-            let mut handler = FileSystemHandler::create_file_handler(fs_in_tx.clone(), fs_in_rx.clone());
+            let mut handler = FileSystemHandler::create_file_handler(direction, fs_in_tx.clone(), fs_in_rx.clone());
             let mut chain_builder = ChainBuilder::new(&mut handler);
             let mut chain = chain_builder
-                .chain::<FileFrame, _, _>(move |_, mut f, fs| {
+                .chain::<FileFrame, _, _>(move |_, f, _fs| {
                     let inner_fs_out_tx = fs_out_tx.clone();
                     Box::pin(async move {
-                        let res = inner_fs_out_tx.send_async(f.chunks).await;
+                        let _ = inner_fs_out_tx.send_async(f.chunks).await;
                         Ok(())
                     })
                 });
             let inner_end_file_task = end_file_task.clone();
             let mut chain = chain
-                .chain::<EofFrame, _, _>(move |_, mut e, fs| {
+                .chain::<EofFrame, _, _>(move |_, _, _fs| {
                     let inner_end_file_task = inner_end_file_task.clone();
                     Box::pin(async move {
                         inner_end_file_task.cancel();

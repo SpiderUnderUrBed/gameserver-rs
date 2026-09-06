@@ -1191,10 +1191,12 @@ dependencies = [
 name = "general_networked_filesystem"
 version = "0.1.0"
 dependencies = [
+ "flume 0.12.0",
  "networked_filesystem",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-util",
  "typetag",
 ]
 

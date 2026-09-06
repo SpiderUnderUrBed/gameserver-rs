@@ -14,7 +14,6 @@ use crate::database::databasespec::{
 };
 use crate::database::{DatabaseError, Element};
 use crate::docker::BuildImageRequest;
-use crate::filesystem::FileSystemHandler;
 // use crate::filesystem::{execute_file_operation, FileOperations, TcpFileStream};
 // use crate::filesystem::{FsType, send_multipart_over_broadcast};
 use crate::http::HeaderMap;
@@ -60,9 +59,9 @@ use axum_oidc::openidconnect::ClientId;
 use axum_oidc::openidconnect::ClientSecret;
 use axum_oidc::openidconnect::IssuerUrl;
 use axum_oidc::openidconnect::Scope;
-use general_networked_filesystem::flume_delimited::{FlumeFile, TcpFsReceiver, TcpFsSender};
-use general_networked_filesystem::{FileOperations, LsRequest, Operation, RemoteFileSystem};
 
+use general_networked_filesystem::core::{Direction, LsRequest, Operation};
+use general_networked_filesystem::wrapper::FileSystemHandler;
 use tokio::sync::{RwLock, watch};
 
 use rcon::Connection;
@@ -142,7 +141,6 @@ use database::User;
 // #[cfg(feature = "grpc_experimental")]
 // mod transport;
 
-mod filesystem;
 mod transport;
 
 use crate::transport::node_transport::ConnectionHandler;
@@ -172,7 +170,7 @@ use crate::orchestrator::kubernetes::local::K8sLocalClient;
 
 #[cfg(not(feature = "full-stack"))]
 #[derive(Clone)]
-struct K8sLocalClient {
+pub struct K8sLocalClient {
     pub k8s_client: Client,
     pub docker_info: String,
 }
@@ -214,7 +212,7 @@ static DOCKER_WORKS: bool = true;
 // dummy client and function
 #[cfg(not(feature = "full-stack"))]
 #[derive(Clone, Debug)]
-struct Client;
+pub struct Client;
 
 #[cfg(not(feature = "full-stack"))]
 impl Client {
@@ -725,7 +723,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     //let (fs_receiver_tx, fs_receiver_rx) = flume::unbounded();
 
     let filesystem =
-        FileSystemHandler::new(fs_sender_tx, fs_sender_rx);
+        FileSystemHandler::new(fs_sender_tx, fs_sender_rx, Direction::Server);
 
     let cached_status_type = watch::channel(String::new()).0;
 
@@ -1252,7 +1250,8 @@ async fn upload(
 
     let mut state = arc_state.write().await;
     let fs_rx = state.filesystem.proxy_receiver().await;
-    let mut update_operation_event = state.filesystem.get_operation_event().await;
+    // let mut update_operation_event = state.filesystem.get_operation_event().await;
+    let inner_filesystem = state.filesystem.clone();
     drop(state);
 
     let inner_arc_state = Arc::clone(&arc_state);
@@ -1262,12 +1261,7 @@ async fn upload(
         tokio::select! {
             _ = request.stream_transport(inner_arc_state) => {},
             _ = async move { 
-                loop { 
-                    let _ = update_operation_event.changed().await;
-                    if matches!(*update_operation_event.borrow(), Operation::Eof){
-                        break;
-                    }
-                }
+                inner_filesystem.wait_for_eof().await;
                 // tokio::time::sleep(Duration::from_millis(10000)).await;
             } => {}
         }
@@ -1365,7 +1359,7 @@ pub async fn stream_file_download(
     let raw_stream = request.stream_transport(inner_arc_state).await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     
-    let stream = FileSystemHandler::create_basic_file_stream(raw_stream, task_end)
+    let stream = FileSystemHandler::create_basic_file_stream(raw_stream, Direction::Server,  task_end)
         .await
         .into_stream()
         .map(|chunk: Vec<u8>| {
@@ -3501,7 +3495,7 @@ mod tests {
 
         let (fs_sender_tx, fs_sender_rx) = flume::unbounded();
         let filesystem =
-            FileSystemHandler::new(fs_sender_tx, fs_sender_rx);
+            FileSystemHandler::new(fs_sender_tx, fs_sender_rx, Direction::Server);
         // filesystem.set_start_delimiter("\\f".as_bytes().to_vec());
         // filesystem.set_end_delimiter("//f".as_bytes().to_vec());
 

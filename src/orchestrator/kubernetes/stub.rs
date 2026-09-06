@@ -11,11 +11,11 @@ use crate::{
 
 pub trait KubeLocalRequest {
     type Output;
-    async fn execute_locally(
+    fn execute_locally(
         &self,
         // client: Client,
         connection: K8sLocalClient,
-    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>>;
+    ) -> impl std::future::Future<Output = Result<Self::Output, Box<dyn Error + Send + Sync>>> + Send;
 }
 
 impl KubeLocalRequest for GetK8sGameserversRequest {
@@ -24,7 +24,7 @@ impl KubeLocalRequest for GetK8sGameserversRequest {
     async fn execute_locally(
         &self,
         // client: Client,
-        connection: K8sLocalClient,
+        _connection: K8sLocalClient,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         Err("not enabled".into())
     }
@@ -34,7 +34,7 @@ impl KubeLocalRequest for BuildDeploymentRequest {
 
     async fn execute_locally(
         &self,
-        connection: K8sLocalClient,
+        _connection: K8sLocalClient,
         // client: Client,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         Err("not enabled".into())
@@ -45,7 +45,7 @@ impl KubeLocalRequest for ListNodeInfoRequest {
 
     async fn execute_locally(
         &self,
-        connection: K8sLocalClient,
+        _connection: K8sLocalClient,
         // client: Client,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         Err("not enabled".into())
@@ -57,7 +57,7 @@ impl KubeLocalRequest for VerifyIsK8sGameserverRequest {
     async fn execute_locally(
         &self,
         // client: Client,
-        connection: K8sLocalClient,
+        _connection: K8sLocalClient,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         Err("not enabled".into())
     }
@@ -68,7 +68,7 @@ impl KubeLocalRequest for GetK8sTypeRequest {
     async fn execute_locally(
         &self,
         // client: Client,
-        connection: K8sLocalClient,
+        _connection: K8sLocalClient,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         Err("not enabled".into())
     }

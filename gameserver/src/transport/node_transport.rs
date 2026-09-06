@@ -2,13 +2,11 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use std::{ops::ControlFlow, sync::Arc};
 
-use crate::{AppState, MessagePayload};
-use general_networked_filesystem::{chain::ChainBuilder, FileFrame, FileHandleStatus, LocalState, SetFrame};
-use general_networked_filesystem::{DrainFrame, EofFrame, FrameCommons};
-use network_abstraction_lib::{FromWire, Router, ValueRequest};
-use serde::{Deserialize, Serialize};
+use crate::{AppState};
+use general_networked_filesystem::core::chain::ChainBuilder;
+use general_networked_filesystem::core::{DrainFrame, EofFrame, FileFrame, FileHandleStatus, LocalState, SetFrame};
+use network_abstraction_lib::{Router};
 
-use tokio::sync::Notify;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{
@@ -17,10 +15,6 @@ use tokio::{
     },
     sync::{watch, Mutex},
 };
-use tokio_util::sync::CancellationToken;
-
-use crate::{GetState, IncomingMessage, IncomingMessageWithMetadata, SimpleMessage};
-
 
 #[derive(Debug)]
 pub enum BackgroundTaskUpdates {
@@ -93,7 +87,7 @@ pub async fn spawn_conn_background_tasks(arc_state: Arc<AppState>, arc_conn_mana
             })
         });
         let out_tx = arc_state.output_tx.clone();
-        let file_rx = arc_state.filesystem.write().await.proxy_receiver().await.clone();
+        // let file_rx = arc_state.filesystem.write().await.proxy_receiver().await.clone();
         let mut chain = chain.chain::<DrainFrame, _, _>(move |state_id, drain, fs| {
             Box::pin({
                 let inner_location = arc_location.clone();
@@ -139,12 +133,9 @@ pub async fn spawn_conn_background_tasks(arc_state: Arc<AppState>, arc_conn_mana
                 }
             })
         });
-
         loop {
-            let res = chain.run(0).await;
-
-            if res.is_err() {
-                break;
+            if let Err(e) = chain.run(0).await {
+                println!("chain err: {:#?}", e);
             }
         }
     });

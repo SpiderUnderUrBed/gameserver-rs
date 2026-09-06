@@ -1,15 +1,9 @@
-use axum::response::IntoResponse;
-use futures_util::stream::BoxStream;
-use general_networked_filesystem::{DirectoryResponse, FileRequest, FileRequestExecutable, LsRequest};
-use serde::{Deserialize, Serialize};
+
+use general_networked_filesystem::core::{DirectoryResponse, FileRequest, LsRequest};
 use serde_json::Value;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    net::TcpStream,
-    sync::{broadcast, mpsc::{self, UnboundedReceiver}, watch, Mutex, RwLock},
-    time::{sleep, timeout},
+    io::AsyncWriteExt, net::TcpStream, sync::{broadcast, mpsc::{self}, watch, Mutex, RwLock}, time::{sleep, timeout}
 };
-use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::sync::CancellationToken;
 use crate::transport::node_transport_spec::{CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, Ping, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StopServerRequest};
 use crate::{
@@ -21,15 +15,14 @@ use crate::{
     },
     extra::value_from_line,
     get_env_var_or_arg,
-    kubernetes::{self, GetK8sTypeRequest, VerifyIsK8sGameserverRequest},
+    kubernetes::{GetK8sTypeRequest, VerifyIsK8sGameserverRequest},
 };
 use crate::{
-    AppState, CHANNEL_BUFFER_SIZE, CONNECTION_RETRY_DELAY, CONNECTION_TIMEOUT, MessagePayload,
+    AppState, CONNECTION_RETRY_DELAY, CONNECTION_TIMEOUT, MessagePayload,
     MessagePayloadWithMetadata, MetadataTypes, SimpleMessage, SrcAndDest, Status, StreamResult,
-    database::databasespec::Filters,
 };
 use std::{
-    collections::HashMap, error::Error, net::SocketAddr, sync::{
+    collections::HashMap, error::Error, sync::{
         atomic::{AtomicBool, Ordering}, Arc
     }, time::{Duration, Instant}
 };
@@ -1370,6 +1363,7 @@ impl StreamTransportable for FileDownloadRequest {
                     state.connection_handler.proxy_tx.clone()
                 };
                 if let Some(tx) = tx {
+                    println!("sent message out");
                     if let Err(e) = tx.send(bytes){
                         println!("{:#?}", e);
                     }
