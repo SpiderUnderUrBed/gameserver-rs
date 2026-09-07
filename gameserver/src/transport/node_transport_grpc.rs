@@ -511,9 +511,7 @@ impl Into<crate::MetadataTypes> for proto::MetadataTypes {
         match self.kind.as_str() {
             "Server" => serde_json::from_str::<crate::MetadataTypes>(&self.data).unwrap(),
             _ => {
-                println!("{:#?}", self);
                 let value = serde_json::to_value(self.clone()).unwrap();
-                println!("{:#?}", value);
                 serde_json::from_value(value).unwrap()
             }
         }

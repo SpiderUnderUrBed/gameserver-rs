@@ -1,4 +1,5 @@
 use std::any::Any;
+use std::sync::Mutex;
 
 use futures::Stream;
 
@@ -56,6 +57,62 @@ where
         Result<StreamResponse<Item>, ErrorResponse>,
         AppState,
     >(f)
+}
+
+pub struct TypedResponse<T> {
+    inner: Mutex<Option<T>>,
+}
+
+impl<T: Send + Sync + 'static> TypedResponse<T> {
+    pub fn new(value: T) -> Self {
+        TypedResponse {
+            inner: Mutex::new(Some(value)),
+        }
+    }
+}
+
+impl<T: Send + Sync + 'static> IntoResponse<Box<dyn Any + Send + Sync>> for TypedResponse<T> {
+    fn try_into_response(&self) -> Result<Box<dyn Any + Send + Sync>, crate::ExtractorErrors> {
+        let taken = self
+            .inner
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or(crate::ExtractorErrors::FailedToExtract)?;
+        Ok(Box::new(taken) as Box<dyn Any + Send + Sync>)
+    }
+}
+
+pub fn erase_typed_wrapper<F, S, R, AppState>(f: F) -> ErasedHandler<AppState>
+where
+    F: for<'a> AsyncFnWrapper<'a, AppState, S, Output = R> + Send + Sync + 'static,
+    S: FromWire + Clone + Send + Sync + 'static,
+    R: Send + Sync + 'static,
+    AppState: Send + Sync + 'static,
+{
+    erase::<_, S, TypedResponse<R>, TypedResponse<R>, AppState>(MapOutput::new(
+        f,
+        |value: R| TypedResponse::new(value),
+    ))
+}
+
+pub fn erase_typed_wrapper_result<F, S, R, E, AppState>(f: F) -> ErasedHandler<AppState>
+where
+    F: for<'a> AsyncFnWrapper<'a, AppState, S, Output = Result<R, E>> + Send + Sync + 'static,
+    S: FromWire + Clone + Send + Sync + 'static,
+    R: Send + Sync + 'static,
+    E: IntoResponse<Box<dyn Any + Send + Sync>> + Send + Sync + 'static,
+    AppState: Send + Sync + 'static,
+{
+    erase::<
+        _,
+        S,
+        Result<TypedResponse<R>, E>,
+        Result<TypedResponse<R>, E>,
+        AppState,
+    >(MapOutput::new(f, |value: Result<R, E>| {
+        value.map(TypedResponse::new)
+    }))
 }
 
 pub fn erase<F, S, R, T, AppState>(f: F) -> ErasedHandler<AppState>

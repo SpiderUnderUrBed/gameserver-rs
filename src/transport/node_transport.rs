@@ -5,7 +5,7 @@ use tokio::{
     io::AsyncWriteExt, net::TcpStream, sync::{broadcast, mpsc::{self}, watch, Mutex, RwLock}, time::{sleep, timeout}
 };
 use tokio_util::sync::CancellationToken;
-use crate::transport::node_transport_spec::{CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, Ping, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StopServerRequest};
+use crate::transport::node_transport_spec::{CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, Ping, RemoteFile, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StopServerRequest};
 use crate::{
     ApiCalls as ToplevelApiCalls, AuthTcpMessage, Clients, ConsoleData, IncomingMessage,
     IntegrationCommands, KubeLocalRequest, List, LogLine, NodeWithStream,
@@ -748,8 +748,11 @@ pub async fn check_channel_health(
         return false;
     }
     match state.connection_handler.proxy_tx.clone().unwrap().send("ping".into()) {
-        Ok(_) => true,
-        Err(_) => return false,
+        Ok(_) => {},
+        Err(_) => {
+            share_tx.remove(&index);
+            return false
+        },
     };
 
     match rx.recv().await {
@@ -758,6 +761,7 @@ pub async fn check_channel_health(
             true
         },
         None => {
+            share_tx.remove(&index);
             false
         },
         // Err(broadcast::error::RecvError::Closed) => false,
@@ -1299,6 +1303,17 @@ impl Drop for BytesFilterMethodGuard {
     }
 }
 
+impl FileUploadRequest {
+    pub fn new(request: (String, flume::Receiver<Vec<u8>>)) -> FileUploadRequest {
+        FileUploadRequest {
+            file: RemoteFile {
+                location: request.0,
+                stream: Some(request.1)
+            }
+        }
+    }
+}
+
 impl StreamTransportable for FileUploadRequest {
     type Output = ();
     async fn stream_transport(
@@ -1314,7 +1329,7 @@ impl StreamTransportable for FileUploadRequest {
         drop(state);
 
         let _guard = PriorityGuard { priority: priority_handle };
-        while let Ok(bytes) = self.stream.recv_async().await {
+        while let Ok(bytes) = self.file.stream.as_ref().unwrap().recv_async().await {
             let tx = {
                 let state = arc_state.read().await;
                 state.connection_handler.proxy_tx.clone()

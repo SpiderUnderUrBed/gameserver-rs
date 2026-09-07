@@ -3,7 +3,7 @@ use chrono::Local;
 use futures::stream::unfold;
 use futures::Stream;
 use futures::StreamExt;
-use general_networked_filesystem::core::Direction;
+use general_networked_filesystem::wrapper::Direction;
 use general_networked_filesystem::core::FileRequestExecutable;
 use general_networked_filesystem::core::FileOperations;
 use general_networked_filesystem::wrapper::FileSystemHandler;

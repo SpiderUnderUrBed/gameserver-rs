@@ -56,9 +56,24 @@ pub struct IntegrationKeyRequest {
 
 pub struct ServerStateRequest {}
 
-pub struct FileUploadRequest {
-    pub(crate) stream: flume::Receiver<Vec<u8>>
+pub struct RemoteFile {
+    pub location: String,
+    pub stream: Option<flume::Receiver<Vec<u8>>>
 }
+
+pub struct FileUploadRequest {
+    pub(crate) file: RemoteFile,
+}
+
+// impl FileUploadRequest {
+//     pub fn new(stream: impl Into<RemoteFile>) -> Self {
+//         Self { stream: stream.into() }
+//     }
+// }
+
+// pub struct FileUploadRequest {
+//     pub(crate) stream: flume::Receiver<Vec<u8>>
+// }
 
 pub struct FileDownloadRequest {
     pub(crate) stream: flume::Receiver<Vec<u8>>,

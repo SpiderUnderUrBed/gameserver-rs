@@ -1,5 +1,5 @@
 use crate::transport::node_transport_spec::{CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FileUploadRequest, FileDownloadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, Ping, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StopServerRequest};
-
+use crate::transport::node_transport_spec::RemoteFile;
 use crate::{ApiCalls as ToplevelApiCalls, AuthTcpMessage, IncomingMessage, List, NodeWithStream};
 use crate::{
     AppState, MessagePayload, MessagePayloadWithMetadata, MetadataTypes, SimpleMessage,
@@ -737,14 +737,25 @@ impl StreamTransportable for FileUploadRequest {
         Ok(())
     }
 }
+impl FileUploadRequest {
+    pub fn new(location: String) -> FileUploadRequest {
+        FileUploadRequest {
+            file: RemoteFile {
+                location,
+                stream: None
+            }
+        }
+    }
+}
 
 impl StreamTransportable for FileDownloadRequest {
-    type Output = ();
+    type Output = flume::Receiver<Vec<u8>>;
     async fn stream_transport(
         &self,
         arc_state: Arc<RwLock<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
-        Ok(())
+        let (flume_tx, flume_rx) = flume::bounded(32);
+        Ok(flume_rx)
     }
 }
 

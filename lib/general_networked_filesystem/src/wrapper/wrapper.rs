@@ -9,12 +9,14 @@ pub use networked_filesystem::Direction;
 #[derive(Debug)]
 pub enum FilesystemErrors {
     Any(Box<dyn Any + Sync + Send>),
+    Unauthorized
 }
 
 #[derive(Clone)]
 pub struct FileSystemHandler {
     pub arc_file_tx: Arc<Mutex<RemoteFileSystem<TcpFsBidirectional, FlumeFile>>>,
     operations: FileOperations,
+    sandboxed_location: Option<String>
 }
 impl FileSystemHandler {
     pub fn new(
@@ -28,6 +30,7 @@ impl FileSystemHandler {
         FileSystemHandler {
             arc_file_tx: Arc::new(Mutex::new(full_remote_fs)),
             operations: FileOperations::new(),
+            sandboxed_location: None,
         }
     }
     fn create_file_handler(
@@ -41,6 +44,19 @@ impl FileSystemHandler {
         let mut full_remote_fs = RemoteFileSystem::new(file_tx);
         full_remote_fs.set_direction(direction);
         full_remote_fs
+    }
+   // TODO: in the future run cannonolize on the remote system
+    // or do some sort of path validation internally
+    // consider a watch channel with location and a rx channel which 
+    // checks for a path confirmation from the server after cannonolizing
+    pub async fn try_create_request_in_directory(&self, location: String) -> Result<(String, flume::Receiver<Vec<u8>>), FilesystemErrors>{
+        let mut file_tx = self.arc_file_tx.lock().await.clone();
+        if let Some(sandboxed_location) = &self.sandboxed_location {
+            let final_location = format!("{}{}", sandboxed_location, location);
+            Ok((final_location, file_tx.inner_mut().rx.clone()))
+        } else {
+            Ok((location, file_tx.inner_mut().rx.clone()))
+        }
     }
     pub async fn wait_for_eof(&self) {
         let mut update_operation_event = self.arc_file_tx.lock().await.get_operation_event().clone();
@@ -105,10 +121,17 @@ impl FileSystemHandler {
     }
     pub async fn set_location(&self, location: String){
         let mut file_tx = self.arc_file_tx.lock().await.clone();
-        let _ = file_tx.set_location(0, location).await;
+        if let Some(sandboxed_location) = &self.sandboxed_location {
+            let final_location = format!("{}{}", sandboxed_location, location);
+            println!("{}", final_location);
+            let _ = file_tx.set_location(0, final_location).await;
+        } else {
+            let _ = file_tx.set_location(0, location).await;
+        }
     }
     pub async fn send_flume_file(
         &mut self,
+        state_id: u8,
         original_location: Option<String>,
         content_stream: Option<flume::Receiver<Vec<u8>>>,
     ) -> Result<(), StreamableFileSystemErrors> {
@@ -117,6 +140,7 @@ impl FileSystemHandler {
             original_location,
             final_location: String::new(),
             content_stream,
+            state_id,
         };
         file_tx.set_codec(Codec::RawContinues);
         file_tx.set_direction(Direction::Server);
@@ -126,12 +150,21 @@ impl FileSystemHandler {
     }
     pub async fn add_flume_file(
         &mut self,
+        state_id: u8,
         original_location: Option<String>,
         final_location: String,
         content_stream: Option<flume::Receiver<Vec<u8>>>,
     ) {
         let mut file_tx = self.arc_file_tx.lock().await;
+        let final_location = {
+            if let Some(sandboxed_location) = &self.sandboxed_location {
+                format!("{}{}", sandboxed_location, final_location)
+            } else {
+                final_location
+            }
+        };
         let file = FlumeFile {
+            state_id,
             original_location,
             final_location,
             content_stream,
@@ -140,6 +173,17 @@ impl FileSystemHandler {
         file_tx.set_direction(Direction::Server);
         let _ = file_tx.set_operation(Operation::Move);
         file_tx.append_files(file);
+    }
+    pub async fn upload(
+        &mut self,
+        state_id: u8,
+    ) -> Result<(), StreamableFileSystemErrors> {
+        let file_tx = self.arc_file_tx.lock().await;
+        if matches!(*file_tx.get_operation_event().borrow(), Operation::Move){
+            file_tx.clone().execute_operation(state_id).await
+        } else {
+            Err(StreamableFileSystemErrors::Any("Not a valid operation".into()))
+        }
     }
     pub async fn execute_operation(
         &mut self,
@@ -153,6 +197,9 @@ impl FileSystemHandler {
     pub async fn proxy_receiver(&mut self) -> flume::Receiver<Vec<u8>> {
         let mut file_tx = self.arc_file_tx.lock().await;
         file_tx.inner_mut().rx.clone()
+    }
+    pub fn set_sandboxed_location(&mut self, location: String) {
+        self.sandboxed_location = Some(location);
     }
     pub async fn create_state(&mut self, state_id: u8, location: String) {
         let mut file_tx = self.arc_file_tx.lock().await;

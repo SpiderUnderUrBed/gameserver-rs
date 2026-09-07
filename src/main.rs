@@ -60,8 +60,8 @@ use axum_oidc::openidconnect::ClientSecret;
 use axum_oidc::openidconnect::IssuerUrl;
 use axum_oidc::openidconnect::Scope;
 
-use general_networked_filesystem::core::{Direction, LsRequest, Operation};
-use general_networked_filesystem::wrapper::FileSystemHandler;
+use general_networked_filesystem::core::{LsRequest, Operation};
+use general_networked_filesystem::wrapper::{Direction, FileSystemHandler};
 use tokio::sync::{RwLock, watch};
 
 use rcon::Connection;
@@ -91,7 +91,7 @@ use futures_util::{sink::SinkExt, stream::StreamExt};
 use jsonwebtoken::{DecodingKey, TokenData, Validation, decode};
 use mime_guess::from_path;
 // use serde;
-use futures_util::{Stream, stream};
+use futures_util::{stream, Stream, TryFutureExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::Notify;
@@ -1225,6 +1225,7 @@ async fn upload(
     }
 
     state.filesystem.create_state(0, "/".to_string()).await;
+    state.filesystem.set_sandboxed_location("server/".to_string());
 
     let total_bytes = headers
         .get("content-length")
@@ -1249,23 +1250,8 @@ async fn upload(
     drop(state);
 
     let mut state = arc_state.write().await;
-    let fs_rx = state.filesystem.proxy_receiver().await;
-    // let mut update_operation_event = state.filesystem.get_operation_event().await;
-    let inner_filesystem = state.filesystem.clone();
+    let mut inner_filesystem = state.filesystem.clone();
     drop(state);
-
-    let inner_arc_state = Arc::clone(&arc_state);
-    tokio::spawn(async move {
-        let request = FileUploadRequest { stream: fs_rx };
-        
-        tokio::select! {
-            _ = request.stream_transport(inner_arc_state) => {},
-            _ = async move { 
-                inner_filesystem.wait_for_eof().await;
-                // tokio::time::sleep(Duration::from_millis(10000)).await;
-            } => {}
-        }
-    });
 
     tokio::spawn(async move {
         let mut buffer: Vec<u8> = Vec::with_capacity(chunk_size * 2);
@@ -1293,19 +1279,43 @@ async fn upload(
 
     let arc_location = Arc::new(Mutex::new(String::new()));
     let inner_location = Arc::clone(&arc_location);
+    // let inner_filesystem =
     tokio::spawn(async move {
-        let mut state = arc_state.write().await;
-        state.filesystem.create_state(0, "/".to_string()).await;
-        let mut filesystem = state.filesystem.clone();
-        drop(state);
-        filesystem.add_flume_file(None, inner_location.lock().await.to_string(), Some(chunked_rx.clone())).await;
-        let _ = filesystem.execute_operation(0).await;
+        // let mut state = arc_state.write().await;
+        // state.filesystem.create_state(0, "/".to_string()).await;
+        // let mut filesystem = state.filesystem.clone();
+        // drop(state);
+        inner_filesystem.add_flume_file(0, None, inner_location.lock().await.to_string(), Some(chunked_rx.clone())).await;
+        let _ = inner_filesystem.execute_operation(0).await;
     });
+
+    let state = arc_state.write().await;
+    let filesystem = state.filesystem.clone();
+    drop(state);
 
     'multipart: while let Ok(field) = multipart.next_field().await {
         let Some(mut field) = field else { break };
         if let Some(name) = field.file_name(){
-            *arc_location.lock().await = format!("server/{}", name.to_string());
+            let file_path = name.to_string();
+            if *arc_location.lock().await != file_path {
+                *arc_location.lock().await = file_path.clone();
+                let inner_arc_state = Arc::clone(&arc_state);
+                let inner_filesystem = filesystem.clone();
+                tokio::spawn(async move {
+                    let request_result = inner_filesystem.try_create_request_in_directory(file_path)
+                        .await
+                        .map(|v| FileUploadRequest::new(v));
+                    if let Ok(request) = request_result {
+                        tokio::select! {
+                            _ = request.stream_transport(inner_arc_state) => {},
+                            _ = async move { 
+                                inner_filesystem.wait_for_eof().await;
+                                // tokio::time::sleep(Duration::from_millis(10000)).await;
+                            } => {}
+                        }
+                    }
+                });
+            }
         }
         loop {
             match field.chunk().await {
@@ -1348,6 +1358,7 @@ pub async fn stream_file_download(
     }
 
     state.filesystem.create_state(0, "/".to_string()).await;
+    state.filesystem.set_sandboxed_location("server/".to_string());
     let mut fs = state.filesystem.clone();
     let fs_rx = (&mut fs).proxy_receiver().await;
     drop(state);
@@ -1656,7 +1667,10 @@ async fn handle_socket(socket: WebSocket, arc_state: Arc<RwLock<AppState>>) {
         let mut server_receiver = server_sender.clone().subscribe();
         drop(state);
         while let Ok(msg) = server_receiver.recv().await {
-            let _ = sender.send(Message::Text(msg.into())).await;
+            if let Err(e) = sender.send(Message::Text(msg.into())).await {
+                println!("{:#?}", e);
+                break;
+            }
         }
     });
 

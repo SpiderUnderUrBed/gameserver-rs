@@ -99,6 +99,31 @@ message SetServerResponse {}
 message StartServerResponse {}
 message StopServerResponse {}
 
+message DownloadRequest {
+  string location = 1;
+}
+message UploadResponse {}
+message FileChunk {
+  string location = 1;
+  bytes bytes = 2;
+}
+message LsRequest {
+  string location = 1;
+}
+message FileItem {
+  string name = 1;
+  bool is_dir = 2;
+}
+message LsResponse {
+  repeated FileItem file_item = 1;
+}
+message CanonicalizeRequest {
+  string path = 1;
+}
+message CanonicalizeResponse {
+  string full_path = 1;
+}
+
 service ServerEdit {
   rpc Create(CreateServerRequest) returns (stream ServerMessage);
   rpc Delete(DeleteServerRequest) returns (DeleteServerResponse);
@@ -118,5 +143,9 @@ service General {
 
 }
 service Filesystem {
-
+  rpc Download(DownloadRequest) returns (stream FileChunk);
+  rpc Upload(stream FileChunk) returns (UploadResponse);
+  rpc Ls(LsRequest) returns (LsResponse);
+  rpc Canonicalize(CanonicalizeRequest) returns (CanonicalizeResponse);
+  rpc Size(SizeRequest) returns (SizeResponse);
 }
