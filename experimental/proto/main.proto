@@ -107,6 +107,9 @@ message FileChunk {
   string location = 1;
   bytes bytes = 2;
 }
+message RawFileChunk {
+  bytes bytes = 2;
+}
 message LsRequest {
   string location = 1;
 }
@@ -122,6 +125,12 @@ message CanonicalizeRequest {
 }
 message CanonicalizeResponse {
   string full_path = 1;
+}
+message SizeRequest {
+  string location = 1;
+}
+message SizeResponse {
+  uint64 size = 1;
 }
 
 service ServerEdit {
@@ -142,8 +151,8 @@ service NodeManage {
 service General {
 
 }
-service Filesystem {
-  rpc Download(DownloadRequest) returns (stream FileChunk);
+service FilesystemManage {
+  rpc Download(DownloadRequest) returns (stream RawFileChunk);
   rpc Upload(stream FileChunk) returns (UploadResponse);
   rpc Ls(LsRequest) returns (LsResponse);
   rpc Canonicalize(CanonicalizeRequest) returns (CanonicalizeResponse);

@@ -1,15 +1,15 @@
 use futures::future::pending;
 use futures::Stream;
 use futures::StreamExt;
+use general_networked_filesystem::core::FileOperations;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tonic::Streaming;
 
-use crate::transport::node_transport::proto::node_manage_server::NodeManage;
-use crate::transport::node_transport::proto::server_manage_server::{
-    ServerManage, ServerManageServer,
-};
+use crate::transport::node_transport::proto::RawFileChunk;
+use crate::transport::node_transport::proto::FileChunk;
+use crate::transport::node_transport::proto::LsRequest;
 use crate::transport::node_transport::proto::ServerMessage;
 use crate::{AppState, IncomingMessage, IncomingMessageWithMetadata};
 use network_abstraction_lib::RouterErrors;
@@ -21,6 +21,11 @@ mod node_transport_spec;
 mod proto {
     tonic::include_proto!("main");
 }
+use crate::transport::node_transport::proto::node_manage_server::NodeManage;
+use crate::transport::node_transport::proto::server_manage_server::{
+    ServerManage, ServerManageServer,
+};
+use crate::transport::node_transport::proto::filesystem_manage_server::FilesystemManage;
 use proto::{server_edit_server::ServerEdit, server_edit_server::ServerEditServer};
 
 use crate::transport::node_transport::node_transport_spec::ConsoleRequest;
@@ -499,11 +504,43 @@ impl NodeManage for Connection {
         }
     }
 }
-// impl Into<crate::MetadataTypes> for proto::MetadataTypes {
-//     fn into(self) -> crate::MetadataTypes {
-//         serde_json::from_value(serde_json::to_value(self).unwrap()).unwrap()
+
+// #[tonic::async_trait]
+// impl FilesystemManage for Connection {
+//     type DownloadStream = ReceiverStream<Result<RawFileChunk, tonic::Status>>;
+//     async fn ls(
+//         &self,
+//         request: tonic::Request<proto::LsRequest>,
+//     ) -> std::result::Result<tonic::Response<proto::LsResponse>, tonic::Status> {
+//         let state = self.router.lock().await.get_state_mut();
+//         let response = FileOperations::from_known_request::<LsRequest>(encoding)
+//             .map_err(|_| tonic::Status::internal("Encountered an error"))?
+//             .execute_bytes()
+//             .map_err(|_| tonic::Status::internal("Encountered an error"))?;
+//     }
+//     async fn canonicalize(
+//         &self,
+//         request: tonic::Request<proto::CanonicalizeRequest>,
+//     ) -> std::result::Result<tonic::Response<proto::CanonicalizeResponse>, tonic::Status> {
+//     }
+//     async fn size(
+//         &self,
+//         request: tonic::Request<proto::SizeRequest>,
+//     ) -> std::result::Result<tonic::Response<proto::SizeResponse>, tonic::Status> {
+//     }
+//     async fn upload(
+//         &self,
+//         request: tonic::Request<Streaming<FileChunk>>,
+//     ) -> std::result::Result<tonic::Response<proto::UploadResponse>, tonic::Status> {
+//     }
+//     async fn download(
+//         &self,
+//         request: tonic::Request<proto::DownloadRequest>,
+//     ) -> std::result::Result<tonic::Response<Self::DownloadStream>, tonic::Status> {
 //     }
 // }
+
+
 impl Into<crate::MetadataTypes> for proto::MetadataTypes {
     fn into(self) -> crate::MetadataTypes {
         // TODO: remove hardcoding of server for

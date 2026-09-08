@@ -9,6 +9,7 @@ use serde::Serialize;
 
 pub mod erasure;
 pub mod general;
+pub mod chain;
 
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + Sync>>;
 
