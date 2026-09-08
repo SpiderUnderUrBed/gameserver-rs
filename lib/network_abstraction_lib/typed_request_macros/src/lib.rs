@@ -2,6 +2,7 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, GenericArgument, ImplItem, ItemImpl, PathArguments};
 
+<<<<<<< HEAD
 #[proc_macro_attribute]
 pub fn typed_request(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input_impl = parse_macro_input!(item as ItemImpl);
@@ -9,6 +10,20 @@ pub fn typed_request(_attr: TokenStream, item: TokenStream) -> TokenStream {
     match expand(&input_impl) {
         Ok(tokens) => tokens.into(),
         Err(e) => e.to_compile_error().into(),
+=======
+    #[proc_macro_attribute]
+    pub fn typed_request(_attr: TokenStream, item: TokenStream) -> TokenStream {
+        let input_impl = match syn::parse::<ItemImpl>(item.clone()) {
+            Ok(imp) => imp,
+            Err(e) => {
+                return item;
+            }
+        };
+        match expand(&input_impl) {
+            Ok(tokens) => tokens.into(),
+            Err(e) => e.to_compile_error().into(),
+        }
+>>>>>>> c5057e3 (Fixed an error popping up with RA for the macro)
     }
 }
 
@@ -62,6 +77,7 @@ fn expand(input_impl: &ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
         }
     };
 
+<<<<<<< HEAD
     let output_ty = input_impl
         .items
         .iter()
@@ -75,6 +91,11 @@ fn expand(input_impl: &ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
                 "#[typed_request] requires `type Output = ...;` already written in the impl body",
             )
         })?;
+=======
+        Ok(quote! {
+            impl #trait_path for #self_ty {
+                type Output = #output_ty;
+>>>>>>> c5057e3 (Fixed an error popping up with RA for the macro)
 
     Ok(quote! {
         impl #trait_path for #self_ty {

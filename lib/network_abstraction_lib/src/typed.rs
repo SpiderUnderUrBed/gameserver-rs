@@ -2,7 +2,7 @@ use std::sync::{Arc, OnceLock};
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_flexitos::{serialize_trait_object, MapRegistry, Registry as FlexitosRegistry};
+use serde_flexitos::{MapRegistry, Registry as FlexitosRegistry, serialize_trait_object};
 
 use crate::{AsyncFnWrapper, BorrowedBoxFuture};
 
@@ -13,7 +13,8 @@ pub trait TaggedOutput: erased_serde::Serialize + std::fmt::Debug + Send + Sync 
 #[doc(hidden)]
 pub struct OutputRegistration {
     pub id: &'static str,
-    pub deser: fn(&mut dyn erased_serde::Deserializer) -> erased_serde::Result<Box<dyn TaggedOutput>>,
+    pub deser:
+        fn(&mut dyn erased_serde::Deserializer) -> erased_serde::Result<Box<dyn TaggedOutput>>,
 }
 
 inventory::collect!(OutputRegistration);
@@ -41,7 +42,10 @@ impl<'a> Serialize for dyn TaggedOutput + 'a {
 
 impl<'de> Deserialize<'de> for Box<dyn TaggedOutput> {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        output_registry().as_mut().unwrap().deserialize_trait_object(d)
+        output_registry()
+            .as_mut()
+            .unwrap()
+            .deserialize_trait_object(d)
     }
 }
 
