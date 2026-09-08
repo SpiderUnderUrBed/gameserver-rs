@@ -3,9 +3,10 @@ use std::{error::Error, marker::PhantomData, pin::Pin};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 
-pub trait Execute {
+pub trait Execute<S> {
     async fn execute(
         &self,
+        state: S,
         bytes: Vec<u8>,
     ) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
@@ -66,37 +67,41 @@ where
     }
 }
 
-pub struct ChainBuilder<H> {
+pub struct ChainBuilder<H, S> {
+    _marker2: PhantomData<S>,
     list: H,
 }
 
-impl ChainBuilder<HNil> {
+impl <S>ChainBuilder<HNil, S> {
     pub fn new() -> Self {
         ChainBuilder {
             list: HNil {},
+            _marker2: PhantomData,
         }
     }
 }
 
 
-impl Execute for HNil {
+impl<S> Execute<S> for HNil {
     async fn execute(
         &self,
+        _state: S,
         _bytes: Vec<u8>,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         Ok(())
     }
 }
 
-impl<T: DeserializeOwned, F, Tail> Execute for HCons<T, F, Tail>
+impl<T: DeserializeOwned, F, Tail, S> Execute<S> for HCons<T, F, Tail>
 where
     F: for<'a> Fn(
         T,
     ) -> Pin<Box<dyn Future<Output = Result<(), Box<dyn Error + Send + Sync>>> + Send>>,
-    Tail: Execute,
+    Tail: Execute<S>,
 {
     async fn execute(
         &self,
+        state: S,
         bytes: Vec<u8>,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         match serde_json::from_slice(&bytes){
@@ -105,64 +110,28 @@ where
             },
             Err(_) => todo!(),
         }
-        // match T::decode(bytes.clone()) {
-        //     Ok(output) => {
-               
-        //         (self.f)(output).await.map_err(|e| match e {
-                  
-        //         })?;
-        //     }
-        //     Err(e) => {
-        //     }
-        // }
-        self.tail.execute(bytes).await
+        self.tail.execute(state, bytes).await
     }
 }
 
-impl<H> ChainBuilder<H> {
-    pub fn chain<T, F, Idx>(&mut self, f: F) -> ChainBuilder<H::Output>
+impl<ST, H: Execute<ST>> ChainBuilder<H, ST> {
+    pub fn chain<T, F, Idx, S>(&mut self, f: F) -> ChainBuilder<H::Output, S>
     where
         H: InsertOrReplace<T, F, Idx>,
         F: for<'a> Fn(
+            S,
             T,
         )
             -> Pin<Box<dyn Future<Output = Result<(), Box<dyn Error + Send + Sync>>> + Send>>,
     {
         ChainBuilder {
             list: self.list.insert_or_replace(f),
+            _marker2: PhantomData,
         }
     }
-    pub async fn decode_bytes(&mut self, bytes: Vec<u8>) -> Result<(), Box<dyn Error + Send + Sync>> {
-        Ok(())
-            // let mut total_bytes = Vec::new();
-            // total_bytes.extend(self.fs.remainder.clone());
-            // self.fs.remainder = Vec::new();
-            // total_bytes.extend(bytes);
-            // let mut frame = self.fs.state.create_frame_handler();
-            // frame.set_chunks(self.fs.remainder.clone());
-
-            // match frame.append_bytes_recv(&total_bytes, remainder) {
-            //     Ok(frames) => {
-            //         for frame in &frames {
-            //             let chunks = frame.get_chunks();
-            //             let _ = self
-            //                 .list
-            //                 .execute(state_id, chunks.clone(), &mut self.fs)
-            //                 .await?;
-            //         }
-            //         if let Some(last_frame) = frames.iter().last() {
-            //             self.fs.remainder.extend(last_frame.get_remainder().clone());
-            //         }
-            //         Ok(())
-            //     }
-            //     Err(e) => {
-                    
-            //     }
-            // }
+    pub async fn decode_bytes(&mut self, state: ST, bytes: Vec<u8>) -> Result<(), Box<dyn Error + Send + Sync>> {
+        self.list.execute(state, bytes).await
     }
-    // pub async fn forward(self, bytes: Vec<u8>){
-
-    // }
 }
 
 // pub fn foo() -> ChainBuilder<HNil> {
