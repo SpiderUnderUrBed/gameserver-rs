@@ -122,22 +122,121 @@ where
     }
 }
 
-#[derive(Default, Serialize)]
-pub struct NoneResponse {}
 
-impl IntoResponse<NoneResponse> for NoneResponse {
-    fn try_into_response(&self) -> Result<NoneResponse, ExtractorErrors> {
-        unimplemented!("Cannot convert NoneResponse into anything")
+
+
+impl<S: Send + Sync> HandlerType<S> for AnyHandler<S>
+where
+    S: Send + Sync,
+{
+    fn add_router(&self, _router: &Router<S>) {
+        todo!()
+    }
+
+    fn try_predicate(
+        &mut self,
+        request: &dyn IntoRequest,
+    ) -> Result<Box<dyn IntoRequest>, RouterErrors> {
+        Ok(request.clone_box())
+    }
+
+    fn execute<'a>(
+        &mut self,
+        state: &'a S,
+        request: Box<dyn IntoRequest>,
+    ) -> BorrowedBoxFuture<'a, Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>> {
+        (self.function)(state, request)
+    }
+
+    fn get_mapping(&self) -> Option<String> {
+        self.mapping.clone()
+    }
+
+    fn mapping(mut self, mapping: String) -> Self {
+        self.mapping = Some(mapping);
+        self
     }
 }
 
-#[derive(Default, Serialize)]
-pub struct ErrorResponse {
-    pub error: String,
+pub struct AnyHandler<AppState> {
+    mapping: Option<String>,
+    function: Box<
+        dyn FnMut(
+                &AppState,
+                Box<dyn IntoRequest>,
+            ) -> BoxFuture<Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>>
+            + Send
+            + Sync,
+    >,
 }
 
-impl<S> IntoResponse<S> for ErrorResponse {
-    fn try_into_response(&self) -> Result<S, ExtractorErrors> {
-        Err(ExtractorErrors::Err(self.error.clone()))
+pub fn any_type<F, Fut, AppState>(mut f: F) -> AnyHandler<AppState>
+where
+    F: FnMut(&AppState, Box<dyn IntoRequest>) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>> + Send + Sync + 'static,
+{
+    AnyHandler {
+        function: Box::new(move |state, req| Box::pin(f(state, req))),
+        mapping: None,
+    }
+}
+
+impl<S: Send + Sync> HandlerType<S> for StringHandler<S>
+where
+    S: Send + Sync,
+{
+    fn add_router(&self, _router: &Router<S>) {
+        todo!()
+    }
+
+    fn try_predicate(
+        &mut self,
+        request: &dyn IntoRequest,
+    ) -> Result<Box<dyn IntoRequest>, RouterErrors> {
+        let concrete = request
+            .as_any()
+            .downcast_ref::<BytesRequest>()
+            .ok_or(RouterErrors::NoHandlerFound)?;
+        Ok(Box::new(concrete.clone()))
+    }
+
+    fn execute<'a>(
+        &mut self,
+        state: &'a S,
+        request: Box<dyn IntoRequest>,
+    ) -> BorrowedBoxFuture<'a, Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>> {
+        (self.function)(state, request)
+    }
+
+    fn get_mapping(&self) -> Option<String> {
+        self.mapping.clone()
+    }
+
+    fn mapping(mut self, mapping: String) -> Self {
+        self.mapping = Some(mapping);
+        self
+    }
+}
+
+pub struct StringHandler<AppState> {
+    mapping: Option<String>,
+    function: Box<
+        dyn FnMut(
+                &AppState,
+                Box<dyn IntoRequest>,
+            ) -> BoxFuture<Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>>
+            + Send
+            + Sync,
+    >,
+}
+
+pub fn string_type<F, Fut, AppState>(mut f: F) -> StringHandler<AppState>
+where
+    F: FnMut(&AppState, Box<dyn IntoRequest>) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>> + Send + Sync + 'static,
+{
+    StringHandler {
+        function: Box::new(move |state, req| Box::pin(f(state, req))),
+        mapping: None,
     }
 }

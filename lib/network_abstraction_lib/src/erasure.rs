@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use futures::Stream;
 
 use crate::BorrowedBoxFuture;
-use crate::general::ErrorResponse;
+use crate::ErrorResponse;
 use crate::{
     AsyncFnWrapper, FromWire, HandlerType, IntoRequest, IntoResponse, MapOutput, Router,
     RouterErrors, StreamResponse, StringResponse,

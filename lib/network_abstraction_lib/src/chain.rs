@@ -1,14 +1,64 @@
 use std::{error::Error, marker::PhantomData, pin::Pin};
-
+use std::any::TypeId;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
+use crate::{HandlerType, IntoRequest};
+
+pub struct ChainHere<InnerIdx>(std::marker::PhantomData<InnerIdx>);
+pub struct ChainThere<Idx>(std::marker::PhantomData<Idx>);
+
+pub struct ChainsNil;
+
+pub struct ChainsCons<C, Tail> {
+    pub(crate) head: C,
+    pub(crate) tail: Tail,
+}
+
+pub trait FindChain<T, Idx, S> {
+    fn find_and_execute(
+        &self,
+        state: S,
+        request: &dyn IntoRequest,
+    ) -> impl Future<Output = Result<(), Box<dyn Error + Send + Sync>>> + Send;
+}
+
+// Cant impliment until try_as_dyn or specializations are added
+impl<T, C, Tail: Send + Sync, S, InnerIdx> FindChain<T, ChainHere<InnerIdx>, S> for ChainsCons<C, Tail>
+where
+    C: Execute<S> + Contains<T, InnerIdx> + Sync,
+    S: Send,
+{
+    async fn find_and_execute(
+        &self,
+        state: S,
+        request: &dyn IntoRequest,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        todo!()
+        // self.head.execute(state, request).await
+    }
+}
+
+impl<T, C: Sync, Tail: Sync, S: Send, Idx> FindChain<T, ChainThere<Idx>, S> for ChainsCons<C, Tail>
+where
+    Tail: FindChain<T, Idx, S>,
+{
+    async fn find_and_execute(
+        &self,
+        state: S,
+        request: &dyn IntoRequest,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        self.tail.find_and_execute(state, request).await
+    }
+}
+
+pub trait Contains<T, Idx> {}
 
 pub trait Execute<S> {
-    async fn execute(
+    fn execute(
         &self,
         state: S,
         bytes: Vec<u8>,
-    ) -> Result<(), Box<dyn Error + Send + Sync>>;
+    ) -> impl Future<Output = Result<(), Box<dyn Error + Send + Sync>>> + Send;
 }
 
 pub struct HNil {
@@ -82,7 +132,7 @@ impl <S>ChainBuilder<HNil, S> {
 }
 
 
-impl<S> Execute<S> for HNil {
+impl<S: Send> Execute<S> for HNil {
     async fn execute(
         &self,
         _state: S,
@@ -92,12 +142,13 @@ impl<S> Execute<S> for HNil {
     }
 }
 
-impl<T: DeserializeOwned, F, Tail, S> Execute<S> for HCons<T, F, Tail>
+impl<T: DeserializeOwned + Send + Sync, F, Tail, S: Send> Execute<S> for HCons<T, F, Tail>
 where
     F: for<'a> Fn(
+        &S,
         T,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Box<dyn Error + Send + Sync>>> + Send>>,
-    Tail: Execute<S>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Box<dyn Error + Send + Sync>>> + Send>> + Sync,
+    Tail: Execute<S> + Send + Sync,
 {
     async fn execute(
         &self,
@@ -106,9 +157,11 @@ where
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         match serde_json::from_slice(&bytes){
             Ok(output) => {
-                (self.f)(output).await?;
+                (self.f)(&state, output).await?;
             },
-            Err(_) => todo!(),
+            Err(_) => {
+
+            },
         }
         self.tail.execute(state, bytes).await
     }
@@ -134,6 +187,75 @@ impl<ST, H: Execute<ST>> ChainBuilder<H, ST> {
     }
 }
 
-// pub fn foo() -> ChainBuilder<HNil> {
-//     ChainBuilder::new()
+
+// pub trait CollectTypeIds {
+//     fn type_ids(ids: &mut Vec<TypeId>);
 // }
+
+// impl CollectTypeIds for HNil {
+//     fn type_ids(_ids: &mut Vec<TypeId>) {}
+// }
+
+// impl<T: 'static, F, Tail: CollectTypeIds> CollectTypeIds for HCons<T, F, Tail> {
+//     fn type_ids(ids: &mut Vec<TypeId>) {
+//         ids.push(TypeId::of::<T>());
+//         Tail::type_ids(ids);
+//     }
+// }
+
+// impl<H, S> ChainType<S> for ChainBuilder<H, S>
+// where
+//     H: Execute<S> + CollectTypeIds + Send + Sync,
+//     S: Send + Sync,
+// {
+//     fn accepts(&self, id: TypeId) -> bool {
+//         let mut ids = Vec::new();
+//         H::type_ids(&mut ids);
+//         ids.contains(&id)
+//     }
+
+//     fn execute_erased<'a>(
+//         &'a self,
+//         state: S,
+//         bytes: Vec<u8>,
+//     ) -> Pin<Box<dyn Future<Output = Result<(), Box<dyn Error + Send + Sync>>> + Send + 'a>> {
+//         Box::pin(self.list.execute(state, bytes))
+//     }
+// }
+
+// trait SerializableRequest: crate::IntoRequest + DeserializeOwned {}
+
+// impl <H: Send + Sync, S: Send + Sync>HandlerType<S> for ChainBuilder<H, S>{
+//     fn add_router(&self, router: &crate::Router<S>) {
+//         todo!()
+//     }
+
+//     fn try_predicate(
+//         &mut self,
+//         request: &dyn SerializableRequest,
+//     ) -> Result<Box<dyn crate::IntoRequest>, crate::RouterErrors> {
+//         todo!()
+//     }
+
+//     fn get_mapping(&self) -> Option<String> {
+//         todo!()
+//     }
+
+//     fn mapping(self, mapping: String) -> Self
+//     where
+//         Self: Sized {
+//         todo!()
+//     }
+
+//     fn execute<'a>(
+//         &mut self,
+//         state: &'a S,
+//         request: Box<dyn crate::IntoRequest>,
+//     ) -> crate::BorrowedBoxFuture<'a, Box<dyn crate::IntoResponse<Box<dyn std::any::Any + Send + Sync>>>> {
+//         todo!()
+//     }
+// }
+// //pub fn chain_wrapper_handler()
+// // pub fn foo() -> ChainBuilder<HNil> {
+// //     ChainBuilder::new()
+// // }
