@@ -6,17 +6,10 @@ use serde_flexitos::{serialize_trait_object, MapRegistry, Registry as FlexitosRe
 
 use crate::{AsyncFnWrapper, BorrowedBoxFuture};
 
-/// A dynamically-serializable output value, tagged with its concrete
-/// type's id so it can round-trip through JSON without the caller
-/// knowing the concrete type ahead of time.
 pub trait TaggedOutput: erased_serde::Serialize + std::fmt::Debug + Send + Sync {
     fn tag(&self) -> &'static str;
 }
 
-/// One entry per `register_output!` call. `inventory::submit!` expands
-/// to a plain item (a linker-section static), so this is legal directly
-/// at module scope — unlike calling a registration fn as a bare
-/// statement, which is not a valid item and is what broke before.
 #[doc(hidden)]
 pub struct OutputRegistration {
     pub id: &'static str,
@@ -32,9 +25,6 @@ fn output_registry() -> std::sync::MutexGuard<'static, Option<MapRegistry<dyn Ta
     let mut guard = OUTPUT_REGISTRY.lock().unwrap();
     if guard.is_none() {
         let mut reg = MapRegistry::<dyn TaggedOutput>::new("TaggedOutput");
-        // Lazily drain every `register_output!` submission the first
-        // time the registry is touched — no eager top-level fn calls,
-        // no startup ordering to worry about.
         for entry in inventory::iter::<OutputRegistration> {
             reg.register(entry.id, entry.deser);
         }
@@ -55,16 +45,6 @@ impl<'de> Deserialize<'de> for Box<dyn TaggedOutput> {
     }
 }
 
-/// Tags a concrete Output type for (de)serialization. Purely a
-/// serde-shape concern — has nothing to do with routing.
-///
-/// Usage (valid directly at item/module scope, e.g. right after a
-/// struct definition):
-/// ```ignore
-/// #[derive(Debug, Clone, Serialize, Deserialize)]
-/// struct Greeting(String);
-/// register_output!(Greeting, "Greeting");
-/// ```
 #[macro_export]
 macro_rules! register_output {
     ($ty:ty, $id:expr) => {
@@ -82,7 +62,6 @@ macro_rules! register_output {
     };
 }
 
-/// The core typed contract: exact Input -> exact Output, known statically.
 pub trait TypedHandler<S>: Send + Sync {
     type Input: DeserializeOwned + Send + Sync + 'static;
     type Output: TaggedOutput + Serialize + Clone + Send + Sync + 'static;
@@ -90,12 +69,6 @@ pub trait TypedHandler<S>: Send + Sync {
     fn call<'a>(&'a self, state: &'a S, input: Self::Input) -> BorrowedBoxFuture<'a, Self::Output>;
 }
 
-/// Wraps a plain async closure into a `TypedHandler`. Built on the
-/// existing `AsyncFnWrapper` trait rather than a bare `Fn(...) -> Fut`
-/// bound — a single fixed `Fut` type can't simultaneously borrow every
-/// possible `'a`, which is what caused the earlier E0195 late/early-bound
-/// mismatch. `AsyncFnWrapper` already expresses "one future type per
-/// call, borrowed for that call's lifetime" correctly.
 pub struct TypedFn<F, In, Out> {
     f: F,
     _marker: std::marker::PhantomData<fn(In) -> Out>,
@@ -129,14 +102,6 @@ where
     }
 }
 
-/// Implemented on the *Input* type. Declares its paired Output and owns
-/// a private static slot for the registered handler. Routing key is the
-/// Input type itself, resolved by ordinary type inference — no HashMap,
-/// no TypeId, no Any::downcast anywhere in this trait or its users.
-///
-/// `fn slot()` is normally filled in by the `#[typed_request]` proc
-/// macro from the `typed_request_macros` crate — you only need to write
-/// `type Output = ...;`.
 pub trait RouteInput<S>: DeserializeOwned + Send + Sync + 'static
 where
     S: Send + Sync + 'static,
@@ -146,7 +111,7 @@ where
     fn slot() -> &'static OnceLock<Arc<dyn TypedHandler<S, Input = Self, Output = Self::Output>>>;
 
     fn set(handler: impl TypedHandler<S, Input = Self, Output = Self::Output> + 'static) {
-        let _ = Self::slot().set(Arc::new(handler)); // first registration wins
+        let _ = Self::slot().set(Arc::new(handler));
     }
 
     fn get() -> Option<Arc<dyn TypedHandler<S, Input = Self, Output = Self::Output>>> {

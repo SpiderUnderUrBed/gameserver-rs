@@ -10,15 +10,11 @@ pub use inventory;
 use futures::Stream;
 use serde::Serialize;
 
-pub mod chain;
 pub mod erasure;
 pub mod general;
 pub mod typed;
 
-use chain::{Contains, Execute};
 use typed::RouteInput;
-
-use crate::chain::{ChainsCons, ChainsNil, FindChain};
 
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + Sync>>;
 
@@ -48,7 +44,7 @@ pub enum MiddlewareAction<'a> {
     Continue,
 }
 
-pub struct Router<S, Chains = ChainsNil>
+pub struct Router<S>
 where
     S: Send + Sync,
 {
@@ -56,21 +52,19 @@ where
     middleware:
         Option<Box<dyn for<'a> Fn(String, &'a dyn IntoRequest) -> MiddlewareAction + Send + Sync>>,
     registry: HashMap<String, Box<dyn HandlerType<S>>>,
-    chains: Chains,
 }
 
-impl<S: Send + Sync> Router<S, ChainsNil> {
-    pub fn new(state: S) -> Router<S, ChainsNil> {
+impl<S: Send + Sync> Router<S> {
+    pub fn new(state: S) -> Router<S> {
         Router {
             state,
             registry: HashMap::new(),
             middleware: None,
-            chains: ChainsNil,
         }
     }
 }
 
-impl<S: Send + Sync + 'static, Chains> Router<S, Chains> {
+impl<S: Send + Sync + 'static> Router<S> {
     pub fn get_state(&self) -> &S {
         &self.state
     }
@@ -82,7 +76,7 @@ impl<S: Send + Sync + 'static, Chains> Router<S, Chains> {
     pub fn register_handler(
         &mut self,
         handler: impl HandlerType<S> + 'static,
-    ) -> &mut Router<S, Chains> {
+    ) -> &mut Router<S> {
         self.registry.insert(
             handler
                 .get_mapping()
@@ -95,7 +89,7 @@ impl<S: Send + Sync + 'static, Chains> Router<S, Chains> {
     pub fn register_typed<I>(
         &mut self,
         handler: impl typed::TypedHandler<S, Input = I, Output = I::Output> + 'static,
-    ) -> &mut Router<S, Chains>
+    ) -> &mut Router<S>
     where
         I: RouteInput<S>,
     {
@@ -118,43 +112,13 @@ impl<S: Send + Sync + 'static, Chains> Router<S, Chains> {
         self.middleware = Some(Box::new(middleware));
     }
 
-    pub fn map_router<F>(self, f: F) -> Router<S, Chains>
+    pub fn map_router<F>(self, f: F) -> Router<S>
     where
-        F: Fn(Router<S, Chains>) -> Router<S, Chains>,
+        F: Fn(Router<S>) -> Router<S>,
     {
         f(self)
     }
 
-    pub fn add_chain<H>(
-        self,
-        chain: chain::ChainBuilder<H, S>,
-    ) -> Router<S, ChainsCons<chain::ChainBuilder<H, S>, Chains>>
-    where
-        H: Execute<S> + Send + Sync,
-    {
-        Router {
-            state: self.state,
-            registry: self.registry,
-            middleware: self.middleware,
-            chains: ChainsCons {
-                head: chain,
-                tail: self.chains,
-            },
-        }
-    }
-
-    pub async fn execute_chain<T, Idx>(
-        &self,
-        request: &dyn IntoRequest,
-    ) -> Result<(), Box<dyn Error + Send + Sync>>
-    where
-        Chains: FindChain<T, Idx, S>,
-        S: Clone,
-    {
-        self.chains
-            .find_and_execute(self.state.clone(), request)
-            .await
-    }
 
     pub async fn execute_handler(
         &mut self,
@@ -578,21 +542,21 @@ mod tests {
             }
         }
 
-        // #[tokio::test]
-        // async fn erasure_match() {
-        //     let router: &mut Router<Arc<State>> = &mut Router::new(Arc::new(State::new()));
-        //     router.register_handler(erasure::erase::<_, MyPayload, _, NoneResponse, Arc<State>>(
-        //         |_state: &Arc<State>, payload: MyPayload| async move {
-        //             println!("got {payload:?}");
-        //             NoneResponse {}
-        //         },
-        //     ));
-        //     let bytes = r#"{"name":"widget","count":3}"#.as_bytes();
-        //     match router.feed_bytes(bytes.to_vec()).await {
-        //         Ok(_) => assert!(true),
-        //         Err(_) => panic!("expected handler to match valid payload"),
-        //     }
-        // }
+        #[tokio::test]
+        async fn erasure_match() {
+            let router: &mut Router<Arc<State>> = &mut Router::new(Arc::new(State::new()));
+            router.register_handler(erasure::erase::<_, MyPayload, _, NoneResponse, Arc<State>>(
+                |_state: &Arc<State>, payload: MyPayload| async move {
+                    println!("got {payload:?}");
+                    NoneResponse {}
+                },
+            ));
+            let bytes = r#"{"name":"widget","count":3}"#.as_bytes();
+            match router.feed_bytes(bytes.to_vec()).await {
+                Ok(_) => assert!(true),
+                Err(_) => panic!("expected handler to match valid payload"),
+            }
+        }
 
         #[tokio::test]
         async fn erasure_mismatch() {

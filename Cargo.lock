@@ -2303,15 +2303,22 @@ dependencies = [
 name = "network_abstraction_lib"
 version = "0.1.0"
 dependencies = [
+ "erased-serde",
  "futures",
+ "inventory",
+ "proc-macro2",
  "prost",
  "prost-types",
+ "quote",
  "serde",
+ "serde_flexitos",
  "serde_json",
+ "syn 2.0.106",
  "tokio",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+ "typed_request_macros",
 ]
 
 [[package]]
@@ -3567,6 +3574,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_flexitos"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3323d093d7597660758b742dd7a1525539613f6182b306a4e1dd6e01a89bada9"
+dependencies = [
+ "erased-serde",
+ "serde",
+]
+
+[[package]]
 name = "serde_json"
 version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4616,6 +4633,15 @@ dependencies = [
  "sha1",
  "thiserror 2.0.16",
  "utf-8",
+]
+
+[[package]]
+name = "typed_request_macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
 ]
 
 [[package]]
