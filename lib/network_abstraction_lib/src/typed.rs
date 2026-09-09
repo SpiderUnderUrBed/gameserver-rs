@@ -6,6 +6,116 @@ use serde_flexitos::{MapRegistry, Registry as FlexitosRegistry, serialize_trait_
 
 use crate::{AsyncFnWrapper, BorrowedBoxFuture};
 
+use crate::{
+    BytesRequest, ErrorResponse, ExtractorErrors, HandlerType, IntoRequest, IntoResponse, Router,
+    RouterErrors, ValueRequest,
+};
+use std::any::Any;
+
+struct TypedRequest<I>(I);
+
+impl<I> IntoRequest for TypedRequest<I>
+where
+    I: Clone + Send + Sync + 'static,
+{
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn into_any(self: Box<Self>) -> Box<dyn Any> {
+        self
+    }
+    fn clone_box(&self) -> Box<dyn IntoRequest> {
+        Box::new(TypedRequest(self.0.clone()))
+    }
+}
+
+pub struct TypedOutputResponse<Out>(pub Out);
+
+impl<Out> IntoResponse<Box<dyn Any + Send + Sync>> for TypedOutputResponse<Out>
+where
+    Out: Clone + Send + Sync + 'static,
+{
+    fn try_into_response(&self) -> Result<Box<dyn Any + Send + Sync>, ExtractorErrors> {
+        Ok(Box::new(self.0.clone()) as Box<dyn Any + Send + Sync>)
+    }
+}
+
+pub(crate) struct TypedRouteHandler<S, I> {
+    _marker: std::marker::PhantomData<fn(S, I)>,
+}
+
+impl<S, I> TypedRouteHandler<S, I> {
+    pub(crate) fn new() -> Self {
+        TypedRouteHandler {
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<S, I> HandlerType<S> for TypedRouteHandler<S, I>
+where
+    S: Send + Sync + 'static,
+    I: RouteInput<S> + Clone,
+{
+    fn add_router(&self, _router: &Router<S>) {}
+
+    fn try_predicate(
+        &mut self,
+        request: &dyn IntoRequest,
+    ) -> Result<Box<dyn IntoRequest>, RouterErrors> {
+        if let Some(bytes_req) = request.as_any().downcast_ref::<BytesRequest>() {
+            if let Ok(parsed) = serde_json::from_slice::<I>(&bytes_req.bytes) {
+                return Ok(Box::new(TypedRequest(parsed)));
+            }
+        } else if let Some(value_req) = request.as_any().downcast_ref::<ValueRequest>() {
+            if let Ok(parsed) = serde_json::from_value::<I>(value_req.value.clone()) {
+                return Ok(Box::new(TypedRequest(parsed)));
+            }
+        }
+        Err(RouterErrors::NoHandlerFound)
+    }
+
+    fn get_mapping(&self) -> Option<String> {
+        None
+    }
+
+    fn mapping(self, _mapping: String) -> Self
+    where
+        Self: Sized,
+    {
+        self
+    }
+
+    fn execute<'a>(
+        &mut self,
+        state: &'a S,
+        request: Box<dyn IntoRequest>,
+    ) -> BorrowedBoxFuture<'a, Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>> {
+        Box::pin(async move {
+            let input = match request.into_any().downcast::<TypedRequest<I>>() {
+                Ok(typed) => typed.0,
+                Err(_) => {
+                    return Box::new(ErrorResponse {
+                        error: "typed route handler received the wrong request wrapper".into(),
+                    })
+                        as Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>;
+                }
+            };
+
+            match I::get() {
+                Some(handler) => {
+                    let output = handler.call(state, input).await;
+                    Box::new(TypedOutputResponse(output))
+                        as Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>
+                }
+                None => Box::new(ErrorResponse {
+                    error: "no typed handler registered for this input type".into(),
+                }) as Box<dyn IntoResponse<Box<dyn Any + Send + Sync>>>,
+            }
+        })
+    }
+}
+
 pub trait TaggedOutput: erased_serde::Serialize + std::fmt::Debug + Send + Sync {
     fn tag(&self) -> &'static str;
 }

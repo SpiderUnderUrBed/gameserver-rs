@@ -91,12 +91,14 @@ impl<S: Send + Sync + 'static> Router<S> {
         handler: impl typed::TypedHandler<S, Input = I, Output = I::Output> + 'static,
     ) -> &mut Router<S>
     where
-        I: RouteInput<S>,
+        I: RouteInput<S> + Clone,
     {
         I::set(handler);
+        let key = format!("__typed::{}", std::any::type_name::<I>());
+        self.registry
+            .insert(key, Box::new(typed::TypedRouteHandler::<S, I>::new()));
         self
     }
-
     pub async fn execute_typed<I>(&self, input: I) -> Result<I::Output, RouterErrors>
     where
         I: RouteInput<S>,
@@ -202,6 +204,7 @@ pub enum RouterErrors {
     NoHandlerFound,
 }
 
+#[derive(Debug)]
 pub enum ExtractorErrors {
     NotValidExtractor,
     FailedToExtract,
@@ -578,13 +581,12 @@ mod tests {
 
         use crate::register_output;
         use crate::typed::{RouteInput, typed_fn};
-        use std::sync::OnceLock;
 
         #[derive(Debug, Clone, Serialize, serde::Deserialize)]
         struct Greeting(String);
         register_output!(Greeting, "Greeting");
 
-        #[derive(serde::Deserialize)]
+        #[derive(serde::Deserialize, Clone)]
         struct NameInput {
             name: String,
         }
@@ -592,6 +594,20 @@ mod tests {
         #[typed_request_macros::typed_request]
         impl RouteInput<Arc<State>> for NameInput {
             type Output = Greeting;
+        }
+
+
+        #[tokio::test]
+        async fn typed_dispatch_via_feed_value() {
+            let mut router: Router<Arc<State>> = Router::new(Arc::new(State::new()));
+            router.register_typed(typed_fn(|_s: &Arc<State>, i: NameInput| async move {
+                Greeting(format!("hi {}", i.name))
+            }));
+
+            let value = serde_json::json!({ "name": "Riley" });
+            let resp = router.feed_value(value).await.ok().unwrap();
+            let greeting: Greeting = resp.extract().unwrap();
+            assert_eq!(greeting.0, "hi Riley");
         }
 
         #[tokio::test]
