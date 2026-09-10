@@ -6,9 +6,11 @@ use std::pin::Pin;
 use std::sync::Mutex;
 
 pub use inventory;
+pub use typed_request_macros;
+pub use erased_serde;
 
 use futures::Stream;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub mod erasure;
 pub mod general;
@@ -42,6 +44,7 @@ pub enum MiddlewareAction<'a> {
     SkipPredicate,
     ReassignValue(&'a dyn IntoRequest),
     Continue,
+    Next,
 }
 
 pub struct Router<S>
@@ -163,7 +166,8 @@ impl<S: Send + Sync + 'static> Router<S> {
                         return Ok(handler.execute(state, request.clone_box()).await);
                     }
                     MiddlewareAction::ReassignValue(value) => request = value,
-                    MiddlewareAction::Continue => continue,
+                    MiddlewareAction::Continue => {},
+                    MiddlewareAction::Next => {continue},
                 }
             }
 
@@ -188,7 +192,8 @@ impl<S: Send + Sync + 'static> Router<S> {
                         return Ok(handler.execute(state, request.clone_box()).await);
                     }
                     MiddlewareAction::ReassignValue(value) => request = value,
-                    MiddlewareAction::Continue => continue,
+                    MiddlewareAction::Continue => {},
+                    MiddlewareAction::Next => {continue},
                 }
             }
 
@@ -200,8 +205,12 @@ impl<S: Send + Sync + 'static> Router<S> {
     }
 }
 
+#[derive(Debug)]
+
 pub enum RouterErrors {
     NoHandlerFound,
+    NotImplimented,
+    Any(Box<dyn Error + Send + Sync>)
 }
 
 #[derive(Debug)]
@@ -219,6 +228,9 @@ pub trait IntoRequest: Send + Sync {
 
 pub trait IntoResponse<S>: Send + Sync {
     fn try_into_response(&self) -> Result<S, ExtractorErrors>;
+    fn try_into_bytes(&self) -> Result<Vec<u8>, ExtractorErrors> {
+        Err(ExtractorErrors::NotValidExtractor)
+    }
 }
 
 pub trait HandlerType<S>: Send + Sync
@@ -243,7 +255,7 @@ where
         &mut self,
         _request: Box<dyn Any + Send + Sync>,
     ) -> Result<Box<dyn IntoRequest>, RouterErrors> {
-        Err(RouterErrors::NoHandlerFound)
+        Err(RouterErrors::NotImplimented)
     }
 }
 
@@ -309,7 +321,8 @@ impl ExtractResponse for dyn IntoResponse<Box<dyn Any + Send + Sync>> {
     }
 }
 
-#[derive(Default, Serialize)]
+#[typed_request_macros::register_output]
+#[derive(Default, Deserialize, Serialize, Clone, Debug)]
 pub struct NoneResponse {}
 
 impl IntoResponse<NoneResponse> for NoneResponse {
@@ -318,7 +331,8 @@ impl IntoResponse<NoneResponse> for NoneResponse {
     }
 }
 
-#[derive(Default, Serialize)]
+#[typed_request_macros::register_output]
+#[derive(Default, Deserialize, Serialize, Debug, Clone)]
 pub struct ErrorResponse {
     pub error: String,
 }
@@ -470,7 +484,9 @@ mod tests {
 
         #[derive(Debug, serde::Deserialize, Clone)]
         struct MyPayload {
+            #[serde(rename = "name")]
             _name: String,
+            #[serde(rename = "count")]
             _count: u32,
         }
 
@@ -576,6 +592,9 @@ mod tests {
                 Err(RouterErrors::NoHandlerFound) => {
                     println!("this was correctly rejected, no handler matched");
                 }
+                Err(_) => {
+                    println!("encountered some other error");
+                }
             }
         }
 
@@ -591,6 +610,7 @@ mod tests {
             name: String,
         }
 
+        
         #[typed_request_macros::typed_request]
         impl RouteInput<Arc<State>> for NameInput {
             type Output = Greeting;
@@ -604,10 +624,10 @@ mod tests {
                 Greeting(format!("hi {}", i.name))
             }));
 
-            let value = serde_json::json!({ "name": "Riley" });
+            let value = serde_json::json!({ "name": "Person" });
             let resp = router.feed_value(value).await.ok().unwrap();
             let greeting: Greeting = resp.extract().unwrap();
-            assert_eq!(greeting.0, "hi Riley");
+            assert_eq!(greeting.0, "hi Person");
         }
 
         #[tokio::test]
@@ -618,11 +638,11 @@ mod tests {
             }));
 
             let out = router
-                .execute_typed(NameInput { name: "Sam".into() })
+                .execute_typed(NameInput { name: "Person".into() })
                 .await
                 .ok()
                 .unwrap();
-            assert_eq!(out.0, "hi Sam");
+            assert_eq!(out.0, "hi Person");
         }
     }
 }

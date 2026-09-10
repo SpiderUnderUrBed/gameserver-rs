@@ -1,40 +1,22 @@
-use std::any::Any;
+use std::{any::Any, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
 //#[cfg(feature = "grpc_experimental")]
 use crate::{
-    GetState, IncomingMessage, IncomingMessageWithMetadata, MessagePayload, SimpleMessage,
-    ValueRequest,
+    AppState, GetState, IncomingMessage, IncomingMessageWithMetadata, MessagePayload, SimpleMessage, ValueRequest,
 };
-use network_abstraction_lib::{FromWire, IntoRequest};
+use network_abstraction_lib::{ErrorResponse, FromWire, IntoRequest, NoneResponse, register_output_single, typed::RouteInput, typed_request_macros::{self, register_output}};
+
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct ConsoleRequest {
     #[serde(flatten)]
     pub common: IncomingMessage,
 }
-impl FromWire for ConsoleRequest {
-    type Request = ValueRequest;
-
-    type Error = serde_json::Error;
-
-    fn from_wire(req: Self::Request) -> Result<Self, Self::Error> {
-        serde_json::from_value(req.value)
-    }
-}
-
-impl IntoRequest for ConsoleRequest {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn into_any(self: Box<Self>) -> Box<dyn Any> {
-        self
-    }
-    fn clone_box(&self) -> Box<dyn IntoRequest> {
-        Box::new(self.clone())
-    }
+#[typed_request_macros::typed_request]
+impl RouteInput<Arc<AppState>> for ConsoleRequest {
+    type Output = NoneResponse;
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -43,28 +25,12 @@ pub struct ServerStateRequest {
     pub common: IncomingMessage,
 }
 
-impl IntoRequest for ServerStateRequest {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn into_any(self: Box<Self>) -> Box<dyn Any> {
-        self
-    }
-    fn clone_box(&self) -> Box<dyn IntoRequest> {
-        Box::new(self.clone())
-    }
+#[typed_request_macros::typed_request]
+impl RouteInput<Arc<AppState>> for ServerStateRequest {
+    type Output = ServerStateResponse;
 }
 
-impl FromWire for ServerStateRequest {
-    type Request = ValueRequest;
 
-    type Error = serde_json::Error;
-
-    fn from_wire(req: Self::Request) -> Result<Self, Self::Error> {
-        serde_json::from_value(req.value)
-    }
-}
 
 impl Default for ServerStateRequest {
     fn default() -> Self {
@@ -84,6 +50,11 @@ pub struct StopServerRequest {
     pub common: IncomingMessage,
 }
 
+#[typed_request_macros::typed_request]
+impl RouteInput<Arc<AppState>> for StopServerRequest {
+    type Output = Result<NoneResponse, ErrorResponse>;
+}
+
 impl Default for StopServerRequest {
     fn default() -> Self {
         StopServerRequest {
@@ -96,73 +67,15 @@ impl Default for StopServerRequest {
     }
 }
 
-impl IntoRequest for StopServerRequest {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn into_any(self: Box<Self>) -> Box<dyn Any> {
-        self
-    }
-    fn clone_box(&self) -> Box<dyn IntoRequest> {
-        Box::new(self.clone())
-    }
-}
-
-impl FromWire for StopServerRequest {
-    type Request = ValueRequest;
-
-    type Error = serde_json::Error;
-
-    fn from_wire(req: Self::Request) -> Result<Self, Self::Error> {
-        serde_json::from_value(req.value)
-    }
-}
-
-#[derive(Deserialize, Serialize, Clone)]
-pub struct StartServerRequest {
-    #[serde(flatten)]
-    pub common: IncomingMessage,
-}
-
-impl IntoRequest for StartServerRequest {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn into_any(self: Box<Self>) -> Box<dyn Any> {
-        self
-    }
-    fn clone_box(&self) -> Box<dyn IntoRequest> {
-        Box::new(self.clone())
-    }
-}
-impl Default for StartServerRequest {
-    fn default() -> Self {
-        StartServerRequest {
-            common: IncomingMessage {
-                message: "start_server".to_string(),
-                message_type: "command".to_string(),
-                authcode: "0".to_string(),
-            },
-        }
-    }
-}
-
-impl FromWire for StartServerRequest {
-    type Request = ValueRequest;
-
-    type Error = serde_json::Error;
-
-    fn from_wire(req: Self::Request) -> Result<Self, Self::Error> {
-        serde_json::from_value(req.value)
-    }
-}
-
 #[derive(Deserialize, Serialize, Clone)]
 pub struct ServerNameRequest {
     #[serde(flatten)]
     pub common: IncomingMessage,
+}
+
+#[typed_request_macros::typed_request]
+impl RouteInput<Arc<AppState>> for ServerNameRequest {
+    type Output = ServerNameResponse;
 }
 
 impl Default for ServerNameRequest {
@@ -174,29 +87,6 @@ impl Default for ServerNameRequest {
                 authcode: "0".to_string(),
             },
         }
-    }
-}
-
-impl IntoRequest for ServerNameRequest {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn into_any(self: Box<Self>) -> Box<dyn Any> {
-        self
-    }
-    fn clone_box(&self) -> Box<dyn IntoRequest> {
-        Box::new(self.clone())
-    }
-}
-
-impl FromWire for ServerNameRequest {
-    type Request = ValueRequest;
-
-    type Error = serde_json::Error;
-
-    fn from_wire(req: Self::Request) -> Result<Self, Self::Error> {
-        serde_json::from_value(req.value)
     }
 }
 
@@ -218,17 +108,27 @@ pub struct ServerDataRequest {
     pub common: IncomingMessage,
 }
 
-impl FromWire for ServerDataRequest {
-    type Request = ValueRequest;
 
-    type Error = serde_json::Error;
-
-    fn from_wire(req: Self::Request) -> Result<Self, Self::Error> {
-        serde_json::from_value(req.value)
-    }
+#[typed_request_macros::typed_request]
+impl RouteInput<Arc<AppState>> for ServerDataRequest {
+    type Output = Result<ServerDataResponse, NoneResponse>; 
 }
 
-impl IntoRequest for ServerDataRequest {
+
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct DeleteServerRequest {
+    #[serde(flatten)]
+    pub common: IncomingMessageWithMetadata,
+}
+// register_output!(DeleteServerRequest, "DeleteServerRequest");
+
+#[typed_request_macros::typed_request]
+impl RouteInput<Arc<AppState>> for DeleteServerRequest {
+    type Output = NoneResponse; 
+}
+
+impl IntoRequest for DeleteServerRequest {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -241,11 +141,73 @@ impl IntoRequest for ServerDataRequest {
     }
 }
 
+
+#[derive(Deserialize, Serialize, Clone)]
+pub struct SetServerRequest {
+    #[serde(flatten)]
+    pub common: IncomingMessageWithMetadata,
+}
+#[typed_request_macros::typed_request]
+impl RouteInput<Arc<AppState>> for SetServerRequest {
+    type Output = NoneResponse; 
+}
+
+
+#[derive(Deserialize, Serialize, Clone)]
+pub struct SetFilterRequest {
+    #[serde(flatten)]
+    pub common: IncomingMessageWithMetadata,
+}
+
+#[typed_request_macros::typed_request]
+impl RouteInput<Arc<AppState>> for SetFilterRequest {
+    type Output = NoneResponse; 
+}
+
+
+#[derive(Deserialize, Serialize, Default, Clone)]
+pub struct Ping {
+    #[serde(flatten)]
+    pub common: SimpleMessage,
+}
+
+#[typed_request_macros::typed_request]
+impl RouteInput<Arc<AppState>> for Ping {
+    type Output = PingResponse; 
+}
+
+#[register_output]
+#[derive(Serialize, Clone, Debug, Deserialize)]
+pub struct ServerDataResponse {
+    pub state: GetState,
+}
+
+#[register_output]
+#[derive(Serialize, Clone, Debug, Deserialize)]
+pub struct PingResponse {
+    pub message: SimpleMessage,
+}
+
+#[register_output]
+#[derive(Serialize, Clone, Debug, Deserialize)]
+pub struct ServerNameResponse {
+    #[serde(flatten)]
+    pub common: MessagePayload,
+}
+// register_output_single!(ServerNameResponse);
+
+#[register_output]
+#[derive(Serialize, Clone, Debug, Deserialize)]
+pub struct ServerStateResponse {
+    pub message: MessagePayload,
+}
+
 #[derive(Deserialize, Serialize, Clone)]
 pub struct CreateServerRequest {
     #[serde(flatten)]
     pub common: IncomingMessageWithMetadata,
 }
+
 impl FromWire for CreateServerRequest {
     type Request = ValueRequest;
 
@@ -270,12 +232,12 @@ impl IntoRequest for CreateServerRequest {
 }
 
 #[derive(Deserialize, Serialize, Clone)]
-pub struct DeleteServerRequest {
+pub struct StartServerRequest {
     #[serde(flatten)]
-    pub common: IncomingMessageWithMetadata,
+    pub common: IncomingMessage,
 }
 
-impl IntoRequest for DeleteServerRequest {
+impl IntoRequest for StartServerRequest {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -287,8 +249,7 @@ impl IntoRequest for DeleteServerRequest {
         Box::new(self.clone())
     }
 }
-
-impl FromWire for DeleteServerRequest {
+impl FromWire for StartServerRequest {
     type Request = ValueRequest;
 
     type Error = serde_json::Error;
@@ -298,110 +259,14 @@ impl FromWire for DeleteServerRequest {
     }
 }
 
-#[derive(Deserialize, Serialize, Clone)]
-pub struct SetServerRequest {
-    #[serde(flatten)]
-    pub common: IncomingMessageWithMetadata,
-}
-
-impl IntoRequest for SetServerRequest {
-    fn as_any(&self) -> &dyn Any {
-        self
+impl Default for StartServerRequest {
+    fn default() -> Self {
+        StartServerRequest {
+            common: IncomingMessage {
+                message: "start_server".to_string(),
+                message_type: "command".to_string(),
+                authcode: "0".to_string(),
+            },
+        }
     }
-
-    fn into_any(self: Box<Self>) -> Box<dyn Any> {
-        self
-    }
-    fn clone_box(&self) -> Box<dyn IntoRequest> {
-        Box::new(self.clone())
-    }
-}
-
-impl FromWire for SetServerRequest {
-    type Request = ValueRequest;
-
-    type Error = serde_json::Error;
-
-    fn from_wire(req: Self::Request) -> Result<Self, Self::Error> {
-        serde_json::from_value(req.value)
-    }
-}
-
-#[derive(Deserialize, Serialize, Clone)]
-pub struct SetFilterRequest {
-    #[serde(flatten)]
-    pub common: IncomingMessageWithMetadata,
-}
-
-impl IntoRequest for SetFilterRequest {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn into_any(self: Box<Self>) -> Box<dyn Any> {
-        self
-    }
-    fn clone_box(&self) -> Box<dyn IntoRequest> {
-        Box::new(self.clone())
-    }
-}
-
-impl FromWire for SetFilterRequest {
-    type Request = ValueRequest;
-
-    type Error = serde_json::Error;
-
-    fn from_wire(req: Self::Request) -> Result<Self, Self::Error> {
-        serde_json::from_value(req.value)
-    }
-}
-
-#[derive(Deserialize, Serialize, Default, Clone)]
-pub struct Ping {
-    #[serde(flatten)]
-    pub common: SimpleMessage,
-}
-
-impl IntoRequest for Ping {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn into_any(self: Box<Self>) -> Box<dyn Any> {
-        self
-    }
-    fn clone_box(&self) -> Box<dyn IntoRequest> {
-        Box::new(self.clone())
-    }
-}
-
-impl FromWire for Ping {
-    type Request = ValueRequest;
-
-    type Error = serde_json::Error;
-
-    fn from_wire(req: Self::Request) -> Result<Self, Self::Error> {
-        serde_json::from_value(req.value)
-    }
-}
-
-#[derive(Serialize)]
-pub struct ServerDataResponse {
-    pub state: GetState,
-}
-
-#[derive(Serialize)]
-pub struct PingResponse {
-    pub message: SimpleMessage,
-}
-
-#[derive(Serialize)]
-pub struct ServerNameResponse {
-    #[serde(flatten)]
-    pub common: MessagePayload,
-}
-
-#[derive(Serialize)]
-pub struct ServerStateResponse {
-    pub message: MessagePayload,
 }

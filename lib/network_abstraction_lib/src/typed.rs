@@ -33,10 +33,15 @@ pub struct TypedOutputResponse<Out>(pub Out);
 
 impl<Out> IntoResponse<Box<dyn Any + Send + Sync>> for TypedOutputResponse<Out>
 where
-    Out: Clone + Send + Sync + 'static,
+    Out: TaggedOutput + Serialize + Clone + Send + Sync + 'static,
 {
     fn try_into_response(&self) -> Result<Box<dyn Any + Send + Sync>, ExtractorErrors> {
         Ok(Box::new(self.0.clone()) as Box<dyn Any + Send + Sync>)
+    }
+
+    fn try_into_bytes(&self) -> Result<Vec<u8>, ExtractorErrors> {
+        let tagged: &dyn TaggedOutput = &self.0;
+        serde_json::to_vec(tagged).map_err(|e| ExtractorErrors::Err(e.to_string()))
     }
 }
 
@@ -170,11 +175,19 @@ macro_rules! register_output {
         $crate::inventory::submit! {
             $crate::typed::OutputRegistration {
                 id: $id,
-                deser: |d| Ok(Box::new(erased_serde::deserialize::<$ty>(d)?)),
+                deser: |d| Ok(Box::new($crate::erased_serde::deserialize::<$ty>(d)?)),
             }
         }
     };
 }
+
+#[macro_export]
+macro_rules! register_output_single {
+    ($ty:ident) => {
+        $crate::register_output!($ty, stringify!($ty));
+    };
+}
+
 
 pub trait TypedHandler<S>: Send + Sync {
     type Input: DeserializeOwned + Send + Sync + 'static;
@@ -230,5 +243,30 @@ where
 
     fn get() -> Option<Arc<dyn TypedHandler<S, Input = Self, Output = Self::Output>>> {
         Self::slot().get().cloned()
+    }
+}
+
+impl<T> TaggedOutput for Option<T>
+where
+    T: TaggedOutput + Serialize,
+{
+    fn tag(&self) -> &'static str {
+        match self {
+            Some(inner) => inner.tag(),
+            None => "None",
+        }
+    }
+}
+
+impl<T, E> TaggedOutput for Result<T, E>
+where
+    T: TaggedOutput + Serialize,
+    E: TaggedOutput + Serialize,
+{
+    fn tag(&self) -> &'static str {
+        match self {
+            Ok(inner) => inner.tag(),
+            Err(inner) => inner.tag(),
+        }
     }
 }

@@ -1,3 +1,4 @@
+use crate::transport::node_transport::proto::FileChunk;
 use crate::transport::node_transport_spec::{CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FileUploadRequest, FileDownloadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, Ping, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StopServerRequest};
 use crate::transport::node_transport_spec::RemoteFile;
 use crate::{ApiCalls as ToplevelApiCalls, AuthTcpMessage, IncomingMessage, List, NodeWithStream};
@@ -28,7 +29,7 @@ mod proto {
     tonic::include_proto!("main");
 }
 use proto::{
-    filesystem_client::FilesystemClient, general_client::GeneralClient,
+    filesystem_manage_client::FilesystemManageClient, general_client::GeneralClient,
     server_edit_client::ServerEditClient, server_manage_client::ServerManageClient,
 };
 
@@ -38,7 +39,7 @@ pub struct Clients {
     node_client: NodeManageClient<Channel>,
     server_manage_client: ServerManageClient<Channel>,
     server_edit_client: ServerEditClient<Channel>,
-    filesystem_client: FilesystemClient<Channel>,
+    filesystem_client: FilesystemManageClient<Channel>,
 }
 
 pub struct ConnectionHandler {
@@ -189,7 +190,7 @@ pub async fn connect_to_server(
 
     let channel = Channel::from_shared(url.clone())?.connect().await?;
     let general_client = GeneralClient::new(channel.clone());
-    let filesystem_client = FilesystemClient::new(channel.clone());
+    let filesystem_client = FilesystemManageClient::new(channel.clone());
     let server_edit_client = ServerEditClient::new(channel.clone());
     let server_manage_client = ServerManageClient::new(channel.clone());
     let node_client = NodeManageClient::new(channel.clone());
@@ -352,14 +353,14 @@ impl StreamTransportable for CreateServerRequest {
     type Output = mpsc::Receiver<ConsoleData>;
     async fn stream_transport(
         &self,
-        state: Arc<RwLock<AppState>>,
+        arc_state: Arc<RwLock<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         let request = proto::CreateServerRequest {
             metadata: Some(self.metadata.clone().into()),
         };
         let (server_out_tx, server_out_rx) = tokio::sync::mpsc::channel(32);
         let mut clients = {
-            let guard = state.read().await;
+            let guard = arc_state.read().await;
             guard.connection_handler.clients.clone().unwrap()
         };
         println!("about to call create");
@@ -434,9 +435,8 @@ impl StreamTransportable for StartServerRequest {
             let guard = state.read().await;
             guard.connection_handler.clients.clone().unwrap()
         };
-
-        if let Ok(response_stream) = clients.server_edit_client.start(outbound_stream).await {
-            {
+        match clients.server_edit_client.start(outbound_stream).await {
+            Ok(response_stream) => {
                 //drop(state);
                 println!("before starting stream");
                 let mut stream = response_stream.into_inner();
@@ -444,7 +444,7 @@ impl StreamTransportable for StartServerRequest {
                     while let Some(result) = stream.next().await {
                         match result {
                             Ok(message) => {
-                                //println!("got a message {:#?}", message);
+                                println!("got a message {:#?}", message);
                                 let _ = server_out_tx
                                     .send(ConsoleData {
                                         authcode: "0".to_string(),
@@ -459,10 +459,12 @@ impl StreamTransportable for StartServerRequest {
                         }
                     }
                 });
+                Ok(server_out_rx)
             }
-            Ok(server_out_rx)
-        } else {
-            Err("error".into())
+            Err(e) => {
+                println!("{:#?}", e);
+                Err("error".into())
+            }
         }
     }
 }
@@ -717,26 +719,53 @@ impl NodeTransportable for LsRequest {
 }
 
 
-// impl NodeTransportable for FileUploadRequest {
-//     type Output = ();
-//     async fn node_transport(
-//         &self,
-//         state: &mut AppState,
-//     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        
-//         Ok(())
-//     }
-// }
 
 impl StreamTransportable for FileUploadRequest {
     type Output = ();
+
     async fn stream_transport(
         &self,
         arc_state: Arc<RwLock<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
+        let mut clients = {
+            let guard = arc_state.read().await;
+            guard.connection_handler.clients.clone().unwrap()
+        };
+
+        let (fs_tx, fs_rx) = tokio::sync::mpsc::channel(32);
+        let outbound_stream = ReceiverStream::new(fs_rx);
+
+        let location = self.file.location.clone();
+
+        tokio::spawn(async move {
+
+            if let Err(e) = clients.filesystem_client.upload(outbound_stream).await  {
+                println!("{:#?}", e)
+            }
+        });
+
+        let stream = {
+            let mut state = arc_state.write().await;
+            state.filesystem.proxy_receiver().await
+        };
+
+        while let Ok(bytes) = stream.recv_async().await {
+            let res = fs_tx
+                .send(FileChunk {
+                    location: location.clone(),
+                    bytes,
+                })
+                .await;
+
+            if res.is_err() {
+                break;
+            }
+        }
+
         Ok(())
     }
 }
+
 impl FileUploadRequest {
     pub fn new(location: String) -> FileUploadRequest {
         FileUploadRequest {

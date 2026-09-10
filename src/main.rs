@@ -2373,7 +2373,6 @@ async fn add_server(
         drop(state);
         tokio::spawn(async move {
             while let Some(data) = stream.recv().await {
-                println!("got message {:#?}", data);
                 let _ = server_console.send(serde_json::to_string(&data).unwrap());
             }
         });

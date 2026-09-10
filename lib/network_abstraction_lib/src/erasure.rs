@@ -125,6 +125,8 @@ where
 {
     ErasedHandler {
         inner: Box::new(move |req: &dyn IntoRequest| {
+            eprintln!("incoming type: {:?}, expected: {:?}",
+                req.as_any().type_id(), std::any::TypeId::of::<S::Request>());
             let t = req.as_any().downcast_ref::<S::Request>()?;
             S::from_wire(t.clone())
                 .ok()

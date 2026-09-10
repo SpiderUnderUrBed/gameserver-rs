@@ -2,22 +2,48 @@ use futures::future::pending;
 use futures::Stream;
 use futures::StreamExt;
 use general_networked_filesystem::core::FileOperations;
+use general_networked_filesystem::core::DirectoryResponse;
+use general_networked_filesystem::core::FileRequestExecutable;
+use general_networked_filesystem::core::SizeResponse;
+use std::fs::File;
+use std::io::Write;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tonic::Streaming;
 
+use crate::GetState;
+use crate::MessagePayload;
+use crate::transport::node_transport::proto::CanonicalizeResponse;
+use crate::transport::node_transport::proto::DeleteServerResponse;
 use crate::transport::node_transport::proto::RawFileChunk;
 use crate::transport::node_transport::proto::FileChunk;
 use crate::transport::node_transport::proto::LsRequest;
 use crate::transport::node_transport::proto::ServerMessage;
+use crate::transport::node_transport::proto::FileItem;
+use crate::transport::node_transport::proto::SetServerResponse;
+use crate::transport::node_transport::proto::StopServerResponse;
+use crate::transport::node_transport::proto::UploadResponse;
+use crate::transport::node_transport::proto::filesystem_manage_server::FilesystemManageServer;
+use crate::transport::node_transport::proto::node_manage_server::NodeManageServer;
+use crate::transport::node_transport_spec::ServerDataResponse;
+use crate::transport::node_transport_spec::ServerStateResponse;
 use crate::{AppState, IncomingMessage, IncomingMessageWithMetadata};
 use network_abstraction_lib::RouterErrors;
 use network_abstraction_lib::{ExtractorErrors, Router};
 use tokio::sync::Mutex;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Server;
-mod node_transport_spec;
+
+use crate::transport::node_transport_spec::ConsoleRequest;
+use crate::transport::node_transport_spec::CreateServerRequest;
+use crate::transport::node_transport_spec::DeleteServerRequest;
+use crate::transport::node_transport_spec::ServerDataRequest;
+use crate::transport::node_transport_spec::ServerNameRequest;
+use crate::transport::node_transport_spec::ServerStateRequest;
+use crate::transport::node_transport_spec::SetServerRequest;
+use crate::transport::node_transport_spec::StartServerRequest;
+use crate::transport::node_transport_spec::StopServerRequest;
 mod proto {
     tonic::include_proto!("main");
 }
@@ -28,15 +54,6 @@ use crate::transport::node_transport::proto::server_manage_server::{
 use crate::transport::node_transport::proto::filesystem_manage_server::FilesystemManage;
 use proto::{server_edit_server::ServerEdit, server_edit_server::ServerEditServer};
 
-use crate::transport::node_transport::node_transport_spec::ConsoleRequest;
-use crate::transport::node_transport::node_transport_spec::CreateServerRequest;
-use crate::transport::node_transport::node_transport_spec::DeleteServerRequest;
-use crate::transport::node_transport::node_transport_spec::ServerDataRequest;
-use crate::transport::node_transport::node_transport_spec::ServerNameRequest;
-use crate::transport::node_transport::node_transport_spec::ServerStateRequest;
-use crate::transport::node_transport::node_transport_spec::SetServerRequest;
-use crate::transport::node_transport::node_transport_spec::StartServerRequest;
-use crate::transport::node_transport::node_transport_spec::StopServerRequest;
 
 pub enum BackgroundTaskUpdates {
     NoMoreFileTransfer
@@ -130,7 +147,6 @@ impl ServerEdit for Connection {
                         .downcast::<Pin<Box<dyn Stream<Item = String> + Send + Sync>>>()
                     {
                         Ok(stream_box) => {
-                            println!("got a stream");
                             let mut stream = *stream_box;
                             tokio::spawn(async move {
                                 while let Some(message) = stream.next().await {
@@ -167,6 +183,9 @@ impl ServerEdit for Connection {
                 RouterErrors::NoHandlerFound => {
                     return Err(tonic::Status::internal("Did not get a stream type back"))
                 }
+                _ => {
+                    
+                }
             },
         }
         Ok(tonic::Response::new(ReceiverStream::new(rx)))
@@ -186,34 +205,13 @@ impl ServerEdit for Connection {
         };
 
         let mut router = self.router.lock().await;
-        let response_result = router
-            .execute_handler_typed(delete_server_request, "delete_server".to_string())
-            .await;
-        if let Ok(response) = response_result {
-            match response.try_into_response() {
-                Ok(boxed) => match boxed.downcast::<String>() {
-                    Ok(final_response) => {
-                        if let Ok(response) =
-                            serde_json::from_str::<proto::DeleteServerResponse>(&*final_response)
-                        {
-                            Ok(response.into())
-                        } else {
-                            return Err(tonic::Status::internal("Could not serialize response"));
-                        }
-                    }
-                    Err(_) => Err(tonic::Status::internal(
-                        "Response did not come back as a string",
-                    )),
-                },
-                Err(_) => Err(tonic::Status::internal(
-                    "Failed during a response conversion",
-                )),
-            }
-        } else {
-            Err(tonic::Status::internal(
-                "Could not get response back at all",
-            ))
-        }
+        let _ = router
+            .execute_typed(delete_server_request)
+            .await
+            .ok()
+            .unwrap();
+
+        Ok(tonic::Response::new(proto::DeleteServerResponse {}))
     }
     async fn start(
         &self,
@@ -244,14 +242,11 @@ impl ServerEdit for Connection {
                             )
                             .await;
                     }
-                    Err(e) => {
+                    Err(_) => {
                         println!("got an error in the stream");
                     }
                 }
             }
-
-            // let mut router = &self.router.lock().await;
-            // router
         });
         let mut router = self.router.lock().await;
 
@@ -268,7 +263,7 @@ impl ServerEdit for Connection {
                             tokio::spawn(async move {
                                 let mut stream = *stream_box;
                                 while let Some(message) = stream.next().await {
-                                    if let Err(e) = tx
+                                    if let Err(_) = tx
                                         .send(Ok(ServerMessage {
                                             authcode: "0".to_string(),
                                             data: message,
@@ -301,6 +296,9 @@ impl ServerEdit for Connection {
                 RouterErrors::NoHandlerFound => {
                     return Err(tonic::Status::internal("Did not get a stream type back"))
                 }
+                _ => {
+                    return Err(tonic::Status::internal("Got an unknown handler error"))
+                },
             },
         }
         println!("returning a stream");
@@ -313,35 +311,17 @@ impl ServerEdit for Connection {
         //let inner = request.into_inner();
         let stop_server_request = StopServerRequest::default();
 
-        let mut router = self.router.lock().await;
-        let response_result = router
-            .execute_handler_typed(stop_server_request, "stop_server".to_string())
-            .await;
-        if let Ok(response) = response_result {
-            match response.try_into_response() {
-                Ok(boxed) => match boxed.downcast::<String>() {
-                    Ok(final_response) => {
-                        if let Ok(response) =
-                            serde_json::from_str::<proto::StopServerResponse>(&*final_response)
-                        {
-                            Ok(response.into())
-                        } else {
-                            return Err(tonic::Status::internal("Could not serialize response"));
-                        }
-                    }
-                    Err(_) => Err(tonic::Status::internal(
-                        "Response did not come back as a string",
-                    )),
-                },
-                Err(_) => Err(tonic::Status::internal(
-                    "Failed during a response conversion",
-                )),
-            }
-        } else {
-            Err(tonic::Status::internal(
-                "Could not get response back at all",
-            ))
-        }
+        let router = self.router.lock().await;
+
+        let _ = router
+            .execute_typed(stop_server_request)
+            .await
+            .ok()
+            .unwrap();
+        
+        Ok(
+            tonic::Response::new(StopServerResponse {})
+        )
     }
 }
 
@@ -354,33 +334,16 @@ impl ServerManage for Connection {
         let server_data_request = ServerDataRequest::default();
 
         let mut router = self.router.lock().await;
-        let response_result = router
-            .execute_handler_typed(server_data_request, "server_data".to_string())
-            .await;
-        if let Ok(response) = response_result {
-            match response.try_into_response() {
-                Ok(boxed) => match boxed.downcast::<String>() {
-                    Ok(final_response) => {
-                        if let Ok(response) =
-                            serde_json::from_str::<proto::ServerDataResponse>(&*final_response)
-                        {
-                            Ok(response.into())
-                        } else {
-                            return Err(tonic::Status::internal("Could not serialize response"));
-                        }
-                    }
-                    Err(_) => Err(tonic::Status::internal(
-                        "Response did not come back as a string",
-                    )),
-                },
-                Err(_) => Err(tonic::Status::internal(
-                    "Failed during a response conversion",
-                )),
-            }
+        let server_data_result = router
+            .execute_typed(server_data_request)
+            .await
+            .ok()
+            .unwrap();
+
+        if let Ok(server_data_response) = server_data_result {
+            Ok(tonic::Response::new(server_data_response.into()))
         } else {
-            Err(tonic::Status::internal(
-                "Could not get response back at all",
-            ))
+            Err(tonic::Status::internal("Failed to get the server data"))
         }
     }
 
@@ -397,35 +360,16 @@ impl ServerManage for Connection {
             },
         };
 
-        let mut router = self.router.lock().await;
-        let response_result = router
-            .execute_handler_typed(server_set_request, "set_server".to_string())
-            .await;
-        if let Ok(response) = response_result {
-            match response.try_into_response() {
-                Ok(boxed) => match boxed.downcast::<String>() {
-                    Ok(final_response) => {
-                        if let Ok(response) =
-                            serde_json::from_str::<proto::SetServerResponse>(&*final_response)
-                        {
-                            Ok(response.into())
-                        } else {
-                            return Err(tonic::Status::internal("Could not serialize response"));
-                        }
-                    }
-                    Err(_) => Err(tonic::Status::internal(
-                        "Response did not come back as a string",
-                    )),
-                },
-                Err(_) => Err(tonic::Status::internal(
-                    "Failed during a response conversion",
-                )),
-            }
-        } else {
-            Err(tonic::Status::internal(
-                "Could not get response back at all",
-            ))
-        }
+        let router = self.router.lock().await;
+        let _ = router
+            .execute_typed(server_set_request)
+            .await
+            .ok()
+            .unwrap();
+        
+        Ok(
+            tonic::Response::new(SetServerResponse {})
+        )
     }
     async fn state(
         &self,
@@ -434,111 +378,121 @@ impl ServerManage for Connection {
         let server_state_request = ServerStateRequest::default();
 
         let mut router = self.router.lock().await;
-        let response_result = router
-            .execute_handler_typed(server_state_request, "server_state".to_string())
-            .await;
-        if let Ok(response) = response_result {
-            match response.try_into_response() {
-                Ok(boxed) => match boxed.downcast::<String>() {
-                    Ok(final_response) => {
-                        if let Ok(response) =
-                            serde_json::from_str::<proto::ServerStateResponse>(&*final_response)
-                        {
-                            Ok(response.into())
-                        } else {
-                            return Err(tonic::Status::internal("Could not serialize response"));
-                        }
-                    }
-                    Err(_) => Err(tonic::Status::internal(
-                        "Response did not come back as a string",
-                    )),
-                },
-                Err(_) => Err(tonic::Status::internal(
-                    "Failed during a response conversion",
-                )),
-            }
-        } else {
-            Err(tonic::Status::internal(
-                "Could not get response back at all",
-            ))
-        }
+        let state_response = router
+            .execute_typed(server_state_request)
+            .await
+            .ok()
+            .unwrap();
+
+        Ok(
+            tonic::Response::new(state_response.into())
+        )
+            
     }
 }
+
 
 #[tonic::async_trait]
 impl NodeManage for Connection {
     async fn name(
         &self,
-        request: tonic::Request<proto::ServerNameRequest>,
+        _request: tonic::Request<proto::ServerNameRequest>,
     ) -> std::result::Result<tonic::Response<proto::ServerNameResponse>, tonic::Status> {
         let server_name_request = ServerNameRequest::default();
 
-        let mut router = self.router.lock().await;
-        let response_result = router
-            .execute_handler_typed(server_name_request, "server_name".to_string())
-            .await;
-        if let Ok(response) = response_result {
-            match response.try_into_response() {
-                Ok(boxed) => match boxed.downcast::<String>() {
-                    Ok(final_response) => {
-                        if let Ok(response) =
-                            serde_json::from_str::<proto::ServerNameResponse>(&*final_response)
-                        {
-                            Ok(response.into())
-                        } else {
-                            return Err(tonic::Status::internal("Could not serialize response"));
-                        }
-                    }
-                    Err(_) => Err(tonic::Status::internal(
-                        "Response did not come back as a string",
-                    )),
-                },
-                Err(_) => Err(tonic::Status::internal(
-                    "Failed during a response conversion",
-                )),
-            }
-        } else {
-            Err(tonic::Status::internal(
-                "Could not get response back at all",
-            ))
-        }
+        let router = self.router.lock().await;
+
+        let resp_result = router
+            .execute_typed(server_name_request)
+            .await
+            .ok();
+
+        let resp = resp_result.unwrap();
+        
+        Ok(
+            tonic::Response::new(proto::ServerNameResponse { 
+                r#type: resp.common.r#type, 
+                message: resp.common.message, 
+                authcode: resp.common.authcode
+            })
+        )
     }
 }
 
-// #[tonic::async_trait]
-// impl FilesystemManage for Connection {
-//     type DownloadStream = ReceiverStream<Result<RawFileChunk, tonic::Status>>;
-//     async fn ls(
-//         &self,
-//         request: tonic::Request<proto::LsRequest>,
-//     ) -> std::result::Result<tonic::Response<proto::LsResponse>, tonic::Status> {
-//         let state = self.router.lock().await.get_state_mut();
-//         let response = FileOperations::from_known_request::<LsRequest>(encoding)
-//             .map_err(|_| tonic::Status::internal("Encountered an error"))?
-//             .execute_bytes()
-//             .map_err(|_| tonic::Status::internal("Encountered an error"))?;
-//     }
-//     async fn canonicalize(
-//         &self,
-//         request: tonic::Request<proto::CanonicalizeRequest>,
-//     ) -> std::result::Result<tonic::Response<proto::CanonicalizeResponse>, tonic::Status> {
-//     }
-//     async fn size(
-//         &self,
-//         request: tonic::Request<proto::SizeRequest>,
-//     ) -> std::result::Result<tonic::Response<proto::SizeResponse>, tonic::Status> {
-//     }
-//     async fn upload(
-//         &self,
-//         request: tonic::Request<Streaming<FileChunk>>,
-//     ) -> std::result::Result<tonic::Response<proto::UploadResponse>, tonic::Status> {
-//     }
-//     async fn download(
-//         &self,
-//         request: tonic::Request<proto::DownloadRequest>,
-//     ) -> std::result::Result<tonic::Response<Self::DownloadStream>, tonic::Status> {
-//     }
-// }
+#[tonic::async_trait]
+impl FilesystemManage for Connection {
+    type DownloadStream = ReceiverStream<Result<RawFileChunk, tonic::Status>>;
+    async fn ls(
+        &self,
+        request: tonic::Request<proto::LsRequest>,
+    ) -> std::result::Result<tonic::Response<proto::LsResponse>, tonic::Status> {
+        // let state = self.router.lock().await.get_state_mut();
+        let fs_request = general_networked_filesystem::core::LsRequest::from_proto(request);
+        let resp = fs_request.execute()
+            .map_err(|e| tonic::Status::internal("Error executing file request"))?;
+        Ok(resp.into_tonic_response())
+    }
+    async fn canonicalize(
+        &self,
+        request: tonic::Request<proto::CanonicalizeRequest>,
+    ) -> std::result::Result<tonic::Response<proto::CanonicalizeResponse>, tonic::Status> {
+        let fs_request = general_networked_filesystem::core::CannonolizeRequest::from_proto(request);
+        let resp = fs_request.execute()
+            .map_err(|e| tonic::Status::internal("Error executing file request"))?;
+        Ok(resp.into_tonic_response())
+    }
+    async fn size(
+        &self,
+        request: tonic::Request<proto::SizeRequest>,
+    ) -> std::result::Result<tonic::Response<proto::SizeResponse>, tonic::Status> {
+        let fs_request = general_networked_filesystem::core::SizeRequest::from_proto(request);
+        let resp = fs_request.execute()
+            .map_err(|e| tonic::Status::internal("Error executing file request"))?;
+        Ok(resp.into_tonic_response())
+    }
+    async fn upload(
+        &self,
+        request: tonic::Request<Streaming<FileChunk>>,
+    ) -> std::result::Result<tonic::Response<proto::UploadResponse>, tonic::Status> {
+        println!("got an upload request");
+        let mut inbound = request.into_inner();
+        let mut location = String::new();
+        let mut file_handle_option = None;
+        while let Some(chunk_res) = inbound.next().await { 
+            if let Ok(chunk) = chunk_res {
+                if location != chunk.location {
+                    location = chunk.location ;
+                    if let Ok(file) = File::open(&location) {
+                        file_handle_option = Some(file);
+                    } else {
+                        match File::create(&location){
+                            Ok(file) => file_handle_option = Some(file),
+                            Err(e) => return Err(tonic::Status::internal(format!("failed to create file at location with: {}", e))),
+                        };
+                    }
+                }
+                if let Some(ref mut file_handle) = file_handle_option {
+                    file_handle.write_all(&chunk.bytes)
+                        .map_err(|e| tonic::Status::internal(format!("failed to write file at location with: {}", e)))?;
+                    let _ = file_handle.flush();
+                    let _ = file_handle.sync_all();
+                }
+
+            } else {
+                return Err(tonic::Status::internal("Error streaming the file chunks"));
+            }
+        }
+        Ok(UploadResponse {}.into())
+    }
+    async fn download(
+        &self,
+        request: tonic::Request<proto::DownloadRequest>,
+    ) -> std::result::Result<tonic::Response<Self::DownloadStream>, tonic::Status> {
+        let (tx, rx) = mpsc::channel(32);
+
+        Ok(tonic::Response::new(ReceiverStream::new(rx)))
+    }
+}
 
 
 impl Into<crate::MetadataTypes> for proto::MetadataTypes {
@@ -563,12 +517,106 @@ impl Connection {
         let addr = url.parse()?;
         Server::builder()
             .add_service(ServerEditServer::from_arc(self.clone()))
-            .add_service(ServerManageServer::from_arc(self))
+            .add_service(ServerManageServer::from_arc(self.clone()))
+            .add_service(NodeManageServer::from_arc(self.clone()))
+            .add_service(FilesystemManageServer::from_arc(self))
             .serve(addr)
             .await?;
         Ok(())
     }
 }
+
+impl Into<proto::ServerStateResponse> for ServerStateResponse {
+    fn into(self) -> proto::ServerStateResponse {
+        proto::ServerStateResponse {
+            message: Some(self.message.into())
+        }
+    }
+}
+impl Into<proto::ServerDataResponse> for ServerDataResponse {
+    fn into(self) -> proto::ServerDataResponse {
+        proto::ServerDataResponse {
+            state: Some(self.state.into()),
+        }
+    }
+}
+impl Into<proto::MessagePayload> for MessagePayload {
+    fn into(self) -> proto::MessagePayload {
+        proto::MessagePayload {
+            r#type: self.r#type,
+            message: self.message,
+            authcode: self.authcode,
+        }
+    }
+}
+impl Into<proto::State> for GetState {
+    fn into(self) -> proto::State {
+        proto::State {
+            name: self.name,
+            start_keyword: self.start_keyword,
+            stop_keyword: self.stop_keyword,
+        }
+    }
+}
+
+
+// TODO: consider manually mapping it in grpc routes rather than trait conversions
+trait FromProto<T> {
+    fn from_proto(value: T) -> Self;
+}
+trait IntoTonicResponse<T> {
+    fn into_tonic_response(self) -> tonic::Response<T>;
+}
+impl FromProto<tonic::Request<proto::LsRequest>> for general_networked_filesystem::core::LsRequest {
+    fn from_proto(value: tonic::Request<proto::LsRequest>) -> Self { 
+        general_networked_filesystem::core::LsRequest {
+            id: 0,
+            location: value.get_ref().location.clone()
+        }
+     }
+}
+impl IntoTonicResponse<proto::LsResponse> for DirectoryResponse {
+    fn into_tonic_response(self) -> tonic::Response<proto::LsResponse> {
+        tonic::Response::new(proto::LsResponse {
+            file_item: self.directory.iter().map(|fs_item| FileItem {
+                name: fs_item.name.clone(),
+                is_dir: fs_item.is_dir,
+            }).collect(),
+        })
+    }
+}
+impl FromProto<tonic::Request<proto::CanonicalizeRequest>> for general_networked_filesystem::core::CannonolizeRequest {
+    fn from_proto(value: tonic::Request<proto::CanonicalizeRequest>) -> Self {
+        general_networked_filesystem::core::CannonolizeRequest {
+            id: 0,
+            path: value.get_ref().path.clone(),
+        }
+    }
+}
+impl IntoTonicResponse<proto::CanonicalizeResponse> for general_networked_filesystem::core::CannonolizeResponse {
+    fn into_tonic_response(self) -> tonic::Response<proto::CanonicalizeResponse> {
+        tonic::Response::new(proto::CanonicalizeResponse {
+            full_path: self.path,
+        })
+    }
+}
+
+impl FromProto<tonic::Request<proto::SizeRequest>> for general_networked_filesystem::core::SizeRequest {
+    fn from_proto(value: tonic::Request<proto::SizeRequest>) -> Self {
+        general_networked_filesystem::core::SizeRequest {
+            id: 0,
+            location: value.get_ref().location.clone(),
+        }
+    }
+}
+impl IntoTonicResponse<proto::SizeResponse> for SizeResponse {
+    fn into_tonic_response(self) -> tonic::Response<proto::SizeResponse> {
+        tonic::Response::new(proto::SizeResponse {
+            size: self.size,
+        })
+    }
+}
+
 pub struct ConnectionHandler {
     // current_request: Option<String>,
     // requests: Vec<String>,

@@ -4,18 +4,17 @@ use futures::stream::unfold;
 use futures::Stream;
 use futures::StreamExt;
 use general_networked_filesystem::wrapper::Direction;
-use general_networked_filesystem::core::FileRequestExecutable;
 use general_networked_filesystem::core::FileOperations;
 use general_networked_filesystem::wrapper::FileSystemHandler;
 use network_abstraction_lib::erasure::erase_stream_wrapper_result;
-use network_abstraction_lib::erasure::erase_string_wrapper;
 use network_abstraction_lib::ErrorResponse;
 use network_abstraction_lib::NoneResponse;
 use network_abstraction_lib::HandlerType;
-use network_abstraction_lib::IntoRequest;
-use network_abstraction_lib::MiddlewareAction;
 use network_abstraction_lib::StreamResponse;
 use network_abstraction_lib::ValueRequest;
+use network_abstraction_lib::typed::typed_fn;
+use network_abstraction_lib::typed_request_macros::register_output;
+use network_abstraction_lib::ExtractorErrors;
 use serde_json::Value;
 use std::convert::TryFrom;
 use std::path::Path;
@@ -54,6 +53,7 @@ use crate::transport::node_transport_spec::ConsoleRequest;
 use crate::transport::node_transport_spec::CreateServerRequest;
 use crate::transport::node_transport_spec::DeleteServerRequest;
 use crate::transport::node_transport_spec::Ping;
+use crate::transport::node_transport_spec::PingResponse;
 use crate::transport::node_transport_spec::ServerDataRequest;
 use crate::transport::node_transport_spec::ServerDataResponse;
 use crate::transport::node_transport_spec::ServerNameRequest;
@@ -132,6 +132,7 @@ struct IncomingMessageWithMetadata {
 }
 
 // For very simple messages like pings that need no added complexity
+#[register_output]
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Default)]
 struct SimpleMessage {
     message: String,
@@ -305,7 +306,7 @@ static StaticLocalUrl: &str = "0.0.0.0:8082";
 
 // the server state, currently only holds keywords for what messages to look for when declaring the server as started or stopped
 // might be phased out in favor of determining whether or not the process is running or not
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 struct GetState {
     name: String,
     start_keyword: String,
@@ -520,7 +521,6 @@ async fn run_command_live_output(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .stdin(Stdio::piped());
-    println!("{:#?}", sandbox.clone());
     println!("Befre process hook");
     process_hook(state, provider, sandbox, Some(location), &mut tokio_cmd);
     println!("After process hook");
@@ -953,7 +953,9 @@ async fn start_server_handler(
     if let Some(rx) = state.cmd_rx.lock().await.take() {
         let stream = unfold(rx, |mut rx| async {
             match rx.recv().await {
-                Some(value) => Some((value, rx)),
+                Some(value) => {
+                    Some((value, rx))
+                },
                 None => None,
             }
         });
@@ -1207,11 +1209,13 @@ async fn server_data_handler(
     }
     //NoneResponse {}
 }
-async fn ping_handler(_state: &Arc<AppState>, _req: Ping) -> SimpleMessage {
+async fn ping_handler(_state: &Arc<AppState>, _req: Ping) -> PingResponse {
     println!("got ping request");
     //         //let out_tx_clone = out_tx.clone();
-    let pong = SimpleMessage {
-        message: "pong".to_string(),
+    let pong = PingResponse { 
+        message:  SimpleMessage {
+            message: "pong".to_string(),
+        }
     };
     pong
 }
@@ -1233,7 +1237,6 @@ async fn server_name_handler(
     _state: &Arc<AppState>,
     _req: ServerNameRequest,
 ) -> ServerNameResponse {
-    println!("Got a server name request");
     // let hostname_str = match hostname_ref.clone() {
     //     Ok(os) => os.to_string_lossy().to_string(),
     //     Err(e) => e.clone(),
@@ -1456,49 +1459,40 @@ async fn spawn_request_loop(
 
                         match feed_result {
                             Ok(response) => {
-                                use network_abstraction_lib::ExtractorErrors;
 
-                                match response.try_into_response() {
-                                    Ok(boxed) => {
-                                        match boxed.downcast::<String>() {
-                                            Ok(resp) => {
-                                                println!("got resp: {}", *resp);
-                                                let _ = out_tx.send((*resp).into()).await;
-                                            }
-                                            Err(boxed) => {
-                                                match boxed.downcast::<Pin<
-                                                    Box<dyn Stream<Item = String> + Send + Sync>,
-                                                >>(
-                                                ) {
+                                match response.try_into_bytes() {
+                                    Ok(mut bytes) => {
+                                        bytes.push(b'\n');
+                                        let _ = out_tx.send(bytes).await;
+                                    }
+                                    Err(_) => {
+                                        match response.try_into_response() {
+                                            Ok(boxed) => match boxed.downcast::<String>() {
+                                                Ok(resp) => {
+                                                    println!("got resp: {}", *resp);
+                                                    let _ = out_tx.send((*resp).into()).await;
+                                                }
+                                                Err(boxed) => match boxed
+                                                    .downcast::<Pin<Box<dyn Stream<Item = String> + Send + Sync>>>()
+                                                {
                                                     Ok(stream_box) => {
                                                         let mut stream = *stream_box;
                                                         let inner_out_tx = out_tx.clone();
                                                         tokio::spawn(async move {
-                                                            while let Some(item) =
-                                                                stream.next().await
-                                                            {
-                                                                let _ = inner_out_tx
-                                                                    .clone()
-                                                                    .send(item.into())
-                                                                    .await;
+                                                            while let Some(item) = stream.next().await {
+                                                                let _ = inner_out_tx.clone().send(item.into()).await;
                                                             }
                                                         });
                                                     }
-                                                    Err(_) => println!(
-                                                        "resp error: dont know this response type"
-                                                    ),
-                                                }
-                                            }
+                                                    Err(_) => println!("resp error: dont know this response type"),
+                                                },
+                                            },
+                                            Err(e) => match e {
+                                                ExtractorErrors::Err(value) => println!("got err: {}", value),
+                                                _ => println!("resp error: try_into_response failed"),
+                                            },
                                         }
                                     }
-                                    Err(e) => match e {
-                                        ExtractorErrors::Err(value) => {
-                                            println!("got err: {}", value);
-                                        }
-                                        _ => {
-                                            println!("resp error: try_into_response failed")
-                                        }
-                                    },
                                 }
                             }
                             Err(e) => match e {
@@ -1518,6 +1512,8 @@ async fn spawn_request_loop(
                                     }
                                     
                                 }
+                                network_abstraction_lib::RouterErrors::Any(error) => {},
+                                _ => {}
                             },
                         }
                     } else {
@@ -1543,30 +1539,30 @@ async fn spawn_request_loop(
 
 
 fn spawn_middlewares(router: &mut Router<Arc<AppState>>) {
-    router.add_middleware(|mapping: String, request: &dyn IntoRequest| {
-        if let Some(value_request) = request.as_any().downcast_ref::<ValueRequest>() {
-            if let Some(Value::String(message)) = value_request.value.get("message") {
-                if let Some(Value::String(message_type)) = value_request.value.get("type") {
-                    if message_type == "console" && *message_type == mapping {
-                        return MiddlewareAction::ReassignValue(request);
-                    }
-                }
-                if *message == mapping {
-                    // if *message == "start_server".to_string() {
-                    //     MiddlewareAction::SkipPredicate
-                    // } else {
-                    MiddlewareAction::ReassignValue(request)
-                    // }
-                } else {
-                    MiddlewareAction::Continue
-                }
-            } else {
-                MiddlewareAction::Continue
-            }
-        } else {
-            MiddlewareAction::Continue
-        }
-    });
+    // router.add_middleware(|mapping: String, request: &dyn IntoRequest| {
+    //     if let Some(value_request) = request.as_any().downcast_ref::<ValueRequest>() {
+    //         if let Some(Value::String(message)) = value_request.value.get("message") {
+    //             if let Some(Value::String(message_type)) = value_request.value.get("type") {
+    //                 if message_type == "console" && *message_type == mapping {
+    //                     return MiddlewareAction::ReassignValue(request);
+    //                 }
+    //             }
+    //             if *message == mapping {
+    //                 // if *message == "start_server".to_string() {
+    //                 //     MiddlewareAction::SkipPredicate
+    //                 // } else {
+    //                 MiddlewareAction::ReassignValue(request)
+    //                 // }
+    //             } else {
+    //                 MiddlewareAction::Continue
+    //             }
+    //         } else {
+    //             MiddlewareAction::Continue
+    //         }
+    //     } else {
+    //         MiddlewareAction::Continue
+    //     }
+    // });
 }
 
 async fn ensure_server_directory() {}
@@ -1629,34 +1625,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut router = Router::new(Arc::clone(&arc_state));
 
     router.register_handler(
-        erase_stream_wrapper_result(start_server_handler).mapping("start_server".to_string()),
-    );
-    router.register_handler(
-        erase_string_wrapper(stop_server_handler).mapping("stop_server".to_string()),
-    );
-    router.register_handler(
-        erase_string_wrapper(delete_server_handler).mapping("delete_server".to_string()),
-    );
-    router.register_handler(
-        erase_string_wrapper(set_server_handler).mapping("set_server".to_string()),
-    );
-    router.register_handler(
-        erase_string_wrapper(set_filter_handler).mapping("set_filter".to_string()),
-    );
-    router.register_handler(erase_string_wrapper(console_handler).mapping("console".to_string()));
-    router.register_handler(
-        erase_string_wrapper(server_data_handler).mapping("server_data".to_string()),
-    );
-    router.register_handler(erase_string_wrapper(ping_handler).mapping("ping".to_string()));
-    router.register_handler(
-        erase_string_wrapper(server_state_handler).mapping("server_state".to_string()),
-    );
-    router.register_handler(
-        erase_string_wrapper(server_name_handler).mapping("server_name".to_string()),
-    );
-    router.register_handler(
         erase_stream_wrapper_result(create_server_handler).mapping("create_server".to_string()),
     );
+    router.register_handler(
+        erase_stream_wrapper_result(start_server_handler).mapping("start_server".to_string()),
+    );
+ 
+    router.register_typed(typed_fn(
+        stop_server_handler
+    ));
+    router.register_typed(typed_fn(delete_server_handler));
+
+    router.register_typed(typed_fn(
+        set_server_handler
+    ));
+
+    router.register_typed(typed_fn(
+        set_filter_handler
+    ));
+    router.register_typed(typed_fn(
+        console_handler
+    ));
+
+    router.register_typed(typed_fn(
+        server_data_handler
+    ));
+    router.register_typed(typed_fn(
+        ping_handler
+    ));
+
+    router.register_typed(typed_fn(
+        server_state_handler
+    ));
+
+    router.register_typed(typed_fn(
+        server_name_handler
+    ));
+
 
     spawn_middlewares(&mut router);
 
