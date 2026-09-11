@@ -76,6 +76,6 @@ pub struct FileUploadRequest {
 // }
 
 pub struct FileDownloadRequest {
-    pub(crate) stream: flume::Receiver<Vec<u8>>,
+    pub(crate) file: RemoteFile,
     pub(crate) task_end: Arc<CancellationToken>
 }

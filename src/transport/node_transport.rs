@@ -1369,7 +1369,7 @@ impl StreamTransportable for FileDownloadRequest {
             inner_task_end.cancelled().await;
         });
 
-        let stream = self.stream.clone();
+        let stream = self.file.stream.as_ref().unwrap().clone();
         let inner_arc_state = arc_state.clone();
         tokio::spawn(async move {
             while let Ok(bytes) = stream.recv_async().await {
@@ -1407,3 +1407,14 @@ impl StreamTransportable for FileDownloadRequest {
     }
 }
 
+impl FileDownloadRequest {
+    pub fn new(file: (String, flume::Receiver<Vec<u8>>), task_end: Arc<CancellationToken>) -> FileDownloadRequest {
+        FileDownloadRequest {
+            file: RemoteFile {
+                location: file.0,
+                stream: Some(file.1),
+            },
+            task_end,
+        }
+    }
+}

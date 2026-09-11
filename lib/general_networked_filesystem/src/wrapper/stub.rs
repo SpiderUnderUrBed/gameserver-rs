@@ -3,7 +3,10 @@ use networked_filesystem::StreamableFileSystemErrors;
 use std::{any::Any, sync::Arc};
 use tokio::sync::Notify;
 use tokio::sync::Mutex;
+use tokio::sync::mpsc;
+use tokio::sync::mpsc::Receiver;
 use tokio_util::sync::CancellationToken;
+use tokio_stream::wrappers::ReceiverStream;
 
 #[derive(Debug)]
 pub enum FilesystemErrors {
@@ -15,6 +18,16 @@ pub enum FilesystemErrors {
 pub enum Direction {
     Server,
     Local
+}
+
+pub trait IntoStream<T> {
+    fn into_stream(self) -> ReceiverStream<T>;
+}
+
+impl<T> IntoStream<T> for Receiver<T> {
+    fn into_stream(self) -> ReceiverStream<T> {
+        ReceiverStream::new(self)
+    }
 }
 
 #[derive(Clone)]
@@ -52,7 +65,7 @@ impl FileSystemHandler {
             Ok(location)
         }
     }
-    pub async fn create_basic_file_stream(raw_rx: flume::Receiver<Vec<u8>>, _direction: Direction, _end_file_task: Arc<CancellationToken>) -> flume::Receiver<Vec<u8>> {
+    pub async fn create_basic_file_stream(raw_rx: mpsc::Receiver<Vec<u8>>, _direction: Direction, _end_file_task: Arc<CancellationToken>) -> mpsc::Receiver<Vec<u8>> {
         raw_rx
     }
     pub async fn upload(

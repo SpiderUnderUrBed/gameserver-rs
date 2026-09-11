@@ -149,10 +149,13 @@ use crate::transport::node_transport::{
     NodeTransportable, StreamTransportable, check_channel_health, connect_to_server,
 };
 use crate::transport::node_transport_spec::{
-    CreateServerRequest, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, Ping, ServerDataRequest, SetServerRequest, StartServerRequest, StopServerRequest
+    CreateServerRequest, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, Ping, RemoteFile, ServerDataRequest, SetServerRequest, StartServerRequest, StopServerRequest
 };
 
 mod extra;
+
+#[cfg(feature = "grpc_experimental")]
+use general_networked_filesystem::wrapper::IntoStream;
 
 // // Docker AND kubernetes would be enabled with a standard deployment
 // // as you wouldnt need the docker module (or the k8s module) for barebones testing
@@ -1360,12 +1363,18 @@ pub async fn stream_file_download(
     state.filesystem.create_state(0, "/".to_string()).await;
     state.filesystem.set_sandboxed_location("server/".to_string());
     let mut fs = state.filesystem.clone();
+    let file = fs.try_create_request_in_directory(file_path.clone()).await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let fs_rx = (&mut fs).proxy_receiver().await;
     drop(state);
 
     let inner_arc_state = Arc::clone(&arc_state);
     let task_end = Arc::new(CancellationToken::new());
-    let request = FileDownloadRequest { stream: fs_rx, task_end: task_end.clone() };
+    // let file = RemoteFile {
+    //     location: file_path,
+    //     stream: Some(fs_rx),
+    // };
+    let request = FileDownloadRequest::new(file, task_end.clone());
 
     let raw_stream = request.stream_transport(inner_arc_state).await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -1379,8 +1388,9 @@ pub async fn stream_file_download(
 
     let state = arc_state.write().await;
     let filesystem = state.filesystem.clone();
+    let inner_file_path = file_path.clone();
     tokio::spawn(async move {
-        let _ = filesystem.download(format!("server/{}", file_path)).await;
+        let _ = filesystem.download(format!("server/{}", inner_file_path)).await;
     });
 
     headers.insert(
@@ -1389,7 +1399,7 @@ pub async fn stream_file_download(
     );
     headers.insert(
         header::CONTENT_DISPOSITION,
-        format!("attachment; filename=\"{}\"", "test.sh")
+        format!("attachment; filename=\"{}\"", file_path)
             .parse()
             .unwrap(),
     );

@@ -1,4 +1,4 @@
-use crate::transport::node_transport::proto::FileChunk;
+use crate::transport::node_transport::proto::{DownloadRequest, FileChunk};
 use crate::transport::node_transport_spec::{CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FileUploadRequest, FileDownloadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, Ping, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StopServerRequest};
 use crate::transport::node_transport_spec::RemoteFile;
 use crate::{ApiCalls as ToplevelApiCalls, AuthTcpMessage, IncomingMessage, List, NodeWithStream};
@@ -18,6 +18,7 @@ use tokio::{
 };
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
+use tokio_util::sync::CancellationToken;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -778,16 +779,47 @@ impl FileUploadRequest {
 }
 
 impl StreamTransportable for FileDownloadRequest {
-    type Output = flume::Receiver<Vec<u8>>;
+    type Output = mpsc::Receiver<Vec<u8>>;
     async fn stream_transport(
         &self,
         arc_state: Arc<RwLock<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
-        let (flume_tx, flume_rx) = flume::bounded(32);
-        Ok(flume_rx)
+        let (fs_tx, fs_rx) = tokio::sync::mpsc::channel(32);
+        let mut clients = {
+            let guard = arc_state.read().await;
+            guard.connection_handler.clients.clone().unwrap()
+        };
+        let location = self.file.location.clone();
+        tokio::spawn(async move {
+            let request = DownloadRequest {
+                location,
+            };
+            match clients.filesystem_client.download(request).await {
+                Ok(mut stream) => {
+                    while let Some(Ok(chunk)) = stream.get_mut().next().await {
+                        let _ = fs_tx.send(chunk.bytes).await;
+                    }
+                },
+                Err(e) => {
+                    println!("{:#?}", e);
+                }
+            }
+        });
+        Ok(fs_rx)
     }
 }
 
+impl FileDownloadRequest {
+    pub fn new(location: String, task_end: Arc<CancellationToken>) -> FileDownloadRequest {
+        FileDownloadRequest {
+            file: RemoteFile {
+                location,
+                stream: None
+            },
+            task_end,
+        }
+    }
+}
 
 impl Into<proto::MetadataTypes> for MetadataTypes {
     fn into(self) -> proto::MetadataTypes {

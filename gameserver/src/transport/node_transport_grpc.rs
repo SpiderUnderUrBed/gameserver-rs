@@ -6,6 +6,8 @@ use general_networked_filesystem::core::DirectoryResponse;
 use general_networked_filesystem::core::FileRequestExecutable;
 use general_networked_filesystem::core::SizeResponse;
 use std::fs::File;
+use std::io::BufReader;
+use std::io::Read;
 use std::io::Write;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -489,7 +491,34 @@ impl FilesystemManage for Connection {
         request: tonic::Request<proto::DownloadRequest>,
     ) -> std::result::Result<tonic::Response<Self::DownloadStream>, tonic::Status> {
         let (tx, rx) = mpsc::channel(32);
+        let location = &request.get_ref().location;
+        let file = File::open(location)
+            .map_err(|e| tonic::Status::internal(format!("Got an error opening the file: {}", e)))?;
 
+        let mut reader = BufReader::new(file);
+        let mut chunk = vec![0u8; 1000];
+        tokio::spawn(async move {
+            loop {
+                let n = reader.read(&mut chunk);
+                match n {
+                    Ok(0) => {
+                        break;
+                    }
+                    Ok(n) => {
+                        let file_chunk = RawFileChunk { 
+                            bytes: chunk[..n].to_vec()
+                        };
+                        if let Err(_) = tx.send(Ok(file_chunk)).await {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        println!("read error: {:#?}", e);
+                        break;
+                    }
+                }
+            }
+        });
         Ok(tonic::Response::new(ReceiverStream::new(rx)))
     }
 }
