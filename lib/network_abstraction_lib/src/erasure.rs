@@ -125,12 +125,15 @@ where
 {
     ErasedHandler {
         inner: Box::new(move |req: &dyn IntoRequest| {
-            eprintln!("incoming type: {:?}, expected: {:?}",
-                req.as_any().type_id(), std::any::TypeId::of::<S::Request>());
             let t = req.as_any().downcast_ref::<S::Request>()?;
-            S::from_wire(t.clone())
-                .ok()
-                .map(|s| Box::new(Erased(s)) as Box<dyn IntoRequest>)
+            match S::from_wire(t.clone()) {
+                Ok(s) => Some(Box::new(Erased(s)) as Box<dyn IntoRequest>),
+                Err(e) => {
+                    // eprintln!("erase() predicate miss for {}: {}",
+                    //     std::any::type_name::<S>(), "?");
+                    None
+                }
+            }
         }),
         direct: Box::new(|any: Box<dyn Any + Send + Sync>| {
             any.downcast::<S>()

@@ -1,13 +1,14 @@
 
 use general_networked_filesystem::core::{DirectoryResponse, FileRequest, LsRequest};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::{
     io::AsyncWriteExt, net::TcpStream, sync::{broadcast, mpsc::{self}, watch, Mutex, RwLock}, time::{sleep, timeout}
 };
 use tokio_util::sync::CancellationToken;
-use crate::transport::node_transport_spec::{CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, Ping, RemoteFile, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StopServerRequest};
+use tower_sessions::session::Id;
+use crate::{OrchestratorClients, ServerCheckEvent, StatusMethod, UserClient, UserManager, transport::node_transport_spec::{CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, NodeTransportable, NodeTransportableMut, Ping, RemoteFile, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StateActionType, StopServerRequest, StreamTransportable}};
 use crate::{
-    ApiCalls as ToplevelApiCalls, AuthTcpMessage, Clients, ConsoleData, IncomingMessage,
+    ApiCalls as ToplevelApiCalls, AuthTcpMessage, ConsoleData, IncomingMessage,
     IntegrationCommands, KubeLocalRequest, List, LogLine, NodeWithStream,
     database::{
         Element, ModifyElementData, Node, NodesDatabase,
@@ -22,8 +23,8 @@ use crate::{
     MessagePayloadWithMetadata, MetadataTypes, SimpleMessage, SrcAndDest, Status, StreamResult,
 };
 use std::{
-    collections::HashMap, error::Error, sync::{
-        atomic::{AtomicBool, Ordering}, Arc
+    collections::HashMap, error::Error, ops::DerefMut, sync::{
+        Arc, atomic::{AtomicBool, Ordering}
     }, time::{Duration, Instant}
 };
 use tokio::io::AsyncReadExt;
@@ -35,7 +36,7 @@ pub struct PasswordRequest {
 }
 
 
-impl NodeTransportable for ServernameRequest {
+impl NodeTransportableMut for ServernameRequest {
     type Output = ();
 
     async fn node_transport(&self, state: &mut AppState) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
@@ -87,7 +88,7 @@ impl NodeTransportable for ServernameRequest {
 impl NodeTransportable for CapabilitiesRequest {
     type Output = ();
 
-    async fn node_transport(&self, state: &mut AppState) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
+    async fn node_transport(&self, state: &AppState) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         let capability_msg = serde_json::to_vec(&List {
             list: ToplevelApiCalls::Capabilities(self.capabilities.clone()),
         })?;
@@ -101,7 +102,7 @@ impl NodeTransportable for CapabilitiesRequest {
 impl NodeTransportable for PasswordRequest {
     type Output = ();
 
-    async fn node_transport(&self, state: &mut AppState) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
+    async fn node_transport(&self, state: &AppState) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         let auth_msg = serde_json::to_vec(&AuthTcpMessage {
             password: self.password.clone(),
         })?;
@@ -124,21 +125,21 @@ async fn get_all_stream_data_parsed(line_content: &str) -> Vec<Value> {
         value_from_line::<List, _>(line_content, |line| line.contains("\"list\"")).await;
 
     let mut list_values: Vec<Value> = vec![];
-    for item in list_parsed {
-        if let Ok(list_item) = item {
-            if let Ok(serialized) = serde_json::to_string(&list_item) {
-                if let Ok(seralized_value) = serde_json::to_value(ConsoleData {
-                    data: serialized,
-                    r#type: "list_item".to_string(),
-                    authcode: "0".to_string(),
-                }) {
-                    if !list_values.contains(&seralized_value) {
-                        list_values.push(seralized_value)
-                    }
-                }
-            }
-        }
-    }
+    // for item in list_parsed {
+    //     if let Ok(list_item) = item {
+    //         if let Ok(serialized) = serde_json::to_string(&list_item) {
+    //             if let Ok(seralized_value) = serde_json::to_value(ConsoleData {
+    //                 data: serialized,
+    //                 r#type: "list_item".to_string(),
+    //                 authcode: "0".to_string(),
+    //             }) {
+    //                 if !list_values.contains(&seralized_value) {
+    //                     list_values.push(seralized_value)
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
     final_data.extend(list_values.clone());
 
     let list_lines: Vec<String> = list_values
@@ -178,22 +179,24 @@ async fn get_all_stream_data_parsed(line_content: &str) -> Vec<Value> {
     }
     final_data.extend(console_values);
 
-    if let Ok(value) = serde_json::from_str::<Value>(line_content) {
-        if let (Some(_), Some(_), Some(_)) = (
-            value.get("start_keyword").and_then(|v| v.as_str()),
-            value.get("stop_keyword").and_then(|v| v.as_str()),
-            value.get("name").and_then(|v| v.as_str()),
-        ) {
-            final_data.push(
-                serde_json::to_value(ConsoleData {
-                    authcode: "0".to_string(),
-                    data: serde_json::to_string(&value).unwrap_or("".to_string()),
-                    r#type: "info".to_string(),
-                })
-                .unwrap(),
-            )
-        }
-    }
+    // if let Ok(value) = serde_json::from_str::<Value>(line_content) {
+    //     if let (Some(_), Some(_), Some(_)) = (
+    //         value.get("start_keyword").and_then(|v| v.as_str()),
+    //         value.get("stop_keyword").and_then(|v| v.as_str()),
+    //         value.get("name").and_then(|v| v.as_str()),
+    //     ) {
+    //         final_data.push(
+    //             serde_json::to_value(ConsoleData {
+    //                 authcode: "0".to_string(),
+    //                 data: serde_json::to_string(&value).unwrap_or("".to_string()),
+    //                 r#type: "info".to_string(),
+    //                 server: todo!(),
+    //                 channel: todo!(),
+    //             })
+    //             .unwrap(),
+    //         )
+    //     }
+    // }
 
     let message_parsed: Vec<Result<MessagePayload, serde_json::Error>> =
         value_from_line::<MessagePayload, _>(line_content, |line| !line.contains("\"list\"")).await;
@@ -265,61 +268,64 @@ async fn get_all_stream_data_parsed(line_content: &str) -> Vec<Value> {
 async fn handle_all_stream_values(
     arc_state: Arc<RwLock<AppState>>,
     value: Value,
-    ws_tx: &broadcast::Sender<String>,
+    user_clients_option: Option<UserManager>,
     ip: &str,
     server_start_keyword: &mut String,
     server_stop_keyword: &mut String,
 ) -> StreamResult {
     if let Ok(payload) = serde_json::from_value::<MessagePayload>(value.clone()) {
-        //     if payload.message == "end_conn" {
-        //         println!("Ending current connection");
-        //         let mut state_guard = arc_state.write().await;
-        //         state_guard.conn_status = Status::Down;
-        //         return Ok(true);
-        // } else
+
         if payload.r#type == "server_state" {
-            let mut state_guard = arc_state.write().await;
-            let sent_status = payload.message.parse().unwrap_or(false);
-            state_guard.current_node.status = match sent_status {
-                true => Status::Up,
-                false => Status::Down,
-            };
+            if let Ok(mut state) = arc_state.try_write() {
+                println!("wrote the state");
+                let sent_status = payload.message.parse().unwrap_or(false);
+                state.current_node.status = match sent_status {
+                    true => Status::Up,
+                    false => Status::Down,
+                };
+            }
         }
     }
 
     if let Ok(data_clone) = serde_json::from_value::<SimpleMessage>(value.clone()) {
         if data_clone.message == "pong" {
-            println!("got a ping");
-            let state_guard: tokio::sync::RwLockWriteGuard<'_, AppState> = arc_state.write().await;
-            let ping_message = MessagePayload {
-                r#type: "status".to_string(),
-                message: "ping_ok".to_string(),
-                authcode: "0".to_string(),
-            };
-            let _ = state_guard
-                .ws_tx
-                .send(serde_json::to_string(&ping_message).unwrap());
+            if let Some(arc_user_clients) = user_clients_option {
+                // let state_guard: tokio::sync::RwLockWriteGuard<'_, AppState> = arc_state.write().await;
+                let ping_message = MessagePayload {
+                    r#type: "status".to_string(),
+                    message: "ping_ok".to_string(),
+                    authcode: "0".to_string(),
+                };
+                // let mut user_clients_lock = arc_user_clients.inner.lock().await;
+                // let user_clients = user_clients_lock.deref_mut();
+                // for (_, client_lock) in arc_user_clients.inner {
+                //     let client = client_lock.write().await;
+                //     while let Some(sender) = &client.server_connection {
+                //         let _ = sender.send(serde_json::to_string(&ping_message).unwrap());
+                //     }
+                // }
+            }
         }
     }
 
     //println!("{:#?} and {:#?} end", serde_json::from_value::<ConsoleData>(value.clone()), value.clone());
     if let Ok(data_clone) = serde_json::from_value::<ConsoleData>(value.clone()) {
-        if let Ok(inner_value) = serde_json::from_str::<serde_json::Value>(&data_clone.data) {
-            if let (Some(start_kw), Some(stop_kw), Some(name)) = (
-                inner_value.get("start_keyword").and_then(|v| v.as_str()),
-                inner_value.get("stop_keyword").and_then(|v| v.as_str()),
-                inner_value.get("name").and_then(|v| v.as_str()),
-            ) {
-                *server_start_keyword = start_kw.to_string();
-                *server_stop_keyword = stop_kw.to_string();
-                let mut state_guard = arc_state.write().await;
-                if let Some(current_server) = &mut state_guard.current_server {
-                    if current_server.servername.is_empty() {
-                        current_server.servername = name.to_string();
-                    }
-                }
-            }
-        }
+        // if let Ok(inner_value) = serde_json::from_str::<serde_json::Value>(&data_clone.data) {
+        //     if let (Some(start_kw), Some(stop_kw), Some(name)) = (
+        //         inner_value.get("start_keyword").and_then(|v| v.as_str()),
+        //         inner_value.get("stop_keyword").and_then(|v| v.as_str()),
+        //         inner_value.get("name").and_then(|v| v.as_str()),
+        //     ) {
+        //         *server_start_keyword = start_kw.to_string();
+        //         *server_stop_keyword = stop_kw.to_string();
+        //         let mut state_guard = arc_state.write().await;
+        //         if let Some(current_server) = &mut state_guard.current_server {
+        //             if current_server.servername.is_empty() {
+        //                 current_server.servername = name.to_string();
+        //             }
+        //         }
+        //     }
+        // }
 
         if data_clone.data.contains("\"type\":\"command\"") {
             if let Ok(inner_msg) = serde_json::from_str::<MessagePayload>(&data_clone.data) {
@@ -330,7 +336,7 @@ async fn handle_all_stream_values(
                     };
 
                     if let Ok(nodes) = database.fetch_all_nodes().await {
-                        let node_status = if let Clients::K8sLocal(client) = client_option {
+                        let node_status = if let OrchestratorClients::K8sLocal(client) = client_option {
                             // let client_clone = client.clone();
                             let ip_clone = ip.to_string();
                             let request = VerifyIsK8sGameserverRequest { server: ip_clone };
@@ -352,7 +358,7 @@ async fn handle_all_stream_values(
                             nodename: inner_msg.message,
                             nodetype: {
                                 let state_guard = arc_state.read().await;
-                                if let Clients::K8sLocal(client) = &state_guard.client {
+                                if let OrchestratorClients::K8sLocal(client) = &state_guard.client {
                                     let request = VerifyIsK8sGameserverRequest {
                                         server: ip.to_string(),
                                     };
@@ -373,7 +379,7 @@ async fn handle_all_stream_values(
                             nodestatus: node_status,
                             k8s_type: {
                                 let state_guard = arc_state.read().await;
-                                if let Clients::K8sLocal(client) = &state_guard.client {
+                                if let OrchestratorClients::K8sLocal(client) = &state_guard.client {
                                     let request = VerifyIsK8sGameserverRequest {
                                         server: ip.to_string(),
                                     };
@@ -419,7 +425,8 @@ async fn handle_all_stream_values(
 async fn process_stream_data(
     raw_data: &[u8],
     arc_state: &Arc<RwLock<AppState>>,
-    ws_tx: &broadcast::Sender<String>,
+    // ws_tx: &broadcast::Sender<String>,
+    user_clients_option: Option<UserManager>,
     ip: &str,
     server_start_keyword: &mut String,
     server_stop_keyword: &mut String,
@@ -427,6 +434,7 @@ async fn process_stream_data(
     if let Ok(text) = std::str::from_utf8(raw_data) {
         let line_content = text.trim();
         if line_content.is_empty() {
+            println!("line is empty");
             return StreamResult::Active;
         }
         // let state = arc_state.write().await;
@@ -440,29 +448,43 @@ async fn process_stream_data(
         println!("got text {:#?}", text);
 
         let final_data: Vec<Value> = get_all_stream_data_parsed(line_content).await;
-
+        println!("got ffinal data {}", final_data.len());
+        // if final_data.len() == 0 {
+        //     return StreamResult::Active;
+        // }
+              // println!("after values");
+        // let state = arc_state.write().await;
+        // println!("got state here earlier");
+        // drop(state);
         //println!("{:#?}", final_data);
 
         for value in final_data.iter() {
             let stream_values_result = handle_all_stream_values(
                 arc_state.clone(),
                 value.clone(),
-                ws_tx,
+                user_clients_option.clone(),
                 ip,
                 server_start_keyword,
                 server_stop_keyword,
             )
             .await;
+            println!("got a value");
             if matches!(stream_values_result, StreamResult::Done) || matches!(stream_values_result, StreamResult::Error(_)) {
                 return stream_values_result;
             } 
         }
+        // println!("after values");
+        // let state = arc_state.write().await;
+        // println!("got state here");
+    } else {
+        println!("bad bytes");
     }
     StreamResult::Active
 }
 
 pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, ip: String) {
     let mut state = arc_state.write().await;
+    println!("got state for start hook");
     let initial_node_password: String =
         get_env_var_or_arg("INITIAL_NODE_PASSWORD", Some(String::default())).unwrap();
     let password_request = PasswordRequest {
@@ -478,39 +500,120 @@ pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, ip: String) {
     let server_name_request = ServernameRequest { ip: ip.clone() };
     let _ = server_name_request.node_transport(&mut state).await;
     drop(state);
+
+
     // TODO: consider interrupts instead of polling
     tokio::spawn(async move {
-        let state = arc_state.write().await;
-        let mut rx = state.cached_status_type.subscribe();
-        drop(state);
+        // let inner_arc_state = arc_state.clone();
+        let server_check_event = arc_state.read().await.server_check_event.clone();
         loop {
-            if rx.changed().await.is_err() {
-                break;
-            }
-            let end_server_polling = AtomicBool::new(false);
-            if rx.borrow().to_string() == "server-process" {
+            let current_server_check_event = (*server_check_event.borrow()).clone();
+            if let ServerCheckEvent::Add(new_server) = current_server_check_event {
+                println!("got an add event");
+                let inner_server_check_event_rx = server_check_event.subscribe().clone();
                 let inner_arc_state = arc_state.clone();
                 tokio::spawn(async move {
+                    let inner_arc_state = inner_arc_state.clone();
                     let state = inner_arc_state.read().await;
-                    let notify = state.poll_server_event.clone();
-                    drop(state);
-                    let mut interval = tokio::time::interval(Duration::from_millis(500));
-                    loop {
-                        notify.notified().await;
-                        if end_server_polling.load(Ordering::SeqCst) == true {
-                            break;
+                    let mut process_guard = state.server_processes.get_mut(&new_server).unwrap();
+                    let status_method = &process_guard.read().await.status_method.clone();
+                    'server_status_task: loop {
+                        println!("starting outer loop 1");
+                        if matches!(*status_method.borrow(), StatusMethod::Poll) {
+                            let mut interval = tokio::time::interval(Duration::from_millis(5000));
+                            loop {
+                                println!("starting inner loop");
+                                let server_state_request = ServerStateRequest { };
+                                // let inner_arc_state = inner_arc_state.clone();
+                                // tokio::spawn(async move {
+                                let inner_arc_state = inner_arc_state.clone();
+                                let state = inner_arc_state.read().await;
+                                let _ = server_state_request.node_transport(&state).await;
+                                drop(state);
+                                // if let Ok(state) = inner_arc_state.try_read() {
+                                //     let _ = server_state_request.node_transport(&state).await;
+                                //     drop(state);
+                                // }
+                                //});
+                                println!("sent the server state request");
+                                // tokio::select! {
+                                //     _ = inner_server_check_event_rx.changed() => {
+                                //         if let ServerCheckEvent::Remove(server) = &*inner_server_check_event_rx.borrow() {
+                                //             if new_server == *server {
+                                //                 break 'server_status_task;
+                                //             }
+                                //         }
+                                //     }
+                                //     _ = interval.tick() => {}
+                                // }
+                                if !matches!(*status_method.borrow(), StatusMethod::Poll){
+                                    break;
+                                }
+                                if let ServerCheckEvent::Remove(server) = &*inner_server_check_event_rx.borrow() {
+                                    if new_server == *server {
+                                        break 'server_status_task;
+                                    }
+                                }
+                                interval.tick().await;
+                            }
+                        } else if matches!(*status_method.borrow(), StatusMethod::OnUpdate){
+                            let server_state_request = ServerStateRequest {
+                            };
+                            if let Ok(mut rx) = server_state_request.stream_transport(inner_arc_state.clone()).await {
+                                let inner_process_guard = process_guard.clone();
+                                tokio::spawn(async move {
+                                    loop {
+                                        let status = rx.borrow().clone();
+                                        inner_process_guard.clone().write().await.status = status;
+                                        let _ = rx.changed().await;
+                                    } 
+                                });
+                            }
                         }
-                        let mut state = inner_arc_state.write().await;
-                        let server_state_request = ServerStateRequest {};
-                        let _ = server_state_request.node_transport(&mut state).await;
-                        interval.tick().await;
+                        if let ServerCheckEvent::Remove(server) = &*inner_server_check_event_rx.borrow() {
+                            if new_server == *server {
+                                break;
+                            }
+                        }
+                        let _ = status_method.subscribe().changed().await;
                     }
                 });
-            } else {
-                end_server_polling.store(true, Ordering::SeqCst);
             }
+            let _ = server_check_event.subscribe().changed().await;
         }
     });
+    // tokio::spawn(async move {
+    //     let state = arc_state.write().await;
+    //     let mut rx = state.cached_status_type.subscribe();
+    //     drop(state);
+    //     loop {
+    //         if rx.changed().await.is_err() {
+    //             break;
+    //         }
+    //         let end_server_polling = AtomicBool::new(false);
+    //         if rx.borrow().to_string() == "server-process" {
+    //             let inner_arc_state = arc_state.clone();
+    //             tokio::spawn(async move {
+    //                 let state = inner_arc_state.read().await;
+    //                 let notify = state.poll_server_event.clone();
+    //                 drop(state);
+    //                 let mut interval = tokio::time::interval(Duration::from_millis(500));
+    //                 loop {
+    //                     notify.notified().await;
+    //                     if end_server_polling.load(Ordering::SeqCst) == true {
+    //                         break;
+    //                     }
+    //                     let mut state = inner_arc_state.write().await;
+    //                     let server_state_request = ServerStateRequest {};
+    //                     let _ = server_state_request.node_transport(&mut state).await;
+    //                     interval.tick().await;
+    //                 }
+    //             });
+    //         } else {
+    //             end_server_polling.store(true, Ordering::SeqCst);
+    //         }
+    //     }
+    // });
 }
 
 // This handles the stream
@@ -522,7 +625,8 @@ pub async fn handle_stream(
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
     //stream: &mut TcpStream,
     ip: String,
-    ws_tx: broadcast::Sender<String>,
+    // ws_tx: broadcast::Sender<String>,
+    user_clients_option: Option<UserManager>
 ) -> StreamResult {
     let mut server_start_keyword = String::new();
     let mut server_stop_keyword = String::new();
@@ -536,8 +640,9 @@ pub async fn handle_stream(
         .as_ref()
         .map(|stream| stream.resubscribe());
     drop(state);
-
+    
     loop {
+        let inner_user_clients_option = user_clients_option.clone();
         tokio::select! {
             Some(received) = async {
                 match internal_rx.as_mut() {
@@ -547,7 +652,7 @@ pub async fn handle_stream(
             }, if internal_rx.is_some() => {
                 if let Ok(bytes) = received {
                     let stream_values_result = process_stream_data(
-                        &bytes, &arc_state, &ws_tx, &ip,
+                        &bytes, &arc_state, inner_user_clients_option, &ip,
                         &mut server_start_keyword, &mut server_stop_keyword,
                     ).await;
                     if matches!(stream_values_result, StreamResult::Done) || matches!(stream_values_result, StreamResult::Error(_)) {
@@ -562,12 +667,15 @@ pub async fn handle_stream(
                 Some(bytes) => {
                     println!("got bytes");
                     let stream_values_result = process_stream_data(
-                        &bytes, &arc_state, &ws_tx, &ip,
+                        &bytes, &arc_state, inner_user_clients_option, &ip,
                         &mut server_start_keyword, &mut server_stop_keyword,
                     ).await;
                     if matches!(stream_values_result, StreamResult::Done) || matches!(stream_values_result, StreamResult::Error(_)) {
                         return stream_values_result;
                     } 
+                    // let state = arc_state.write().await;
+
+                    println!("finished prcoessing bytes");
                 },
                 None => {
                     println!("got err receiving");
@@ -592,7 +700,8 @@ pub async fn handle_stream(
 pub async fn connect_to_server(
     arc_state: Arc<RwLock<AppState>>,
     tcp_url: String,
-    ws_tx: broadcast::Sender<String>,
+    user_clients: UserManager,
+    //ws_tx: broadcast::Sender<String>,
     end_if_timeout: bool,
 ) -> Result<watch::Receiver<StreamResult>, Box<dyn Error + Send + Sync>> {
 
@@ -646,11 +755,11 @@ pub async fn connect_to_server(
                                         let bytes_filter_method = arc_bytes_filter_method.lock().await;
                                         match *bytes_filter_method {
                                             BytesFilterMethod::Line => {
-                                                read_buf.extend_from_slice(&temp_buf);
+                                                read_buf.extend_from_slice(&temp_buf[..n]);
                                                 if read_buf.is_empty(){
                                                     continue;
                                                 }
-                                                if let Some(pos) = read_buf.iter().position(|b| *b == b'\n'){
+                                                while let Some(pos) = read_buf.windows(2).position(|b| b == "\n".as_bytes() || *b.last().unwrap() == b'\n'){
                                                     let full_segment: &Vec<u8> = &read_buf.drain(..=pos).collect();
                                                     let share_tx = share_tx_guard.lock().await;
                                                     for (_, tx) in share_tx.iter() {
@@ -706,9 +815,10 @@ pub async fn connect_to_server(
                 share_tx.insert(index, tx);
 
                 let (watch_tx, watch_rx) = watch::channel(StreamResult::Init);
+                let inner_user_clients = user_clients.clone();
                 tokio::spawn(async move {
                     let stream_result =
-                        handle_stream(Arc::clone(&arc_state), &mut rx, ip, ws_tx.clone()).await;
+                        handle_stream(Arc::clone(&arc_state), &mut rx, ip, Some(inner_user_clients)).await;
                     
                     let _ = watch_tx.send(stream_result);
                 });
@@ -788,7 +898,6 @@ pub(crate) async fn try_initial_connection(
     create_handler: bool,
     arc_state: &Arc<RwLock<AppState>>,
     tcp_url: String,
-    ws_tx: &broadcast::Sender<String>,
 ) -> Result<(), anyhow::Error> {
     let mut final_error = anyhow!(String::new());
     for _ in 0..conn_attempts {
@@ -812,7 +921,7 @@ pub(crate) async fn try_initial_connection(
                     let ip: String = stream.peer_addr()?.ip().to_string();
 
                     let stream_result =
-                        handle_stream(arc_state.clone(), &mut rx, ip, ws_tx.clone()).await;
+                        handle_stream(arc_state.clone(), &mut rx, ip, None).await;
                     if matches!(stream_result, StreamResult::Active) || matches!(stream_result, StreamResult::Done){
                         println!("Stream test successful");
                     } else {
@@ -835,12 +944,8 @@ pub(crate) async fn try_initial_connection(
     Err(final_error)
 }
 
-pub trait NodeTransportable {
-    type Output;
-    async fn node_transport(&self, state: &mut AppState) -> Result<Self::Output, Box<dyn Error + Send + Sync>>;
-}
 
-enum BytesFilterMethod {
+pub enum BytesFilterMethod {
     Line, 
     All
 }
@@ -876,7 +981,7 @@ impl Default for ConnectionHandler {
 
 impl NodeTransportable for LsRequest {
     type Output = DirectoryResponse;
-    async fn node_transport(&self, state: &mut AppState) -> Result<DirectoryResponse, Box<dyn Error + Send + Sync>> {
+    async fn node_transport(&self, state: &AppState) -> Result<DirectoryResponse, Box<dyn Error + Send + Sync>> {
         if *state.connection_handler.current_active_priority.lock().await > 0 {
             return Err("high priority task is occuring and cant be interfered with".into())
         }
@@ -919,7 +1024,7 @@ impl NodeTransportable for LsRequest {
 // NodeTransportable
 impl NodeTransportable for DeleteServerRequest {
     type Output = ();
-    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         if *state.connection_handler.current_active_priority.lock().await > 0 {
             return Err("high priority task is occuring and cant be interfered with".into())
         }
@@ -950,13 +1055,6 @@ impl NodeTransportable for DeleteServerRequest {
 }
 
 
-pub trait StreamTransportable {
-    type Output;
-    async fn stream_transport(
-        &self,
-        state: Arc<RwLock<AppState>>,
-    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>>;
-}
 
 impl StreamTransportable for CreateServerRequest {
     type Output = mpsc::Receiver<ConsoleData>;
@@ -1007,7 +1105,7 @@ impl StreamTransportable for CreateServerRequest {
 
 
 impl StreamTransportable for StartServerRequest {
-    type Output = mpsc::Receiver<ConsoleData>;
+    type Output = ();
     async fn stream_transport(
         &self,
         arc_state: Arc<RwLock<AppState>>,
@@ -1030,37 +1128,54 @@ impl StreamTransportable for StartServerRequest {
         if state.connection_handler.proxy_tx.is_none(){
             return Err("no stream".into());
         }
-        let _ = state.connection_handler.proxy_tx.clone().unwrap().send(msg.unwrap());
-        let (tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-        let share_tx_guard = state.connection_handler.share_tx.clone();
+        let proxy_tx = state.connection_handler.proxy_tx.clone().unwrap();
+        let _ = proxy_tx.send(msg.unwrap());
         drop(state);
-        let mut share_tx = share_tx_guard.lock().await;
-        let index = share_tx.len();
-        share_tx.insert(index, tx);
-        drop(share_tx);
         
-        let (server_tx, server_rx) = tokio::sync::mpsc::channel(32);
+        let inner_arc_state = Arc::clone(&arc_state);
+        // let (server_tx, server_rx) = tokio::sync::mpsc::channel(32);
+        let mut stdin = self.stdin.resubscribe();
         tokio::spawn(async move {
+            while let Ok(msg) = stdin.recv().await {
+                let _ = proxy_tx.send(msg.into_bytes());
+            }
+        });
+        let stdout = self.stdout.clone();
+        tokio::spawn(async move {
+            let (tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+            let state = inner_arc_state.write().await;
+            let share_tx_guard = state.connection_handler.share_tx.clone();
+            drop(state);
+            let mut share_tx = share_tx_guard.lock().await;
+            let index = share_tx.len();
+            share_tx.insert(index, tx);
+            drop(share_tx);
             loop {
                 if let Some(bytes) = proxy_rx.recv().await {
                     if let Ok(value) = serde_json::from_slice::<ConsoleData>(&bytes) {
-                        let mut share_tx = share_tx_guard.lock().await;
-                        share_tx.remove(&index);
-                        let _ = server_tx.send(value).await;
+                        if let Err(_) = stdout.send(serde_json::to_string(&value).unwrap()) {
+                            println!("User disconnected");
+                            let mut share_tx = share_tx_guard.lock().await;
+                            share_tx.remove(&index);
+                            break;
+                        }
                     }
                 } else {
-                    break;
+                    
+                    // println!("got nothing, breaking");
+                    // break;
                 }
             }
         });
 
-        Ok(server_rx)
+        Ok(())
+        // Ok(server_rx)
     }
 }
 
 impl NodeTransportable for StopServerRequest {
     type Output = ();
-    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         if *state.connection_handler.current_active_priority.lock().await > 0 {
             return Err("high priority task is occuring and cant be interfered with".into())
         }
@@ -1083,7 +1198,7 @@ impl NodeTransportable for StopServerRequest {
 
 impl NodeTransportable for MigrateRequest {
     type Output = ();
-    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         if *state.connection_handler.current_active_priority.lock().await > 0 {
             return Err("high priority task is occuring and cant be interfered with".into())
         }
@@ -1106,7 +1221,7 @@ impl NodeTransportable for MigrateRequest {
 
 impl NodeTransportable for SetServerRequest {
     type Output = ();
-    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         if *state.connection_handler.current_active_priority.lock().await > 0 {
             // if *state.connection_handler.current_active_priority.lock().await > 0 {
             return Err("high priority task is occuring and cant be interfered with".into())
@@ -1131,7 +1246,7 @@ impl NodeTransportable for SetServerRequest {
             return Err("no stream".into());
         }
         let _ = state.connection_handler.proxy_tx.clone().unwrap().send(bytes);
-
+        println!("sent set req");
         Ok(())
     }
 }
@@ -1139,7 +1254,7 @@ impl NodeTransportable for SetServerRequest {
 
 impl NodeTransportable for ServerDataRequest {
     type Output = ();
-    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         if *state.connection_handler.current_active_priority.lock().await > 0 {
             return Err("high priority task is occuring and cant be interfered with".into())
         }
@@ -1170,7 +1285,7 @@ impl NodeTransportable for ServerDataRequest {
 
 impl NodeTransportable for FilterRequest {
     type Output = ();
-    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         if *state.connection_handler.current_active_priority.lock().await > 0 {
             return Err("high priority task is occuring and cant be interfered with".into())
         }
@@ -1196,7 +1311,7 @@ impl NodeTransportable for FilterRequest {
 
 impl NodeTransportable for Ping {
     type Output = ();
-    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         println!("got ping request");
         if *state.connection_handler.current_active_priority.lock().await > 0 {
             println!("high priority");
@@ -1222,7 +1337,7 @@ impl NodeTransportable for Ping {
 
 impl NodeTransportable for IntegrationKeyRequest {
     type Output = ();
-    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         if *state.connection_handler.current_active_priority.lock().await > 0 {
             return Err("high priority task is occuring and cant be interfered with".into())
         }
@@ -1249,23 +1364,90 @@ impl NodeTransportable for IntegrationKeyRequest {
     }
 }
 
-
+// #[derive(Deserialize, Serialize, Clone)]
+// pub struct ServerStateRequest {
+//     #[serde(flatten)]
+//     pub common: IncomingMessage,
+//     pub state_action: StateActionType
+// }
 impl NodeTransportable for ServerStateRequest {
     type Output = ();
-    async fn node_transport(&self, state: &mut AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
         if *state.connection_handler.current_active_priority.lock().await > 0 {
             return Err("high priority task is occuring and cant be interfered with".into())
         }
 
-        let _ = serde_json::to_vec(&MessagePayload {
-            r#type: "command".to_string(),
-            message: "server_state".to_string(),
-            authcode: "0".to_string(),
-        })
+        let mut bytes = serde_json::to_vec(&json!({
+            "type": "command".to_string(),
+            "message": "server_state".to_string(),
+            "authcode": "0".to_string(),
+            "state_action": &StateActionType::Immediate,
+        }))
         .unwrap();
-        
+        bytes.push(b'\n');
+
+        if state.connection_handler.proxy_tx.is_none(){
+            return Err("no stream".into());
+        }
+        let _ = state.connection_handler.proxy_tx.clone().unwrap().send(bytes);
 
         Ok(())
+    }
+}
+
+impl StreamTransportable for ServerStateRequest {
+    type Output = watch::Receiver<Status>;
+
+    async fn stream_transport(
+        &self,
+        arc_state: Arc<RwLock<AppState>>,
+    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
+        let state = arc_state.read().await;
+        if *state.connection_handler.current_active_priority.lock().await > 0 {
+            return Err("high priority task is occuring and cant be interfered with".into())
+        }
+        drop(state);
+
+        let state = arc_state.write().await;
+        if state.connection_handler.proxy_tx.is_none(){
+            return Err("no stream".into());
+        }
+
+        let mut bytes = serde_json::to_vec(&json!({
+            "type": "command".to_string(),
+            "message": "server_state".to_string(),
+            "authcode": "0".to_string(),
+            "state_action": &StateActionType::OnUpdate,
+        }))
+        .unwrap();
+        bytes.push(b'\n');
+
+        let _ = state.connection_handler.proxy_tx.clone().unwrap().send(bytes);
+        let (tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let share_tx_guard = state.connection_handler.share_tx.clone();
+        drop(state);
+        let mut share_tx = share_tx_guard.lock().await;
+        let index = share_tx.len();
+        share_tx.insert(index, tx);
+        drop(share_tx);
+
+        let (watch_tx, watch_rx) = watch::channel(Status::Unknown);
+        tokio::spawn(async move {
+            // let mut previous_state: Status;
+            while let Some(bytes) = proxy_rx.recv().await {
+                if let Ok(payload) = serde_json::from_slice::<MessagePayload>(&bytes){
+                    if let Ok(status_bool) = payload.message.parse::<bool>(){
+                        let status =match status_bool {
+                            true => Status::Up,
+                            false => Status::Down,
+                        };
+                        let _ = watch_tx.send(status);
+                    }
+                }
+            }
+        });
+
+        Ok(watch_rx)
     }
 }
 
@@ -1399,7 +1581,6 @@ impl StreamTransportable for FileDownloadRequest {
         let (flume_tx, flume_rx) = flume::bounded(32);
         tokio::spawn(async move {
             while let Some(bytes) = proxy_rx.recv().await {
-                println!("got bytes");
                 let _ = flume_tx.send_async(bytes).await;
             }
         });

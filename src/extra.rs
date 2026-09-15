@@ -49,6 +49,8 @@ where
                                 authcode: console.authcode.clone(),
                                 data: inner.data,
                                 r#type: console.r#type.clone(),
+                                server: console.server.clone(),
+                                channel: console.channel.clone(),
                             };
                             if let Ok(parsed) = serde_json::from_value::<T>(
                                 serde_json::to_value(reconstructed).unwrap(),

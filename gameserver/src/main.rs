@@ -6,6 +6,8 @@ use futures::StreamExt;
 use general_networked_filesystem::wrapper::Direction;
 use general_networked_filesystem::core::FileOperations;
 use general_networked_filesystem::wrapper::FileSystemHandler;
+use network_abstraction_lib::IntoRequest;
+use network_abstraction_lib::MiddlewareAction;
 use network_abstraction_lib::erasure::erase_stream_wrapper_result;
 use network_abstraction_lib::ErrorResponse;
 use network_abstraction_lib::NoneResponse;
@@ -15,6 +17,8 @@ use network_abstraction_lib::ValueRequest;
 use network_abstraction_lib::typed::typed_fn;
 use network_abstraction_lib::typed_request_macros::register_output;
 use network_abstraction_lib::ExtractorErrors;
+use network_abstraction_lib::typed_stream::typed_stream_fn;
+use network_abstraction_lib::typed_stream::typed_stream_fn_result;
 use serde_json::Value;
 use std::convert::TryFrom;
 use std::path::Path;
@@ -144,6 +148,8 @@ struct SimpleMessage {
 pub struct ConsoleData {
     authcode: String,
     data: String,
+    server: String,
+    channel: String,
     r#type: String,
 }
 
@@ -499,6 +505,7 @@ async fn run_command_live_output(
     sandbox: bool,
     location: String,
     provider: ProviderConfig,
+    name: String,
     label: String,
     sender: Option<mpsc::Sender<String>>,
     stdin_arc: Option<Arc<Mutex<Option<ChildStdin>>>>,
@@ -536,6 +543,7 @@ async fn run_command_live_output(
     let stdout_handle = if let Some(stdout) = child.stdout.take() {
         let tx = sender.clone();
         let lbl = label.clone();
+        let inner_name = name.clone();
         Some(tokio::spawn(async move {
             let mut reader = BufReader::new(stdout).lines();
             let stdout_last_updated_loop_clone = stdout_last_updated_clone.clone();
@@ -553,6 +561,8 @@ async fn run_command_live_output(
                         authcode: "0".to_string(),
                         data: format!("[{}] {}", lbl, line),
                         r#type: "console".to_string(),
+                        server: inner_name.clone(),
+                        channel: "stdout".to_string(),
                     })
                     .unwrap();
                     let _ = tx.try_send(msg);
@@ -567,6 +577,7 @@ async fn run_command_live_output(
     let stderr_handle = if let Some(stderr) = child.stderr.take() {
         let tx = sender.clone();
         let lbl = label.clone();
+        // let inner_name = name.clone();
         Some(tokio::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
             let stderr_last_updated_loop_clone = stderr_last_updated_clone.clone();
@@ -577,12 +588,12 @@ async fn run_command_live_output(
                     continue;
                 }
                 if let Some(tx) = &tx {
-                    // let msg =
-                    //     json!({"type":"stderr","data":format!("[{}] {}", lbl, line)}).to_string();
                     let msg = serde_json::to_string(&ConsoleData {
                         authcode: "0".to_string(),
                         data: format!("[{}] {}", lbl, line),
                         r#type: "console".to_string(),
+                        server: name.clone(),
+                        channel: "stderr".to_string(),
                     })
                     .unwrap();
                     let _ = tx.try_send(msg);
@@ -903,6 +914,7 @@ async fn start_server_handler(
                             sandbox,
                             location.unwrap_or(String::new()),
                             provider,
+                            current_server.clone(),
                             "Server".into(),
                             Some((*tx).clone()),
                             Some(stdin_clone.clone()),
@@ -1125,7 +1137,7 @@ async fn set_filter_handler(state: &Arc<AppState>, req: SetFilterRequest) -> Non
 }
 async fn console_handler(state: &Arc<AppState>, req: ConsoleRequest) -> NoneResponse {
     println!("Got a console request");
-    let input = req.common.message.clone();
+    let input = req.data.clone();
     let stdin_ref = &state.stdin_ref;
     let cmd_tx_arc = state.cmd_tx.lock().await.clone().unwrap();
     let cmd_tx = cmd_tx_arc;
@@ -1459,40 +1471,46 @@ async fn spawn_request_loop(
 
                         match feed_result {
                             Ok(response) => {
-
-                                match response.try_into_bytes() {
-                                    Ok(mut bytes) => {
-                                        bytes.push(b'\n');
-                                        let _ = out_tx.send(bytes).await;
-                                    }
-                                    Err(_) => {
-                                        match response.try_into_response() {
-                                            Ok(boxed) => match boxed.downcast::<String>() {
-                                                Ok(resp) => {
-                                                    println!("got resp: {}", *resp);
-                                                    let _ = out_tx.send((*resp).into()).await;
-                                                }
-                                                Err(boxed) => match boxed
-                                                    .downcast::<Pin<Box<dyn Stream<Item = String> + Send + Sync>>>()
-                                                {
-                                                    Ok(stream_box) => {
-                                                        let mut stream = *stream_box;
-                                                        let inner_out_tx = out_tx.clone();
-                                                        tokio::spawn(async move {
-                                                            while let Some(item) = stream.next().await {
-                                                                let _ = inner_out_tx.clone().send(item.into()).await;
-                                                            }
-                                                        });
+                                match response.try_into_response() {
+                                    Ok(boxed) => {
+                                        match boxed.downcast::<Pin<Box<dyn Stream<Item = String> + Send + Sync>>>(){
+                                            Ok(stream_box) => {
+                                                let mut stream = *stream_box;
+                                                let inner_out_tx = out_tx.clone();
+                                                println!("got a stream box");
+                                                tokio::spawn(async move {
+                                                    while let Some(item) = stream.next().await {
+                                                        println!("got item {}", item);
+                                                        let mut bytes = item.as_bytes().to_vec();
+                                                        // bytes.push(b'\n');
+                                                        let res = inner_out_tx.clone().send(bytes).await;
+                                                        println!("{:#?}", res);
                                                     }
-                                                    Err(_) => println!("resp error: dont know this response type"),
-                                                },
+                                                });
                                             },
-                                            Err(e) => match e {
-                                                ExtractorErrors::Err(value) => println!("got err: {}", value),
-                                                _ => println!("resp error: try_into_response failed"),
+                                            Err(_) => match response.try_into_value() {
+                                                Ok(value) => {
+                                                    let to_send: &serde_json::Value = match value.as_object() {
+                                                        Some(map) if map.len() == 1 => {
+                                                            let (_first_key, first_value) = map.iter().next().unwrap();
+
+                                                            first_value
+                                                                .as_object()
+                                                                .and_then(|inner_map| inner_map.get("message"))
+                                                                .unwrap_or(first_value)
+                                                        }
+                                                        _ => &value, 
+                                                    };
+
+                                                    let mut bytes = serde_json::to_vec(to_send).unwrap();
+                                                    bytes.push(b'\n');
+                                                    let _ = out_tx.send(bytes).await;
+                                                },
+                                                Err(e) => println!("{:#?}", e),
                                             },
                                         }
-                                    }
+                                    },
+                                    Err(_) => println!("unknown error"),
                                 }
                             }
                             Err(e) => match e {
@@ -1537,32 +1555,30 @@ async fn spawn_request_loop(
 }
 
 
-
 fn spawn_middlewares(router: &mut Router<Arc<AppState>>) {
-    // router.add_middleware(|mapping: String, request: &dyn IntoRequest| {
-    //     if let Some(value_request) = request.as_any().downcast_ref::<ValueRequest>() {
-    //         if let Some(Value::String(message)) = value_request.value.get("message") {
-    //             if let Some(Value::String(message_type)) = value_request.value.get("type") {
-    //                 if message_type == "console" && *message_type == mapping {
-    //                     return MiddlewareAction::ReassignValue(request);
-    //                 }
-    //             }
-    //             if *message == mapping {
-    //                 // if *message == "start_server".to_string() {
-    //                 //     MiddlewareAction::SkipPredicate
-    //                 // } else {
-    //                 MiddlewareAction::ReassignValue(request)
-    //                 // }
-    //             } else {
-    //                 MiddlewareAction::Continue
-    //             }
-    //         } else {
-    //             MiddlewareAction::Continue
-    //         }
-    //     } else {
-    //         MiddlewareAction::Continue
-    //     }
-    // });
+    router.add_middleware(|mapping: String, request: &dyn IntoRequest| {
+        let Some(value_request) = request.as_any().downcast_ref::<ValueRequest>() else {
+            return MiddlewareAction::Continue;
+        };
+
+        let message_type = value_request.value.get("type").and_then(Value::as_str);
+
+        let normalized_mapping = mapping.strip_suffix("_request").unwrap_or(&mapping);
+
+        if message_type == Some("console") && mapping == "console".to_string() {
+            return MiddlewareAction::Continue;
+        }
+        let Some(Value::String(message)) = value_request.value.get("message") else {
+            return MiddlewareAction::Continue;
+        };
+
+        if message == normalized_mapping {
+            println!("{:#?}", normalized_mapping);
+            MiddlewareAction::Continue
+        } else {
+            MiddlewareAction::Next
+        }
+    });
 }
 
 async fn ensure_server_directory() {}
@@ -1627,9 +1643,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     router.register_handler(
         erase_stream_wrapper_result(create_server_handler).mapping("create_server".to_string()),
     );
-    router.register_handler(
-        erase_stream_wrapper_result(start_server_handler).mapping("start_server".to_string()),
-    );
+    // router.register_handler(
+    //     erase_stream_wrapper_result(start_server_handler).mapping("start_server".to_string()),
+    // );
+    router.register_typed_stream(typed_stream_fn_result(start_server_handler));
  
     router.register_typed(typed_fn(
         stop_server_handler
@@ -1949,6 +1966,7 @@ async fn create_server(
                             sandbox,
                             path.unwrap_or(String::new()),
                             provider_config.clone().unwrap(),
+                            servername.clone(),
                             "Pre-hook".into(),
                             Some(inner_cmd_tx.clone()),
                             None,
@@ -1971,6 +1989,7 @@ async fn create_server(
                             sandbox,
                             path.unwrap_or(String::new()),
                             provider_config.clone().unwrap(),
+                            servername.clone(),
                             "Install".into(),
                             Some(inner_cmd_tx.clone()),
                             None,
@@ -1994,6 +2013,7 @@ async fn create_server(
                             sandbox,
                             path.unwrap_or(String::new()),
                             provider_config.clone().unwrap(),
+                            servername.clone(),
                             "Post-hook".into(),
                             Some(inner_cmd_tx.clone()),
                             None,

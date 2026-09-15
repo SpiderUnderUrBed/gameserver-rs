@@ -6,26 +6,38 @@ use serde::{Deserialize, Serialize};
 use crate::{
     AppState, GetState, IncomingMessage, IncomingMessageWithMetadata, MessagePayload, SimpleMessage, ValueRequest,
 };
-use network_abstraction_lib::{ErrorResponse, FromWire, IntoRequest, NoneResponse, register_output_single, typed::RouteInput, typed_request_macros::{self, register_output}};
+use network_abstraction_lib::{ErrorResponse, FromWire, IntoRequest, NoneResponse, register_output_single, typed::RouteInput, typed_request_macros::{self, register_output}, typed_stream::StreamRouteInput};
 
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct ConsoleRequest {
-    #[serde(flatten)]
-    pub common: IncomingMessage,
+    authcode: String,
+    pub(crate) data: String,
+    server: String,
+    channel: String,
+    r#type: String,
 }
-#[typed_request_macros::typed_request]
+
+#[typed_request_macros::typed_request(name = "console")]
 impl RouteInput<Arc<AppState>> for ConsoleRequest {
     type Output = NoneResponse;
+}
+
+#[derive(Deserialize, Serialize, Clone, Default)]
+pub enum StateActionType {
+    #[default]
+    Immediate,
+    OnUpdate
 }
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct ServerStateRequest {
     #[serde(flatten)]
     pub common: IncomingMessage,
+    pub state_action: StateActionType
 }
 
-#[typed_request_macros::typed_request]
+#[typed_request_macros::typed_request(snake_case)]
 impl RouteInput<Arc<AppState>> for ServerStateRequest {
     type Output = ServerStateResponse;
 }
@@ -40,6 +52,7 @@ impl Default for ServerStateRequest {
                 message_type: "command".to_string(),
                 authcode: "0".to_string(),
             },
+            state_action: StateActionType::default(),
         }
     }
 }
@@ -50,7 +63,7 @@ pub struct StopServerRequest {
     pub common: IncomingMessage,
 }
 
-#[typed_request_macros::typed_request]
+#[typed_request_macros::typed_request(snake_case)]
 impl RouteInput<Arc<AppState>> for StopServerRequest {
     type Output = Result<NoneResponse, ErrorResponse>;
 }
@@ -73,7 +86,7 @@ pub struct ServerNameRequest {
     pub common: IncomingMessage,
 }
 
-#[typed_request_macros::typed_request]
+#[typed_request_macros::typed_request(snake_case)]
 impl RouteInput<Arc<AppState>> for ServerNameRequest {
     type Output = ServerNameResponse;
 }
@@ -109,7 +122,7 @@ pub struct ServerDataRequest {
 }
 
 
-#[typed_request_macros::typed_request]
+#[typed_request_macros::typed_request(snake_case)]
 impl RouteInput<Arc<AppState>> for ServerDataRequest {
     type Output = Result<ServerDataResponse, NoneResponse>; 
 }
@@ -123,7 +136,7 @@ pub struct DeleteServerRequest {
 }
 // register_output!(DeleteServerRequest, "DeleteServerRequest");
 
-#[typed_request_macros::typed_request]
+#[typed_request_macros::typed_request(snake_case)]
 impl RouteInput<Arc<AppState>> for DeleteServerRequest {
     type Output = NoneResponse; 
 }
@@ -147,7 +160,7 @@ pub struct SetServerRequest {
     #[serde(flatten)]
     pub common: IncomingMessageWithMetadata,
 }
-#[typed_request_macros::typed_request]
+#[typed_request_macros::typed_request(snake_case)]
 impl RouteInput<Arc<AppState>> for SetServerRequest {
     type Output = NoneResponse; 
 }
@@ -159,7 +172,7 @@ pub struct SetFilterRequest {
     pub common: IncomingMessageWithMetadata,
 }
 
-#[typed_request_macros::typed_request]
+#[typed_request_macros::typed_request(snake_case)]
 impl RouteInput<Arc<AppState>> for SetFilterRequest {
     type Output = NoneResponse; 
 }
@@ -171,7 +184,7 @@ pub struct Ping {
     pub common: SimpleMessage,
 }
 
-#[typed_request_macros::typed_request]
+#[typed_request_macros::typed_request(snake_case)]
 impl RouteInput<Arc<AppState>> for Ping {
     type Output = PingResponse; 
 }
@@ -235,6 +248,10 @@ impl IntoRequest for CreateServerRequest {
 pub struct StartServerRequest {
     #[serde(flatten)]
     pub common: IncomingMessage,
+}
+#[typed_request_macros::typed_stream_request(snake_case)]
+impl StreamRouteInput<Arc<AppState>> for StartServerRequest {
+    type Item = String;
 }
 
 impl IntoRequest for StartServerRequest {

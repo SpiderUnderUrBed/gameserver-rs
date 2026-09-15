@@ -6,6 +6,7 @@ use std::pin::Pin;
 use std::sync::Mutex;
 
 pub use inventory;
+use serde_json::Value;
 pub use typed_request_macros;
 pub use erased_serde;
 
@@ -15,6 +16,7 @@ use serde::{Deserialize, Serialize};
 pub mod erasure;
 pub mod general;
 pub mod typed;
+pub mod typed_stream;
 
 use typed::RouteInput;
 
@@ -97,9 +99,22 @@ impl<S: Send + Sync + 'static> Router<S> {
         I: RouteInput<S> + Clone,
     {
         I::set(handler);
-        let key = format!("__typed::{}", std::any::type_name::<I>());
+        let key = I::type_key();
         self.registry
             .insert(key, Box::new(typed::TypedRouteHandler::<S, I>::new()));
+        self
+    }
+
+    pub fn register_typed_stream<I>(
+        &mut self,
+        handler: impl typed_stream::TypedStreamHandler<S, Input = I, Item = I::Item> + 'static,
+    ) -> &mut Router<S>
+    where
+        I: typed_stream::StreamRouteInput<S> + Clone,
+    {
+        I::set(handler);
+        let key = I::type_key();
+        self.registry.insert(key, Box::new(typed_stream::TypedStreamRouteHandler::<S, I>::new()));
         self
     }
     pub async fn execute_typed<I>(&self, input: I) -> Result<I::Output, RouterErrors>
@@ -229,6 +244,9 @@ pub trait IntoRequest: Send + Sync {
 pub trait IntoResponse<S>: Send + Sync {
     fn try_into_response(&self) -> Result<S, ExtractorErrors>;
     fn try_into_bytes(&self) -> Result<Vec<u8>, ExtractorErrors> {
+        Err(ExtractorErrors::NotValidExtractor)
+    }
+    fn try_into_value(&self) -> Result<Value, ExtractorErrors> {
         Err(ExtractorErrors::NotValidExtractor)
     }
 }

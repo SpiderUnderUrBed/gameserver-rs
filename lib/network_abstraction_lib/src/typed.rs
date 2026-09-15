@@ -3,6 +3,7 @@ use std::sync::{Arc, OnceLock};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_flexitos::{MapRegistry, Registry as FlexitosRegistry, serialize_trait_object};
+use serde_json::Value;
 
 use crate::{AsyncFnWrapper, BorrowedBoxFuture};
 
@@ -12,7 +13,8 @@ use crate::{
 };
 use std::any::Any;
 
-struct TypedRequest<I>(I);
+
+pub struct TypedRequest<I>(pub I);
 
 impl<I> IntoRequest for TypedRequest<I>
 where
@@ -42,6 +44,10 @@ where
     fn try_into_bytes(&self) -> Result<Vec<u8>, ExtractorErrors> {
         let tagged: &dyn TaggedOutput = &self.0;
         serde_json::to_vec(tagged).map_err(|e| ExtractorErrors::Err(e.to_string()))
+    }
+    fn try_into_value(&self) -> Result<Value, ExtractorErrors> {
+        let tagged: &dyn TaggedOutput = &self.0;
+        serde_json::to_value(tagged).map_err(|e| ExtractorErrors::Err(e.to_string()))
     }
 }
 
@@ -236,6 +242,10 @@ where
     type Output: TaggedOutput + Serialize + Clone + Send + Sync + 'static;
 
     fn slot() -> &'static OnceLock<Arc<dyn TypedHandler<S, Input = Self, Output = Self::Output>>>;
+
+    fn type_key() -> String {
+        std::any::type_name::<Self>().to_string()
+    }
 
     fn set(handler: impl TypedHandler<S, Input = Self, Output = Self::Output> + 'static) {
         let _ = Self::slot().set(Arc::new(handler));

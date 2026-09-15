@@ -406,16 +406,16 @@ pub trait StreamTransportable {
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>>;
 }
 impl StreamTransportable for StartServerRequest {
-    type Output = mpsc::Receiver<ConsoleData>;
+    type Output = ();
     async fn stream_transport(
         &self,
         state: Arc<RwLock<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         let request = proto::StartServerRequest {};
-        let (server_out_tx, server_out_rx) = tokio::sync::mpsc::channel(32);
         let (server_in_tx, server_in_rx) = tokio::sync::mpsc::channel(32);
         let outbound_stream = ReceiverStream::new(server_in_rx);
-        if let Some(mut stdin) = self.stdin.as_ref().map(|r| r.resubscribe()) {
+        let mut stdin = self.stdin.resubscribe();
+        // if let Some(mut stdin) = self.stdin.as_ref().map(|r| r.resubscribe()) {
             tokio::spawn(async move {
                 loop {
                     if let Ok(data) = stdin.recv().await {
@@ -431,7 +431,7 @@ impl StreamTransportable for StartServerRequest {
                     }
                 }
             });
-        }
+        //}
         let mut clients = {
             let guard = state.read().await;
             guard.connection_handler.clients.clone().unwrap()
@@ -441,18 +441,21 @@ impl StreamTransportable for StartServerRequest {
                 //drop(state);
                 println!("before starting stream");
                 let mut stream = response_stream.into_inner();
+                let stdout = self.stdout.clone();
                 tokio::spawn(async move {
                     while let Some(result) = stream.next().await {
                         match result {
                             Ok(message) => {
                                 println!("got a message {:#?}", message);
-                                let _ = server_out_tx
-                                    .send(ConsoleData {
+                                if let Err(e) = stdout
+                                    .send(serde_json::to_string(&ConsoleData {
                                         authcode: "0".to_string(),
                                         data: message.data,
                                         r#type: message.r#type,
-                                    })
-                                    .await;
+                                    }).unwrap()){
+                                        println!("User disconnected");
+                                        break;
+                                    }
                             }
                             Err(e) => {
                                 println!("got an err");
@@ -460,7 +463,7 @@ impl StreamTransportable for StartServerRequest {
                         }
                     }
                 });
-                Ok(server_out_rx)
+                Ok(())
             }
             Err(e) => {
                 println!("{:#?}", e);
