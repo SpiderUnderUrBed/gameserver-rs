@@ -515,11 +515,12 @@ pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, ip: String) {
                 tokio::spawn(async move {
                     let inner_arc_state = inner_arc_state.clone();
                     let state = inner_arc_state.read().await;
-                    let mut process_guard = state.server_processes.get_mut(&new_server).unwrap();
+                    let process_guard = state.server_processes.get(&new_server).unwrap();
                     let status_method = &process_guard.read().await.status_method.clone();
                     'server_status_task: loop {
                         println!("starting outer loop 1");
                         if matches!(*status_method.borrow(), StatusMethod::Poll) {
+                            println!("doing on poll");
                             let mut interval = tokio::time::interval(Duration::from_millis(5000));
                             loop {
                                 println!("starting inner loop");
@@ -557,6 +558,7 @@ pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, ip: String) {
                                 interval.tick().await;
                             }
                         } else if matches!(*status_method.borrow(), StatusMethod::OnUpdate){
+                            println!("doing on update");
                             let server_state_request = ServerStateRequest {
                             };
                             if let Ok(mut rx) = server_state_request.stream_transport(inner_arc_state.clone()).await {
@@ -1071,7 +1073,7 @@ impl StreamTransportable for CreateServerRequest {
         if let Err(_) = msg {
             return Err("Failed to serialize".into());
         };
-        let mut state = arc_state.write().await;
+        let state = arc_state.read().await;
         if state.connection_handler.proxy_tx.is_none(){
             return Err("no stream".into());
         }
@@ -1119,7 +1121,9 @@ impl StreamTransportable for StartServerRequest {
         if let Err(_) = msg {
             return Err("Failed to serialize".into());
         };
-        let state = arc_state.write().await;
+        println!("before state write lock");
+        let state = arc_state.read().await;
+        println!("after state write lock");
 
         if *state.connection_handler.current_active_priority.lock().await > 0 {
             return Err("high priority task is occuring and cant be interfered with".into())
@@ -1130,6 +1134,7 @@ impl StreamTransportable for StartServerRequest {
         }
         let proxy_tx = state.connection_handler.proxy_tx.clone().unwrap();
         let _ = proxy_tx.send(msg.unwrap());
+        println!("after sending message");
         drop(state);
         
         let inner_arc_state = Arc::clone(&arc_state);
@@ -1143,7 +1148,7 @@ impl StreamTransportable for StartServerRequest {
         let stdout = self.stdout.clone();
         tokio::spawn(async move {
             let (tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-            let state = inner_arc_state.write().await;
+            let state = inner_arc_state.read().await;
             let share_tx_guard = state.connection_handler.share_tx.clone();
             drop(state);
             let mut share_tx = share_tx_guard.lock().await;
@@ -1408,7 +1413,7 @@ impl StreamTransportable for ServerStateRequest {
         }
         drop(state);
 
-        let state = arc_state.write().await;
+        let state = arc_state.read().await;
         if state.connection_handler.proxy_tx.is_none(){
             return Err("no stream".into());
         }

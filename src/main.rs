@@ -1202,6 +1202,7 @@ pub async fn stop_server(
         return StatusCode::UNAUTHORIZED.into_response();
     }
     if let Ok(Some(current_observing_process)) = get_current_observing_process(session, arc_state.clone()).await {
+        println!("got an observing process");
         let inner_arc_state = arc_state.clone();
         let state = inner_arc_state.read().await;
         let current_process_guard;
@@ -1210,15 +1211,18 @@ pub async fn stop_server(
         } else {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
+        println!("got the stop process guard");
 
         let inner_arc_state = arc_state.clone();
-        let mut state = inner_arc_state.write().await;
+        let mut state = inner_arc_state.read().await;
         let stop_server_request = StopServerRequest {};
         let _ = stop_server_request.node_transport(&mut state).await;
 
         drop(state);
+        println!("getting the current process");
         let current_process = current_process_guard.read().await;
         let _ = current_process.status_method.send(StatusMethod::OnUpdate);
+        println!("changed the current processes status method");
 
         // let server_state_request = ServerStateRequest {
         // };
@@ -1834,7 +1838,9 @@ async fn get_current_process(session: tower_sessions::Session, arc_state: Arc<Rw
     println!("past state lock");
 
     let current_process_guard;
+    println!("before process");
     if let Some(process) = state.server_processes.get(&current_observing_process){
+        println!("reassigning process");
         current_process_guard = process;
     } else {
         println!("error finding process in registry");
@@ -1856,11 +1862,13 @@ async fn set_process_for_user(session: tower_sessions::Session, servername: Stri
 
     let state = arc_state.write().await;
     if let Some(old_process) = &current_user.current_observing_process {
+        println!("setting mut here");
         if let Some(server_process) = state.server_processes.get_mut(old_process) {
             server_process.read().await.observing_users.fetch_sub(1, Ordering::SeqCst);
         }
     }
     
+    println!("setting mut here");
     if let Some(server_process) = state.server_processes.get_mut(&servername) {
         // current_user.server_connection = server_process.write().await.console_in.clone();
         server_process.read().await.observing_users.fetch_add(1, Ordering::SeqCst);

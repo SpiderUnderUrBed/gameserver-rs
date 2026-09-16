@@ -6,19 +6,8 @@ use futures::StreamExt;
 use general_networked_filesystem::wrapper::Direction;
 use general_networked_filesystem::core::FileOperations;
 use general_networked_filesystem::wrapper::FileSystemHandler;
-use network_abstraction_lib::IntoRequest;
-use network_abstraction_lib::MiddlewareAction;
-use network_abstraction_lib::erasure::erase_stream_wrapper_result;
-use network_abstraction_lib::ErrorResponse;
-use network_abstraction_lib::NoneResponse;
-use network_abstraction_lib::HandlerType;
-use network_abstraction_lib::StreamResponse;
-use network_abstraction_lib::ValueRequest;
-use network_abstraction_lib::typed::typed_fn;
-use network_abstraction_lib::typed_request_macros::register_output;
-use network_abstraction_lib::ExtractorErrors;
-use network_abstraction_lib::typed_stream::typed_stream_fn;
-use network_abstraction_lib::typed_stream::typed_stream_fn_result;
+use serde::Deserialize;
+use serde::Serialize;
 use serde_json::Value;
 use std::convert::TryFrom;
 use std::path::Path;
@@ -68,11 +57,12 @@ use crate::transport::node_transport_spec::SetFilterRequest;
 use crate::transport::node_transport_spec::SetServerRequest;
 use crate::transport::node_transport_spec::StartServerRequest;
 use crate::transport::node_transport_spec::StopServerRequest;
+use crate::transport::node_transport::RequestByteExecutable;
+use crate::transport::node_transport::RequestStreamExecutable;
 
 use std::net::SocketAddr;
 use tokio::sync::broadcast;
 
-use network_abstraction_lib::Router;
 
 // I use the same code as in the main server
 // with a few diffrences in stuff like filesystem
@@ -110,7 +100,7 @@ const SERVER_DIR: &str = "server";
 // a struct for basic message sending between a node and the main server
 // IncomingMessageWithMetadata and IncomingMessage should be renamed to something that makes sense
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-struct IncomingMessage {
+pub struct IncomingMessage {
     message: String,
     #[serde(rename = "type")]
     message_type: String,
@@ -127,7 +117,7 @@ struct IncomingMessage {
 // Note, this also handles the things like MessagePayloadWithMetadata and converts it here, as
 // from the gameservers perpective, the command payload is incoming, so it made sense not to recreate such a struct
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-struct IncomingMessageWithMetadata {
+pub struct IncomingMessageWithMetadata {
     message: String,
     #[serde(rename = "type")]
     message_type: String,
@@ -136,7 +126,6 @@ struct IncomingMessageWithMetadata {
 }
 
 // For very simple messages like pings that need no added complexity
-#[register_output]
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Default)]
 struct SimpleMessage {
     message: String,
@@ -667,7 +656,7 @@ pub struct FsMetadata {
 // AppState for the Node, stores the name of the current server, the state of the process
 // whether or not its running, the channel for the output messages, and the process, makes it easier to pass and modify
 // between functions
-struct AppState {
+pub struct AppState {
     // current_server has to be an arc mutex because you cant assign data to an arc
     current_server: Arc<Mutex<Option<String>>>,
     //server_index: HashMap<String, ServerIndex>,
@@ -699,6 +688,27 @@ struct AppState {
 struct OneTimeWrapper {
     data: Value,
 }
+
+#[derive(Deserialize, Serialize)]
+pub struct NoneResponse {}
+
+#[derive(Deserialize, Serialize)]
+pub struct ErrorResponse {
+    error: String
+}
+
+pub struct StreamResponse<Item> {
+    inner: Mutex<Option<Pin<Box<dyn Stream<Item = Item> + Send + Sync>>>>,
+}
+
+impl<Item: Send + Sync + 'static> StreamResponse<Item> {
+    pub fn new(stream: impl Stream<Item = Item> + Send + Sync + 'static) -> Self {
+        StreamResponse {
+            inner: Mutex::new(Some(Box::pin(stream))),
+        }
+    }
+}
+
 
 // This is for returning a connection from either a specifed ip feild, which might look like
 // <IP>:<PORT> or IP and PORT seprately from two diffrent arguments, I need to probably enforce setting the ip or port, atleast change to the default port
@@ -739,7 +749,7 @@ fn get_env_var_or_arg<T: std::str::FromStr>(env_var: &str, default: Option<T>) -
         .or(default)
 }
 
-async fn create_server_handler(
+pub async fn create_server_handler(
     state: &Arc<AppState>,
     req: CreateServerRequest,
 ) -> Result<StreamResponse<String>, ErrorResponse> {
@@ -769,7 +779,7 @@ async fn create_server_handler(
         })
     }
 }
-async fn start_server_handler(
+pub async fn start_server_handler(
     state: &Arc<AppState>,
     _req: StartServerRequest,
 ) -> Result<StreamResponse<String>, ErrorResponse> {
@@ -979,7 +989,7 @@ async fn start_server_handler(
     }
     //NoneResponse {}
 }
-async fn stop_server_handler(
+pub async fn stop_server_handler(
     state: &Arc<AppState>,
     _req: StopServerRequest,
 ) -> Result<NoneResponse, ErrorResponse> {
@@ -1049,7 +1059,7 @@ async fn stop_server_handler(
         })
     }
 }
-async fn delete_server_handler(state: &Arc<AppState>, req: DeleteServerRequest) -> NoneResponse {
+pub async fn delete_server_handler(state: &Arc<AppState>, req: DeleteServerRequest) -> NoneResponse {
     if let MetadataTypes::DeleteServer {
         delete_server_name,
         delete_server_files,
@@ -1092,7 +1102,7 @@ async fn delete_server_handler(state: &Arc<AppState>, req: DeleteServerRequest) 
     }
     NoneResponse {}
 }
-async fn set_server_handler(state: &Arc<AppState>, req: SetServerRequest) -> NoneResponse {
+pub async fn set_server_handler(state: &Arc<AppState>, req: SetServerRequest) -> NoneResponse {
     println!("Got a set server request");
     if let MetadataTypes::Server {
         servername,
@@ -1125,6 +1135,7 @@ async fn set_server_handler(state: &Arc<AppState>, req: SetServerRequest) -> Non
         let mut mutable_server = state.current_server.lock().await;
         *mutable_server = Some(servername.to_string());
     }
+    println!("done with the set server request");
     NoneResponse {}
 }
 async fn set_filter_handler(state: &Arc<AppState>, req: SetFilterRequest) -> NoneResponse {
@@ -1135,7 +1146,7 @@ async fn set_filter_handler(state: &Arc<AppState>, req: SetFilterRequest) -> Non
     }
     NoneResponse {}
 }
-async fn console_handler(state: &Arc<AppState>, req: ConsoleRequest) -> NoneResponse {
+pub async fn console_handler(state: &Arc<AppState>, req: ConsoleRequest) -> NoneResponse {
     println!("Got a console request");
     let input = req.data.clone();
     let stdin_ref = &state.stdin_ref;
@@ -1149,7 +1160,7 @@ async fn console_handler(state: &Arc<AppState>, req: ConsoleRequest) -> NoneResp
     }
     NoneResponse {}
 }
-async fn server_data_handler(
+pub async fn server_data_handler(
     state: &Arc<AppState>,
     _req: ServerDataRequest,
 ) -> Result<ServerDataResponse, NoneResponse> {
@@ -1221,7 +1232,7 @@ async fn server_data_handler(
     }
     //NoneResponse {}
 }
-async fn ping_handler(_state: &Arc<AppState>, _req: Ping) -> PingResponse {
+pub async fn ping_handler(_state: &Arc<AppState>, _req: Ping) -> PingResponse {
     println!("got ping request");
     //         //let out_tx_clone = out_tx.clone();
     let pong = PingResponse { 
@@ -1231,7 +1242,7 @@ async fn ping_handler(_state: &Arc<AppState>, _req: Ping) -> PingResponse {
     };
     pong
 }
-async fn server_state_handler(
+pub async fn server_state_handler(
     state: &Arc<AppState>,
     _req: ServerStateRequest,
 ) -> ServerStateResponse {
@@ -1245,7 +1256,7 @@ async fn server_state_handler(
     };
     server_state_response
 }
-async fn server_name_handler(
+pub async fn server_name_handler(
     _state: &Arc<AppState>,
     _req: ServerNameRequest,
 ) -> ServerNameResponse {
@@ -1318,15 +1329,16 @@ async fn spawn_request_loop(
 #[cfg(not(feature = "grpc_experimental"))]
 async fn spawn_request_loop(
     conn_handler: &mut ConnectionHandler,
-    router: Arc<Mutex<Router<Arc<AppState>>>>,
+    // router: Arc<Mutex<Router<Arc<AppState>>>>,
+    arc_state: Arc<AppState>,
     addr: String,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("[{}] DEBUG: Connection task started", addr);
 
-    let arc_state = {
-        let router_guard = router.lock().await;
-        Arc::clone(router_guard.get_state())
-    };
+    // let arc_state = {
+    //     let router_guard = router.lock().await;
+    //     Arc::clone(router_guard.get_state())
+    // };
 
     let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(128);
     if let Ok(mut guard) = arc_state.output_tx.try_lock() {
@@ -1417,7 +1429,7 @@ async fn spawn_request_loop(
         }
 
         let inner_arc_state = arc_state.clone();
-        let mut filesystem_writer = inner_arc_state.filesystem.write().await;
+        let filesystem_writer = inner_arc_state.filesystem.write().await;
         let file_sender = filesystem_writer.arc_file_tx.lock().await.inner_mut().tx.clone();
         loop {
             let mut found_message = false;
@@ -1462,78 +1474,121 @@ async fn spawn_request_loop(
                                 conn_handler.end_clean_hook().await;
                                 break 'outer;
                             }
-                        }
+                        }   
 
-                        let feed_result = {
-                            let mut router_guard = router.lock().await;
-                            router_guard.feed_value(json_value.clone()).await
-                        };
-
-                        match feed_result {
-                            Ok(response) => {
-                                match response.try_into_response() {
-                                    Ok(boxed) => {
-                                        match boxed.downcast::<Pin<Box<dyn Stream<Item = String> + Send + Sync>>>(){
-                                            Ok(stream_box) => {
-                                                let mut stream = *stream_box;
+                        println!("{:#?}", json_value);
+                        if let Some(Value::String(message)) = json_value.get("message"){
+                            if message != "create_server" && message != "start_server" {
+                                match serde_json::from_value::<Box<dyn RequestByteExecutable>>(json_value.clone()) {
+                                    Ok(simple_request) => {
+                                        let response = simple_request.execute(arc_state.clone()).await;
+                                        println!("done with request");
+                                        let _ = out_tx.send(response).await;
+                                    }
+                                    Err(e) => println!("could not match request: {e}"),
+                                }
+                            } else {
+                                //RequestStreamExecutable
+                                println!("trying a stream request");
+                                match serde_json::from_value::<Box<dyn RequestStreamExecutable>>(json_value.clone()) {
+                                    Ok(simple_request) => {
+                                        let response_result = simple_request.execute_stream(arc_state.clone()).await;
+                                        // println!("done with request");
+                                        // let _ = out_tx.send(response).await;
+                                        match response_result {
+                                            Ok(stream_lock) => {
+                                                println!("got a stream request");
                                                 let inner_out_tx = out_tx.clone();
-                                                println!("got a stream box");
                                                 tokio::spawn(async move {
+                                                    let mut binding = stream_lock.inner.lock().await;
+                                                    println!("starting a stream request");
+                                                    let stream = binding.as_mut().unwrap();
                                                     while let Some(item) = stream.next().await {
-                                                        println!("got item {}", item);
-                                                        let mut bytes = item.as_bytes().to_vec();
-                                                        // bytes.push(b'\n');
-                                                        let res = inner_out_tx.clone().send(bytes).await;
-                                                        println!("{:#?}", res);
+                                                        let _ = inner_out_tx.send(item.into_bytes()).await;
                                                     }
                                                 });
                                             },
-                                            Err(_) => match response.try_into_value() {
-                                                Ok(value) => {
-                                                    let to_send: &serde_json::Value = match value.as_object() {
-                                                        Some(map) if map.len() == 1 => {
-                                                            let (_first_key, first_value) = map.iter().next().unwrap();
-
-                                                            first_value
-                                                                .as_object()
-                                                                .and_then(|inner_map| inner_map.get("message"))
-                                                                .unwrap_or(first_value)
-                                                        }
-                                                        _ => &value, 
-                                                    };
-
-                                                    let mut bytes = serde_json::to_vec(to_send).unwrap();
-                                                    bytes.push(b'\n');
-                                                    let _ = out_tx.send(bytes).await;
-                                                },
-                                                Err(e) => println!("{:#?}", e),
+                                            Err(e) => {
+                                                let _ = out_tx.send(serde_json::to_vec(&e).unwrap()).await;
                                             },
                                         }
-                                    },
-                                    Err(_) => println!("unknown error"),
+                                    }
+                                    Err(e) => println!("could not match request: {e}"),
                                 }
                             }
-                            Err(e) => match e {
-                                network_abstraction_lib::RouterErrors::NoHandlerFound => {
-                                    if let Ok(request) = FileOperations::from_tagged_request(serde_json::to_vec(&json_value).unwrap()) {
-
-                                        if let Ok(mut bytes) = request.execute_bytes() {
-                                            bytes.extend("\n".as_bytes());
-                                            if let Err(e) = writer.send(bytes).await {
-                                                println!("Got error with file request {}", e);
-                                            }
-                                        } else {
-                                            println!("Error with the file operation");
-                                        }
-                                    } else {
-                                        println!("No handler found, nor any file operation coorosponded with the request");
-                                    }
-                                    
-                                }
-                                network_abstraction_lib::RouterErrors::Any(error) => {},
-                                _ => {}
-                            },
                         }
+                        // if let Ok() = serde_json::from_value::<(json_value.clone()){
+                        // } else if let Ok() = serde_json::from_value(json_value.clone()){}
+                        // let feed_result = {
+                        //     let mut router_guard = router.lock().await;
+                        //     router_guard.feed_value(json_value.clone()).await
+                        // };
+
+                        // match feed_result {
+                        //     Ok(response) => {
+                        //         match response.try_into_response() {
+                        //             Ok(boxed) => {
+                        //                 match boxed.downcast::<Pin<Box<dyn Stream<Item = String> + Send + Sync>>>(){
+                        //                     Ok(stream_box) => {
+                        //                         let mut stream = *stream_box;
+                        //                         let inner_out_tx = out_tx.clone();
+                        //                         println!("got a stream box");
+                        //                         tokio::spawn(async move {
+                        //                             while let Some(item) = stream.next().await {
+                        //                                 println!("got item {}", item);
+                        //                                 let mut bytes = item.as_bytes().to_vec();
+                        //                                 // bytes.push(b'\n');
+                        //                                 let res = inner_out_tx.clone().send(bytes).await;
+                        //                                 println!("{:#?}", res);
+                        //                             }
+                        //                         });
+                        //                     },
+                        //                     Err(_) => match response.try_into_value() {
+                        //                         Ok(value) => {
+                        //                             let to_send: &serde_json::Value = match value.as_object() {
+                        //                                 Some(map) if map.len() == 1 => {
+                        //                                     let (_first_key, first_value) = map.iter().next().unwrap();
+
+                        //                                     first_value
+                        //                                         .as_object()
+                        //                                         .and_then(|inner_map| inner_map.get("message"))
+                        //                                         .unwrap_or(first_value)
+                        //                                 }
+                        //                                 _ => &value, 
+                        //                             };
+
+                        //                             let mut bytes = serde_json::to_vec(to_send).unwrap();
+                        //                             bytes.push(b'\n');
+                        //                             let _ = out_tx.send(bytes).await;
+                        //                         },
+                        //                         Err(e) => println!("{:#?}", e),
+                        //                     },
+                        //                 }
+                        //             },
+                        //             Err(_) => println!("unknown error"),
+                        //         }
+                        //     }
+                        //     Err(e) => match e {
+                        //         network_abstraction_lib::RouterErrors::NoHandlerFound => {
+                        //             if let Ok(request) = FileOperations::from_tagged_request(serde_json::to_vec(&json_value).unwrap()) {
+
+                        //                 if let Ok(mut bytes) = request.execute_bytes() {
+                        //                     bytes.extend("\n".as_bytes());
+                        //                     if let Err(e) = writer.send(bytes).await {
+                        //                         println!("Got error with file request {}", e);
+                        //                     }
+                        //                 } else {
+                        //                     println!("Error with the file operation");
+                        //                 }
+                        //             } else {
+                        //                 println!("No handler found, nor any file operation coorosponded with the request");
+                        //             }
+                                    
+                        //         }
+                        //         network_abstraction_lib::RouterErrors::Any(error) => {},
+                        //         _ => {}
+                        //     },
+                        // }
                     } else {
                     }
 
@@ -1554,32 +1609,6 @@ async fn spawn_request_loop(
     Ok(())
 }
 
-
-fn spawn_middlewares(router: &mut Router<Arc<AppState>>) {
-    router.add_middleware(|mapping: String, request: &dyn IntoRequest| {
-        let Some(value_request) = request.as_any().downcast_ref::<ValueRequest>() else {
-            return MiddlewareAction::Continue;
-        };
-
-        let message_type = value_request.value.get("type").and_then(Value::as_str);
-
-        let normalized_mapping = mapping.strip_suffix("_request").unwrap_or(&mapping);
-
-        if message_type == Some("console") && mapping == "console".to_string() {
-            return MiddlewareAction::Continue;
-        }
-        let Some(Value::String(message)) = value_request.value.get("message") else {
-            return MiddlewareAction::Continue;
-        };
-
-        if message == normalized_mapping {
-            println!("{:#?}", normalized_mapping);
-            MiddlewareAction::Continue
-        } else {
-            MiddlewareAction::Next
-        }
-    });
-}
 
 async fn ensure_server_directory() {}
 
@@ -1621,7 +1650,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     ensure_server_directory().await;
 
     let (fs_tx, fs_rx) = flume::unbounded();
-    let state = AppState {
+    let state = Arc::new(AppState {
         current_server: Arc::new(Mutex::new(None)),
         jailed_user: "server".to_string(),
         authenticated_origins: Arc::new(Mutex::new(Vec::new())),
@@ -1635,56 +1664,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         db_conn: Arc::new(Mutex::new(Some(DbConn::first_connection().await))),
         db: Arc::clone(&arc_db),
         filesystem: RwLock::new(FileSystemHandler::new(fs_tx, fs_rx, Direction::Local)),
-    };
-    let arc_state = Arc::new(state);
+    });
 
-    let mut router = Router::new(Arc::clone(&arc_state));
-
-    router.register_handler(
-        erase_stream_wrapper_result(create_server_handler).mapping("create_server".to_string()),
-    );
-    // router.register_handler(
-    //     erase_stream_wrapper_result(start_server_handler).mapping("start_server".to_string()),
-    // );
-    router.register_typed_stream(typed_stream_fn_result(start_server_handler));
- 
-    router.register_typed(typed_fn(
-        stop_server_handler
-    ));
-    router.register_typed(typed_fn(delete_server_handler));
-
-    router.register_typed(typed_fn(
-        set_server_handler
-    ));
-
-    router.register_typed(typed_fn(
-        set_filter_handler
-    ));
-    router.register_typed(typed_fn(
-        console_handler
-    ));
-
-    router.register_typed(typed_fn(
-        server_data_handler
-    ));
-    router.register_typed(typed_fn(
-        ping_handler
-    ));
-
-    router.register_typed(typed_fn(
-        server_state_handler
-    ));
-
-    router.register_typed(typed_fn(
-        server_name_handler
-    ));
-
-
-    spawn_middlewares(&mut router);
-
-    let state = Arc::clone(&router.get_state());
-    let mut arc_conn_manager = Arc::new(Mutex::new(ConnectionManager::serve(router, config_local_url.clone().unwrap()).await?));
-    //TcpListener::bind(config_local_url.clone().unwrap()).await?;
+    let arc_conn_manager = Arc::new(Mutex::new(ConnectionManager::serve(config_local_url.clone().unwrap()).await?));
     println!("Listening on {}", config_local_url.unwrap());
 
     let db_current_server = state.db.lock().await.current_server.clone();
@@ -1700,18 +1682,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     *state.cmd_tx.lock().await = Some(Arc::new(cmd_tx.clone()));
     *state.cmd_rx.lock().await = Some(cmd_rx);
 
-    spawn_conn_background_tasks(state, Arc::clone(&arc_conn_manager)).await;
+    spawn_conn_background_tasks(state.clone(), Arc::clone(&arc_conn_manager)).await;
     loop {
+        
         let mut conn_manager = arc_conn_manager.lock().await;
         let (mut conn_handler, addr_option) = conn_manager.accept_connection().await?;
 
         let addr = addr_option.unwrap_or("unknown".to_string());
         println!("{}", addr);
 
-        let router_clone = conn_manager.get_arc_mutex_router().await;
-        
+        // let router_clone = conn_manager.get_arc_mutex_router().await;
+        let inner_state = state.clone();
         tokio::spawn(
-            async move { spawn_request_loop(&mut conn_handler, router_clone, addr).await },
+            async move { 
+                spawn_request_loop(&mut conn_handler, inner_state, addr).await 
+            },
         );
     }
 }

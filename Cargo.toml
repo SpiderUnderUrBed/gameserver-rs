@@ -45,6 +45,7 @@ flume = "0.12.0"
 tokio-stream = "0.1.19"
 async-trait = "0.1.92"
 dashmap = "6.2.1"
+typetag = "0.2.23"
 
 [build-dependencies]
 tonic-prost-build = { version = "0.14.6", optional = true }
@@ -75,7 +76,7 @@ grpc_experimental = [
 [workspace]
 members = [
     "gameserver"
-, "k8s_orchestrator_node", "lib/general_networked_filesystem", "lib/k8s_orchestrator"]
+, "k8s_orchestrator_node", "lib/flatten_safe_macro", "lib/general_networked_filesystem", "lib/k8s_orchestrator"]
 
 [[bin]]
 name = "gameserver-rs"

@@ -1,12 +1,15 @@
 use std::fs::File;
 use std::io::{BufReader, Read};
+use std::pin::Pin;
 use std::{ops::ControlFlow, sync::Arc};
 
-use crate::{AppState};
+use crate::{AppState, ErrorResponse, StreamResponse, create_server_handler, start_server_handler};
+use async_trait::async_trait;
+use futures::Stream;
 use general_networked_filesystem::core::chain::ChainBuilder;
 use general_networked_filesystem::core::{DrainFrame, EofFrame, FileFrame, FileHandleStatus, LocalState, SetFrame};
-use network_abstraction_lib::{Router};
 
+use serde::Serialize;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{
@@ -145,19 +148,16 @@ pub async fn spawn_conn_background_tasks(arc_state: Arc<AppState>, arc_conn_mana
 
 pub struct ConnectionManager {
     listner: TcpListener,
-    router: Arc<Mutex<Router<Arc<AppState>>>>,
     backround_task_updates: Option<Arc<watch::Receiver<BackgroundTaskUpdates>>>
 }
 impl ConnectionManager {
     pub async fn serve(
-        router: Router<Arc<AppState>>,
         url: String,
     ) -> Result<ConnectionManager, Box<dyn std::error::Error + Send + Sync>> {
         let listner = TcpListener::bind(url).await?;
 
         Ok(ConnectionManager {
             listner,
-            router: Arc::new(Mutex::new(router)),
             backround_task_updates: None,
         })
     }
@@ -176,9 +176,6 @@ impl ConnectionManager {
             backround_task_updates: self.backround_task_updates.clone(),
         };
         Ok((handler, Some(addr.to_string())))
-    }
-    pub async fn get_arc_mutex_router(&self) -> Arc<Mutex<Router<Arc<AppState>>>> {
-        self.router.clone()
     }
 }
 
@@ -354,3 +351,128 @@ impl Reader {
         Ok(())
     }
 }
+
+use crate::{CreateServerRequest, ServerNameRequest, ServerStateRequest, ServerDataRequest, ConsoleRequest, SetFilterRequest, SetServerRequest, DeleteServerRequest, StopServerRequest, StartServerRequest};
+use crate::{stop_server_handler, server_state_handler, server_data_handler, console_handler, set_filter_handler, set_server_handler, delete_server_handler, server_name_handler};
+
+#[async_trait]
+#[typetag::serde(tag = "message")]
+pub trait RequestByteExecutable: Send + Sync { async fn execute(&self, state: Arc<AppState>) -> Vec<u8>; }
+
+#[async_trait]
+#[typetag::serde(tag = "message")]
+pub trait RequestStreamExecutable: Send + Sync { async fn execute_stream(&self, state: Arc<AppState>) -> Result<StreamResponse<String>, ErrorResponse>; }
+
+#[async_trait]
+#[typetag::serde(name = "server_name")]
+impl RequestByteExecutable for ServerNameRequest {
+    async fn execute(&self, state: Arc<AppState>) -> Vec<u8> {
+        serde_json::to_vec(
+            &server_name_handler(&state, self.clone()).await
+        ).unwrap()
+    }
+}
+
+#[async_trait]
+#[typetag::serde(name = "server_state")]
+impl RequestByteExecutable for ServerStateRequest {
+    async fn execute(&self, state: Arc<AppState>) -> Vec<u8> {
+        serde_json::to_vec(
+            &server_state_handler(&state, self.clone()).await
+        ).unwrap()
+    }
+}
+
+#[async_trait]
+#[typetag::serde(name = "server_data")]
+impl RequestByteExecutable for ServerDataRequest {
+    async fn execute(&self, state: Arc<AppState>) -> Vec<u8> {
+        serde_json::to_vec(
+            &server_data_handler(&state, self.clone()).await
+        ).unwrap()
+    }
+}
+
+#[async_trait]
+#[typetag::serde(name = "console")]
+impl RequestByteExecutable for ConsoleRequest {
+    async fn execute(&self, state: Arc<AppState>) -> Vec<u8> {
+        serde_json::to_vec(
+            &console_handler(&state, self.clone()).await
+        ).unwrap()
+    }
+}
+
+#[async_trait]
+#[typetag::serde(name = "set_filter")]
+impl RequestByteExecutable for SetFilterRequest {
+    async fn execute(&self, state: Arc<AppState>) -> Vec<u8> {
+        serde_json::to_vec(
+            &set_filter_handler(&state, self.clone()).await
+        ).unwrap()
+    }
+}
+
+#[async_trait]
+#[typetag::serde(name = "set_server")]
+impl RequestByteExecutable for SetServerRequest {
+    async fn execute(&self, state: Arc<AppState>) -> Vec<u8> {
+        serde_json::to_vec(
+            &set_server_handler(&state, self.clone()).await
+        ).unwrap()
+    }
+}
+
+#[async_trait]
+#[typetag::serde(name = "delete_server")]
+impl RequestByteExecutable for DeleteServerRequest {
+    async fn execute(&self, state: Arc<AppState>) -> Vec<u8> {
+        serde_json::to_vec(
+            &delete_server_handler(&state, self.clone()).await
+        ).unwrap()
+    }
+}
+
+#[async_trait]
+#[typetag::serde(name = "stop_server")]
+impl RequestByteExecutable for StopServerRequest {
+    async fn execute(&self, state: Arc<AppState>) -> Vec<u8> {
+        serde_json::to_vec(
+            &stop_server_handler(&state, self.clone()).await
+        ).unwrap()
+    }
+}
+
+#[async_trait]
+#[typetag::serde(name = "start_server")]
+impl RequestStreamExecutable for StartServerRequest {
+    async fn execute_stream(&self, state: Arc<AppState>) -> Result<StreamResponse<String>, ErrorResponse> {
+        start_server_handler(&state, self.clone()).await
+    }
+}
+
+#[async_trait]
+#[typetag::serde(name = "create_server")]
+impl RequestStreamExecutable for CreateServerRequest {
+    async fn execute_stream(&self, state: Arc<AppState>) -> Result<StreamResponse<String>, ErrorResponse> {
+        create_server_handler(&state, self.clone()).await
+    }
+}
+
+// #[typetag::serde]
+// impl RequestByteExecutable for StartServerRequest {
+//     fn execute(&self, state: Arc<AppState>) -> Vec<u8> {
+
+//     }
+// }
+
+// #[typetag::serde]
+// impl RequestByteExecutable for CreateServerRequest {
+//     fn execute(&self, state: Arc<AppState>) -> Vec<u8> {
+
+//     }
+// }
+
+
+//StartServerRequest
+//StopServerRequest
