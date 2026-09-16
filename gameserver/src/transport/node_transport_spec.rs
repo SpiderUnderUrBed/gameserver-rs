@@ -10,14 +10,6 @@ use crate::{
 use flatten_safe_macro::flatten_safe;
 
 
-#[derive(Deserialize, Serialize, Clone)]
-pub struct ConsoleRequest {
-    authcode: String,
-    pub(crate) data: String,
-    server: String,
-    channel: String,
-    r#type: String,
-}
 
 // #[typed_request_macros::typed_request(name = "console")]
 // impl RouteInput<Arc<AppState>> for ConsoleRequest {
@@ -190,6 +182,16 @@ pub struct Ping {
     pub common: SimpleMessage,
 }
 
+#[flatten_safe(tag_value = "console")]
+#[derive(Serialize, Clone)]
+pub struct ConsoleRequest {
+    #[flatten]
+    pub(crate) common: SimpleMessage,
+    pub(crate) data: String,
+    server: String,
+    channel: String,
+}
+
 // #[typed_request_macros::typed_request(snake_case)]
 // impl RouteInput<Arc<AppState>> for Ping {
 //     type Output = PingResponse; 
@@ -221,6 +223,11 @@ pub struct ServerNameResponse {
 pub struct ServerStateResponse {
     pub message: MessagePayload,
 }
+
+
+
+
+
 
 #[flatten_safe]
 #[derive(Serialize, Clone)]

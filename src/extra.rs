@@ -43,12 +43,12 @@ where
             match serde_json::from_str::<Value>(candidate) {
                 Ok(val) => {
                     if let Ok(console) = serde_json::from_value::<ConsoleData>(val.clone()) {
-                        if let Ok(inner) = serde_json::from_str::<InnerData>(&console.data) {
+                        if let Ok(inner) = serde_json::from_str::<InnerData>(&console.message) {
                             // Reconstruct a ConsoleData with inner.data as the payload
                             let reconstructed = ConsoleData {
                                 authcode: console.authcode.clone(),
                                 data: inner.data,
-                                r#type: console.r#type.clone(),
+                                message: console.message.clone(),
                                 server: console.server.clone(),
                                 channel: console.channel.clone(),
                             };
@@ -57,7 +57,7 @@ where
                             ) {
                                 results.push(Ok(parsed));
                             }
-                        } else if let Ok(parsed) = serde_json::from_str::<T>(&console.data) {
+                        } else if let Ok(parsed) = serde_json::from_str::<T>(&console.message) {
                             results.push(Ok(parsed));
                         } else {
                         }

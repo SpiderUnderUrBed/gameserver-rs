@@ -127,7 +127,7 @@ pub struct IncomingMessageWithMetadata {
 
 // For very simple messages like pings that need no added complexity
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Default)]
-struct SimpleMessage {
+pub struct SimpleMessage {
     message: String,
 }
 
@@ -139,7 +139,7 @@ pub struct ConsoleData {
     data: String,
     server: String,
     channel: String,
-    r#type: String,
+    message: String,
 }
 
 // Metadata types, currently i primarially use it to transmit server data
@@ -549,7 +549,7 @@ async fn run_command_live_output(
                     let msg = serde_json::to_string(&ConsoleData {
                         authcode: "0".to_string(),
                         data: format!("[{}] {}", lbl, line),
-                        r#type: "console".to_string(),
+                        message: "console".to_string(),
                         server: inner_name.clone(),
                         channel: "stdout".to_string(),
                     })
@@ -580,7 +580,7 @@ async fn run_command_live_output(
                     let msg = serde_json::to_string(&ConsoleData {
                         authcode: "0".to_string(),
                         data: format!("[{}] {}", lbl, line),
-                        r#type: "console".to_string(),
+                        message: "console".to_string(),
                         server: name.clone(),
                         channel: "stderr".to_string(),
                     })

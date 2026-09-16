@@ -1,12 +1,12 @@
 
+use dashmap::DashMap;
 use general_networked_filesystem::core::{DirectoryResponse, FileRequest, LsRequest};
 use serde_json::{Value, json};
 use tokio::{
-    io::AsyncWriteExt, net::TcpStream, sync::{broadcast, mpsc::{self}, watch, Mutex, RwLock}, time::{sleep, timeout}
+    io::AsyncWriteExt, net::TcpStream, sync::{mpsc::{self}, watch, Mutex, RwLock}, time::{sleep, timeout}
 };
 use tokio_util::sync::CancellationToken;
-use tower_sessions::session::Id;
-use crate::{OrchestratorClients, ServerCheckEvent, StatusMethod, UserClient, UserManager, transport::node_transport_spec::{CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, NodeTransportable, NodeTransportableMut, Ping, RemoteFile, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StateActionType, StopServerRequest, StreamTransportable}};
+use crate::{OrchestratorClients, ServerCheckEvent, StatusMethod, UserClient, transport::node_transport_spec::{CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, NodeTransportable, NodeTransportableMut, Ping, RemoteFile, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StateActionType, StopServerRequest, StreamTransportable}};
 use crate::{
     ApiCalls as ToplevelApiCalls, AuthTcpMessage, ConsoleData, IncomingMessage,
     IntegrationCommands, KubeLocalRequest, List, LogLine, NodeWithStream,
@@ -23,12 +23,11 @@ use crate::{
     MessagePayloadWithMetadata, MetadataTypes, SimpleMessage, SrcAndDest, Status, StreamResult,
 };
 use std::{
-    collections::HashMap, error::Error, ops::DerefMut, sync::{
-        Arc, atomic::{AtomicBool, Ordering}
+    collections::HashMap, error::Error, sync::{
+        Arc
     }, time::{Duration, Instant}
 };
 use tokio::io::AsyncReadExt;
-use tokio_stream::StreamExt;
 use anyhow::anyhow;
 
 pub struct PasswordRequest {
@@ -157,7 +156,7 @@ async fn get_all_stream_data_parsed(line_content: &str) -> Vec<Value> {
 
     for item in console_parsed {
         if let Ok(data) = item {
-            if !list_lines.contains(&data.data) {
+            if !list_lines.contains(&data.message) {
                 if let Ok(seralized_value) = serde_json::to_value(data) {
                     console_values.push(seralized_value);
                 }
@@ -268,7 +267,7 @@ async fn get_all_stream_data_parsed(line_content: &str) -> Vec<Value> {
 async fn handle_all_stream_values(
     arc_state: Arc<RwLock<AppState>>,
     value: Value,
-    user_clients_option: Option<UserManager>,
+    user_clients_option: Option<DashMap<i128, Arc<RwLock<UserClient>>>>,
     ip: &str,
     server_start_keyword: &mut String,
     server_stop_keyword: &mut String,
@@ -276,14 +275,14 @@ async fn handle_all_stream_values(
     if let Ok(payload) = serde_json::from_value::<MessagePayload>(value.clone()) {
 
         if payload.r#type == "server_state" {
-            if let Ok(mut state) = arc_state.try_write() {
-                println!("wrote the state");
-                let sent_status = payload.message.parse().unwrap_or(false);
-                state.current_node.status = match sent_status {
-                    true => Status::Up,
-                    false => Status::Down,
-                };
-            }
+            // if let Ok(mut state) = arc_state.try_write() {
+            //     println!("wrote the state");
+            //     let sent_status = payload.message.parse().unwrap_or(false);
+            //     state.current_node.status = match sent_status {
+            //         true => Status::Up,
+            //         false => Status::Down,
+            //     };
+            // }
         }
     }
 
@@ -327,8 +326,8 @@ async fn handle_all_stream_values(
         //     }
         // }
 
-        if data_clone.data.contains("\"type\":\"command\"") {
-            if let Ok(inner_msg) = serde_json::from_str::<MessagePayload>(&data_clone.data) {
+        if data_clone.message.contains("\"type\":\"command\"") {
+            if let Ok(inner_msg) = serde_json::from_str::<MessagePayload>(&data_clone.message) {
                 if inner_msg.r#type == "command" {
                     let (client_option, database) = {
                         let state_guard = arc_state.read().await;
@@ -426,7 +425,7 @@ async fn process_stream_data(
     raw_data: &[u8],
     arc_state: &Arc<RwLock<AppState>>,
     // ws_tx: &broadcast::Sender<String>,
-    user_clients_option: Option<UserManager>,
+    user_clients_option: Option<DashMap<i128, Arc<RwLock<UserClient>>>>,
     ip: &str,
     server_start_keyword: &mut String,
     server_stop_keyword: &mut String,
@@ -437,26 +436,11 @@ async fn process_stream_data(
             println!("line is empty");
             return StreamResult::Active;
         }
-        // let state = arc_state.write().await;
-        // {
-        //     let arc_byte_filter_method = state.connection_handler.byte_filter_method.clone();
-        //     let byte_filter_method = &*arc_byte_filter_method.lock().await;
-        //     if matches!(byte_filter_method, BytesFilterMethod::Line){
-        //         println!("got text {:#?}", text);
-        //     }
-        // }
+
         println!("got text {:#?}", text);
 
         let final_data: Vec<Value> = get_all_stream_data_parsed(line_content).await;
-        println!("got ffinal data {}", final_data.len());
-        // if final_data.len() == 0 {
-        //     return StreamResult::Active;
-        // }
-              // println!("after values");
-        // let state = arc_state.write().await;
-        // println!("got state here earlier");
-        // drop(state);
-        //println!("{:#?}", final_data);
+
 
         for value in final_data.iter() {
             let stream_values_result = handle_all_stream_values(
@@ -472,13 +456,8 @@ async fn process_stream_data(
             if matches!(stream_values_result, StreamResult::Done) || matches!(stream_values_result, StreamResult::Error(_)) {
                 return stream_values_result;
             } 
-        }
-        // println!("after values");
-        // let state = arc_state.write().await;
-        // println!("got state here");
-    } else {
-        println!("bad bytes");
-    }
+        };
+    } 
     StreamResult::Active
 }
 
@@ -490,12 +469,12 @@ pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, ip: String) {
     let password_request = PasswordRequest {
         password: initial_node_password,
     };
-    let _ = password_request.node_transport(&mut state).await;
+    let _ = password_request.node_transport(&state).await;
 
     let capability_request = CapabilitiesRequest {
         capabilities: vec!["all".to_string()],
     };
-    let _ = capability_request.node_transport(&mut state).await;
+    let _ = capability_request.node_transport(&state).await;
 
     let server_name_request = ServernameRequest { ip: ip.clone() };
     let _ = server_name_request.node_transport(&mut state).await;
@@ -521,16 +500,17 @@ pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, ip: String) {
                         println!("starting outer loop 1");
                         if matches!(*status_method.borrow(), StatusMethod::Poll) {
                             println!("doing on poll");
-                            let mut interval = tokio::time::interval(Duration::from_millis(5000));
+                            let mut interval = tokio::time::interval(Duration::from_millis(10000));
                             loop {
                                 println!("starting inner loop");
                                 let server_state_request = ServerStateRequest { };
                                 // let inner_arc_state = inner_arc_state.clone();
                                 // tokio::spawn(async move {
                                 let inner_arc_state = inner_arc_state.clone();
-                                let state = inner_arc_state.read().await;
-                                let _ = server_state_request.node_transport(&state).await;
-                                drop(state);
+                                if let Ok(state) = inner_arc_state.try_read(){
+                                    let _ = server_state_request.node_transport(&state).await;
+                                    drop(state);
+                                }
                                 // if let Ok(state) = inner_arc_state.try_read() {
                                 //     let _ = server_state_request.node_transport(&state).await;
                                 //     drop(state);
@@ -566,8 +546,10 @@ pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, ip: String) {
                                 tokio::spawn(async move {
                                     loop {
                                         let status = rx.borrow().clone();
-                                        inner_process_guard.clone().write().await.status = status;
-                                        let _ = rx.changed().await;
+                                        if let Ok(mut inner_process) = inner_process_guard.clone().try_write(){
+                                            inner_process.status = status;
+                                            let _ = rx.changed().await;
+                                        }
                                     } 
                                 });
                             }
@@ -628,7 +610,7 @@ pub async fn handle_stream(
     //stream: &mut TcpStream,
     ip: String,
     // ws_tx: broadcast::Sender<String>,
-    user_clients_option: Option<UserManager>
+    user_clients_option: Option<DashMap<i128, Arc<RwLock<UserClient>>>>
 ) -> StreamResult {
     let mut server_start_keyword = String::new();
     let mut server_stop_keyword = String::new();
@@ -702,7 +684,7 @@ pub async fn handle_stream(
 pub async fn connect_to_server(
     arc_state: Arc<RwLock<AppState>>,
     tcp_url: String,
-    user_clients: UserManager,
+    user_clients: DashMap<i128, Arc<RwLock<UserClient>>>,
     //ws_tx: broadcast::Sender<String>,
     end_if_timeout: bool,
 ) -> Result<watch::Receiver<StreamResult>, Box<dyn Error + Send + Sync>> {
