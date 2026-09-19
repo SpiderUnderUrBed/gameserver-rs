@@ -1154,7 +1154,7 @@ pub async fn console_handler(state: &Arc<AppState>, req: ConsoleRequest) -> None
     let cmd_tx = cmd_tx_arc;
     let mut guard = stdin_ref.lock().await;
     if let Some(stdin) = guard.as_mut() {
-        let _ = stdin.write_all(format!("{}\n", input).as_bytes()).await;
+        let _ = stdin.write_all(format!("{}", input).as_bytes()).await;
         let _ = stdin.flush().await;
         let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
     }
@@ -1432,7 +1432,6 @@ async fn spawn_request_loop(
         let filesystem_writer = inner_arc_state.filesystem.write().await;
         let file_sender = filesystem_writer.arc_file_tx.lock().await.inner_mut().tx.clone();
         loop {
-            let mut found_message = false;
             while let Ok(_) = conn_handler.next().await {
                 let line_str_result = conn_handler.recv_line().await;
                 if let Ok(mut line_str) = line_str_result {
@@ -1447,6 +1446,7 @@ async fn spawn_request_loop(
                         }
                     }
 
+                    println!("got: {:#?}", line_str);
                     if let Ok(json_value) = serde_json::from_str::<Value>(&line_str) {
                         log_requests(json_value.clone(), addr.to_string(), line_str.to_string());
 
@@ -1476,7 +1476,7 @@ async fn spawn_request_loop(
                             }
                         }   
 
-                        println!("{:#?}", json_value);
+                        // println!("{:#?}", json_value);
                         if let Some(Value::String(message)) = json_value.get("message"){
                             if message != "create_server" && message != "start_server" {
                                 match serde_json::from_value::<Box<dyn RequestByteExecutable>>(json_value.clone()) {
@@ -1517,92 +1517,14 @@ async fn spawn_request_loop(
                                 }
                             }
                         }
-                        // if let Ok() = serde_json::from_value::<(json_value.clone()){
-                        // } else if let Ok() = serde_json::from_value(json_value.clone()){}
-                        // let feed_result = {
-                        //     let mut router_guard = router.lock().await;
-                        //     router_guard.feed_value(json_value.clone()).await
-                        // };
-
-                        // match feed_result {
-                        //     Ok(response) => {
-                        //         match response.try_into_response() {
-                        //             Ok(boxed) => {
-                        //                 match boxed.downcast::<Pin<Box<dyn Stream<Item = String> + Send + Sync>>>(){
-                        //                     Ok(stream_box) => {
-                        //                         let mut stream = *stream_box;
-                        //                         let inner_out_tx = out_tx.clone();
-                        //                         println!("got a stream box");
-                        //                         tokio::spawn(async move {
-                        //                             while let Some(item) = stream.next().await {
-                        //                                 println!("got item {}", item);
-                        //                                 let mut bytes = item.as_bytes().to_vec();
-                        //                                 // bytes.push(b'\n');
-                        //                                 let res = inner_out_tx.clone().send(bytes).await;
-                        //                                 println!("{:#?}", res);
-                        //                             }
-                        //                         });
-                        //                     },
-                        //                     Err(_) => match response.try_into_value() {
-                        //                         Ok(value) => {
-                        //                             let to_send: &serde_json::Value = match value.as_object() {
-                        //                                 Some(map) if map.len() == 1 => {
-                        //                                     let (_first_key, first_value) = map.iter().next().unwrap();
-
-                        //                                     first_value
-                        //                                         .as_object()
-                        //                                         .and_then(|inner_map| inner_map.get("message"))
-                        //                                         .unwrap_or(first_value)
-                        //                                 }
-                        //                                 _ => &value, 
-                        //                             };
-
-                        //                             let mut bytes = serde_json::to_vec(to_send).unwrap();
-                        //                             bytes.push(b'\n');
-                        //                             let _ = out_tx.send(bytes).await;
-                        //                         },
-                        //                         Err(e) => println!("{:#?}", e),
-                        //                     },
-                        //                 }
-                        //             },
-                        //             Err(_) => println!("unknown error"),
-                        //         }
-                        //     }
-                        //     Err(e) => match e {
-                        //         network_abstraction_lib::RouterErrors::NoHandlerFound => {
-                        //             if let Ok(request) = FileOperations::from_tagged_request(serde_json::to_vec(&json_value).unwrap()) {
-
-                        //                 if let Ok(mut bytes) = request.execute_bytes() {
-                        //                     bytes.extend("\n".as_bytes());
-                        //                     if let Err(e) = writer.send(bytes).await {
-                        //                         println!("Got error with file request {}", e);
-                        //                     }
-                        //                 } else {
-                        //                     println!("Error with the file operation");
-                        //                 }
-                        //             } else {
-                        //                 println!("No handler found, nor any file operation coorosponded with the request");
-                        //             }
-                                    
-                        //         }
-                        //         network_abstraction_lib::RouterErrors::Any(error) => {},
-                        //         _ => {}
-                        //     },
-                        // }
                     } else {
                     }
 
-                    if conn_handler.has_remaining_buffer().await {
-                        found_message = true;
-                    }
                     conn_handler.end_clean_hook().await;
                 } else {
                     let bytes = conn_handler.recv_bytes();
                     let _ = file_sender.clone().send(bytes);
                 }
-            }
-            if !found_message {
-                break;
             }
         }
     }

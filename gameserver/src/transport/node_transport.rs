@@ -171,9 +171,9 @@ impl ConnectionManager {
         let handler = ConnectionHandler {
             stream: Some(socket),
             read_buf: vec![],
-            newline_pos: 0,
             bytes_filter_method: BytesFilterMethod::Line,
             backround_task_updates: self.backround_task_updates.clone(),
+            segments: vec![],
         };
         Ok((handler, Some(addr.to_string())))
     }
@@ -186,16 +186,23 @@ enum BytesFilterMethod {
     All
 }
 
+enum ProtocolMethod {
+    Unknown,
+    Json { distance: usize, inner_acc: usize } 
+}
+
 enum Protocol {
     Json(usize),
     FileTransfer(usize),
+    // Postcard,
+    CobsWrapped(usize),
     Continue(usize)
 }
 
 pub struct ConnectionHandler {
     stream: Option<TcpStream>,
     read_buf: Vec<u8>,
-    newline_pos: usize,
+    segments: Vec<String>,
     bytes_filter_method: BytesFilterMethod,
     backround_task_updates: Option<Arc<watch::Receiver<BackgroundTaskUpdates>>>
 }
@@ -212,7 +219,9 @@ impl ConnectionHandler {
         self.remove_current_segment_or_clear().await;
     }
     pub async fn remove_current_segment_or_clear(&mut self) {
-        self.remove_segment_or_clear(self.newline_pos);
+        if self.segments.len() > 0 {
+            let _ = self.segments.remove(0);
+        }
     }
     fn remove_segment_or_clear(&mut self, position: usize) {
         if position + 1 <= self.inner().len() {
@@ -221,6 +230,7 @@ impl ConnectionHandler {
             self.inner().clear();
         }
     }
+
     pub async fn next(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if let Some(backround_task_updates) = &self.backround_task_updates {
             if backround_task_updates.has_changed()? {
@@ -235,35 +245,18 @@ impl ConnectionHandler {
         };
 
         if matches!(self.bytes_filter_method, BytesFilterMethod::Line) {
-            let position = self.read_buf
-                .windows(FILE_STARTING_DELIMITER.len())
-                .enumerate()
-                .try_fold(0usize, |_acc, (i, bytes)| {
-                    if bytes == FILE_STARTING_DELIMITER.as_bytes() {
-                        ControlFlow::Break(Protocol::FileTransfer(i))
-                    } else if let Some(pos) = bytes.iter().position(|b| *b == b'\n') {
-                        ControlFlow::Break(Protocol::Json(i + pos))
-                    } else {
-                        ControlFlow::Continue(i + 1)
-                    }
-                });
-            if let ControlFlow::Break(protocol) = position {
-                match protocol {
-                    Protocol::Json(pos) => {
-                        self.newline_pos = pos;
-                    },
-                    Protocol::FileTransfer(pos) => {
-                        self.bytes_filter_method = BytesFilterMethod::All;
-                        self.newline_pos = pos;
-                    },
-                    Protocol::Continue(_) => {
-                    },
+            let read_buf_clone = self.read_buf.clone();
+            let mut stream = serde_json::Deserializer::from_slice(&read_buf_clone).into_iter::<serde_json::Value>();
+            while let Some(Ok(value)) = stream.next(){
+                self.segments.push(serde_json::to_string(&value).unwrap());
+                if self.read_buf.len() >= stream.byte_offset() {
+                    self.read_buf = self.read_buf[stream.byte_offset()..].to_vec();
                 }
-
-                Ok(())
-            } else {
-                Err("Did not find next position".into())
+            } 
+            if self.read_buf.windows(FILE_STARTING_DELIMITER.len()).any(|bytes| bytes == FILE_STARTING_DELIMITER.as_bytes()){
+                self.bytes_filter_method = BytesFilterMethod::All;
             }
+            Ok(())
         } else {
             Ok(())
         }
@@ -278,23 +271,27 @@ impl ConnectionHandler {
             return Err("Cannot receive line when receiving all bytes".into());
         }
 
-        let newline_pos = self.newline_pos.clone();
-        let line = &self.read_buf[..newline_pos];
+        // let newline_pos = self.newline_pos.clone();
+        // let line = &self.read_buf[..newline_pos].to_vec();
+        let line = {
+            if let Some(segment) = self.segments.pop(){
+                segment
+            } else {
+                return Err("no line".into())
+            }
+        };
+        
 
-        if line.is_empty() {
-            self.remove_current_segment_or_clear().await;
-            return Err("Line is empty".into());
-        }
+        self.remove_current_segment_or_clear().await;
 
-        let line_str = String::from_utf8_lossy(line);
-        Ok(line_str.to_string())
+        Ok(line)
     }
     pub async fn append_bytes(&mut self, bytes: Vec<u8>) {
         self.inner().extend_from_slice(&bytes);
     }
-    pub async fn has_remaining_buffer(&self) -> bool {
-        self.newline_pos + 1 <= self.read_buf.len()
-    }
+    // pub async fn has_remaining_buffer(&self) -> bool {
+    //     self.newline_pos + 1 <= self.read_buf.len()
+    // }
 
     pub fn split(&mut self) -> Result<(Writer, Reader), Box<dyn std::error::Error + Send + Sync>> {
         let stream = self.stream.take().ok_or("no stream set")?;

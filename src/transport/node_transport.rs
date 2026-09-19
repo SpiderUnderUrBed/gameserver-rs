@@ -1,6 +1,7 @@
 
 use dashmap::DashMap;
 use general_networked_filesystem::core::{DirectoryResponse, FileRequest, LsRequest};
+use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::{
     io::AsyncWriteExt, net::TcpStream, sync::{mpsc::{self}, watch, Mutex, RwLock}, time::{sleep, timeout}
@@ -39,15 +40,16 @@ impl NodeTransportableMut for ServernameRequest {
     type Output = ();
 
     async fn node_transport(&self, state: &mut AppState) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
-        let cmd_msg = serde_json::to_vec(&MessagePayload {
+        let mut bytes = convert_into_request(&MessagePayload {
             r#type: "command".to_string(),
             message: "server_name".to_string(),
             authcode: "0".to_string(),
         })?;
+
         if state.connection_handler.proxy_tx.is_none(){
             return Err("no stream".into());
         }
-        let _ = state.connection_handler.proxy_tx.clone().unwrap().send(cmd_msg);
+        let _ = state.connection_handler.proxy_tx.clone().unwrap().send(bytes);
         // writer.write_all(cmd_msg.as_bytes()).await?;
         let (tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
         let share_tx_guard = state.connection_handler.share_tx.clone();
@@ -88,13 +90,13 @@ impl NodeTransportable for CapabilitiesRequest {
     type Output = ();
 
     async fn node_transport(&self, state: &AppState) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
-        let capability_msg = serde_json::to_vec(&List {
+        let mut bytes = convert_into_request(&List {
             list: ToplevelApiCalls::Capabilities(self.capabilities.clone()),
         })?;
         if state.connection_handler.proxy_tx.is_none(){
             return Err("no stream".into());
         }
-        let _ = state.connection_handler.proxy_tx.clone().unwrap().send(capability_msg);
+        let _ = state.connection_handler.proxy_tx.clone().unwrap().send(bytes);
         Ok(())
     }
 }
@@ -102,13 +104,14 @@ impl NodeTransportable for PasswordRequest {
     type Output = ();
 
     async fn node_transport(&self, state: &AppState) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
-        let auth_msg = serde_json::to_vec(&AuthTcpMessage {
+        let mut bytes = convert_into_request(&AuthTcpMessage {
             password: self.password.clone(),
         })?;
+
         if state.connection_handler.proxy_tx.is_none(){
             return Err("no stream".into());
         }
-        let _ = state.connection_handler.proxy_tx.clone().unwrap().send(auth_msg);
+        let _ = state.connection_handler.proxy_tx.clone().unwrap().send(bytes);
         Ok(())
     }
 }
@@ -775,15 +778,15 @@ pub async fn connect_to_server(
                                         println!("Error writing {}", e);
                                     }
 
-                                    if *current_active_priority.lock().await == 0 {
-                                        if let Err(e) = writer.write_all(b"\n").await {
-                                            println!("Error writing {}", e);
-                                        };
-                                    }
+                                    // if *current_active_priority.lock().await == 0 {
+                                    //     // if let Err(e) = writer.write_all(b"\n").await {
+                                    //     //     println!("Error writing {}", e);
+                                    //     // };
+                                    // }
 
-                                    if let Err(e) = writer.flush().await {
-                                        println!("Error flushing writer: {}", e);
-                                    };
+                                    // if let Err(e) = writer.flush().await {
+                                    //     println!("Error flushing writer: {}", e);
+                                    // };
                                 }
                             }
                         }
@@ -963,6 +966,31 @@ impl Default for ConnectionHandler {
     }
 }
 
+// fn wrap_request(bytes: Vec<u8>) -> Vec<u8> {
+//     let mut new_bytes = Vec::new();
+// //    new_bytes.extend(b"\n");
+//     // new_bytes.extend("\\n".as_bytes());
+//     // new_bytes.extend(b"jrs");
+//     new_bytes.extend(bytes);
+//     // new_bytes.extend("\\n".as_bytes());
+//     // new_bytes.extend(b"jre");
+//     new_bytes
+// }
+
+fn convert_into_request<S: Serialize>(s: S) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
+    let mut new_bytes = Vec::new();
+    //    new_bytes.extend(b"\n");
+    // new_bytes.extend("\\n".as_bytes());
+    // new_bytes.extend(b"jrs");
+    new_bytes.extend(&serde_json::to_vec(&s)?);
+    // new_bytes.extend(cobs::encode_vec(&serde_json::to_vec(&s)?));
+    // new_bytes.push(0x00);
+    // new_bytes.extend(postcard::to_vec_cobs::<S, 32>(&s)?);
+    // new_bytes.extend("\\n".as_bytes());
+    // new_bytes.extend(b"jre");
+    Ok(new_bytes)
+}
+
 impl NodeTransportable for LsRequest {
     type Output = DirectoryResponse;
     async fn node_transport(&self, state: &AppState) -> Result<DirectoryResponse, Box<dyn Error + Send + Sync>> {
@@ -985,7 +1013,7 @@ impl NodeTransportable for LsRequest {
         let _ = state.connection_handler.proxy_tx.clone().unwrap().send(bytes);
         let (tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
         let share_tx_guard = state.connection_handler.share_tx.clone();
-        drop(state);
+
         let mut share_tx = share_tx_guard.lock().await;
         let index = share_tx.len();
         share_tx.insert(index, tx);
@@ -1020,14 +1048,13 @@ impl NodeTransportable for DeleteServerRequest {
             metadata: self.metadata.clone(),
         };
 
-        let mut bytes = match serde_json::to_vec(&msg) {
+        let mut bytes = match convert_into_request(&msg) {
             Ok(b) => b,
             Err(e) => {
                 eprintln!("Serialization error: {}", e);
                 return Err("Failed to serialize".into());
             }
         };
-        bytes.push(b'\n');
 
         if state.connection_handler.proxy_tx.is_none(){
             return Err("no stream".into());
@@ -1046,20 +1073,18 @@ impl StreamTransportable for CreateServerRequest {
         &self,
         arc_state: Arc<RwLock<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
-        let msg = serde_json::to_vec(&MessagePayloadWithMetadata {
+        let mut bytes = convert_into_request(&MessagePayloadWithMetadata {
             r#type: "command".to_string(),
             message: "create_server".to_string(),
             metadata: self.metadata.clone(),
             authcode: "".to_string(),
-        });
-        if let Err(_) = msg {
-            return Err("Failed to serialize".into());
-        };
+        }).unwrap();
+
         let state = arc_state.read().await;
         if state.connection_handler.proxy_tx.is_none(){
             return Err("no stream".into());
         }
-        let _ = state.connection_handler.proxy_tx.clone().unwrap().send(msg.unwrap());
+        let _ = state.connection_handler.proxy_tx.clone().unwrap().send(bytes);
         let (tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
         let share_tx_guard = state.connection_handler.share_tx.clone();
         drop(state);
@@ -1095,14 +1120,14 @@ impl StreamTransportable for StartServerRequest {
         arc_state: Arc<RwLock<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
 
-        let msg = serde_json::to_vec(&MessagePayload {
+        let mut bytes = convert_into_request(&MessagePayload {
             r#type: "command".to_string(),
             message: "start_server".to_string(),
             authcode: "".to_string(),
-        });
-        if let Err(_) = msg {
-            return Err("Failed to serialize".into());
-        };
+        }).unwrap();
+        // if let Err(_) = msg {
+        //     return Err("Failed to serialize".into());
+        // };
         println!("before state write lock");
         let state = arc_state.read().await;
         println!("after state write lock");
@@ -1115,7 +1140,7 @@ impl StreamTransportable for StartServerRequest {
             return Err("no stream".into());
         }
         let proxy_tx = state.connection_handler.proxy_tx.clone().unwrap();
-        let _ = proxy_tx.send(msg.unwrap());
+        let _ = proxy_tx.send(bytes);
         println!("after sending message");
         drop(state);
         
@@ -1220,14 +1245,13 @@ impl NodeTransportable for SetServerRequest {
             metadata: self.metadata.clone(),
             authcode: "0".to_string(),
         };
-        let mut bytes = match serde_json::to_vec(&msg) {
+        let mut bytes = match convert_into_request(&msg) {
             Ok(b) => b,
             Err(e) => {
                 eprintln!("Serialization error: {}", e);
                 return Err("Failed to serialize".into());
             }
         };
-        bytes.push(b'\n');
 
         if state.connection_handler.proxy_tx.is_none(){
             return Err("no stream".into());
@@ -1252,14 +1276,14 @@ impl NodeTransportable for ServerDataRequest {
             metadata: self.metadata.clone(),
             authcode: "0".to_string(),
         };
-        let mut bytes = match serde_json::to_vec(&msg) {
+        let mut bytes = match convert_into_request(&msg) {
             Ok(b) => b,
             Err(e) => {
                 eprintln!("Serialization error: {}", e);
                 return Err("Failed to serialize".into());
             }
         };
-        bytes.push(b'\n');
+
         if state.connection_handler.proxy_tx.is_none(){
             return Err("no stream".into());
         }
@@ -1331,8 +1355,6 @@ impl NodeTransportable for IntegrationKeyRequest {
 
         match serde_json::to_vec(&self.key) {
             Ok(mut bytes) => {
-                // Add newline delimiter for TCP stream parsing
-                bytes.push(b'\n');
                 if state.connection_handler.proxy_tx.is_none(){
                     return Err("no stream".into());
                 }
@@ -1364,14 +1386,13 @@ impl NodeTransportable for ServerStateRequest {
             return Err("high priority task is occuring and cant be interfered with".into())
         }
 
-        let mut bytes = serde_json::to_vec(&json!({
+        let mut bytes = convert_into_request(&json!({
             "type": "command".to_string(),
             "message": "server_state".to_string(),
             "authcode": "0".to_string(),
             "state_action": &StateActionType::Immediate,
         }))
         .unwrap();
-        bytes.push(b'\n');
 
         if state.connection_handler.proxy_tx.is_none(){
             return Err("no stream".into());
@@ -1400,14 +1421,13 @@ impl StreamTransportable for ServerStateRequest {
             return Err("no stream".into());
         }
 
-        let mut bytes = serde_json::to_vec(&json!({
+        let mut bytes = convert_into_request(&json!({
             "type": "command".to_string(),
             "message": "server_state".to_string(),
             "authcode": "0".to_string(),
             "state_action": &StateActionType::OnUpdate,
         }))
         .unwrap();
-        bytes.push(b'\n');
 
         let _ = state.connection_handler.proxy_tx.clone().unwrap().send(bytes);
         let (tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();

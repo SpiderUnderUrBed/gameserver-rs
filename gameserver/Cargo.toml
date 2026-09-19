@@ -34,6 +34,7 @@ tokio-stream = "0.1.19"
 flume = "0.12.0"
 typetag = "0.2.23"
 flatten_safe_macro = { path = "../lib/flatten_safe_macro" }
+postcard = "1.1.3"
 
 [build-dependencies]
 tonic-prost-build = { version = "0.14.6", optional = true }

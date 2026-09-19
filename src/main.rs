@@ -644,6 +644,7 @@ async fn ensure_admin_user(database: Database) {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("Starting server...");
+    // console_subscriber::init();
 
     let conn = first_connection().await?;
     let database = database::Database::new(Some(conn));
@@ -1794,21 +1795,28 @@ async fn ensure_current_user(session: tower_sessions::Session, arc_state: Arc<Rw
 async fn get_current_observing_process(session: tower_sessions::Session, arc_state: Arc<RwLock<AppState>>) -> Result<Option<String>, String>{
     let current_user;
     println!("getting current observed process");
-    if let Ok(user) = ensure_current_user(session, Arc::clone(&arc_state)).await {
+    if let Ok(user) = ensure_current_user(session.clone(), Arc::clone(&arc_state)).await {
         current_user = user;
     } else {
         println!("no user id was found");
         return Err("no user id was found".into());
     }
     println!("past ensure current user");
-    let current_observing_process_option = current_user
-        .read()
-        .await
-        .current_observing_process
-        .clone();
+    if let Ok(user_guard) = current_user
+        .try_read()
+        {
+        let current_observing_process_option = &user_guard.current_observing_process;
+        if let Some(current_observing_process) = current_observing_process_option {
+            let _ = session.insert("current-process", current_observing_process).await;
+        }
+        println!("{:#?}", current_observing_process_option);
+        Ok(current_observing_process_option.clone())
+    } else {
+        let current_observing_process_option = session.get("current-process").await.map_err(|e| e.to_string())?;
+        Ok(current_observing_process_option)
+    }
 
-    println!("{:#?}", current_observing_process_option);
-    Ok(current_observing_process_option)
+
 }
 
 async fn get_current_process(session: tower_sessions::Session, arc_state: Arc<RwLock<AppState>>) -> Result<Arc<RwLock<ServerProcesses>>, String>{
@@ -1851,17 +1859,18 @@ async fn set_process_for_user(session: tower_sessions::Session, servername: Stri
     current_user.current_observing_process = Some(servername.clone());
 
     
-    if let Some(old_process) = &current_user.current_observing_process {
+    if let Some(old_process) = current_user.current_observing_process.clone() {
         let state = arc_state.read().await;
         println!("setting mut here");
-        if let Some(server_process) = state.server_processes.get_mut(old_process) {
+        if let Some(server_process) = state.server_processes.get(&old_process) {
             server_process.read().await.observing_users.fetch_sub(1, Ordering::SeqCst);
         }
     }
+    drop(current_user);
     
     let state = arc_state.read().await;
     println!("setting mut here");
-    if let Some(server_process) = state.server_processes.get_mut(&servername) {
+    if let Some(server_process) = state.server_processes.get(&servername) {
         // current_user.server_connection = server_process.write().await.console_in.clone();
         server_process.read().await.observing_users.fetch_add(1, Ordering::SeqCst);
     } else {
@@ -1882,7 +1891,7 @@ async fn ensure_server_process(arc_state: Arc<RwLock<AppState>>, server: Server)
     } else {
         // let (user_polling_tx, _) = watch::channel(UserPollingEvent::None);
         let (logging_status_tx, _) = watch::channel(LoggingStatus::None);
-        let status_method = watch::channel(StatusMethod::Poll).0;
+        let status_method = watch::channel(StatusMethod::None).0;
         let server_process = Arc::new(RwLock::new(ServerProcesses {
             logging_status: logging_status_tx,
             logger: None,
@@ -1971,7 +1980,6 @@ async fn handle_socket(socket: WebSocket, session: tower_sessions::Session, arc_
                 continue;
             }
 
-            println!("working on getting the console");
             let state = cloned_arc_state.read().await;
 
             if let Some(process) = state.server_processes.clone().get(current_observing_process){
@@ -1981,7 +1989,6 @@ async fn handle_socket(socket: WebSocket, session: tower_sessions::Session, arc_
                 let inner_start_reader_task = inner_start_reader_task.clone();
                 let inner_console_in = inner_console_in.clone();
                 let inner_server_name = current_server_name_lock.clone();
-                println!("past all the reads");
 
                 tokio::spawn(async move {
                     loop {
@@ -2675,12 +2682,12 @@ pub async fn start_server(
     }
     drop(state);
 
-    let arc_current_user; 
-    if let Ok(user) = ensure_current_user(session.clone(), Arc::clone(&arc_state)).await {
-        arc_current_user = user;
-    } else {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
+    // let arc_current_user; 
+    // if let Ok(user) = ensure_current_user(session.clone(), Arc::clone(&arc_state)).await {
+    //     arc_current_user = user;
+    // } else {
+    //     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    // }
     
     // let mut current_user = arc_current_user.write().await;
     // // if matches!(current_user.connection_status, ConnectionStatus::Connected) {
@@ -2708,7 +2715,6 @@ pub async fn start_server(
             } else {
                 let (server_console_in_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
                 current_process.console_in = Some(server_console_in_tx);
-                current_process.server_start_event.notify_waiters();
                 current_process.console_in.as_ref().unwrap().subscribe()
             }
         },
@@ -2718,14 +2724,16 @@ pub async fn start_server(
             } else {
                 let (server_console_out_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
                 current_process.console_out = Some(server_console_out_tx);
-                current_process.server_start_event.notify_waiters();
                 current_process.console_out.as_ref().unwrap().clone()
             }
         }
     };
+    println!("before sending start req");
     let _ = start_server_request
         .stream_transport(arc_state.clone())
         .await;
+    println!("finished sending start req");
+    current_process.server_start_event.notify_waiters();
 
     StatusCode::CREATED.into_response()
 }
