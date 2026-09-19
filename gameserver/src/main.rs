@@ -1401,32 +1401,35 @@ async fn spawn_request_loop(
 
     let (mut writer, mut reader) = conn_handler.split().unwrap();
 
-    let mut tick = tokio::time::interval(tokio::time::Duration::from_secs(1));
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
-    let mut pending_buf: Vec<u8> = Vec::new();
-    'outer: loop {
-        tokio::select! {
-            Some(mut out) = out_rx.recv() => {
-                out.push(b'\n');
-                if let Err(e) = writer.send(out).await {
-                    eprintln!("[{}] Write error: {}", addr, e);
-                    break 'outer;
-                };
-            }
-
-            result = reader.handle_request(conn_handler) => {
-                if let Err(e) = result {
-                    // TODO: with tracing consider printing this to stderr, or with a feature flag, otherwise
-                    // it messes with tests
-                    println!("[{}] Connection closed: {}", addr, e);
-                    // eprintln!("[{}] Connection closed: {}", addr, e);
-                    break 'outer;
+    // let mut tick = tokio::time::interval(tokio::time::Duration::from_secs(1));
+    // tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let inner_addr = addr.clone();
+    tokio::spawn(async move {
+        'outer: loop {
+            tokio::select! {
+                Some(mut out) = out_rx.recv() => {
+                    out.push(b'\n');
+                    if let Err(e) = writer.send(out).await {
+                        eprintln!("[{}] Write error: {}", inner_addr, e);
+                        break 'outer;
+                    };
                 }
-            },
 
-            _ = tick.tick() => {}
+                result = reader.recv_into_buffer() => {
+                    println!("handling request");
+                    if let Err(e) = result {
+                        // TODO: with tracing consider printing this to stderr, or with a feature flag, otherwise
+                        // it messes with tests
+                        println!("[{}] Connection closed: {}", inner_addr, e);
+                        // eprintln!("[{}] Connection closed: {}", addr, e);
+                        break 'outer;
+                    }
+                },
+
+                // _ = tick.tick() => {}
+            }
         }
+    });
 
         let inner_arc_state = arc_state.clone();
         let filesystem_writer = inner_arc_state.filesystem.write().await;
@@ -1450,31 +1453,31 @@ async fn spawn_request_loop(
                     if let Ok(json_value) = serde_json::from_str::<Value>(&line_str) {
                         log_requests(json_value.clone(), addr.to_string(), line_str.to_string());
 
-                        let auth_payload_result: Result<AuthTcpMessage, serde_json::Error> =
-                            serde_json::from_value(json_value.clone());
-                        let authenticated_origins =
-                            &mut inner_arc_state.authenticated_origins.lock().await;
-                        if let Ok(auth_payload) = auth_payload_result {
-                            let node_password: String =
-                                get_env_var_or_arg("NODE_PASSWORD", Some(String::default()))
-                                    .unwrap();
+                        // let auth_payload_result: Result<AuthTcpMessage, serde_json::Error> =
+                        //     serde_json::from_value(json_value.clone());
+                        // let authenticated_origins =
+                        //     &mut inner_arc_state.authenticated_origins.lock().await;
+                        // if let Ok(auth_payload) = auth_payload_result {
+                        //     let node_password: String =
+                        //         get_env_var_or_arg("NODE_PASSWORD", Some(String::default()))
+                        //             .unwrap();
 
-                            if node_password.clone() == auth_payload.password {
-                                authenticated_origins.push(addr.to_string());
-                            }
-                        }
-                        if !authenticated_origins
-                            .iter()
-                            .any(|origin| *origin == addr.to_string())
-                        {
-                            let node_password: String =
-                                get_env_var_or_arg("NODE_PASSWORD", Some(String::default()))
-                                    .unwrap();
-                            if !node_password.is_empty() {
-                                conn_handler.end_clean_hook().await;
-                                break 'outer;
-                            }
-                        }   
+                        //     if node_password.clone() == auth_payload.password {
+                        //         authenticated_origins.push(addr.to_string());
+                        //     }
+                        // }
+                        // if !authenticated_origins
+                        //     .iter()
+                        //     .any(|origin| *origin == addr.to_string())
+                        // {
+                        //     let node_password: String =
+                        //         get_env_var_or_arg("NODE_PASSWORD", Some(String::default()))
+                        //             .unwrap();
+                        //     if !node_password.is_empty() {
+                        //         conn_handler.end_clean_hook().await;
+                        //         break 'outer;
+                        //     }
+                        // }   
 
                         // println!("{:#?}", json_value);
                         if let Some(Value::String(message)) = json_value.get("message"){
@@ -1519,8 +1522,9 @@ async fn spawn_request_loop(
                         }
                     } else {
                     }
-
+                    println!("next");
                     conn_handler.end_clean_hook().await;
+                    println!("past end hook");
                 } else {
                     let bytes = conn_handler.recv_bytes();
                     let _ = file_sender.clone().send(bytes);
@@ -1528,8 +1532,8 @@ async fn spawn_request_loop(
             }
         }
     }
-    Ok(())
-}
+//     Ok(())
+// }
 
 
 async fn ensure_server_directory() {}

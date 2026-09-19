@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::pin::Pin;
+use tokio::sync::mpsc;
 use std::{ops::ControlFlow, sync::Arc};
 
 use crate::{AppState, ErrorResponse, StreamResponse, create_server_handler, start_server_handler};
@@ -168,12 +169,14 @@ impl ConnectionManager {
         &mut self,
     ) -> Result<(ConnectionHandler, Option<String>), Box<dyn std::error::Error + Send + Sync>> {
         let (socket, addr) = self.listner.accept().await?;
+        let (tx, rx) = mpsc::unbounded_channel();
         let handler = ConnectionHandler {
             stream: Some(socket),
             read_buf: vec![],
             bytes_filter_method: BytesFilterMethod::Line,
             backround_task_updates: self.backround_task_updates.clone(),
             segments: vec![],
+            shared_buf_chn: (tx, rx),
         };
         Ok((handler, Some(addr.to_string())))
     }
@@ -201,6 +204,7 @@ enum Protocol {
 
 pub struct ConnectionHandler {
     stream: Option<TcpStream>,
+    shared_buf_chn: (mpsc::UnboundedSender<Vec<u8>>, mpsc::UnboundedReceiver<Vec<u8>>),
     read_buf: Vec<u8>,
     segments: Vec<String>,
     bytes_filter_method: BytesFilterMethod,
@@ -239,11 +243,23 @@ impl ConnectionHandler {
                 }
             }
         }
-
-        if self.read_buf.len() == 0 {
-            return Err("empty buffer".into())
-        };
-
+        
+        if self.shared_buf_chn.0.strong_count() > 1 {
+            if self.read_buf.is_empty() {
+                match self.shared_buf_chn.1.recv().await {
+                    Some(bytes) => self.append_bytes(bytes).await,
+                    None => return Err("channel closed".into()),
+                }
+            } else {
+                while let Ok(bytes) = self.shared_buf_chn.1.try_recv() {
+                    self.append_bytes(bytes).await;
+                }
+            }
+        } else {
+            if self.read_buf.is_empty() {
+                return Err("empty buffer".into())
+            }
+        }
         if matches!(self.bytes_filter_method, BytesFilterMethod::Line) {
             let read_buf_clone = self.read_buf.clone();
             let mut stream = serde_json::Deserializer::from_slice(&read_buf_clone).into_iter::<serde_json::Value>();
@@ -256,6 +272,7 @@ impl ConnectionHandler {
             if self.read_buf.windows(FILE_STARTING_DELIMITER.len()).any(|bytes| bytes == FILE_STARTING_DELIMITER.as_bytes()){
                 self.bytes_filter_method = BytesFilterMethod::All;
             }
+            println!("returning from");
             Ok(())
         } else {
             Ok(())
@@ -281,12 +298,12 @@ impl ConnectionHandler {
             }
         };
         
-
         self.remove_current_segment_or_clear().await;
 
         Ok(line)
     }
     pub async fn append_bytes(&mut self, bytes: Vec<u8>) {
+        println!("got request");
         self.inner().extend_from_slice(&bytes);
     }
     // pub async fn has_remaining_buffer(&self) -> bool {
@@ -296,7 +313,7 @@ impl ConnectionHandler {
     pub fn split(&mut self) -> Result<(Writer, Reader), Box<dyn std::error::Error + Send + Sync>> {
         let stream = self.stream.take().ok_or("no stream set")?;
         let (read_half, write_half) = stream.into_split();
-        Ok((Writer { write_half }, Reader { read_half }))
+        Ok((Writer { write_half }, Reader { read_half, shared_buf_chn_tx: self.shared_buf_chn.0.clone() }))
     }
 }
 pub struct Writer {
@@ -313,25 +330,28 @@ impl Writer {
 }
 pub struct Reader {
     read_half: OwnedReadHalf,
+    shared_buf_chn_tx: mpsc::UnboundedSender<Vec<u8>>
     //read_buf: Option<&Vec<u8>>,
 }
 impl Reader {
-    // TODO: consider removing this or keeping it
-    // pub async fn recv(&mut self) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-    //     let mut temp_buf = vec![0u8; 4096];
-    //     let n = self.read_half.read(&mut temp_buf).await?;
 
-    //     if n == 0 {
-    //         return Err("connection closed by peer or no bytes".into());
-    //     }
-
-    //     println!("got {}", String::from_utf8_lossy(&temp_buf[..n]));
-    //     Ok(temp_buf)
-    // }
+    pub async fn recv_into_buffer(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut temp_buf = vec![0u8; 4096];
+        let n = match self.read_half.read(&mut temp_buf).await {
+            Ok(n) => n,
+            Err(_) => return Err("failed to read".into()),
+        };
+        if n == 0 {
+            return Err("connection closed by peer or no bytes".into());
+        }
+        let _ = self.shared_buf_chn_tx.send(temp_buf[..n].to_vec());
+        Ok(())
+    }
     pub async fn handle_request(
         &mut self,
         handler: &mut ConnectionHandler,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        println!("reading");
         let mut temp_buf = vec![0u8; 4096];
         let n = {
             match self.read_half.read(&mut temp_buf).await {
@@ -349,6 +369,19 @@ impl Reader {
     }
 }
 
+
+// TODO: consider removing this or keeping it
+// pub async fn recv(&mut self) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+//     let mut temp_buf = vec![0u8; 4096];
+//     let n = self.read_half.read(&mut temp_buf).await?;
+
+//     if n == 0 {
+//         return Err("connection closed by peer or no bytes".into());
+//     }
+
+//     println!("got {}", String::from_utf8_lossy(&temp_buf[..n]));
+//     Ok(temp_buf)
+// }
 use crate::{CreateServerRequest, ServerNameRequest, ServerStateRequest, ServerDataRequest, ConsoleRequest, SetFilterRequest, SetServerRequest, DeleteServerRequest, StopServerRequest, StartServerRequest};
 use crate::{stop_server_handler, server_state_handler, server_data_handler, console_handler, set_filter_handler, set_server_handler, delete_server_handler, server_name_handler};
 
