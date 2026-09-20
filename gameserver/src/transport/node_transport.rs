@@ -90,53 +90,53 @@ pub async fn spawn_conn_background_tasks(arc_state: Arc<AppState>, arc_conn_mana
                 }
             })
         });
-        let out_tx = arc_state.output_tx.clone();
+        // let out_tx = arc_state.output_tx.clone();
         // let file_rx = arc_state.filesystem.write().await.proxy_receiver().await.clone();
-        let mut chain = chain.chain::<DrainFrame, _, _>(move |state_id, drain, fs| {
-            Box::pin({
-                let inner_location = arc_location.clone();
-                let inner_out_tx = out_tx.clone();
-                async move {
-                    let location = inner_location.lock().await;
-                    let file = File::open(location.to_string())
-                        .map_err(|e| FileHandleStatus::Any(Box::new(e)))?;
+        // let mut chain = chain.chain::<DrainFrame, _, _>(move |state_id, drain, fs| {
+        //     Box::pin({
+        //         let inner_location = arc_location.clone();
+        //         let inner_out_tx = out_tx.clone();
+        //         async move {
+        //             let location = inner_location.lock().await;
+        //             let file = File::open(location.to_string())
+        //                 .map_err(|e| FileHandleStatus::Any(Box::new(e)))?;
 
          
-                    let inner_out_tx = inner_out_tx.lock().await.as_mut().unwrap().clone();
+        //             let inner_out_tx = inner_out_tx.lock().await.as_mut().unwrap().clone();
 
 
-                    let mut reader = BufReader::new(file);
-                    let mut chunk = vec![0u8; 1000];
-                    let (tx, rx) = flume::unbounded();
+        //             let mut reader = BufReader::new(file);
+        //             let mut chunk = vec![0u8; 1000];
+        //             let (tx, rx) = flume::unbounded();
    
-                    tokio::task::spawn_blocking(move || {
-                        loop {
-                            let n = reader.read(&mut chunk);
-                            match n {
-                                Ok(0) => {
-                                    break;
-                                }
-                                Ok(n) => {
-                                    if let Err(e) = tx.send(chunk[..n].to_vec()) {
-                                        break;
-                                    }
-                                }
-                                Err(e) => {
-                                    println!("read error: {:#?}", e);
-                                    break;
-                                }
-                            }
-                        }
-                    });
-                    let mut rx_stream = rx.into_stream();
-                    let mut fs_clone = fs.clone();
-                    tokio::spawn(async move {
-                        let _: Result<(), FileHandleStatus> = DrainFrame::write_from_custom_stream_with_delims(drain, state_id, &mut fs_clone, &mut Some(&mut rx_stream), inner_out_tx).await;
-                    });
-                    Ok(())
-                }
-            })
-        });
+        //             tokio::task::spawn_blocking(move || {
+        //                 loop {
+        //                     let n = reader.read(&mut chunk);
+        //                     match n {
+        //                         Ok(0) => {
+        //                             break;
+        //                         }
+        //                         Ok(n) => {
+        //                             if let Err(e) = tx.send(chunk[..n].to_vec()) {
+        //                                 break;
+        //                             }
+        //                         }
+        //                         Err(e) => {
+        //                             println!("read error: {:#?}", e);
+        //                             break;
+        //                         }
+        //                     }
+        //                 }
+        //             });
+        //             let mut rx_stream = rx.into_stream();
+        //             let mut fs_clone = fs.clone();
+        //             tokio::spawn(async move {
+        //                 let _: Result<(), FileHandleStatus> = DrainFrame::write_from_custom_stream_with_delims(drain, state_id, &mut fs_clone, &mut Some(&mut rx_stream), inner_out_tx).await;
+        //             });
+        //             Ok(())
+        //         }
+        //     })
+        // });
         loop {
             if let Err(e) = chain.run(0).await {
                 println!("chain err: {:#?}", e);
@@ -177,6 +177,7 @@ impl ConnectionManager {
             backround_task_updates: self.backround_task_updates.clone(),
             segments: vec![],
             shared_buf_chn: (tx, rx),
+            addr: addr.clone().to_string(),
         };
         Ok((handler, Some(addr.to_string())))
     }
@@ -208,7 +209,8 @@ pub struct ConnectionHandler {
     read_buf: Vec<u8>,
     segments: Vec<String>,
     bytes_filter_method: BytesFilterMethod,
-    backround_task_updates: Option<Arc<watch::Receiver<BackgroundTaskUpdates>>>
+    backround_task_updates: Option<Arc<watch::Receiver<BackgroundTaskUpdates>>>,
+    addr: String
 }
 
 impl ConnectionHandler {
@@ -243,21 +245,22 @@ impl ConnectionHandler {
                 }
             }
         }
-        
-        if self.shared_buf_chn.0.strong_count() > 1 {
-            if self.read_buf.is_empty() {
-                match self.shared_buf_chn.1.recv().await {
-                    Some(bytes) => self.append_bytes(bytes).await,
-                    None => return Err("channel closed".into()),
-                }
-            } else {
-                while let Ok(bytes) = self.shared_buf_chn.1.try_recv() {
-                    self.append_bytes(bytes).await;
-                }
+
+        if self.read_buf.is_empty() {
+            println!("{} will be awaiting", self.addr);
+            match self.shared_buf_chn.1.recv().await {
+                Some(bytes) => {
+                    println!("{} hhss", self.addr);
+                    self.append_bytes(bytes).await
+                },
+                None => {
+                    println!("{} returning", self.addr);
+                    return Err("channel closed".into())
+                },
             }
         } else {
-            if self.read_buf.is_empty() {
-                return Err("empty buffer".into())
+            while let Ok(bytes) = self.shared_buf_chn.1.try_recv() {
+                self.append_bytes(bytes).await;
             }
         }
         if matches!(self.bytes_filter_method, BytesFilterMethod::Line) {
@@ -344,27 +347,8 @@ impl Reader {
         if n == 0 {
             return Err("connection closed by peer or no bytes".into());
         }
+        println!("sending it out");
         let _ = self.shared_buf_chn_tx.send(temp_buf[..n].to_vec());
-        Ok(())
-    }
-    pub async fn handle_request(
-        &mut self,
-        handler: &mut ConnectionHandler,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        println!("reading");
-        let mut temp_buf = vec![0u8; 4096];
-        let n = {
-            match self.read_half.read(&mut temp_buf).await {
-                Ok(n) => n,
-                Err(_) => {
-                    return Err("failed to read".into());
-                }
-            }
-        };
-        if n == 0 {
-            return Err("connection closed by peer or no bytes".into());
-        }
-        handler.append_bytes(temp_buf[..n].to_vec()).await;
         Ok(())
     }
 }
@@ -387,18 +371,18 @@ use crate::{stop_server_handler, server_state_handler, server_data_handler, cons
 
 #[async_trait]
 #[typetag::serde(tag = "message")]
-pub trait RequestByteExecutable: Send + Sync { async fn execute(&self, state: Arc<AppState>) -> Vec<u8>; }
+pub trait RequestByteExecutable: Send + Sync { async fn execute(&self, state: Arc<AppState>, addr: String) -> Vec<u8>; }
 
 #[async_trait]
 #[typetag::serde(tag = "message")]
-pub trait RequestStreamExecutable: Send + Sync { async fn execute_stream(&self, state: Arc<AppState>) -> Result<StreamResponse<String>, ErrorResponse>; }
+pub trait RequestStreamExecutable: Send + Sync { async fn execute_stream(&self, state: Arc<AppState>, addr: String) -> Result<StreamResponse<String>, ErrorResponse>; }
 
 #[async_trait]
 #[typetag::serde(name = "server_name")]
 impl RequestByteExecutable for ServerNameRequest {
-    async fn execute(&self, state: Arc<AppState>) -> Vec<u8> {
+    async fn execute(&self, state: Arc<AppState>, addr: String) -> Vec<u8> {
         serde_json::to_vec(
-            &server_name_handler(&state, self.clone()).await
+            &server_name_handler(&state, self.clone(), addr).await
         ).unwrap()
     }
 }
@@ -406,9 +390,9 @@ impl RequestByteExecutable for ServerNameRequest {
 #[async_trait]
 #[typetag::serde(name = "server_state")]
 impl RequestByteExecutable for ServerStateRequest {
-    async fn execute(&self, state: Arc<AppState>) -> Vec<u8> {
+    async fn execute(&self, state: Arc<AppState>, addr: String) -> Vec<u8> {
         serde_json::to_vec(
-            &server_state_handler(&state, self.clone()).await
+            &server_state_handler(&state, self.clone(), addr).await
         ).unwrap()
     }
 }
@@ -416,9 +400,9 @@ impl RequestByteExecutable for ServerStateRequest {
 #[async_trait]
 #[typetag::serde(name = "server_data")]
 impl RequestByteExecutable for ServerDataRequest {
-    async fn execute(&self, state: Arc<AppState>) -> Vec<u8> {
+    async fn execute(&self, state: Arc<AppState>, addr: String) -> Vec<u8> {
         serde_json::to_vec(
-            &server_data_handler(&state, self.clone()).await
+            &server_data_handler(&state, self.clone(), addr).await
         ).unwrap()
     }
 }
@@ -426,9 +410,9 @@ impl RequestByteExecutable for ServerDataRequest {
 #[async_trait]
 #[typetag::serde(name = "console")]
 impl RequestByteExecutable for ConsoleRequest {
-    async fn execute(&self, state: Arc<AppState>) -> Vec<u8> {
+    async fn execute(&self, state: Arc<AppState>, addr: String) -> Vec<u8> {
         serde_json::to_vec(
-            &console_handler(&state, self.clone()).await
+            &console_handler(&state, self.clone(), addr).await
         ).unwrap()
     }
 }
@@ -436,9 +420,9 @@ impl RequestByteExecutable for ConsoleRequest {
 #[async_trait]
 #[typetag::serde(name = "set_filter")]
 impl RequestByteExecutable for SetFilterRequest {
-    async fn execute(&self, state: Arc<AppState>) -> Vec<u8> {
+    async fn execute(&self, state: Arc<AppState>, addr: String) -> Vec<u8> {
         serde_json::to_vec(
-            &set_filter_handler(&state, self.clone()).await
+            &set_filter_handler(&state, self.clone(), addr).await
         ).unwrap()
     }
 }
@@ -446,9 +430,9 @@ impl RequestByteExecutable for SetFilterRequest {
 #[async_trait]
 #[typetag::serde(name = "set_server")]
 impl RequestByteExecutable for SetServerRequest {
-    async fn execute(&self, state: Arc<AppState>) -> Vec<u8> {
+    async fn execute(&self, state: Arc<AppState>, addr: String) -> Vec<u8> {
         serde_json::to_vec(
-            &set_server_handler(&state, self.clone()).await
+            &set_server_handler(&state, self.clone(), addr).await
         ).unwrap()
     }
 }
@@ -456,9 +440,9 @@ impl RequestByteExecutable for SetServerRequest {
 #[async_trait]
 #[typetag::serde(name = "delete_server")]
 impl RequestByteExecutable for DeleteServerRequest {
-    async fn execute(&self, state: Arc<AppState>) -> Vec<u8> {
+    async fn execute(&self, state: Arc<AppState>, addr: String) -> Vec<u8> {
         serde_json::to_vec(
-            &delete_server_handler(&state, self.clone()).await
+            &delete_server_handler(&state, self.clone(), addr).await
         ).unwrap()
     }
 }
@@ -466,9 +450,9 @@ impl RequestByteExecutable for DeleteServerRequest {
 #[async_trait]
 #[typetag::serde(name = "stop_server")]
 impl RequestByteExecutable for StopServerRequest {
-    async fn execute(&self, state: Arc<AppState>) -> Vec<u8> {
+    async fn execute(&self, state: Arc<AppState>, addr: String) -> Vec<u8> {
         serde_json::to_vec(
-            &stop_server_handler(&state, self.clone()).await
+            &stop_server_handler(&state, self.clone(), addr).await
         ).unwrap()
     }
 }
@@ -476,16 +460,16 @@ impl RequestByteExecutable for StopServerRequest {
 #[async_trait]
 #[typetag::serde(name = "start_server")]
 impl RequestStreamExecutable for StartServerRequest {
-    async fn execute_stream(&self, state: Arc<AppState>) -> Result<StreamResponse<String>, ErrorResponse> {
-        start_server_handler(&state, self.clone()).await
+    async fn execute_stream(&self, state: Arc<AppState>, addr: String) -> Result<StreamResponse<String>, ErrorResponse> {
+        start_server_handler(&state, self.clone(), addr).await
     }
 }
 
 #[async_trait]
 #[typetag::serde(name = "create_server")]
 impl RequestStreamExecutable for CreateServerRequest {
-    async fn execute_stream(&self, state: Arc<AppState>) -> Result<StreamResponse<String>, ErrorResponse> {
-        create_server_handler(&state, self.clone()).await
+    async fn execute_stream(&self, state: Arc<AppState>, addr: String) -> Result<StreamResponse<String>, ErrorResponse> {
+        create_server_handler(&state, self.clone(), addr).await
     }
 }
 

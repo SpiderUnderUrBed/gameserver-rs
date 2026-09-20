@@ -784,9 +784,9 @@ pub async fn connect_to_server(
                                     //     // };
                                     // }
 
-                                    // if let Err(e) = writer.flush().await {
-                                    //     println!("Error flushing writer: {}", e);
-                                    // };
+                                    if let Err(e) = writer.flush().await {
+                                        println!("Error flushing writer: {}", e);
+                                    };
                                 }
                             }
                         }
