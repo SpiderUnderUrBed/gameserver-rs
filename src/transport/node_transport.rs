@@ -7,7 +7,7 @@ use tokio::{
     io::AsyncWriteExt, net::TcpStream, sync::{mpsc::{self}, watch, Mutex, RwLock}, time::{sleep, timeout}
 };
 use tokio_util::sync::CancellationToken;
-use crate::{OrchestratorClients, ServerCheckEvent, StatusMethod, UserClient, transport::node_transport_spec::{CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, NodeTransportable, NodeTransportableMut, Ping, RemoteFile, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StateActionType, StopServerRequest, StreamTransportable}};
+use crate::{OrchestratorClients, ServerCheckEvent, StatusMethod, UserClient, transport::node_transport_spec::{CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, NodeTransportable, NodeTransportableMut, Ping, RemoteFile, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StateActionType, StopServerRequest, StreamTransportable, SwitchConsoleRequest}};
 use crate::{
     ApiCalls as ToplevelApiCalls, AuthTcpMessage, ConsoleData, IncomingMessage,
     IntegrationCommands, KubeLocalRequest, List, LogLine, NodeWithStream,
@@ -1147,11 +1147,7 @@ impl StreamTransportable for StartServerRequest {
         let inner_arc_state = Arc::clone(&arc_state);
         // let (server_tx, server_rx) = tokio::sync::mpsc::channel(32);
         let mut stdin = self.stdin.resubscribe();
-        tokio::spawn(async move {
-            while let Ok(msg) = stdin.recv().await {
-                let _ = proxy_tx.send(msg.into_bytes());
-            }
-        });
+
         let stdout = self.stdout.clone();
         tokio::spawn(async move {
             let (tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
@@ -1163,25 +1159,81 @@ impl StreamTransportable for StartServerRequest {
             share_tx.insert(index, tx);
             drop(share_tx);
             loop {
-                if let Some(bytes) = proxy_rx.recv().await {
-                    if let Ok(value) = serde_json::from_slice::<ConsoleData>(&bytes) {
-                        if let Err(_) = stdout.send(serde_json::to_string(&value).unwrap()) {
-                            println!("User disconnected");
-                            let mut share_tx = share_tx_guard.lock().await;
-                            share_tx.remove(&index);
-                            break;
+                tokio::select! {
+                    Some(bytes) = proxy_rx.recv() => {
+                        if let Ok(value) = serde_json::from_slice::<ConsoleData>(&bytes) {
+                            if let Err(_) = stdout.send(serde_json::to_string(&value).unwrap()) {
+                                println!("User disconnected");
+                                let mut share_tx = share_tx_guard.lock().await;
+                                share_tx.remove(&index);
+                                break;
+                            }
                         }
                     }
-                } else {
-                    
-                    // println!("got nothing, breaking");
-                    // break;
+                    Ok(msg) = stdin.recv() => {
+                        let _ = proxy_tx.send(msg.into_bytes());
+                    }
                 }
             }
         });
 
         Ok(())
         // Ok(server_rx)
+    }
+}
+
+impl StreamTransportable for SwitchConsoleRequest {
+    type Output = ();
+
+    async fn stream_transport(
+        &self,
+        arc_state: Arc<RwLock<AppState>>,
+    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
+        let state = arc_state.read().await;
+        println!("after state write lock in switch console");
+
+        if *state.connection_handler.current_active_priority.lock().await > 0 {
+            return Err("high priority task is occuring and cant be interfered with".into())
+        }
+
+        if state.connection_handler.proxy_tx.is_none(){
+            return Err("no stream".into());
+        }
+        let proxy_tx = state.connection_handler.proxy_tx.clone().unwrap();
+        println!("after sending message in switch console");
+        drop(state);
+        
+        let inner_arc_state = Arc::clone(&arc_state);
+        let mut stdin = self.stdin.resubscribe();
+        let stdout = self.stdout.clone();
+        tokio::spawn(async move {
+            let (tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+            let state = inner_arc_state.read().await;
+            let share_tx_guard = state.connection_handler.share_tx.clone();
+            drop(state);
+            let mut share_tx = share_tx_guard.lock().await;
+            let index = share_tx.len();
+            share_tx.insert(index, tx);
+            drop(share_tx);
+            loop {
+                tokio::select! {
+                    Some(bytes) = proxy_rx.recv() => {
+                        if let Ok(value) = serde_json::from_slice::<ConsoleData>(&bytes) {
+                            if let Err(_) = stdout.send(serde_json::to_string(&value).unwrap()) {
+                                println!("User disconnected");
+                                let mut share_tx = share_tx_guard.lock().await;
+                                share_tx.remove(&index);
+                                break;
+                            }
+                        }
+                    }
+                    Ok(msg) = stdin.recv() => {
+                        let _ = proxy_tx.send(msg.into_bytes());
+                    }
+                }
+            }
+        });
+        Ok(())
     }
 }
 

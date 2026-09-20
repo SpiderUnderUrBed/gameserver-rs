@@ -12,12 +12,21 @@ pub struct ServernameRequest {
 pub struct DeleteServerRequest {
     pub metadata: MetadataTypes,
 }
+
+pub struct SwitchConsoleRequest {
+    pub active: CancellationToken,
+    pub stdin: broadcast::Receiver<String>,
+    pub stdout: broadcast::Sender<String>
+}
+
 pub struct CreateServerRequest {
+    pub active: CancellationToken,
     pub metadata: MetadataTypes,
 }
 
 pub struct StartServerRequest {
     // metadata: MetadataTypes
+    pub active: CancellationToken,
     #[allow(unused)]
     pub stdin: broadcast::Receiver<String>,
     pub stdout: broadcast::Sender<String>
