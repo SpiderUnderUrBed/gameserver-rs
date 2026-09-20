@@ -4,8 +4,8 @@ use dashmap::DashMap;
 use futures::stream::unfold;
 use futures::Stream;
 use futures::StreamExt;
-use general_networked_filesystem::wrapper::Direction;
 use general_networked_filesystem::core::FileOperations;
+use general_networked_filesystem::wrapper::Direction;
 use general_networked_filesystem::wrapper::FileSystemHandler;
 use postcard::Error;
 use serde::Deserialize;
@@ -19,12 +19,12 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use tokio::fs;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::process::{ChildStdin, Command as TokioCommand};
 use tokio::sync::broadcast::Receiver;
+use tokio::sync::RwLock;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::sleep;
 use tokio::time::Duration;
@@ -43,8 +43,11 @@ use crate::databasespec::ServerMetadata;
 // use crate::filesystem::FileOperations;
 use crate::providers::{Custom, Platforms, Provider, ProviderConfig, ProviderDbList, ProviderGame};
 use crate::transport::node_transport::spawn_conn_background_tasks;
+use crate::transport::node_transport::ClientManager;
 use crate::transport::node_transport::ConnectionHandler;
 use crate::transport::node_transport::ConnectionManager;
+use crate::transport::node_transport::RequestByteExecutable;
+use crate::transport::node_transport::RequestStreamExecutable;
 use crate::transport::node_transport_spec::ConsoleRequest;
 use crate::transport::node_transport_spec::CreateServerRequest;
 use crate::transport::node_transport_spec::DeleteServerRequest;
@@ -60,12 +63,9 @@ use crate::transport::node_transport_spec::SetFilterRequest;
 use crate::transport::node_transport_spec::SetServerRequest;
 use crate::transport::node_transport_spec::StartServerRequest;
 use crate::transport::node_transport_spec::StopServerRequest;
-use crate::transport::node_transport::RequestByteExecutable;
-use crate::transport::node_transport::RequestStreamExecutable;
 
 use std::net::SocketAddr;
 use tokio::sync::broadcast;
-
 
 // I use the same code as in the main server
 // with a few diffrences in stuff like filesystem
@@ -664,11 +664,7 @@ pub struct ServerProcesses {
     cmd_rx: Mutex<Option<mpsc::Receiver<String>>>,
     cmd_tx: Mutex<Option<Arc<mpsc::Sender<String>>>>,
     stdin_ref: Arc<Mutex<Option<ChildStdin>>>,
-    active: Arc<AtomicBool>
-}
-
-struct Client {
-    output_tx: Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>,
+    active: Arc<AtomicBool>,
 }
 
 // AppState for the Node, stores the name of the current server, the state of the process
@@ -683,7 +679,7 @@ pub struct AppState {
     jailed_user: String,
     authenticated_origins: Arc<Mutex<Vec<String>>>,
     server_processes: DashMap<String, Arc<ServerProcesses>>,
-    clients: DashMap<String, Client>,
+    clients: ClientManager,
     last_updated: Arc<Mutex<Option<DateTime<Local>>>>,
     // TODO:
     // Consider if i want to store the db at all, previously I was wondering whether or not to have an arc mutex, (arc not needed; the app state has a arc, so I just need to add a mutex
@@ -692,7 +688,6 @@ pub struct AppState {
     db: Arc<Mutex<databasespec::Database>>,
     #[allow(unused)]
     db_conn: Arc<Mutex<Option<DbConn>>>,
-    filesystem: RwLock<FileSystemHandler>,
 }
 
 // Will remove this, this was kept because at a time there was a issue with the channels reciving messages they sent, so
@@ -708,7 +703,7 @@ pub struct NoneResponse {}
 
 #[derive(Deserialize, Serialize)]
 pub struct ErrorResponse {
-    error: String
+    error: String,
 }
 
 pub struct StreamResponse<Item> {
@@ -722,7 +717,6 @@ impl<Item: Send + Sync + 'static> StreamResponse<Item> {
         }
     }
 }
-
 
 // This is for returning a connection from either a specifed ip feild, which might look like
 // <IP>:<PORT> or IP and PORT seprately from two diffrent arguments, I need to probably enforce setting the ip or port, atleast change to the default port
@@ -754,7 +748,6 @@ pub async fn unsure_ip_or_port_tcp_conn(
     Ok(stream)
 }
 
-
 // Looks for a env varible, if its not found, try the specified default, if none is found it will use the default of whatever that type is
 fn get_env_var_or_arg<T: std::str::FromStr>(env_var: &str, default: Option<T>) -> Option<T> {
     env::var(env_var)
@@ -768,7 +761,7 @@ pub async fn ensure_server_process(state: &Arc<AppState>) -> Arc<ServerProcesses
 
     if let Some(servername) = servername {
         if let Some(process) = state.server_processes.get(&servername) {
-            return process.clone(); 
+            return process.clone();
         }
     }
 
@@ -783,7 +776,9 @@ pub async fn ensure_server_process(state: &Arc<AppState>) -> Arc<ServerProcesses
     });
 
     if let Some(servername) = &*state.current_server.lock().await {
-        state.server_processes.insert(servername.clone(), new_process.clone());
+        state
+            .server_processes
+            .insert(servername.clone(), new_process.clone());
     }
 
     new_process
@@ -792,7 +787,7 @@ pub async fn ensure_server_process(state: &Arc<AppState>) -> Arc<ServerProcesses
 pub async fn create_server_handler(
     state: &Arc<AppState>,
     req: CreateServerRequest,
-    addr: String
+    addr: String,
 ) -> Result<StreamResponse<String>, ErrorResponse> {
     let process = ensure_server_process(&state.clone()).await;
     let cmd_tx_arc = process.cmd_tx.lock().await.clone().unwrap();
@@ -824,12 +819,14 @@ pub async fn create_server_handler(
 pub async fn start_server_handler(
     state: &Arc<AppState>,
     _req: StartServerRequest,
-    addr: String
+    addr: String,
 ) -> Result<StreamResponse<String>, ErrorResponse> {
     //let current_server = state.current_server.lock().await;
-    
-    let Some(client) = state.clients.get(&addr) else {
-        return Err(ErrorResponse { error: "this client is not registered".into() })
+
+    let Some(client) = state.clients.inner.get(&addr) else {
+        return Err(ErrorResponse {
+            error: "this client is not registered".into(),
+        });
     };
     let process = ensure_server_process(&state.clone()).await;
     // *state.cmd_tx.lock().await = Some(Arc::new(cmd_tx.clone()));
@@ -994,32 +991,25 @@ pub async fn start_server_handler(
                         }
                         match result {
                             Ok(_) => {
-                                let _ = tx
-                                    .unwrap()
-                                    .send("Server process ended".into()).await;
+                                let _ = tx.unwrap().send("Server process ended".into()).await;
                                 let (cmd_tx, cmd_rx) = mpsc::channel::<String>(10_000);
                                 *inner_process.cmd_tx.lock().await = Some(Arc::new(cmd_tx));
                                 *inner_process.cmd_rx.lock().await = Some(cmd_rx);
-                                inner_process
-                                    .active
-                                    .store(false, Ordering::SeqCst);
+                                inner_process.active.store(false, Ordering::SeqCst);
                             }
                             Err(e) => match e {
                                 ProcessErrors::IOError(error) => {
                                     let _ = tx
-                                            .unwrap()
-                                            .send(format!("Server process failed: {}", error))
-                                            .await;
+                                        .unwrap()
+                                        .send(format!("Server process failed: {}", error))
+                                        .await;
                                 }
                                 _ => {}
                             },
                         }
                     });
                     //println!("will say server started");
-                    let _ = cmd_tx
-                        .unwrap()
-                        .send("Server started".into())
-                        .await;
+                    let _ = cmd_tx.unwrap().send("Server started".into()).await;
                     //let mut server_running = state.server_running.lock().await;
                     // println!("has access to the running lock");
                     // *server_running = true;
@@ -1039,9 +1029,7 @@ pub async fn start_server_handler(
     if let Some(rx) = process.clone().cmd_rx.lock().await.take() {
         let stream = unfold(rx, |mut rx| async {
             match rx.recv().await {
-                Some(value) => {
-                    Some((value, rx))
-                },
+                Some(value) => Some((value, rx)),
                 None => None,
             }
         });
@@ -1056,67 +1044,66 @@ pub async fn start_server_handler(
 pub async fn stop_server_handler(
     state: &Arc<AppState>,
     _req: StopServerRequest,
-    addr: String
+    addr: String,
 ) -> Result<NoneResponse, ErrorResponse> {
     if let Some(servername) = &*state.current_server.lock().await {
-        if let Some(process) = state.server_processes.get(servername){
+        if let Some(process) = state.server_processes.get(servername) {
             let stdin_ref = process.stdin_ref.clone();
             if let Some(cmd_tx_arc) = process.cmd_tx.lock().await.clone() {
                 let cmd_tx = cmd_tx_arc;
                 println!("Got a stop server request");
-                    let option_path = {
-                        if let Some(ProviderTypes::Path(path)) = convert_provider(
-                            state.clone(),
-                            vec![ProviderTypes::Name(servername.clone())],
-                            ProviderReturnTypes::Path,
-                        )
-                        .await
-                        {
-                            Some(path)
-                        } else {
-                            None
-                        }
-                    };
-                    let provider = {
-                        if let Some(ProviderTypes::Provider(provider)) = convert_provider(
-                            state.clone(),
-                            vec![ProviderTypes::Name(servername.clone())],
-                            ProviderReturnTypes::Provider,
-                        )
-                        .await
-                        {
-                            Some(provider)
-                        } else {
-                            None
-                        }
-                    };
-                    let provider_object = {
-                        if let Some(ProviderTypes::Object(object)) = convert_provider(
-                            state.clone(),
-                            vec![
-                                ProviderTypes::Path(option_path.unwrap_or(String::new())),
-                                ProviderTypes::Provider(provider.unwrap_or(String::new())),
-                            ],
-                            ProviderReturnTypes::Object,
-                        )
-                        .await
-                        {
-                            Some(object)
-                        } else {
-                            None
-                        }
-                    };
-
-                    if let Some(_) = provider_object {
-                        let input = "stop";
-                        let mut guard = stdin_ref.lock().await;
-                        if let Some(stdin) = guard.as_mut() {
-                            let _ = stdin.write_all(format!("{}\n", input).as_bytes()).await;
-                            let _ = stdin.flush().await;
-                            let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
-                        }
+                let option_path = {
+                    if let Some(ProviderTypes::Path(path)) = convert_provider(
+                        state.clone(),
+                        vec![ProviderTypes::Name(servername.clone())],
+                        ProviderReturnTypes::Path,
+                    )
+                    .await
+                    {
+                        Some(path)
+                    } else {
+                        None
                     }
+                };
+                let provider = {
+                    if let Some(ProviderTypes::Provider(provider)) = convert_provider(
+                        state.clone(),
+                        vec![ProviderTypes::Name(servername.clone())],
+                        ProviderReturnTypes::Provider,
+                    )
+                    .await
+                    {
+                        Some(provider)
+                    } else {
+                        None
+                    }
+                };
+                let provider_object = {
+                    if let Some(ProviderTypes::Object(object)) = convert_provider(
+                        state.clone(),
+                        vec![
+                            ProviderTypes::Path(option_path.unwrap_or(String::new())),
+                            ProviderTypes::Provider(provider.unwrap_or(String::new())),
+                        ],
+                        ProviderReturnTypes::Object,
+                    )
+                    .await
+                    {
+                        Some(object)
+                    } else {
+                        None
+                    }
+                };
 
+                if let Some(_) = provider_object {
+                    let input = "stop";
+                    let mut guard = stdin_ref.lock().await;
+                    if let Some(stdin) = guard.as_mut() {
+                        let _ = stdin.write_all(format!("{}\n", input).as_bytes()).await;
+                        let _ = stdin.flush().await;
+                        let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
+                    }
+                }
 
                 Ok(NoneResponse {})
             } else {
@@ -1135,7 +1122,11 @@ pub async fn stop_server_handler(
         })
     }
 }
-pub async fn delete_server_handler(state: &Arc<AppState>, req: DeleteServerRequest, addr: String) -> NoneResponse {
+pub async fn delete_server_handler(
+    state: &Arc<AppState>,
+    req: DeleteServerRequest,
+    addr: String,
+) -> NoneResponse {
     if let MetadataTypes::DeleteServer {
         delete_server_name,
         delete_server_files,
@@ -1178,7 +1169,11 @@ pub async fn delete_server_handler(state: &Arc<AppState>, req: DeleteServerReque
     }
     NoneResponse {}
 }
-pub async fn set_server_handler(state: &Arc<AppState>, req: SetServerRequest, addr: String) -> NoneResponse {
+pub async fn set_server_handler(
+    state: &Arc<AppState>,
+    req: SetServerRequest,
+    addr: String,
+) -> NoneResponse {
     println!("Got a set server request");
     if let MetadataTypes::Server {
         servername,
@@ -1214,7 +1209,11 @@ pub async fn set_server_handler(state: &Arc<AppState>, req: SetServerRequest, ad
     println!("done with the set server request");
     NoneResponse {}
 }
-async fn set_filter_handler(state: &Arc<AppState>, req: SetFilterRequest, addr: String) -> NoneResponse {
+async fn set_filter_handler(
+    state: &Arc<AppState>,
+    req: SetFilterRequest,
+    addr: String,
+) -> NoneResponse {
     if let MetadataTypes::Filter(filter) = req.common.metadata {
         let mut db = state.db.lock().await;
         db.filter = filter.clone();
@@ -1222,11 +1221,15 @@ async fn set_filter_handler(state: &Arc<AppState>, req: SetFilterRequest, addr: 
     }
     NoneResponse {}
 }
-pub async fn console_handler(state: &Arc<AppState>, req: ConsoleRequest, addr: String) -> NoneResponse {
+pub async fn console_handler(
+    state: &Arc<AppState>,
+    req: ConsoleRequest,
+    addr: String,
+) -> NoneResponse {
     println!("Got a console request");
     let input = req.data.clone();
     if let Some(servername) = &*state.current_server.clone().lock().await {
-        if let Some(process) = state.server_processes.get(servername){
+        if let Some(process) = state.server_processes.get(servername) {
             let stdin_ref = &process.stdin_ref;
             let cmd_tx_arc = process.cmd_tx.lock().await.clone().unwrap();
             let cmd_tx = cmd_tx_arc;
@@ -1249,7 +1252,7 @@ pub async fn console_handler(state: &Arc<AppState>, req: ConsoleRequest, addr: S
 pub async fn server_data_handler(
     state: &Arc<AppState>,
     _req: ServerDataRequest,
-    addr: String
+    addr: String,
 ) -> Result<ServerDataResponse, NoneResponse> {
     println!("Got a server data request");
     if let Some(current_server) = state.current_server.lock().await.clone() {
@@ -1322,20 +1325,20 @@ pub async fn server_data_handler(
 pub async fn ping_handler(_state: &Arc<AppState>, _req: Ping, addr: String) -> PingResponse {
     println!("got ping request");
     //         //let out_tx_clone = out_tx.clone();
-    let pong = PingResponse { 
-        message:  SimpleMessage {
+    let pong = PingResponse {
+        message: SimpleMessage {
             message: "pong".to_string(),
-        }
+        },
     };
     pong
 }
 pub async fn server_state_handler(
     state: &Arc<AppState>,
     _req: ServerStateRequest,
-    addr: String
+    addr: String,
 ) -> Result<ServerStateResponse, NoneResponse> {
     if let Some(servername) = &*state.current_server.lock().await {
-        if let Some(process) = state.server_processes.get(servername){
+        if let Some(process) = state.server_processes.get(servername) {
             let status = process.active.load(Ordering::SeqCst);
             let server_state_response: ServerStateResponse = ServerStateResponse {
                 message: MessagePayload {
@@ -1355,7 +1358,7 @@ pub async fn server_state_handler(
 pub async fn server_name_handler(
     _state: &Arc<AppState>,
     _req: ServerNameRequest,
-    addr: String
+    addr: String,
 ) -> ServerNameResponse {
     // let hostname_str = match hostname_ref.clone() {
     //     Ok(os) => os.to_string_lossy().to_string(),
@@ -1381,7 +1384,7 @@ async fn check_server(
     // addr: String
 ) -> Option<String> {
     if let Some(servername) = &*arc_state.current_server.lock().await {
-        if let Some(process) = arc_state.server_processes.get(servername){
+        if let Some(process) = arc_state.server_processes.get(servername) {
             if process.active.load(Ordering::SeqCst) == true {
                 let connection_msg = serde_json::json!({
                     "type": "info",
@@ -1409,7 +1412,6 @@ async fn spawn_request_loop(
     _conn_handler: &mut ConnectionHandler,
     _router: Arc<Mutex<Router<Arc<AppState>>>>,
     //cmd_rx: &mut mpsc::Receiver<String>,
-
     _addr: String,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
@@ -1422,6 +1424,8 @@ async fn spawn_request_loop(
     arc_state: Arc<AppState>,
     addr: String,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use crate::transport::node_transport::{Client, ClientEvent};
+
     println!("[{}] DEBUG: Connection task started", addr);
 
     // let arc_state = {
@@ -1429,32 +1433,22 @@ async fn spawn_request_loop(
     //     Arc::clone(router_guard.get_state())
     // };
     let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(128);
+    let (fs_tx, fs_rx) = flume::unbounded();
+    let filesystem = Arc::new(RwLock::new(FileSystemHandler::new(
+        fs_tx,
+        fs_rx,
+        Direction::Local,
+    )));
     let client = Client {
         output_tx: Arc::new(Mutex::new(Some(out_tx.clone()))),
+        filesystem: filesystem.clone(),
     };
-    arc_state.clients.insert(addr.clone(), client);
-    // let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(128);
-    // if let Ok(mut guard) = arc_state.output_tx.try_lock() {
-    //     *guard = Some(out_tx.clone());
-    // }
+    arc_state.clients.inner.insert(addr.clone(), client);
+    let _ = arc_state.clients.client_event.send(ClientEvent::Add(addr.clone()));
 
-    // let mut server_output_rx = {
-    //     let mut output_tx_lock = arc_state.server_output_tx.lock().await;
-    //     if let Some(ref tx) = *output_tx_lock {
-    //         Some(tx.subscribe())
-    //     } else {
-    //         let (tx, rx) = broadcast::channel::<String>(32);
-    //         *output_tx_lock = Some(tx);
-    //         Some(rx)
-    //     }
-    // };
-
-    let addr_clone = addr.clone();
-
-    let mut retry_interval = tokio::time::interval(tokio::time::Duration::from_secs(2));
     // let mut needs_server_status_check = server_output_rx.is_none();
 
-   // let inner_arc_state = arc_state.clone();
+    // let inner_arc_state = arc_state.clone();
 
     // let inner_arc_state = arc_state.clone();
     // let inner_out_tx = out_tx.clone();
@@ -1494,6 +1488,7 @@ async fn spawn_request_loop(
 
     // let mut tick = tokio::time::interval(tokio::time::Duration::from_secs(1));
     // tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let inner_clients = arc_state.clients.clone();
     let inner_addr = addr.clone();
     tokio::spawn(async move {
         'outer: loop {
@@ -1517,6 +1512,7 @@ async fn spawn_request_loop(
                         // TODO: with tracing consider printing this to stderr, or with a feature flag, otherwise
                         // it messes with tests
                         println!("[{}] Connection closed: {}", inner_addr, e);
+                        let _ = inner_clients.client_event.send(ClientEvent::Remove(inner_addr));
                         // eprintln!("[{}] Connection closed: {}", addr, e);
                         break 'outer;
                     }
@@ -1527,112 +1523,127 @@ async fn spawn_request_loop(
         }
     });
 
-        let file_sender = {
-            let filesystem_writer = arc_state.filesystem.write().await;
-            let writer = filesystem_writer.arc_file_tx.lock().await.inner_mut().tx.clone(); 
-            writer
-        }; 
-        loop {
-            while let Ok(_) = conn_handler.next().await {
-                let line_str_result = conn_handler.recv_line().await;
-                if let Ok(mut line_str) = line_str_result {
-                    conn_handler.start_clean_hook().await;
-                    line_str = line_str
-                        .trim_matches(|c: char| c.is_whitespace() || c == '\0')
-                        .to_string();
-                    if let Some(stripped) = line_str.strip_prefix(r"\f") {
-                        line_str = stripped.to_string();
-                        if !line_str.starts_with('{') {
-                            line_str = "{".to_owned() + &line_str;
-                        }
+    let file_sender = {
+        let filesystem_writer = filesystem.write().await;
+        let writer = filesystem_writer
+            .arc_file_tx
+            .lock()
+            .await
+            .inner_mut()
+            .tx
+            .clone();
+        writer
+    };
+    loop {
+        while let Ok(_) = conn_handler.next().await {
+            let line_str_result = conn_handler.recv_line().await;
+            if let Ok(mut line_str) = line_str_result {
+                conn_handler.start_clean_hook().await;
+                line_str = line_str
+                    .trim_matches(|c: char| c.is_whitespace() || c == '\0')
+                    .to_string();
+                if let Some(stripped) = line_str.strip_prefix(r"\f") {
+                    line_str = stripped.to_string();
+                    if !line_str.starts_with('{') {
+                        line_str = "{".to_owned() + &line_str;
                     }
+                }
 
-                    println!("got: {:#?}", line_str);
-                    if let Ok(json_value) = serde_json::from_str::<Value>(&line_str) {
-                        log_requests(json_value.clone(), addr.to_string(), line_str.to_string());
+                println!("got: {:#?}", line_str);
+                if let Ok(json_value) = serde_json::from_str::<Value>(&line_str) {
+                    log_requests(json_value.clone(), addr.to_string(), line_str.to_string());
 
-                        // let auth_payload_result: Result<AuthTcpMessage, serde_json::Error> =
-                        //     serde_json::from_value(json_value.clone());
-                        // let authenticated_origins =
-                        //     &mut inner_arc_state.authenticated_origins.lock().await;
-                        // if let Ok(auth_payload) = auth_payload_result {
-                        //     let node_password: String =
-                        //         get_env_var_or_arg("NODE_PASSWORD", Some(String::default()))
-                        //             .unwrap();
+                    // let auth_payload_result: Result<AuthTcpMessage, serde_json::Error> =
+                    //     serde_json::from_value(json_value.clone());
+                    // let authenticated_origins =
+                    //     &mut inner_arc_state.authenticated_origins.lock().await;
+                    // if let Ok(auth_payload) = auth_payload_result {
+                    //     let node_password: String =
+                    //         get_env_var_or_arg("NODE_PASSWORD", Some(String::default()))
+                    //             .unwrap();
 
-                        //     if node_password.clone() == auth_payload.password {
-                        //         authenticated_origins.push(addr.to_string());
-                        //     }
-                        // }
-                        // if !authenticated_origins
-                        //     .iter()
-                        //     .any(|origin| *origin == addr.to_string())
-                        // {
-                        //     let node_password: String =
-                        //         get_env_var_or_arg("NODE_PASSWORD", Some(String::default()))
-                        //             .unwrap();
-                        //     if !node_password.is_empty() {
-                        //         conn_handler.end_clean_hook().await;
-                        //         break 'outer;
-                        //     }
-                        // }   
+                    //     if node_password.clone() == auth_payload.password {
+                    //         authenticated_origins.push(addr.to_string());
+                    //     }
+                    // }
+                    // if !authenticated_origins
+                    //     .iter()
+                    //     .any(|origin| *origin == addr.to_string())
+                    // {
+                    //     let node_password: String =
+                    //         get_env_var_or_arg("NODE_PASSWORD", Some(String::default()))
+                    //             .unwrap();
+                    //     if !node_password.is_empty() {
+                    //         conn_handler.end_clean_hook().await;
+                    //         break 'outer;
+                    //     }
+                    // }
 
-                        // println!("{:#?}", json_value);
-                        if let Some(Value::String(message)) = json_value.get("message"){
-                            if message != "create_server" && message != "start_server" {
-                                match serde_json::from_value::<Box<dyn RequestByteExecutable>>(json_value.clone()) {
-                                    Ok(simple_request) => {
-                                        let response = simple_request.execute(arc_state.clone(), addr.clone()).await;
-                                        println!("done with request");
-                                        let _ = out_tx.send(response).await;
-                                    }
-                                    Err(e) => println!("could not match request: {e}"),
+                    // println!("{:#?}", json_value);
+                    if let Some(Value::String(message)) = json_value.get("message") {
+                        if message != "create_server" && message != "start_server" {
+                            match serde_json::from_value::<Box<dyn RequestByteExecutable>>(
+                                json_value.clone(),
+                            ) {
+                                Ok(simple_request) => {
+                                    let response = simple_request
+                                        .execute(arc_state.clone(), addr.clone())
+                                        .await;
+                                    println!("done with request");
+                                    let _ = out_tx.send(response).await;
                                 }
-                            } else {
-                                //RequestStreamExecutable
-                                println!("trying a stream request");
-                                match serde_json::from_value::<Box<dyn RequestStreamExecutable>>(json_value.clone()) {
-                                    Ok(simple_request) => {
-                                        let response_result = simple_request.execute_stream(arc_state.clone(), addr.clone()).await;
-                                        // println!("done with request");
-                                        // let _ = out_tx.send(response).await;
-                                        match response_result {
-                                            Ok(stream_lock) => {
-                                                println!("got a stream request");
-                                                let inner_out_tx = out_tx.clone();
-                                                tokio::spawn(async move {
-                                                    let mut binding = stream_lock.inner.lock().await;
-                                                    println!("starting a stream request");
-                                                    let stream = binding.as_mut().unwrap();
-                                                    while let Some(item) = stream.next().await {
-                                                        let _ = inner_out_tx.send(item.into_bytes()).await;
-                                                    }
-                                                });
-                                            },
-                                            Err(e) => {
-                                                let _ = out_tx.send(serde_json::to_vec(&e).unwrap()).await;
-                                            },
+                                Err(e) => println!("could not match request: {e}"),
+                            }
+                        } else {
+                            //RequestStreamExecutable
+                            println!("trying a stream request");
+                            match serde_json::from_value::<Box<dyn RequestStreamExecutable>>(
+                                json_value.clone(),
+                            ) {
+                                Ok(simple_request) => {
+                                    let response_result = simple_request
+                                        .execute_stream(arc_state.clone(), addr.clone())
+                                        .await;
+                                    // println!("done with request");
+                                    // let _ = out_tx.send(response).await;
+                                    match response_result {
+                                        Ok(stream_lock) => {
+                                            println!("got a stream request");
+                                            let inner_out_tx = out_tx.clone();
+                                            tokio::spawn(async move {
+                                                let mut binding = stream_lock.inner.lock().await;
+                                                println!("starting a stream request");
+                                                let stream = binding.as_mut().unwrap();
+                                                while let Some(item) = stream.next().await {
+                                                    let _ =
+                                                        inner_out_tx.send(item.into_bytes()).await;
+                                                }
+                                            });
+                                        }
+                                        Err(e) => {
+                                            let _ =
+                                                out_tx.send(serde_json::to_vec(&e).unwrap()).await;
                                         }
                                     }
-                                    Err(e) => println!("could not match request: {e}"),
                                 }
+                                Err(e) => println!("could not match request: {e}"),
                             }
                         }
-                    } else {
                     }
-                    println!("next");
-                    conn_handler.end_clean_hook().await;
-                    println!("past end hook");
                 } else {
-                    let bytes = conn_handler.recv_bytes();
-                    let _ = file_sender.clone().send(bytes);
                 }
+                println!("next");
+                conn_handler.end_clean_hook().await;
+                println!("past end hook");
+            } else {
+                let bytes = conn_handler.recv_bytes();
+                let _ = file_sender.clone().send(bytes);
             }
         }
     }
+}
 //     Ok(())
 // }
-
 
 async fn ensure_server_directory() {}
 
@@ -1673,13 +1684,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     ensure_server_directory().await;
 
-    let (fs_tx, fs_rx) = flume::unbounded();
     let state = Arc::new(AppState {
         current_server: Arc::new(Mutex::new(None)),
         jailed_user: "server".to_string(),
         authenticated_origins: Arc::new(Mutex::new(Vec::new())),
         // server_running: Arc::new(AtomicBool::new(false)),
-        clients: DashMap::new(),
+        clients: ClientManager::new(),
         server_processes: DashMap::new(),
         // output_tx: Arc::new(Mutex::new(None)),
         // cmd_tx: Mutex::new(None),
@@ -1689,10 +1699,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         last_updated: Arc::new(Mutex::new(None)),
         db_conn: Arc::new(Mutex::new(Some(DbConn::first_connection().await))),
         db: Arc::clone(&arc_db),
-        filesystem: RwLock::new(FileSystemHandler::new(fs_tx, fs_rx, Direction::Local)),
     });
 
-    let arc_conn_manager = Arc::new(Mutex::new(ConnectionManager::serve(config_local_url.clone().unwrap()).await?));
+    let arc_conn_manager = Arc::new(Mutex::new(
+        ConnectionManager::serve(config_local_url.clone().unwrap()).await?,
+    ));
     println!("Listening on {}", config_local_url.unwrap());
 
     let db_current_server = state.db.lock().await.current_server.clone();
@@ -1703,10 +1714,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         None
     };
 
-
     spawn_conn_background_tasks(state.clone(), Arc::clone(&arc_conn_manager)).await;
     loop {
-        
         let mut conn_manager = arc_conn_manager.lock().await;
         let (mut conn_handler, addr_option) = conn_manager.accept_connection().await?;
 
@@ -1715,11 +1724,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         // let router_clone = conn_manager.get_arc_mutex_router().await;
         let inner_state = state.clone();
-        tokio::spawn(
-            async move { 
-                spawn_request_loop(&mut conn_handler, inner_state, addr).await 
-            },
-        );
+        tokio::spawn(async move { spawn_request_loop(&mut conn_handler, inner_state, addr).await });
     }
 }
 

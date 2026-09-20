@@ -9,8 +9,6 @@ use crate::{
 
 use flatten_safe_macro::flatten_safe;
 
-
-
 // #[typed_request_macros::typed_request(name = "console")]
 // impl RouteInput<Arc<AppState>> for ConsoleRequest {
 //     type Output = NoneResponse;
@@ -20,24 +18,21 @@ use flatten_safe_macro::flatten_safe;
 pub enum StateActionType {
     #[default]
     Immediate,
-    OnUpdate
+    OnUpdate,
 }
-
 
 #[flatten_safe(tag_value = "server_state")]
 #[derive(Serialize, Clone)]
 pub struct ServerStateRequest {
     #[flatten]
     pub common: IncomingMessage,
-    pub state_action: StateActionType
+    pub state_action: StateActionType,
 }
 
 // #[typed_request_macros::typed_request(snake_case)]
 // impl RouteInput<Arc<AppState>> for ServerStateRequest {
 //     type Output = ServerStateResponse;
 // }
-
-
 
 impl Default for ServerStateRequest {
     fn default() -> Self {
@@ -119,12 +114,10 @@ pub struct ServerDataRequest {
     pub common: IncomingMessage,
 }
 
-
 // #[typed_request_macros::typed_request(snake_case)]
 // impl RouteInput<Arc<AppState>> for ServerDataRequest {
-//     type Output = Result<ServerDataResponse, NoneResponse>; 
+//     type Output = Result<ServerDataResponse, NoneResponse>;
 // }
-
 
 #[flatten_safe(tag_value = "delete_server")]
 #[derive(Serialize, Clone, Debug)]
@@ -136,7 +129,7 @@ pub struct DeleteServerRequest {
 
 // #[typed_request_macros::typed_request(snake_case)]
 // impl RouteInput<Arc<AppState>> for DeleteServerRequest {
-//     type Output = NoneResponse; 
+//     type Output = NoneResponse;
 // }
 
 // impl IntoRequest for DeleteServerRequest {
@@ -160,7 +153,7 @@ pub struct SetServerRequest {
 }
 // #[typed_request_macros::typed_request(snake_case)]
 // impl RouteInput<Arc<AppState>> for SetServerRequest {
-//     type Output = NoneResponse; 
+//     type Output = NoneResponse;
 // }
 
 #[flatten_safe(tag_value = "set_filter")]
@@ -172,7 +165,7 @@ pub struct SetFilterRequest {
 
 // #[typed_request_macros::typed_request(snake_case)]
 // impl RouteInput<Arc<AppState>> for SetFilterRequest {
-//     type Output = NoneResponse; 
+//     type Output = NoneResponse;
 // }
 
 #[flatten_safe(tag_value = "ping")]
@@ -194,7 +187,7 @@ pub struct ConsoleRequest {
 
 // #[typed_request_macros::typed_request(snake_case)]
 // impl RouteInput<Arc<AppState>> for Ping {
-//     type Output = PingResponse; 
+//     type Output = PingResponse;
 // }
 
 // #[register_output]
@@ -223,11 +216,6 @@ pub struct ServerNameResponse {
 pub struct ServerStateResponse {
     pub message: MessagePayload,
 }
-
-
-
-
-
 
 #[flatten_safe]
 #[derive(Serialize, Clone)]

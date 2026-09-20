@@ -1,8 +1,8 @@
 use futures::future::pending;
 use futures::Stream;
 use futures::StreamExt;
-use general_networked_filesystem::core::FileOperations;
 use general_networked_filesystem::core::DirectoryResponse;
+use general_networked_filesystem::core::FileOperations;
 use general_networked_filesystem::core::FileRequestExecutable;
 use general_networked_filesystem::core::SizeResponse;
 use std::fs::File;
@@ -14,22 +14,22 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tonic::Streaming;
 
-use crate::GetState;
-use crate::MessagePayload;
+use crate::transport::node_transport::proto::filesystem_manage_server::FilesystemManageServer;
+use crate::transport::node_transport::proto::node_manage_server::NodeManageServer;
 use crate::transport::node_transport::proto::CanonicalizeResponse;
 use crate::transport::node_transport::proto::DeleteServerResponse;
-use crate::transport::node_transport::proto::RawFileChunk;
 use crate::transport::node_transport::proto::FileChunk;
-use crate::transport::node_transport::proto::LsRequest;
-use crate::transport::node_transport::proto::ServerMessage;
 use crate::transport::node_transport::proto::FileItem;
+use crate::transport::node_transport::proto::LsRequest;
+use crate::transport::node_transport::proto::RawFileChunk;
+use crate::transport::node_transport::proto::ServerMessage;
 use crate::transport::node_transport::proto::SetServerResponse;
 use crate::transport::node_transport::proto::StopServerResponse;
 use crate::transport::node_transport::proto::UploadResponse;
-use crate::transport::node_transport::proto::filesystem_manage_server::FilesystemManageServer;
-use crate::transport::node_transport::proto::node_manage_server::NodeManageServer;
 use crate::transport::node_transport_spec::ServerDataResponse;
 use crate::transport::node_transport_spec::ServerStateResponse;
+use crate::GetState;
+use crate::MessagePayload;
 use crate::{AppState, IncomingMessage, IncomingMessageWithMetadata};
 use network_abstraction_lib::RouterErrors;
 use network_abstraction_lib::{ExtractorErrors, Router};
@@ -49,19 +49,21 @@ use crate::transport::node_transport_spec::StopServerRequest;
 mod proto {
     tonic::include_proto!("main");
 }
+use crate::transport::node_transport::proto::filesystem_manage_server::FilesystemManage;
 use crate::transport::node_transport::proto::node_manage_server::NodeManage;
 use crate::transport::node_transport::proto::server_manage_server::{
     ServerManage, ServerManageServer,
 };
-use crate::transport::node_transport::proto::filesystem_manage_server::FilesystemManage;
 use proto::{server_edit_server::ServerEdit, server_edit_server::ServerEditServer};
 
-
 pub enum BackgroundTaskUpdates {
-    NoMoreFileTransfer
+    NoMoreFileTransfer,
 }
 
-pub async fn spawn_conn_background_tasks(arc_state: Arc<AppState>, arc_conn_manager: Arc<Mutex<ConnectionManager>>) {
+pub async fn spawn_conn_background_tasks(
+    arc_state: Arc<AppState>,
+    arc_conn_manager: Arc<Mutex<ConnectionManager>>,
+) {
 }
 pub struct ConnectionManager {
     url: String,
@@ -185,9 +187,7 @@ impl ServerEdit for Connection {
                 RouterErrors::NoHandlerFound => {
                     return Err(tonic::Status::internal("Did not get a stream type back"))
                 }
-                _ => {
-                    
-                }
+                _ => {}
             },
         }
         Ok(tonic::Response::new(ReceiverStream::new(rx)))
@@ -298,9 +298,7 @@ impl ServerEdit for Connection {
                 RouterErrors::NoHandlerFound => {
                     return Err(tonic::Status::internal("Did not get a stream type back"))
                 }
-                _ => {
-                    return Err(tonic::Status::internal("Got an unknown handler error"))
-                },
+                _ => return Err(tonic::Status::internal("Got an unknown handler error")),
             },
         }
         println!("returning a stream");
@@ -320,10 +318,8 @@ impl ServerEdit for Connection {
             .await
             .ok()
             .unwrap();
-        
-        Ok(
-            tonic::Response::new(StopServerResponse {})
-        )
+
+        Ok(tonic::Response::new(StopServerResponse {}))
     }
 }
 
@@ -363,15 +359,9 @@ impl ServerManage for Connection {
         };
 
         let router = self.router.lock().await;
-        let _ = router
-            .execute_typed(server_set_request)
-            .await
-            .ok()
-            .unwrap();
-        
-        Ok(
-            tonic::Response::new(SetServerResponse {})
-        )
+        let _ = router.execute_typed(server_set_request).await.ok().unwrap();
+
+        Ok(tonic::Response::new(SetServerResponse {}))
     }
     async fn state(
         &self,
@@ -386,13 +376,9 @@ impl ServerManage for Connection {
             .ok()
             .unwrap();
 
-        Ok(
-            tonic::Response::new(state_response.into())
-        )
-            
+        Ok(tonic::Response::new(state_response.into()))
     }
 }
-
 
 #[tonic::async_trait]
 impl NodeManage for Connection {
@@ -404,20 +390,15 @@ impl NodeManage for Connection {
 
         let router = self.router.lock().await;
 
-        let resp_result = router
-            .execute_typed(server_name_request)
-            .await
-            .ok();
+        let resp_result = router.execute_typed(server_name_request).await.ok();
 
         let resp = resp_result.unwrap();
-        
-        Ok(
-            tonic::Response::new(proto::ServerNameResponse { 
-                r#type: resp.common.r#type, 
-                message: resp.common.message, 
-                authcode: resp.common.authcode
-            })
-        )
+
+        Ok(tonic::Response::new(proto::ServerNameResponse {
+            r#type: resp.common.r#type,
+            message: resp.common.message,
+            authcode: resp.common.authcode,
+        }))
     }
 }
 
@@ -430,7 +411,8 @@ impl FilesystemManage for Connection {
     ) -> std::result::Result<tonic::Response<proto::LsResponse>, tonic::Status> {
         // let state = self.router.lock().await.get_state_mut();
         let fs_request = general_networked_filesystem::core::LsRequest::from_proto(request);
-        let resp = fs_request.execute()
+        let resp = fs_request
+            .execute()
             .map_err(|e| tonic::Status::internal("Error executing file request"))?;
         Ok(resp.into_tonic_response())
     }
@@ -438,8 +420,10 @@ impl FilesystemManage for Connection {
         &self,
         request: tonic::Request<proto::CanonicalizeRequest>,
     ) -> std::result::Result<tonic::Response<proto::CanonicalizeResponse>, tonic::Status> {
-        let fs_request = general_networked_filesystem::core::CannonolizeRequest::from_proto(request);
-        let resp = fs_request.execute()
+        let fs_request =
+            general_networked_filesystem::core::CannonolizeRequest::from_proto(request);
+        let resp = fs_request
+            .execute()
             .map_err(|e| tonic::Status::internal("Error executing file request"))?;
         Ok(resp.into_tonic_response())
     }
@@ -448,7 +432,8 @@ impl FilesystemManage for Connection {
         request: tonic::Request<proto::SizeRequest>,
     ) -> std::result::Result<tonic::Response<proto::SizeResponse>, tonic::Status> {
         let fs_request = general_networked_filesystem::core::SizeRequest::from_proto(request);
-        let resp = fs_request.execute()
+        let resp = fs_request
+            .execute()
             .map_err(|e| tonic::Status::internal("Error executing file request"))?;
         Ok(resp.into_tonic_response())
     }
@@ -460,26 +445,34 @@ impl FilesystemManage for Connection {
         let mut inbound = request.into_inner();
         let mut location = String::new();
         let mut file_handle_option = None;
-        while let Some(chunk_res) = inbound.next().await { 
+        while let Some(chunk_res) = inbound.next().await {
             if let Ok(chunk) = chunk_res {
                 if location != chunk.location {
-                    location = chunk.location ;
+                    location = chunk.location;
                     if let Ok(file) = File::open(&location) {
                         file_handle_option = Some(file);
                     } else {
-                        match File::create(&location){
+                        match File::create(&location) {
                             Ok(file) => file_handle_option = Some(file),
-                            Err(e) => return Err(tonic::Status::internal(format!("failed to create file at location with: {}", e))),
+                            Err(e) => {
+                                return Err(tonic::Status::internal(format!(
+                                    "failed to create file at location with: {}",
+                                    e
+                                )))
+                            }
                         };
                     }
                 }
                 if let Some(ref mut file_handle) = file_handle_option {
-                    file_handle.write_all(&chunk.bytes)
-                        .map_err(|e| tonic::Status::internal(format!("failed to write file at location with: {}", e)))?;
+                    file_handle.write_all(&chunk.bytes).map_err(|e| {
+                        tonic::Status::internal(format!(
+                            "failed to write file at location with: {}",
+                            e
+                        ))
+                    })?;
                     let _ = file_handle.flush();
                     let _ = file_handle.sync_all();
                 }
-
             } else {
                 return Err(tonic::Status::internal("Error streaming the file chunks"));
             }
@@ -492,8 +485,9 @@ impl FilesystemManage for Connection {
     ) -> std::result::Result<tonic::Response<Self::DownloadStream>, tonic::Status> {
         let (tx, rx) = mpsc::channel(32);
         let location = &request.get_ref().location;
-        let file = File::open(location)
-            .map_err(|e| tonic::Status::internal(format!("Got an error opening the file: {}", e)))?;
+        let file = File::open(location).map_err(|e| {
+            tonic::Status::internal(format!("Got an error opening the file: {}", e))
+        })?;
 
         let mut reader = BufReader::new(file);
         let mut chunk = vec![0u8; 1000];
@@ -505,8 +499,8 @@ impl FilesystemManage for Connection {
                         break;
                     }
                     Ok(n) => {
-                        let file_chunk = RawFileChunk { 
-                            bytes: chunk[..n].to_vec()
+                        let file_chunk = RawFileChunk {
+                            bytes: chunk[..n].to_vec(),
                         };
                         if let Err(_) = tx.send(Ok(file_chunk)).await {
                             break;
@@ -522,7 +516,6 @@ impl FilesystemManage for Connection {
         Ok(tonic::Response::new(ReceiverStream::new(rx)))
     }
 }
-
 
 impl Into<crate::MetadataTypes> for proto::MetadataTypes {
     fn into(self) -> crate::MetadataTypes {
@@ -558,7 +551,7 @@ impl Connection {
 impl Into<proto::ServerStateResponse> for ServerStateResponse {
     fn into(self) -> proto::ServerStateResponse {
         proto::ServerStateResponse {
-            message: Some(self.message.into())
+            message: Some(self.message.into()),
         }
     }
 }
@@ -588,7 +581,6 @@ impl Into<proto::State> for GetState {
     }
 }
 
-
 // TODO: consider manually mapping it in grpc routes rather than trait conversions
 trait FromProto<T> {
     fn from_proto(value: T) -> Self;
@@ -597,24 +589,30 @@ trait IntoTonicResponse<T> {
     fn into_tonic_response(self) -> tonic::Response<T>;
 }
 impl FromProto<tonic::Request<proto::LsRequest>> for general_networked_filesystem::core::LsRequest {
-    fn from_proto(value: tonic::Request<proto::LsRequest>) -> Self { 
+    fn from_proto(value: tonic::Request<proto::LsRequest>) -> Self {
         general_networked_filesystem::core::LsRequest {
             id: 0,
-            location: value.get_ref().location.clone()
+            location: value.get_ref().location.clone(),
         }
-     }
+    }
 }
 impl IntoTonicResponse<proto::LsResponse> for DirectoryResponse {
     fn into_tonic_response(self) -> tonic::Response<proto::LsResponse> {
         tonic::Response::new(proto::LsResponse {
-            file_item: self.directory.iter().map(|fs_item| FileItem {
-                name: fs_item.name.clone(),
-                is_dir: fs_item.is_dir,
-            }).collect(),
+            file_item: self
+                .directory
+                .iter()
+                .map(|fs_item| FileItem {
+                    name: fs_item.name.clone(),
+                    is_dir: fs_item.is_dir,
+                })
+                .collect(),
         })
     }
 }
-impl FromProto<tonic::Request<proto::CanonicalizeRequest>> for general_networked_filesystem::core::CannonolizeRequest {
+impl FromProto<tonic::Request<proto::CanonicalizeRequest>>
+    for general_networked_filesystem::core::CannonolizeRequest
+{
     fn from_proto(value: tonic::Request<proto::CanonicalizeRequest>) -> Self {
         general_networked_filesystem::core::CannonolizeRequest {
             id: 0,
@@ -622,7 +620,9 @@ impl FromProto<tonic::Request<proto::CanonicalizeRequest>> for general_networked
         }
     }
 }
-impl IntoTonicResponse<proto::CanonicalizeResponse> for general_networked_filesystem::core::CannonolizeResponse {
+impl IntoTonicResponse<proto::CanonicalizeResponse>
+    for general_networked_filesystem::core::CannonolizeResponse
+{
     fn into_tonic_response(self) -> tonic::Response<proto::CanonicalizeResponse> {
         tonic::Response::new(proto::CanonicalizeResponse {
             full_path: self.path,
@@ -630,7 +630,9 @@ impl IntoTonicResponse<proto::CanonicalizeResponse> for general_networked_filesy
     }
 }
 
-impl FromProto<tonic::Request<proto::SizeRequest>> for general_networked_filesystem::core::SizeRequest {
+impl FromProto<tonic::Request<proto::SizeRequest>>
+    for general_networked_filesystem::core::SizeRequest
+{
     fn from_proto(value: tonic::Request<proto::SizeRequest>) -> Self {
         general_networked_filesystem::core::SizeRequest {
             id: 0,
@@ -640,9 +642,7 @@ impl FromProto<tonic::Request<proto::SizeRequest>> for general_networked_filesys
 }
 impl IntoTonicResponse<proto::SizeResponse> for SizeResponse {
     fn into_tonic_response(self) -> tonic::Response<proto::SizeResponse> {
-        tonic::Response::new(proto::SizeResponse {
-            size: self.size,
-        })
+        tonic::Response::new(proto::SizeResponse { size: self.size })
     }
 }
 
@@ -661,4 +661,3 @@ impl ConnectionHandler {
         }
     }
 }
-
