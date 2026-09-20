@@ -14,6 +14,9 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tonic::Streaming;
 
+use crate::create_server_handler;
+use crate::start_server_handler;
+use crate::SimpleMessage;
 use crate::transport::node_transport::proto::filesystem_manage_server::FilesystemManageServer;
 use crate::transport::node_transport::proto::node_manage_server::NodeManageServer;
 use crate::transport::node_transport::proto::CanonicalizeResponse;
@@ -31,8 +34,6 @@ use crate::transport::node_transport_spec::ServerStateResponse;
 use crate::GetState;
 use crate::MessagePayload;
 use crate::{AppState, IncomingMessage, IncomingMessageWithMetadata};
-use network_abstraction_lib::RouterErrors;
-use network_abstraction_lib::{ExtractorErrors, Router};
 use tokio::sync::Mutex;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Server;
@@ -56,6 +57,21 @@ use crate::transport::node_transport::proto::server_manage_server::{
 };
 use proto::{server_edit_server::ServerEdit, server_edit_server::ServerEditServer};
 
+
+use crate::{
+    console_handler, delete_server_handler, server_data_handler, server_name_handler,
+    server_state_handler, set_filter_handler, set_server_handler, stop_server_handler,
+};
+
+pub struct ClientManager {
+
+}
+impl ClientManager {
+    pub fn new() -> ClientManager {
+        ClientManager {}
+    }
+}
+
 pub enum BackgroundTaskUpdates {
     NoMoreFileTransfer,
 }
@@ -68,17 +84,17 @@ pub async fn spawn_conn_background_tasks(
 pub struct ConnectionManager {
     url: String,
     accepted_connection: bool,
-    router: Arc<Mutex<Router<Arc<AppState>>>>,
+    state: Arc<AppState>,
 }
 impl ConnectionManager {
     pub async fn serve(
-        router: Router<Arc<AppState>>,
+        state: Arc<AppState>,
         url: String,
     ) -> Result<ConnectionManager, Box<dyn std::error::Error + Send + Sync>> {
         Ok(ConnectionManager {
             accepted_connection: false,
             url,
-            router: Arc::new(Mutex::new(router)),
+            state,
         })
     }
     pub async fn accept_connection(
@@ -90,30 +106,23 @@ impl ConnectionManager {
             let _never: () = pending().await;
         }
         let connection = Connection {
-            router: Arc::clone(&self.router),
+            state: self.state.clone(),
         };
         let handler = ConnectionHandler {
-            // current_request: None,
-            // requests: vec![],
-            connection,
+            connection: connection.clone(),
         };
 
-        let inner_connection = Connection {
-            router: Arc::clone(&self.router),
-        };
         let inner_url = self.url.clone();
         tokio::spawn(async move {
-            let _ = Connection::serve_with_arc(Arc::new(inner_connection), inner_url).await;
+            let _ = Connection::serve_with_arc(Arc::new(connection), inner_url).await;
         });
         Ok((handler, None))
     }
-    pub async fn get_arc_mutex_router(&self) -> Arc<Mutex<Router<Arc<AppState>>>> {
-        self.router.clone()
-    }
 }
 
+#[derive(Clone)]
 pub struct Connection {
-    router: Arc<Mutex<Router<Arc<AppState>>>>,
+    state: Arc<AppState>,
 }
 #[derive(Clone)]
 pub struct Request {
@@ -140,56 +149,20 @@ impl ServerEdit for Connection {
                 authcode: "0".to_string(),
             },
         };
-        let mut router = self.router.lock().await;
-        let response_result = router
-            .execute_handler_typed(create_server_request, "create_server".to_string())
-            .await;
-        match response_result {
-            Ok(response) => {
-                match response.try_into_response() {
-                    Ok(boxed) => match boxed
-                        .downcast::<Pin<Box<dyn Stream<Item = String> + Send + Sync>>>()
-                    {
-                        Ok(stream_box) => {
-                            let mut stream = *stream_box;
-                            tokio::spawn(async move {
-                                while let Some(message) = stream.next().await {
-                                    let _ = tx
-                                        .send(Ok(ServerMessage {
-                                            authcode: "0".to_string(),
-                                            data: message,
-                                            r#type: "command".to_string(),
-                                        }))
-                                        .await;
-                                }
-                                let _ = tx.send(Err(tonic::Status::aborted("stream EOF"))).await;
-                            });
-                        }
-                        Err(_) => {
-                            return Err(tonic::Status::internal("Did not get a stream type back"))
-                        }
-                    },
-                    Err(e) => {
-                        // Err(tonic::Status::internal("Could not extract from box"));
-                        match e {
-                            ExtractorErrors::Err(value) => {
-                                return Err(tonic::Status::internal(format!(
-                                    "got an error: {}",
-                                    value
-                                )))
-                            }
-                            _ => return Err(tonic::Status::internal("got an unknown error")),
-                        }
-                    }
-                }
+        
+        let raw_stream = create_server_handler(&self.state.clone(), create_server_request, "unknown".into()).await
+                        .map_err(|_| tonic::Status::internal("failed to create server"))?;
+
+        tokio::spawn(async move {
+            let mut raw_stream_guard = raw_stream.inner.lock().await;
+            let stream = raw_stream_guard.as_mut().unwrap();
+            while let Some(message) = stream.next().await {
+                tx.send(Ok(
+                    ServerMessage { authcode:"0".into(), data: message,  message: "console".into(), channel: "stdout".into(), servername: "unknown".into() }
+                )).await;
             }
-            Err(e) => match e {
-                RouterErrors::NoHandlerFound => {
-                    return Err(tonic::Status::internal("Did not get a stream type back"))
-                }
-                _ => {}
-            },
-        }
+        });
+
         Ok(tonic::Response::new(ReceiverStream::new(rx)))
     }
     async fn delete(
@@ -206,12 +179,7 @@ impl ServerEdit for Connection {
             },
         };
 
-        let mut router = self.router.lock().await;
-        let _ = router
-            .execute_typed(delete_server_request)
-            .await
-            .ok()
-            .unwrap();
+        delete_server_handler(&self.state.clone(), delete_server_request).await;
 
         Ok(tonic::Response::new(proto::DeleteServerResponse {}))
     }
@@ -224,25 +192,17 @@ impl ServerEdit for Connection {
 
         let (tx, rx) = mpsc::channel(32);
 
-        let inner_router_guard = Arc::clone(&self.router);
         let mut inbound = request.into_inner();
+        let inner_state = self.state.clone();
         tokio::spawn(async move {
             while let Some(result) = inbound.next().await {
-                let mut router = inner_router_guard.lock().await;
                 match result {
                     Ok(message) => {
-                        let _ = router
-                            .execute_handler_typed(
-                                ConsoleRequest {
-                                    common: IncomingMessage {
-                                        message: message.data,
-                                        message_type: "console".to_string(),
-                                        authcode: "0".to_string(),
-                                    },
-                                },
-                                "console".to_string(),
-                            )
-                            .await;
+                        console_handler(
+                            &inner_state, 
+                            message.into(),
+                            "unknown".into()
+                        ).await;
                     }
                     Err(_) => {
                         println!("got an error in the stream");
@@ -250,57 +210,26 @@ impl ServerEdit for Connection {
                 }
             }
         });
-        let mut router = self.router.lock().await;
 
-        let response_result = router
-            .execute_handler_typed(start_server_request, "start_server".to_string())
-            .await;
-        match response_result {
-            Ok(response) => {
-                match response.try_into_response() {
-                    Ok(boxed) => match boxed
-                        .downcast::<Pin<Box<dyn Stream<Item = String> + Send + Sync>>>()
-                    {
-                        Ok(stream_box) => {
-                            tokio::spawn(async move {
-                                let mut stream = *stream_box;
-                                while let Some(message) = stream.next().await {
-                                    if let Err(_) = tx
-                                        .send(Ok(ServerMessage {
-                                            authcode: "0".to_string(),
-                                            data: message,
-                                            r#type: "console".to_string(),
-                                        }))
-                                        .await
-                                    {
-                                        // eprintln!("send failed, dropped: {:?}", e.0);
-                                        println!("send failed");
-                                    }
-                                    //println!("{:#?}", res);
-                                }
-                                println!("no stream");
-                                let _ = tx.send(Err(tonic::Status::aborted("stream EOF"))).await;
-                            });
-                        }
-                        Err(_) => {
-                            return Err(tonic::Status::internal("Did not get a stream type back"))
-                        }
-                    },
-                    Err(e) => match e {
-                        ExtractorErrors::Err(value) => {
-                            return Err(tonic::Status::internal(format!("got an error: {}", value)))
-                        }
-                        _ => return Err(tonic::Status::internal("got an unknown error")),
-                    },
-                }
+
+        let raw_stream = start_server_handler(&self.state.clone(), start_server_request, "unknown".into()).await
+                        .map_err(|_| tonic::Status::internal("error starting server"))?;
+        tokio::spawn(async move {
+            let mut raw_stream_guard = raw_stream.inner.lock().await;
+            let mut stream = raw_stream_guard.as_mut().unwrap();
+            while let Some(message) = stream.next().await {
+                tx.send(Ok(
+                    ServerMessage { 
+                        authcode: "0".into(), 
+                        data: message, 
+                        message: "console".into(), 
+                        channel: "stdout".into(), 
+                        servername: "unknown".into() 
+                    }
+                )).await;
             }
-            Err(e) => match e {
-                RouterErrors::NoHandlerFound => {
-                    return Err(tonic::Status::internal("Did not get a stream type back"))
-                }
-                _ => return Err(tonic::Status::internal("Got an unknown handler error")),
-            },
-        }
+        });
+
         println!("returning a stream");
         Ok(tonic::Response::new(ReceiverStream::new(rx)))
     }
@@ -311,13 +240,8 @@ impl ServerEdit for Connection {
         //let inner = request.into_inner();
         let stop_server_request = StopServerRequest::default();
 
-        let router = self.router.lock().await;
-
-        let _ = router
-            .execute_typed(stop_server_request)
-            .await
-            .ok()
-            .unwrap();
+        stop_server_handler(&self.state.clone(), stop_server_request, "unknown".into()).await
+            .map_err(|_| tonic::Status::internal("There is no server to stop"))?;
 
         Ok(tonic::Response::new(StopServerResponse {}))
     }
@@ -331,12 +255,7 @@ impl ServerManage for Connection {
     ) -> std::result::Result<tonic::Response<proto::ServerDataResponse>, tonic::Status> {
         let server_data_request = ServerDataRequest::default();
 
-        let mut router = self.router.lock().await;
-        let server_data_result = router
-            .execute_typed(server_data_request)
-            .await
-            .ok()
-            .unwrap();
+        let server_data_result = server_data_handler(&self.state.clone(), server_data_request, "unknown".into()).await;
 
         if let Ok(server_data_response) = server_data_result {
             Ok(tonic::Response::new(server_data_response.into()))
@@ -358,8 +277,8 @@ impl ServerManage for Connection {
             },
         };
 
-        let router = self.router.lock().await;
-        let _ = router.execute_typed(server_set_request).await.ok().unwrap();
+        
+        set_server_handler(&self.state.clone(), server_set_request, "unknown".into()).await;
 
         Ok(tonic::Response::new(SetServerResponse {}))
     }
@@ -369,12 +288,8 @@ impl ServerManage for Connection {
     ) -> std::result::Result<tonic::Response<proto::ServerStateResponse>, tonic::Status> {
         let server_state_request = ServerStateRequest::default();
 
-        let mut router = self.router.lock().await;
-        let state_response = router
-            .execute_typed(server_state_request)
-            .await
-            .ok()
-            .unwrap();
+        let state_response = server_state_handler(&self.state.clone(), server_state_request, "unknown".into()).await
+                                .map_err(|_| tonic::Status::internal("Error getting the server state"))?;
 
         Ok(tonic::Response::new(state_response.into()))
     }
@@ -388,11 +303,7 @@ impl NodeManage for Connection {
     ) -> std::result::Result<tonic::Response<proto::ServerNameResponse>, tonic::Status> {
         let server_name_request = ServerNameRequest::default();
 
-        let router = self.router.lock().await;
-
-        let resp_result = router.execute_typed(server_name_request).await.ok();
-
-        let resp = resp_result.unwrap();
+        let resp = server_name_handler(&self.state.clone(), server_name_request, "unknown".into()).await;
 
         Ok(tonic::Response::new(proto::ServerNameResponse {
             r#type: resp.common.r#type,
@@ -548,6 +459,19 @@ impl Connection {
     }
 }
 
+impl Into<ConsoleRequest> for proto::ServerMessage {
+    fn into(self) -> ConsoleRequest {
+        ConsoleRequest {
+            common: SimpleMessage {
+                message: "console".into(),
+            },
+            data: self.data,
+            server: self.servername,
+            channel: self.channel,
+        }
+    }
+}
+
 impl Into<proto::ServerStateResponse> for ServerStateResponse {
     fn into(self) -> proto::ServerStateResponse {
         proto::ServerStateResponse {
@@ -653,11 +577,11 @@ pub struct ConnectionHandler {
 }
 
 impl ConnectionHandler {
-    pub fn new(router: Arc<Mutex<Router<Arc<AppState>>>>) -> ConnectionHandler {
+    pub fn new(state: Arc<AppState>) -> ConnectionHandler {
         ConnectionHandler {
             // current_request: None,
             // requests: Vec::new(),
-            connection: Connection { router },
+            connection: Connection { state },
         }
     }
 }

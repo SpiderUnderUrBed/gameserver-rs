@@ -1,6 +1,8 @@
 {
     "nixEnvSelector.nixFile": "${workspaceFolder}/flake.nix",
-    "rust-analyzer.cargo.features": [],
+    "rust-analyzer.cargo.features": [
+        "grpc_experimental"
+    ],
     "rust-analyzer.diagnostics.disabled": ["unresolved-proc-macro"],
     "rust-analyzer.cargo.buildScripts.enable": true,
     "rust-analyzer.check.allTargets": false,

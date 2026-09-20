@@ -181,8 +181,8 @@ pub struct ConsoleRequest {
     #[flatten]
     pub(crate) common: SimpleMessage,
     pub(crate) data: String,
-    server: String,
-    channel: String,
+    pub server: String,
+    pub channel: String,
 }
 
 // #[typed_request_macros::typed_request(snake_case)]

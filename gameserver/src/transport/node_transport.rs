@@ -25,6 +25,15 @@ use tokio::{
     sync::{watch, Mutex},
 };
 
+use crate::{
+    console_handler, delete_server_handler, server_data_handler, server_name_handler,
+    server_state_handler, set_filter_handler, set_server_handler, stop_server_handler,
+};
+use crate::{
+    ConsoleRequest, CreateServerRequest, DeleteServerRequest, ServerDataRequest, ServerNameRequest,
+    ServerStateRequest, SetFilterRequest, SetServerRequest, StartServerRequest, StopServerRequest,
+};
+
 #[derive(Clone)]
 pub struct Client {
     pub output_tx: Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>,
@@ -219,6 +228,7 @@ pub struct ConnectionManager {
 }
 impl ConnectionManager {
     pub async fn serve(
+        _state: Arc<AppState>,
         url: String,
     ) -> Result<ConnectionManager, Box<dyn std::error::Error + Send + Sync>> {
         let listner = TcpListener::bind(url).await?;
@@ -228,9 +238,6 @@ impl ConnectionManager {
             backround_task_updates: None,
         })
     }
-    // pub async fn subscribe_to_background_tasks(&mut self, task: Arc<watch::Receiver<BackgroundTaskUpdates>>){
-    //     self.backround_task_updates = Some(task);
-    // }
     pub async fn accept_connection(
         &mut self,
     ) -> Result<(ConnectionHandler, Option<String>), Box<dyn std::error::Error + Send + Sync>> {
@@ -336,6 +343,14 @@ impl ConnectionHandler {
             }
         }
         if matches!(self.bytes_filter_method, BytesFilterMethod::Line) {
+            if self
+                .read_buf
+                .windows(FILE_STARTING_DELIMITER.len())
+                .any(|bytes| bytes == FILE_STARTING_DELIMITER.as_bytes())
+            {
+                self.bytes_filter_method = BytesFilterMethod::All;
+                return Ok(());
+            }
             let read_buf_clone = self.read_buf.clone();
             let mut stream = serde_json::Deserializer::from_slice(&read_buf_clone)
                 .into_iter::<serde_json::Value>();
@@ -344,13 +359,6 @@ impl ConnectionHandler {
                 if self.read_buf.len() >= stream.byte_offset() {
                     self.read_buf = self.read_buf[stream.byte_offset()..].to_vec();
                 }
-            }
-            if self
-                .read_buf
-                .windows(FILE_STARTING_DELIMITER.len())
-                .any(|bytes| bytes == FILE_STARTING_DELIMITER.as_bytes())
-            {
-                self.bytes_filter_method = BytesFilterMethod::All;
             }
             println!("returning from");
             Ok(())
@@ -368,8 +376,6 @@ impl ConnectionHandler {
             return Err("Cannot receive line when receiving all bytes".into());
         }
 
-        // let newline_pos = self.newline_pos.clone();
-        // let line = &self.read_buf[..newline_pos].to_vec();
         let line = {
             if let Some(segment) = self.segments.pop() {
                 segment
@@ -379,16 +385,12 @@ impl ConnectionHandler {
         };
 
         self.remove_current_segment_or_clear().await;
-
         Ok(line)
     }
     pub async fn append_bytes(&mut self, bytes: Vec<u8>) {
-        println!("got request");
         self.inner().extend_from_slice(&bytes);
     }
-    // pub async fn has_remaining_buffer(&self) -> bool {
-    //     self.newline_pos + 1 <= self.read_buf.len()
-    // }
+
 
     pub fn split(&mut self) -> Result<(Writer, Reader), Box<dyn std::error::Error + Send + Sync>> {
         let stream = self.stream.take().ok_or("no stream set")?;
@@ -436,26 +438,7 @@ impl Reader {
     }
 }
 
-// TODO: consider removing this or keeping it
-// pub async fn recv(&mut self) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-//     let mut temp_buf = vec![0u8; 4096];
-//     let n = self.read_half.read(&mut temp_buf).await?;
 
-//     if n == 0 {
-//         return Err("connection closed by peer or no bytes".into());
-//     }
-
-//     println!("got {}", String::from_utf8_lossy(&temp_buf[..n]));
-//     Ok(temp_buf)
-// }
-use crate::{
-    console_handler, delete_server_handler, server_data_handler, server_name_handler,
-    server_state_handler, set_filter_handler, set_server_handler, stop_server_handler,
-};
-use crate::{
-    ConsoleRequest, CreateServerRequest, DeleteServerRequest, ServerDataRequest, ServerNameRequest,
-    ServerStateRequest, SetFilterRequest, SetServerRequest, StartServerRequest, StopServerRequest,
-};
 
 #[async_trait]
 #[typetag::serde(tag = "message")]
@@ -509,7 +492,7 @@ impl RequestByteExecutable for ConsoleRequest {
 #[typetag::serde(name = "set_filter")]
 impl RequestByteExecutable for SetFilterRequest {
     async fn execute(&self, state: Arc<AppState>, addr: String) -> Vec<u8> {
-        serde_json::to_vec(&set_filter_handler(&state, self.clone(), addr).await).unwrap()
+        serde_json::to_vec(&set_filter_handler(&state, self.clone()).await).unwrap()
     }
 }
 
@@ -525,7 +508,7 @@ impl RequestByteExecutable for SetServerRequest {
 #[typetag::serde(name = "delete_server")]
 impl RequestByteExecutable for DeleteServerRequest {
     async fn execute(&self, state: Arc<AppState>, addr: String) -> Vec<u8> {
-        serde_json::to_vec(&delete_server_handler(&state, self.clone(), addr).await).unwrap()
+        serde_json::to_vec(&delete_server_handler(&state, self.clone()).await).unwrap()
     }
 }
 

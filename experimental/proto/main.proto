@@ -38,7 +38,9 @@ message StopServerRequest {}
 message ServerMessage {
   string authcode = 1;
   string data = 2;
-  string type = 3;
+  string message = 3;
+  string channel = 4;
+  string servername = 5;
 }
 
 message SetServerRequest {

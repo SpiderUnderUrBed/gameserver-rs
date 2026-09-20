@@ -46,8 +46,6 @@ use crate::transport::node_transport::spawn_conn_background_tasks;
 use crate::transport::node_transport::ClientManager;
 use crate::transport::node_transport::ConnectionHandler;
 use crate::transport::node_transport::ConnectionManager;
-use crate::transport::node_transport::RequestByteExecutable;
-use crate::transport::node_transport::RequestStreamExecutable;
 use crate::transport::node_transport_spec::ConsoleRequest;
 use crate::transport::node_transport_spec::CreateServerRequest;
 use crate::transport::node_transport_spec::DeleteServerRequest;
@@ -66,6 +64,12 @@ use crate::transport::node_transport_spec::StopServerRequest;
 
 use std::net::SocketAddr;
 use tokio::sync::broadcast;
+
+#[cfg(not(feature = "grpc_experimental"))]
+use crate::transport::node_transport::RequestByteExecutable;
+
+#[cfg(not(feature = "grpc_experimental"))]
+use crate::transport::node_transport::RequestStreamExecutable;
 
 // I use the same code as in the main server
 // with a few diffrences in stuff like filesystem
@@ -787,7 +791,7 @@ pub async fn ensure_server_process(state: &Arc<AppState>) -> Arc<ServerProcesses
 pub async fn create_server_handler(
     state: &Arc<AppState>,
     req: CreateServerRequest,
-    addr: String,
+    _addr: String
 ) -> Result<StreamResponse<String>, ErrorResponse> {
     let process = ensure_server_process(&state.clone()).await;
     let cmd_tx_arc = process.cmd_tx.lock().await.clone().unwrap();
@@ -823,11 +827,11 @@ pub async fn start_server_handler(
 ) -> Result<StreamResponse<String>, ErrorResponse> {
     //let current_server = state.current_server.lock().await;
 
-    let Some(client) = state.clients.inner.get(&addr) else {
-        return Err(ErrorResponse {
-            error: "this client is not registered".into(),
-        });
-    };
+    // let Some(client) = state.clients.inner.get(&addr) else {
+    //     return Err(ErrorResponse {
+    //         error: "this client is not registered".into(),
+    //     });
+    // };
     let process = ensure_server_process(&state.clone()).await;
     // *state.cmd_tx.lock().await = Some(Arc::new(cmd_tx.clone()));
     // *state.cmd_rx.lock().await = Some(cmd_rx);
@@ -1044,7 +1048,7 @@ pub async fn start_server_handler(
 pub async fn stop_server_handler(
     state: &Arc<AppState>,
     _req: StopServerRequest,
-    addr: String,
+    _addr: String
 ) -> Result<NoneResponse, ErrorResponse> {
     if let Some(servername) = &*state.current_server.lock().await {
         if let Some(process) = state.server_processes.get(servername) {
@@ -1125,7 +1129,6 @@ pub async fn stop_server_handler(
 pub async fn delete_server_handler(
     state: &Arc<AppState>,
     req: DeleteServerRequest,
-    addr: String,
 ) -> NoneResponse {
     if let MetadataTypes::DeleteServer {
         delete_server_name,
@@ -1212,7 +1215,6 @@ pub async fn set_server_handler(
 async fn set_filter_handler(
     state: &Arc<AppState>,
     req: SetFilterRequest,
-    addr: String,
 ) -> NoneResponse {
     if let MetadataTypes::Filter(filter) = req.common.metadata {
         let mut db = state.db.lock().await;
@@ -1224,7 +1226,7 @@ async fn set_filter_handler(
 pub async fn console_handler(
     state: &Arc<AppState>,
     req: ConsoleRequest,
-    addr: String,
+    _addr: String
 ) -> NoneResponse {
     println!("Got a console request");
     let input = req.data.clone();
@@ -1252,7 +1254,7 @@ pub async fn console_handler(
 pub async fn server_data_handler(
     state: &Arc<AppState>,
     _req: ServerDataRequest,
-    addr: String,
+    _addr: String
 ) -> Result<ServerDataResponse, NoneResponse> {
     println!("Got a server data request");
     if let Some(current_server) = state.current_server.lock().await.clone() {
@@ -1322,7 +1324,7 @@ pub async fn server_data_handler(
     }
     //NoneResponse {}
 }
-pub async fn ping_handler(_state: &Arc<AppState>, _req: Ping, addr: String) -> PingResponse {
+pub async fn ping_handler(_state: &Arc<AppState>, _req: Ping) -> PingResponse {
     println!("got ping request");
     //         //let out_tx_clone = out_tx.clone();
     let pong = PingResponse {
@@ -1335,7 +1337,7 @@ pub async fn ping_handler(_state: &Arc<AppState>, _req: Ping, addr: String) -> P
 pub async fn server_state_handler(
     state: &Arc<AppState>,
     _req: ServerStateRequest,
-    addr: String,
+    _addr: String
 ) -> Result<ServerStateResponse, NoneResponse> {
     if let Some(servername) = &*state.current_server.lock().await {
         if let Some(process) = state.server_processes.get(servername) {
@@ -1358,7 +1360,7 @@ pub async fn server_state_handler(
 pub async fn server_name_handler(
     _state: &Arc<AppState>,
     _req: ServerNameRequest,
-    addr: String,
+    _addr: String
 ) -> ServerNameResponse {
     // let hostname_str = match hostname_ref.clone() {
     //     Ok(os) => os.to_string_lossy().to_string(),
@@ -1410,7 +1412,7 @@ async fn check_server(
 async fn spawn_request_loop(
     //arc_state: Arc<AppState>,
     _conn_handler: &mut ConnectionHandler,
-    _router: Arc<Mutex<Router<Arc<AppState>>>>,
+    _state: Arc<AppState>,
     //cmd_rx: &mut mpsc::Receiver<String>,
     _addr: String,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -1702,7 +1704,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     });
 
     let arc_conn_manager = Arc::new(Mutex::new(
-        ConnectionManager::serve(config_local_url.clone().unwrap()).await?,
+        ConnectionManager::serve(state.clone(), config_local_url.clone().unwrap()).await?,
     ));
     println!("Listening on {}", config_local_url.unwrap());
 
