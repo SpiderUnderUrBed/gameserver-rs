@@ -1094,6 +1094,7 @@ impl StreamTransportable for CreateServerRequest {
         drop(share_tx);
 
         let (server_tx, server_rx) = tokio::sync::mpsc::channel(32);
+        let inner_console_task = self.active.clone();
         tokio::spawn(async move {
             loop {
                 if let Some(bytes) = proxy_rx.recv().await {
@@ -1105,6 +1106,7 @@ impl StreamTransportable for CreateServerRequest {
                 } else {
                     break;
                 }
+                inner_console_task.cancel();
             }
         });
 
@@ -1149,6 +1151,7 @@ impl StreamTransportable for StartServerRequest {
         let mut stdin = self.stdin.resubscribe();
 
         let stdout = self.stdout.clone();
+        let inner_console_task = self.active.clone();
         tokio::spawn(async move {
             let (tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
             let state = inner_arc_state.read().await;
@@ -1174,6 +1177,7 @@ impl StreamTransportable for StartServerRequest {
                         let _ = proxy_tx.send(msg.into_bytes());
                     }
                 }
+                inner_console_task.cancel();
             }
         });
 

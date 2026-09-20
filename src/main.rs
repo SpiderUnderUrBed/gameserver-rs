@@ -2040,6 +2040,8 @@ async fn handle_socket(socket: WebSocket, session: tower_sessions::Session, arc_
                                 println!("before switch console request");
                                 let _ = request.stream_transport(inner_arc_state).await;
                                 println!("sent switch console request");
+                            } else {
+                                println!("wont be sending a console request");
                             }
                             *inner_console_out.write().await = Some(console_out.clone());
                             *inner_console_in.write().await = Some(console_in.clone());
