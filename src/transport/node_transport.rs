@@ -1,4 +1,5 @@
 
+use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use general_networked_filesystem::core::{DirectoryResponse, FileRequest, LsRequest};
 use serde::Serialize;
@@ -36,10 +37,10 @@ pub struct PasswordRequest {
 }
 
 
-impl NodeTransportableMut for ServernameRequest {
-    type Output = ();
+impl NodeTransportable for ServernameRequest {
+    type Output = NodeWithStream;
 
-    async fn node_transport(&self, state: &mut AppState) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
+    async fn node_transport(&self, state: &AppState) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         let mut bytes = convert_into_request(&MessagePayload {
             r#type: "command".to_string(),
             message: "server_name".to_string(),
@@ -59,31 +60,34 @@ impl NodeTransportableMut for ServernameRequest {
         share_tx.insert(index, tx);
         drop(share_tx);
 
-        'name: {
-            // let mut state = arc_state.write().await;
-            if let Ok(Some(bytes)) = timeout(
-                Duration::from_millis(1000),
-                proxy_rx.recv(),
-            )
-            .await
-            {
-                if let Ok(payload) = serde_json::from_slice::<IncomingMessage>(&bytes) {
-                    state.current_node = NodeWithStream {
-                        name: payload.message,
-                        ip: self.ip.clone(),
-                        ..Default::default()
-                    };
-                    break 'name;
-                }
+        if let Ok(Some(bytes)) = timeout(
+            Duration::from_millis(1000),
+            proxy_rx.recv(),
+        )
+        .await
+        {
+            if let Ok(payload) = serde_json::from_slice::<IncomingMessage>(&bytes) {
+                return Ok(NodeWithStream {
+                    name: payload.message,
+                    ip: self.ip.clone(),
+                    ..Default::default()
+                });
+            } else {
+                return Ok(NodeWithStream {
+                    name: "main".to_string(),
+                    ip: self.ip.clone(),
+                    ..Default::default()
+                });
             }
-            state.current_node = NodeWithStream {
+        } else {
+            return Ok(NodeWithStream {
                 name: "main".to_string(),
                 ip: self.ip.clone(),
                 ..Default::default()
-            };
+            });
         }
+        
 
-        Ok(())
     }
 }
 impl NodeTransportable for CapabilitiesRequest {
@@ -268,7 +272,7 @@ async fn get_all_stream_data_parsed(line_content: &str) -> Vec<Value> {
 // Deserializes all the values which has previously been serialized and processed individually
 // rationale for this extra step is explained above
 async fn handle_all_stream_values(
-    arc_state: Arc<RwLock<AppState>>,
+    arc_state: Arc<ArcSwap<AppState>>,
     value: Value,
     user_clients_option: Option<DashMap<i128, Arc<RwLock<UserClient>>>>,
     ip: &str,
@@ -333,8 +337,8 @@ async fn handle_all_stream_values(
             if let Ok(inner_msg) = serde_json::from_str::<MessagePayload>(&data_clone.message) {
                 if inner_msg.r#type == "command" {
                     let (client_option, database) = {
-                        let state_guard = arc_state.read().await;
-                        (state_guard.client.clone(), state_guard.database.clone())
+                        let state = arc_state.load();
+                        (state.client.clone(), state.database.clone())
                     };
 
                     if let Ok(nodes) = database.fetch_all_nodes().await {
@@ -359,8 +363,8 @@ async fn handle_all_stream_values(
                             ip: ip.to_string(),
                             nodename: inner_msg.message,
                             nodetype: {
-                                let state_guard = arc_state.read().await;
-                                if let OrchestratorClients::K8sLocal(client) = &state_guard.client {
+                                let state = arc_state.load();
+                                if let OrchestratorClients::K8sLocal(client) = &state.client {
                                     let request = VerifyIsK8sGameserverRequest {
                                         server: ip.to_string(),
                                     };
@@ -380,8 +384,8 @@ async fn handle_all_stream_values(
                             },
                             nodestatus: node_status,
                             k8s_type: {
-                                let state_guard = arc_state.read().await;
-                                if let OrchestratorClients::K8sLocal(client) = &state_guard.client {
+                                let state = arc_state.load();
+                                if let OrchestratorClients::K8sLocal(client) = &state.client {
                                     let request = VerifyIsK8sGameserverRequest {
                                         server: ip.to_string(),
                                     };
@@ -426,7 +430,7 @@ async fn handle_all_stream_values(
 
 async fn process_stream_data(
     raw_data: &[u8],
-    arc_state: &Arc<RwLock<AppState>>,
+    arc_state: &Arc<ArcSwap<AppState>>,
     // ws_tx: &broadcast::Sender<String>,
     user_clients_option: Option<DashMap<i128, Arc<RwLock<UserClient>>>>,
     ip: &str,
@@ -464,8 +468,8 @@ async fn process_stream_data(
     StreamResult::Active
 }
 
-pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, ip: String) {
-    let mut state = arc_state.write().await;
+pub async fn node_start_hook(arc_state: Arc<ArcSwap<AppState>>, ip: String) {
+    let state = arc_state.load();
     println!("got state for start hook");
     let initial_node_password: String =
         get_env_var_or_arg("INITIAL_NODE_PASSWORD", Some(String::default())).unwrap();
@@ -480,14 +484,15 @@ pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, ip: String) {
     let _ = capability_request.node_transport(&state).await;
 
     let server_name_request = ServernameRequest { ip: ip.clone() };
-    let _ = server_name_request.node_transport(&mut state).await;
-    drop(state);
-
+    let mut state: AppState = (*arc_state.load_full()).clone();
+    let node = server_name_request.node_transport(&state).await.unwrap();
+    state.current_node = node;
+    arc_state.store(Arc::new(state.clone()));
 
     // TODO: consider interrupts instead of polling
     tokio::spawn(async move {
         // let inner_arc_state = arc_state.clone();
-        let server_check_event = arc_state.read().await.server_check_event.clone();
+        let server_check_event = arc_state.load().server_check_event.clone();
         loop {
             let current_server_check_event = (*server_check_event.borrow()).clone();
             if let ServerCheckEvent::Add(new_server) = current_server_check_event {
@@ -496,7 +501,7 @@ pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, ip: String) {
                 let inner_arc_state = arc_state.clone();
                 tokio::spawn(async move {
                     let inner_arc_state = inner_arc_state.clone();
-                    let state = inner_arc_state.read().await;
+                    let state = inner_arc_state.load();
                     let process_guard = state.server_processes.get(&new_server).unwrap();
                     let status_method = &process_guard.read().await.status_method.clone();
                     'server_status_task: loop {
@@ -510,10 +515,12 @@ pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, ip: String) {
                                 // let inner_arc_state = inner_arc_state.clone();
                                 // tokio::spawn(async move {
                                 let inner_arc_state = inner_arc_state.clone();
-                                if let Ok(state) = inner_arc_state.try_read(){
-                                    let _ = server_state_request.node_transport(&state).await;
-                                    drop(state);
-                                }
+                                let _ = server_state_request.node_transport(&state).await;
+                                // if let Ok(state) = inner_arc_state.try_read(){
+                                //     let _ = server_state_request.node_transport(&state).await;
+                                //     drop(state);
+                                // }
+                                
                                 // if let Ok(state) = inner_arc_state.try_read() {
                                 //     let _ = server_state_request.node_transport(&state).await;
                                 //     drop(state);
@@ -608,7 +615,7 @@ pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, ip: String) {
 // how internally it gets or sends from the stream
 // is up to the implimentation, among other things
 pub async fn handle_stream(
-    arc_state: Arc<RwLock<AppState>>,
+    arc_state: Arc<ArcSwap<AppState>>,
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
     //stream: &mut TcpStream,
     ip: String,
@@ -620,35 +627,13 @@ pub async fn handle_stream(
 
     node_start_hook(arc_state.clone(), ip.clone()).await;
 
-    let state = arc_state.read().await;
+    let state = arc_state.load();
     let cloned_token = state.cancel_current_conn.clone();
-    let mut internal_rx = state
-        .internal_rx
-        .as_ref()
-        .map(|stream| stream.resubscribe());
     drop(state);
     
     loop {
         let inner_user_clients_option = user_clients_option.clone();
         tokio::select! {
-            Some(received) = async {
-                match internal_rx.as_mut() {
-                    Some(rx) => Some(rx.recv().await),
-                    None => None,
-                }
-            }, if internal_rx.is_some() => {
-                if let Ok(bytes) = received {
-                    let stream_values_result = process_stream_data(
-                        &bytes, &arc_state, inner_user_clients_option, &ip,
-                        &mut server_start_keyword, &mut server_stop_keyword,
-                    ).await;
-                    if matches!(stream_values_result, StreamResult::Done) || matches!(stream_values_result, StreamResult::Error(_)) {
-                        return stream_values_result;
-                    } 
-                } else {
-                    //break;
-                }
-            },
            broadcast_result = rx.recv() => {
             match broadcast_result {
                 Some(bytes) => {
@@ -685,7 +670,7 @@ pub async fn handle_stream(
 // No more blocking with stream, if the caller wants the server connection to not be blocking its the callers job to spawn it in
 // its own thread
 pub async fn connect_to_server(
-    arc_state: Arc<RwLock<AppState>>,
+    arc_state: Arc<ArcSwap<AppState>>,
     tcp_url: String,
     user_clients: DashMap<i128, Arc<RwLock<UserClient>>>,
     //ws_tx: broadcast::Sender<String>,
@@ -705,26 +690,20 @@ pub async fn connect_to_server(
        
                 let cancel_token = CancellationToken::new();
                 
-                let mut state = arc_state.write().await;
+                let mut state: AppState = (*arc_state.load_full()).clone();
                 state.cancel_current_conn = cancel_token.clone();
                 state.conn_status = Status::Up;
-                let current_active_priority = Arc::clone(&state.connection_handler.current_active_priority);
                 let ip = stream.peer_addr()?.ip().to_string();
-
                 let (mut reader, mut writer) = stream.into_split();
-
-                // let buf_reader = BufReader::new(reader);
-                // let mut lines = buf_reader.lines();
-
                 let share_tx_guard = state.connection_handler.share_tx.clone();
                 let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
                 state.connection_handler.proxy_tx = Some(tx);
                 let arc_bytes_filter_method = state.connection_handler.byte_filter_method.clone();
-                //let current_active_priority = state.connection_handler.current_active_priority.clone();
+                arc_state.store(Arc::new(state));
+
                 let mut read_buf: Vec<u8> = Vec::new();
                 let mut temp_buf = vec![0u8; 8192];
-                drop(state);
-                
+
                 tokio::spawn(async move {
                     loop {
                         tokio::select! {
@@ -794,7 +773,7 @@ pub async fn connect_to_server(
                 });
 
                 let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-                let mut state = arc_state.write().await;
+                let state = arc_state.load();
                 let shared_tx_guard = state.connection_handler.share_tx.clone();
                 let mut share_tx = shared_tx_guard.lock().await;
                 drop(state);
@@ -813,15 +792,18 @@ pub async fn connect_to_server(
             }
             Ok(Err(e)) => {
                 eprintln!("TCP connect error: {}", e);
-                let mut state_guard = arc_state.write().await;
-                if let Some(tx) = &state_guard.internal_tx {
-                    let _ = tx.send("end_conn".into());
-                }
-                state_guard.conn_status = Status::Down;
+                let mut state: AppState = (*arc_state.load_full()).clone();
+                state.conn_status = Status::Down;
+                arc_state.store(Arc::new(state));
+                // arc_state.rcu(|state| {
+                //     state.conn_status = Status::Down;
+                //     state
+                // });
             }
             Err(_) => {
-                let mut state_guard = arc_state.write().await;
-                state_guard.conn_status = Status::Down;
+                let mut state: AppState = (*arc_state.load_full()).clone();
+                state.conn_status = Status::Down;
+                arc_state.store(Arc::new(state));
                 eprintln!("TCP connect timed out");
                 if end_if_timeout {
                     return Err("connection attempt timed out".into());
@@ -883,7 +865,7 @@ pub(crate) async fn try_initial_connection(
     conn_attempts: u64,
     conn_timeout: u64,
     create_handler: bool,
-    arc_state: &Arc<RwLock<AppState>>,
+    arc_state: &Arc<ArcSwap<AppState>>,
     tcp_url: String,
 ) -> Result<(), anyhow::Error> {
     let mut final_error = anyhow!(String::new());
@@ -898,7 +880,7 @@ pub(crate) async fn try_initial_connection(
                 // and i rather keep this function focused on testing the connection (there might be a very NICHE case for making a handler here, but if there isnt ill remove it)
                 if create_handler {
 
-                    let state = arc_state.write().await;
+                    let state = arc_state.load();
                     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
                     let mut share_tx = state.connection_handler.share_tx.lock().await;
                     let index = share_tx.len();
@@ -936,6 +918,8 @@ pub enum BytesFilterMethod {
     Line, 
     All
 }
+
+#[derive(Clone)]
 pub struct ConnectionHandler {
     //stream: Option<&'static TcpStream>,
     pub(crate) proxy_tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
@@ -1071,7 +1055,7 @@ impl StreamTransportable for CreateServerRequest {
     type Output = mpsc::Receiver<ConsoleData>;
     async fn stream_transport(
         &self,
-        arc_state: Arc<RwLock<AppState>>,
+        arc_state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         let mut bytes = convert_into_request(&MessagePayloadWithMetadata {
             r#type: "command".to_string(),
@@ -1080,7 +1064,7 @@ impl StreamTransportable for CreateServerRequest {
             authcode: "".to_string(),
         }).unwrap();
 
-        let state = arc_state.read().await;
+        let state = arc_state.load();
         if state.connection_handler.proxy_tx.is_none(){
             return Err("no stream".into());
         }
@@ -1119,7 +1103,7 @@ impl StreamTransportable for StartServerRequest {
     type Output = ();
     async fn stream_transport(
         &self,
-        arc_state: Arc<RwLock<AppState>>,
+        arc_state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
 
         let mut bytes = convert_into_request(&MessagePayload {
@@ -1131,7 +1115,7 @@ impl StreamTransportable for StartServerRequest {
         //     return Err("Failed to serialize".into());
         // };
         println!("before state write lock");
-        let state = arc_state.read().await;
+        let state = arc_state.load();
         println!("after state write lock");
 
         if *state.connection_handler.current_active_priority.lock().await > 0 {
@@ -1154,9 +1138,8 @@ impl StreamTransportable for StartServerRequest {
         let inner_console_task = self.active.clone();
         tokio::spawn(async move {
             let (tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-            let state = inner_arc_state.read().await;
+            let state = inner_arc_state.load();
             let share_tx_guard = state.connection_handler.share_tx.clone();
-            drop(state);
             let mut share_tx = share_tx_guard.lock().await;
             let index = share_tx.len();
             share_tx.insert(index, tx);
@@ -1191,9 +1174,9 @@ impl StreamTransportable for SwitchConsoleRequest {
 
     async fn stream_transport(
         &self,
-        arc_state: Arc<RwLock<AppState>>,
+        arc_state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
-        let state = arc_state.read().await;
+        let state = arc_state.load();
         println!("after state write lock in switch console");
 
         if *state.connection_handler.current_active_priority.lock().await > 0 {
@@ -1212,7 +1195,7 @@ impl StreamTransportable for SwitchConsoleRequest {
         let stdout = self.stdout.clone();
         tokio::spawn(async move {
             let (tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-            let state = inner_arc_state.read().await;
+            let state = inner_arc_state.load();
             let share_tx_guard = state.connection_handler.share_tx.clone();
             drop(state);
             let mut share_tx = share_tx_guard.lock().await;
@@ -1464,15 +1447,15 @@ impl StreamTransportable for ServerStateRequest {
 
     async fn stream_transport(
         &self,
-        arc_state: Arc<RwLock<AppState>>,
+        arc_state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
-        let state = arc_state.read().await;
+        let state = arc_state.load();
         if *state.connection_handler.current_active_priority.lock().await > 0 {
             return Err("high priority task is occuring and cant be interfered with".into())
         }
         drop(state);
 
-        let state = arc_state.read().await;
+        let state = arc_state.load();
         if state.connection_handler.proxy_tx.is_none(){
             return Err("no stream".into());
         }
@@ -1563,9 +1546,9 @@ impl StreamTransportable for FileUploadRequest {
     type Output = ();
     async fn stream_transport(
         &self,
-        arc_state: Arc<RwLock<AppState>>,
+        arc_state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
-        let state = arc_state.write().await;
+        let state = arc_state.load();
         if state.connection_handler.proxy_tx.is_none() {
             return Err("no stream".into());
         }
@@ -1576,7 +1559,7 @@ impl StreamTransportable for FileUploadRequest {
         let _guard = PriorityGuard { priority: priority_handle };
         while let Ok(bytes) = self.file.stream.as_ref().unwrap().recv_async().await {
             let tx = {
-                let state = arc_state.read().await;
+                let state = arc_state.load();
                 state.connection_handler.proxy_tx.clone()
             };
             let Some(tx) = tx else {
@@ -1595,9 +1578,9 @@ impl StreamTransportable for FileDownloadRequest {
     type Output = flume::Receiver<Vec<u8>>;
     async fn stream_transport(
         &self,
-        arc_state: Arc<RwLock<AppState>>,
+        arc_state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
-        let state = arc_state.write().await;
+        let state = arc_state.load();
         if state.connection_handler.proxy_tx.is_none() {
             return Err("no stream".into());
         }
@@ -1619,7 +1602,7 @@ impl StreamTransportable for FileDownloadRequest {
         tokio::spawn(async move {
             while let Ok(bytes) = stream.recv_async().await {
                 let tx = {
-                    let state = inner_arc_state.read().await;
+                    let state = inner_arc_state.load();
                     state.connection_handler.proxy_tx.clone()
                 };
                 if let Some(tx) = tx {
@@ -1633,10 +1616,9 @@ impl StreamTransportable for FileDownloadRequest {
             }
         });
 
-        let state = arc_state.write().await;
+        let state = arc_state.load();
         let (tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
         let share_tx_guard = state.connection_handler.share_tx.clone();
-        drop(state);
         let mut share_tx = share_tx_guard.lock().await;
         let index = share_tx.len();
         share_tx.insert(index, tx);

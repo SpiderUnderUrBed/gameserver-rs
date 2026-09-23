@@ -20,6 +20,7 @@ use crate::http::HeaderMap;
 use crate::kubernetes::{BuildDeploymentRequest, ListNodeInfoRequest};
 use crate::middleware::from_fn;
 
+use arc_swap::ArcSwap;
 use bytes::Bytes;
 
 use axum::http::header;
@@ -581,14 +582,13 @@ pub enum ServerCheckEvent {
 // the base path like if all the routes are prefixed with something like /gameserver-rs which is the default for my testing deployment, and database as its needed frequently
 // for user information and etc
 // #[derive(Default)]
+#[derive(Clone)]
 pub struct AppState {
     // tx: tokio::sync::broadcast::Sender<Vec<u8>>,
     // rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
     connection_handler: ConnectionHandler,
     cancel_current_conn: CancellationToken,
     conn_status: Status,
-    internal_rx: Option<broadcast::Receiver<Vec<u8>>>,
-    internal_tx: Option<broadcast::Sender<Vec<u8>>>,
     additonal_node: Vec<NodeWithStream>,
     current_node: NodeWithStream,
     user_clients: DashMap<i128, Arc<RwLock<UserClient>>>,
@@ -800,8 +800,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // rx: rx,
         connection_handler,
         cancel_current_conn: CancellationToken::new(),
-        internal_rx: Some(internal_rx.resubscribe()),
-        internal_tx: Some(internal_tx),
         user_clients: DashMap::new(),
         server_check_event: server_process_event_tx,
         // ws_tx: ws_tx.clone(),
@@ -830,7 +828,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     };
 
-    let multifaceted_state = Arc::new(RwLock::new(state));
+    let multifaceted_state: Arc<ArcSwap<AppState>> = Arc::new(ArcSwap::new(Arc::new(state)));
     let _ = load_settings(None, multifaceted_state.clone()).await;
 
     // CORS are currently very permissive
@@ -990,7 +988,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 println!("All initial connections failed");
             }
             if initial_connection_result.is_err() || force_rebuild {
-                if let OrchestratorClients::K8sLocal(client) = &inner_state.write().await.client {
+                if let OrchestratorClients::K8sLocal(client) = &inner_state.load().client {
                     eprintln!(
                         "Initial connection failed or force rebuild enabled, will possibly enable auto-build (configurable)"
                     );
@@ -1038,7 +1036,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         }
                     }
                 }
-                if let OrchestratorClients::K8sRemote(client) = &inner_state.write().await.client {
+                if let OrchestratorClients::K8sRemote(client) = &inner_state.load().client {
                     eprintln!(
                         "Initial connection failed or force rebuild enabled, will possibly enable auto-build (configurable)"
                     );
@@ -1105,18 +1103,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             if initial_connection_result.is_ok() {
                 println!("Creating a new connection");
                 let (new_tx, mut new_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-                let (internal_tx, internal_rx) = broadcast::channel::<Vec<u8>>(100);
 
-                {
-                    let mut state = inner_state.write().await;
-                    state.connection_handler = ConnectionHandler::new();
-                    state.internal_tx = Some(internal_tx);
-                    state.internal_rx = Some(internal_rx.resubscribe());
-                }
+                // {
+                //     let mut state = inner_state.load().await;
+                //     state.connection_handler = ConnectionHandler::new();
+                //     state.internal_tx = Some(internal_tx);
+                //     state.internal_rx = Some(internal_rx.resubscribe());
+                // }
                 // println!("after state");
 
                 // let bridge_tx = inner_state.read().await.ws_tx.clone();
-                let user_clients = inner_state.read().await.user_clients.clone(); 
+                let user_clients = inner_state.load().user_clients.clone(); 
                 // tokio::spawn(async move {
                 let connect_to_server_result =
                     connect_to_server(inner_state, node_url, user_clients, true).await;
@@ -1143,12 +1140,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 }
 
 pub async fn set_lock(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
     Json(request): Json<IncomingMessage>,
 ) -> impl IntoResponse {
-    let mut state = arc_state.read().await;
+    let state = arc_state.load();
 
     let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
@@ -1164,22 +1161,21 @@ pub async fn set_lock(
 }
 
 pub async fn stop_server(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     session: tower_sessions::Session,
     auth_session: AuthSession,
     headers: HeaderMap,
 ) -> impl IntoResponse {
     let inner_arc_state = arc_state.clone();
-    let state = inner_arc_state.read().await;
+    let mut state = inner_arc_state.load();
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    if let Ok(Some(current_observing_process)) = get_current_observing_process(session, arc_state.clone()).await {
+    if let Ok(Some(current_observing_process)) = get_current_observing_process(session, &state).await {
         println!("got an observing process");
         let inner_arc_state = arc_state.clone();
-        let state = inner_arc_state.read().await;
         let current_process_guard;
         if let Some(process) = state.server_processes.get(&current_observing_process){
             current_process_guard = process;
@@ -1189,11 +1185,9 @@ pub async fn stop_server(
         println!("got the stop process guard");
 
         let inner_arc_state = arc_state.clone();
-        let mut state = inner_arc_state.read().await;
         let stop_server_request = StopServerRequest {};
-        let _ = stop_server_request.node_transport(&mut state).await;
+        let _ = stop_server_request.node_transport(&state).await;
 
-        drop(state);
         println!("getting the current process");
         let current_process = current_process_guard.read().await;
         let _ = current_process.status_method.send(StatusMethod::OnUpdate);
@@ -1218,28 +1212,27 @@ pub async fn stop_server(
 }
 
 pub async fn rcon_command(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     session: tower_sessions::Session,
     auth_session: AuthSession,
     headers: HeaderMap,
     Json(request): Json<IncomingMessage>,
 ) -> impl IntoResponse {
-    let state = arc_state.read().await;
+    let state = arc_state.load();
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED.into_response();
     }
 
-    drop(state);
 
-    if let Err(e) = ensure_rcon(session.clone(), Arc::clone(&arc_state)).await {
+    if let Err(e) = ensure_rcon(session.clone(), &state).await {
         eprintln!("Failed to ensure RCON: {}", e);
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
     let current_process_lock;
-    if let Ok(process) = get_current_process(session, Arc::clone(&arc_state)).await {
+    if let Ok(process) = get_current_process(session, &state).await {
         current_process_lock = process;
     } else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -1265,9 +1258,9 @@ pub async fn rcon_command(
     }
 }
 
-pub async fn ensure_rcon(session: tower_sessions::Session, arc_state: Arc<RwLock<AppState>>) -> Result<(), String> {
+pub async fn ensure_rcon(session: tower_sessions::Session, state: &AppState) -> Result<(), String> {
     let current_process_lock;
-    if let Ok(process) = get_current_process(session, Arc::clone(&arc_state)).await {
+    if let Ok(process) = get_current_process(session, &state).await {
         current_process_lock = process;
     } else {
         return Err("Could not get the current process, either the user did not have an id, they didnt have an observed process, or the observing process does not exist".into());
@@ -1275,7 +1268,6 @@ pub async fn ensure_rcon(session: tower_sessions::Session, arc_state: Arc<RwLock
     let mut current_process = current_process_lock.write().await;
 
     if current_process.rcon_connection.is_none() {
-        let state = arc_state.read().await;
         if let Ok(retrived_db) = state.database.get_settings().await {
             if retrived_db.enabled_rcon {
                 match Connection::builder()
@@ -1301,12 +1293,12 @@ pub async fn ensure_rcon(session: tower_sessions::Session, arc_state: Arc<RwLock
 }
 
 async fn file_operations(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
     Json(request): Json<SrcAndDest>,
 ) -> StatusCode {
-    let state = arc_state.read().await;
+    let state = arc_state.load();
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
@@ -1315,22 +1307,22 @@ async fn file_operations(
 
     let request_bytes = serde_json::to_vec(&request).unwrap_or_default();
 
-    if let Some(tx) = &state.internal_tx {
-        let _ = tx.send(request_bytes);
-    }
+    // if let Some(tx) = &state.internal_tx {
+    //     let _ = tx.send(request_bytes);
+    // }
 
     StatusCode::CREATED
 }
 
 #[axum::debug_handler]
 async fn upload(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
     mut multipart: Multipart,
 ) -> StatusCode {
     println!("got an upload request");
-    let mut state = arc_state.write().await;
+    let state = arc_state.load();
     let authorized = authorize(
         &state,
         auth_session,
@@ -1341,9 +1333,14 @@ async fn upload(
     if !authorized {
         return StatusCode::UNAUTHORIZED;
     }
+    drop(state);
 
+    let mut state: AppState = (*arc_state.load_full()).clone();
     state.filesystem.create_state(0, "/".to_string()).await;
     state.filesystem.set_sandboxed_location("server/".to_string());
+    arc_state.store(Arc::new(state));
+
+    let state = arc_state.load();
 
     let total_bytes = headers
         .get("content-length")
@@ -1365,7 +1362,6 @@ async fn upload(
     let (chunked_tx, chunked_rx): (flume::Sender<Vec<u8>>, flume::Receiver<Vec<u8>>) =
         flume::unbounded();
     let mut inner_filesystem = state.filesystem.clone();
-    drop(state);
 
     tokio::spawn(async move {
         let mut buffer: Vec<u8> = Vec::with_capacity(chunk_size * 2);
@@ -1403,9 +1399,7 @@ async fn upload(
         let _ = inner_filesystem.execute_operation(0).await;
     });
 
-    let state = arc_state.write().await;
     let filesystem = state.filesystem.clone();
-    drop(state);
 
     'multipart: while let Ok(field) = multipart.next_field().await {
         let Some(mut field) = field else { break };
@@ -1453,12 +1447,12 @@ async fn upload(
 }
 
 pub async fn stream_file_download(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     mut headers: HeaderMap,
     axum::extract::Path(file_path): axum::extract::Path<String>,
 ) -> Result<Response<Body>, StatusCode> {
-    let mut state = arc_state.write().await;
+    let state = arc_state.load();
 
     let authorized = authorize(
         &state,
@@ -1471,13 +1465,16 @@ pub async fn stream_file_download(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
+    let mut state: AppState = (*arc_state.load_full()).clone();
     state.filesystem.create_state(0, "/".to_string()).await;
     state.filesystem.set_sandboxed_location("server/".to_string());
+    arc_state.store(Arc::new(state));
+    let state = arc_state.load();
+
     let mut fs = state.filesystem.clone();
     let file = fs.try_create_request_in_directory(file_path.clone()).await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let fs_rx = (&mut fs).proxy_receiver().await;
-    drop(state);
 
     let inner_arc_state = Arc::clone(&arc_state);
     let task_end = Arc::new(CancellationToken::new());
@@ -1497,7 +1494,6 @@ pub async fn stream_file_download(
             Ok::<_, std::io::Error>(Bytes::from(chunk))
         });
 
-    let state = arc_state.write().await;
     let filesystem = state.filesystem.clone();
     let inner_file_path = file_path.clone();
     tokio::spawn(async move {
@@ -1530,12 +1526,12 @@ pub async fn stream_file_download(
 
 // SrcAndDest
 async fn migrate(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
     Json(request): Json<SrcAndDest>,
 ) -> impl IntoResponse {
-    let mut state = arc_state.read().await;
+    let state = arc_state.load();
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
@@ -1544,14 +1540,14 @@ async fn migrate(
     }
 
     let migrate_request = MigrateRequest { common: request };
-    let _ = migrate_request.node_transport(&mut state).await;
+    let _ = migrate_request.node_transport(&state).await;
 
     StatusCode::OK.into_response()
 }
 
 // TODO: see if this is really a nessesary route
 async fn refresh_status(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     // auth_session: AuthSession,
     // headers: HeaderMap,
 ) {
@@ -1580,11 +1576,11 @@ async fn refresh_status(
 }
 
 async fn fetch_current_node(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
 ) -> Result<Json<Node>, StatusCode> {
-    let state = arc_state.read().await;
+    let state = arc_state.load();
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED);
@@ -1615,12 +1611,12 @@ async fn fetch_current_node(
 
 // TODO: maybe split this function and route into several routes with statuses for diffrent states/nodes/settings?
 async fn get_status(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
     Json(request): Json<IncomingMessage>,
 ) -> impl IntoResponse {
-    let state = arc_state.read().await;
+    let state = arc_state.load();
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
@@ -1650,11 +1646,11 @@ async fn get_status(
     }
 }
 async fn get_settings(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let state = arc_state.read().await;
+    let state = arc_state.load();
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED);
@@ -1666,11 +1662,11 @@ async fn get_settings(
     }
 }
 async fn get_buttons(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let state = arc_state.read().await;
+    let state = arc_state.load();
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
@@ -1690,12 +1686,12 @@ async fn get_buttons(
 }
 
 async fn edit_buttons(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
     Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
-    let state = arc_state.read().await;
+    let state = arc_state.load();
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
@@ -1710,12 +1706,12 @@ async fn edit_buttons(
     result
 }
 async fn button_reset(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
     Json(request): Json<IncomingMessage>,
 ) -> impl IntoResponse {
-    let state = arc_state.read().await;
+    let state = arc_state.load();
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
@@ -1755,7 +1751,7 @@ pub struct LogLine {
     pub data: String,
 }
 
-async fn ensure_current_user(session: tower_sessions::Session, arc_state: Arc<RwLock<AppState>>) -> Result<Arc<RwLock<UserClient>>, String>{
+async fn ensure_current_user(session: tower_sessions::Session, state: &AppState) -> Result<Arc<RwLock<UserClient>>, String>{
     let user_id;
     if let Some(id) = session.id(){
         user_id = id.0;
@@ -1763,14 +1759,12 @@ async fn ensure_current_user(session: tower_sessions::Session, arc_state: Arc<Rw
         return Err("no user id found".into())
     }
     if let Ok(Some(_)) = session.get::<String>("user-loaded").await {
-        let state = arc_state.read().await;
         let current_user = state
             .user_clients
             .get(&user_id)
             .unwrap().clone();
         Ok(current_user)
     } else {
-        let state = arc_state.read().await;
         // let current_user = state
         //     .user_clients
         //     .ensure_user(user_id)
@@ -1793,10 +1787,10 @@ async fn ensure_current_user(session: tower_sessions::Session, arc_state: Arc<Rw
         Ok(state.user_clients.get(&user_id).unwrap().clone())
     }
 }
-async fn get_current_observing_process(session: tower_sessions::Session, arc_state: Arc<RwLock<AppState>>) -> Result<Option<String>, String>{
+async fn get_current_observing_process(session: tower_sessions::Session, state: &AppState) -> Result<Option<String>, String>{
     let current_user;
     println!("getting current observed process");
-    if let Ok(user) = ensure_current_user(session.clone(), Arc::clone(&arc_state)).await {
+    if let Ok(user) = ensure_current_user(session.clone(), state).await {
         current_user = user;
     } else {
         println!("no user id was found");
@@ -1820,19 +1814,18 @@ async fn get_current_observing_process(session: tower_sessions::Session, arc_sta
 
 }
 
-async fn get_current_process(session: tower_sessions::Session, arc_state: Arc<RwLock<AppState>>) -> Result<Arc<RwLock<ServerProcesses>>, String>{
+async fn get_current_process(session: tower_sessions::Session, state: &AppState) -> Result<Arc<RwLock<ServerProcesses>>, String>{
     let current_observing_process;
-    if let Ok(Some(process)) = get_current_observing_process(session.clone(), Arc::clone(&arc_state)).await {
+    if let Ok(Some(process)) = get_current_observing_process(session.clone(), state).await {
         println!("got current prcoess");
         current_observing_process = process
     } else {
         println!("error getting an observed process");
         return Err("Could not get the user id or the current observing process does not exist".into())
     }
-
-    let state = arc_state.read().await;
+    
     println!("past state lock");
-
+    // let state_clone = Arc::clone(&state);
     let current_process_guard;
     println!("before process");
     if let Some(process) = state.server_processes.get(&current_observing_process){
@@ -1845,10 +1838,10 @@ async fn get_current_process(session: tower_sessions::Session, arc_state: Arc<Rw
     println!("done getting processes");
     Ok(current_process_guard.clone())
 }
-async fn set_process_for_user(session: tower_sessions::Session, servername: String, arc_state: Arc<RwLock<AppState>>) -> Result<(), String> {
+async fn set_process_for_user(session: tower_sessions::Session, servername: String, state: &AppState) -> Result<(), String> {
     println!("called set process for user");
     let current_user_lock;
-    if let Ok(user) =  ensure_current_user(session.clone(), Arc::clone(&arc_state)).await {
+    if let Ok(user) =  ensure_current_user(session.clone(), &state).await {
         current_user_lock = user;
     } else {
         println!("user did not have an id to work with");
@@ -1861,7 +1854,6 @@ async fn set_process_for_user(session: tower_sessions::Session, servername: Stri
 
     
     if let Some(old_process) = current_user.current_observing_process.clone() {
-        let state = arc_state.read().await;
         println!("setting mut here");
         if let Some(server_process) = state.server_processes.get(&old_process) {
             server_process.read().await.observing_users.fetch_sub(1, Ordering::SeqCst);
@@ -1869,7 +1861,6 @@ async fn set_process_for_user(session: tower_sessions::Session, servername: Stri
     }
     drop(current_user);
     
-    let state = arc_state.read().await;
     println!("setting mut here");
     if let Some(server_process) = state.server_processes.get(&servername) {
         // current_user.server_connection = server_process.write().await.console_in.clone();
@@ -1883,9 +1874,8 @@ async fn set_process_for_user(session: tower_sessions::Session, servername: Stri
     println!("end");
     Ok(())
 }
-async fn ensure_server_process(arc_state: Arc<RwLock<AppState>>, server: Server) -> Arc<RwLock<ServerProcesses>> {
+async fn ensure_server_process(state: &AppState, server: Server) -> Arc<RwLock<ServerProcesses>> {
     println!("called ensure server process");
-    let state = arc_state.read().await;
     if let Some(server_process) = state.server_processes.get(&server.servername){
         println!("{:#?}", state.server_processes.len());
         server_process.clone()
@@ -1914,7 +1904,7 @@ async fn ensure_server_process(arc_state: Arc<RwLock<AppState>>, server: Server)
     }
 }
 
-async fn handle_socket(socket: WebSocket, session: tower_sessions::Session, arc_state: Arc<RwLock<AppState>>) {
+async fn handle_socket(socket: WebSocket, session: tower_sessions::Session, arc_state: Arc<ArcSwap<AppState>>) {
     // Acquire lock just to get needed data
     let conn_id = { CONNECTION_COUNTER.fetch_add(1, Ordering::SeqCst) };
 
@@ -1923,16 +1913,16 @@ async fn handle_socket(socket: WebSocket, session: tower_sessions::Session, arc_
     let (mut sender, mut receiver) = socket.split();
 
 
-
+    let state = arc_state.load();
     let current_user;
-    if let Ok(user) = ensure_current_user(session, arc_state.clone()).await {
+    if let Ok(user) = ensure_current_user(session, &state).await {
         current_user = user;
     } else {
         return;
     }
     let inner_current_user = current_user.clone();
     
-    let state = arc_state.read().await;
+    // let state = arc_state.load();
     let lock = state.lock.clone();
 
     let (server_out_tx, mut server_out_rx) = mpsc::channel::<String>(32);
@@ -1990,7 +1980,7 @@ async fn handle_socket(socket: WebSocket, session: tower_sessions::Session, arc_
                 continue;
             }
 
-            let state = cloned_arc_state.read().await;
+            let state = cloned_arc_state.load();
 
             if let Some(process) = state.server_processes.clone().get(current_observing_process){
                 let inner_arc_state = arc_state.clone();
@@ -2160,12 +2150,12 @@ async fn authorize(
 
 async fn ws_handler(
     ws: WebSocketUpgrade,
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     session: tower_sessions::Session,
     auth_session: AuthSession,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let state = arc_state.read().await;
+    let state = arc_state.load();
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
 
     if !authorized {
@@ -2193,10 +2183,10 @@ async fn ws_handler(
 // also I pass auth layer because sometimes it says that there is no auth layer present instead of serving the webpage
 // the fix mainly worked in the router in main, I am just covering future cases
 async fn routes_static(
-    state: Arc<RwLock<AppState>>,
+    state: Arc<ArcSwap<AppState>>,
     _auth_layer: AuthManagerLayer<Backend, MemoryStore>,
 ) -> (
-    Router<Arc<RwLock<AppState>>>,
+    Router<Arc<ArcSwap<AppState>>>,
     Option<OidcAuthLayer<OidcAdditionalClaims>>,
 ) {
     let base_path = std::env::var("SITE_URL")
@@ -2242,16 +2232,16 @@ async fn routes_static(
     // OIDC layers and routes will not be constructed if there is an issue with creating the layer
     // and routes, and will just merge and empty router
     let mut maybe_oidc_layer: Option<OidcAuthLayer<OidcAdditionalClaims>> = None;
-    let mut oidc_routes: Router<Arc<RwLock<AppState>>> = Router::new();
+    let mut oidc_routes: Router<Arc<ArcSwap<AppState>>> = Router::new();
 
     if let Ok((raw_oidc_layer, _)) = get_oidc_layer().await {
         // adds the callback and the oidc route to actually start the login initiation (includes fallback for /oidc/ if the user adds a path, maybe not nessesary?)
-        let callback_router: Router<Arc<RwLock<AppState>>> = Router::new().route(
+        let callback_router: Router<Arc<ArcSwap<AppState>>> = Router::new().route(
             "/oidc/callback",
             any(handle_oidc_redirect::<OidcAdditionalClaims>),
         );
 
-        let login_router: Router<Arc<RwLock<AppState>>> = Router::new()
+        let login_router: Router<Arc<ArcSwap<AppState>>> = Router::new()
             .route("/oidc", any(oidc_login_initiate))
             .route("/oidc/", any(oidc_login_initiate))
             .layer(
@@ -2279,11 +2269,11 @@ async fn routes_static(
         .route("/{*wildcard}", get(handle_static_request))
         .layer(login_required_middleware);
 
-    let router = Router::new()
+    let router: Router<Arc<ArcSwap<AppState>>> = Router::new()
         .merge(public)
         .merge(oidc_routes)
         .merge(protected)
-        .with_state(state.clone());
+        .with_state(state);
 
     (router, maybe_oidc_layer)
 }
@@ -2380,9 +2370,9 @@ async fn oidc_login_initiate(
 
 async fn load_settings(
     session_option: Option<tower_sessions::Session>,
-    arc_state: Arc<RwLock<AppState>>,
+    arc_state: Arc<ArcSwap<AppState>>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let state = arc_state.read().await;
+    let state = arc_state.load();
 
     let settings = match state.database.get_settings().await {
         Ok(s) => s,
@@ -2392,11 +2382,10 @@ async fn load_settings(
             ));
         }
     };
-    drop(state);
 
     if let Some(session) = session_option {
         let current_user_lock;
-        if let Ok(user) = ensure_current_user(session, arc_state).await {
+        if let Ok(user) = ensure_current_user(session, &state).await {
             current_user_lock = user;
         } else {
             return Ok(())
@@ -2412,14 +2401,14 @@ async fn load_settings(
 // Instead of submitting a entire new settings feild, you send a list of values you want to change
 // it will go through and see if the user can edit those settings
 async fn set_settings(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     session: tower_sessions::Session,
     auth_session: AuthSession,
     headers: HeaderMap,
     Json(request): Json<IncomingMessageWithValue>,
 ) -> impl IntoResponse {
     let inner_value = request.message;
-    let state = arc_state.read().await;
+    let state = arc_state.load();
 
     let authorized = authorize(&state, auth_session, headers, vec![]).await;
 
@@ -2464,10 +2453,10 @@ async fn set_settings(
     }
 }
 async fn notify_node_of_settings(
-    arc_state: Arc<RwLock<AppState>>,
+    arc_state: Arc<ArcSwap<AppState>>,
     old_settings_option: Option<Settings>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let mut state = arc_state.read().await;
+    let state = arc_state.load();
     let database = &state.database;
     let settings = database.get_settings().await?;
     if let Some(old_settings) = old_settings_option {
@@ -2475,7 +2464,7 @@ async fn notify_node_of_settings(
             let filter_request = FilterRequest {
                 filter: settings.filter,
             };
-            let _ = filter_request.node_transport(&mut state).await;
+            let _ = filter_request.node_transport(&state).await;
         }
         Ok(())
     } else {
@@ -2496,7 +2485,7 @@ async fn notify_node_of_settings(
 // }
 
 async fn statistics(
-    State(_): State<Arc<RwLock<AppState>>>,
+    State(_): State<Arc<ArcSwap<AppState>>>,
 ) -> Sse<impl Stream<Item = Result<Event, Box<dyn Error + Send + Sync>>>> {
     let interval = interval(Duration::from_secs(3));
 
@@ -2542,13 +2531,14 @@ async fn statistics(
 
 async fn ongoing_server_status(
     session: tower_sessions::Session,
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
     let interval = interval(Duration::from_secs(3));
-    let state_clone = arc_state.clone();
+    // let state_clone = arc_state.clone();
+    let state = arc_state.load();
 
     let current_user_lock;
-    if let Ok(user) = ensure_current_user(session.clone(), Arc::clone(&arc_state)).await {
+    if let Ok(user) = ensure_current_user(session.clone(), &state).await {
         current_user_lock = user;
     } else {
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
@@ -2556,7 +2546,7 @@ async fn ongoing_server_status(
     let current_user = current_user_lock.read().await;
     let cached_status_type = current_user.cached_status_type.1.clone();
     let poll_server_event_option = {
-        if let Ok(process) = get_current_process(session, Arc::clone(&arc_state)).await {
+        if let Ok(process) = get_current_process(session, &state).await {
             Some(process.read().await.poll_server_event.clone())
         } else {
             None
@@ -2565,7 +2555,7 @@ async fn ongoing_server_status(
     drop(current_user);
 
     let updates = stream::unfold(
-        (interval, state_clone),
+        (interval, arc_state),
         move |(mut interval, arc_state)| {
         let inner_cached_status_type = cached_status_type.clone();
         let inner_poll_event_option =  poll_server_event_option.clone();
@@ -2574,18 +2564,18 @@ async fn ongoing_server_status(
             let status = {
                 let status_type = inner_cached_status_type.borrow().to_string();
                 if status_type.is_empty() || status_type == "server-keyword" {
-                    let state = arc_state.read().await;
+                    let state = arc_state.load();
                     state.current_node.status.clone()
                 } else if status_type == "server-process" {
                     if let Some(poll_server_event) = inner_poll_event_option {
                         poll_server_event.notify_waiters();
-                        let state = arc_state.read().await;
+                        let state = arc_state.load();
                         state.current_node.status.clone()
                     } else {
                         Status::Down
                     }
                 } else if status_type == "node" {
-                    let state = arc_state.read().await;
+                    let state = arc_state.load();
                     state.conn_status.clone()
                 } else if status_type == "manual-click" {
                     Status::Unknown
@@ -2613,17 +2603,16 @@ async fn ongoing_server_status(
 
 // TODO: clean up sometime, delete_node should only expect one node type, just verify nothing is using it weirdly
 async fn delete_node(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
     Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
-    let state = arc_state.read().await;
+    let state = arc_state.load();
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED);
     }
-    drop(state);
 
     let node_request_name_option = 'node: {
         if let Element::Node(node) = request.element {
@@ -2640,7 +2629,6 @@ async fn delete_node(
         }
     };
     if let Some(node_request_name) = node_request_name_option {
-        let state = arc_state.read().await;
         let node_option = state.database.retrieve_nodes(node_request_name).await;
         if let Some(node) = node_option {
             if matches!(node.k8s_type, K8sType::None) || matches!(node.k8s_type, K8sType::Unknown) {
@@ -2661,12 +2649,12 @@ async fn delete_node(
     }
 }
 async fn add_node(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
     Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
-    let state = arc_state.read().await;
+    let state = arc_state.load();
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
@@ -2681,12 +2669,12 @@ async fn add_node(
     result
 }
 async fn delete_server(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
     Json(request): Json<IncomingMessageWithMetadata>,
 ) -> impl IntoResponse {
-    let mut state = arc_state.read().await;
+    let mut state = arc_state.load();
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
@@ -2723,20 +2711,19 @@ async fn delete_server(
 }
 
 pub async fn start_server(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     session: tower_sessions::Session,
     auth_session: AuthSession,
     headers: HeaderMap,
 ) -> impl IntoResponse {
     println!("Called start server");
-    let state = arc_state.read().await;
+    let state = arc_state.load();
     println!("got start server lock");
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    drop(state);
 
     // let arc_current_user; 
     // if let Ok(user) = ensure_current_user(session.clone(), Arc::clone(&arc_state)).await {
@@ -2754,7 +2741,7 @@ pub async fn start_server(
     
     println!("past current user");
     let current_process_lock;
-    if let Ok(process) = get_current_process(session.clone(), Arc::clone(&arc_state)).await {
+    if let Ok(process) = get_current_process(session.clone(), &state).await {
         current_process_lock = process;
     } else {
         println!("error getting current process");
@@ -2792,7 +2779,7 @@ pub async fn start_server(
         .await;
 
     let arc_current_user; 
-    if let Ok(user) = ensure_current_user(session.clone(), Arc::clone(&arc_state)).await {
+    if let Ok(user) = ensure_current_user(session.clone(), &state).await {
         arc_current_user = user;
     } else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -2813,13 +2800,13 @@ pub async fn start_server(
 
 
 async fn add_server(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     session: tower_sessions::Session,
     auth_session: AuthSession,
     headers: HeaderMap,
     Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
-    let mut state = arc_state.read().await;
+    let mut state = arc_state.load();
     println!("Got create server request");
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
@@ -2875,7 +2862,6 @@ async fn add_server(
             server.sandbox.clone()
         }
     };
-    drop(state);
     let console_task = CancellationToken::new();
     let create_server_request = CreateServerRequest {
         metadata: MetadataTypes::Server {
@@ -2893,12 +2879,11 @@ async fn add_server(
         .stream_transport(arc_state.clone())
         .await
     {
-        let server_process_lock = ensure_server_process(arc_state.clone(), server.clone())
+        let server_process_lock = ensure_server_process(&state, server.clone())
             .await;
         let mut server_process = server_process_lock
             .write()
             .await;
-        let state = arc_state.read().await;
         let server_console: broadcast::Sender<String> =
             if let Some(console) = server_process.console_out.as_ref() {
                 console.clone()
@@ -2908,7 +2893,6 @@ async fn add_server(
                 server_process.server_start_event.notify_waiters();
                 server_process.console_out.as_ref().unwrap().clone()
             };
-        drop(state);
         tokio::spawn(async move {
             while let Some(data) = stream.recv().await {
                 let _ = server_console.send(serde_json::to_string(&data).unwrap());
@@ -2925,7 +2909,6 @@ async fn add_server(
             server_metadata: server.server_metadata.clone(),
         },
     };
-    let state = arc_state.read().await;
     let _ = set_server_request.node_transport(&state).await;
 
     let server_data_request = ServerDataRequest {
@@ -2939,19 +2922,18 @@ async fn add_server(
         },
     };
     let _ = server_data_request.node_transport(&state).await;
-    drop(state);
 
-    let _ = set_process_for_user(session, server.servername, arc_state).await;
+    let _ = set_process_for_user(session, server.servername, &state).await;
 
     Ok(StatusCode::OK)
 }
 
 async fn get_integrations(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let state = arc_state.read().await;
+    let state = arc_state.load();
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
@@ -2981,12 +2963,12 @@ async fn get_integrations(
 // the status code itself does not determine if a ping was successful rather if the ping
 // went through
 async fn ping(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
     Json(request): Json<MessagePayload>,
 ) -> StatusCode {
-    let mut state = arc_state.read().await;
+    let mut state = arc_state.load();
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return StatusCode::UNAUTHORIZED;
@@ -3007,12 +2989,12 @@ async fn ping(
 
 //modify_intergration
 async fn modify_intergration(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
     Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
-    let mut state = arc_state.read().await;
+    let mut state = arc_state.load();
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
@@ -3097,12 +3079,12 @@ async fn modify_intergration(
 }
 
 async fn delete_intergration(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
     Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
-    let state = arc_state.read().await;
+    let state = arc_state.load();
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
@@ -3120,12 +3102,12 @@ async fn delete_intergration(
     result
 }
 async fn create_intergration(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
     Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
-    let state = arc_state.read().await;
+    let state = arc_state.load();
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
@@ -3169,12 +3151,12 @@ async fn create_intergration(
 
 // delegate user creation to the DB and return with relevent status code
 async fn create_user(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
     Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
-    let state = arc_state.read().await;
+    let state = arc_state.load();
 
     let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
@@ -3190,12 +3172,12 @@ async fn create_user(
 }
 // edits the user data in the db
 async fn edit_user(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
     Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
-    let state = arc_state.read().await;
+    let state = arc_state.load();
     let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED.into_response());
@@ -3211,13 +3193,13 @@ async fn edit_user(
 
 // This sets the current server
 async fn set_server(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     session: tower_sessions::Session,
     auth_session: AuthSession,
     headers: HeaderMap,
     Json(request): Json<ModifyElementData>,
 ) -> Result<StatusCode, StatusCode> {
-    let mut state = arc_state.read().await;
+    let mut state = arc_state.load();
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED);
@@ -3233,9 +3215,8 @@ async fn set_server(
             .transpose()
             .ok_or(StatusCode::NOT_FOUND)??;
 
-        drop(state);
-        let _ = ensure_server_process(arc_state.clone(), retrieved_server.clone()).await;
-        if set_process_for_user(session, retrieved_server.servername.clone(), arc_state.clone()).await.is_err() {
+        let _ = ensure_server_process(&state, retrieved_server.clone()).await;
+        if set_process_for_user(session, retrieved_server.servername.clone(), &state).await.is_err() {
             println!("err");
             return Err(StatusCode::INTERNAL_SERVER_ERROR)
         };
@@ -3262,7 +3243,7 @@ async fn set_server(
         //     .into(),
         // );
         println!("right about here");
-        let mut state = arc_state.read().await;
+        let mut state = arc_state.load();
         println!("rigth after lock");
         let set_server_request = SetServerRequest {
             metadata: MetadataTypes::Server {
@@ -3284,14 +3265,14 @@ async fn set_server(
 
 // gets the server from the database, if the incoming request is empty, it will give the current server
 async fn get_server(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     session: tower_sessions::Session,
     auth_session: AuthSession,
     headers: HeaderMap,
     Json(request): Json<RetrieveElement>,
 ) -> Result<Json<Server>, StatusCode> {
     println!("called get server");
-    let state = arc_state.read().await;
+    let state = arc_state.load();
     println!("got state write lock");
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
@@ -3304,7 +3285,7 @@ async fn get_server(
     //     server_to_get = state.current_server.clone().unwrap().servername;
     // }
     if server_to_get.is_empty(){
-        if let Ok(Some(process)) = get_current_observing_process(session.clone(), Arc::clone(&arc_state)).await {
+        if let Ok(Some(process)) = get_current_observing_process(session.clone(), &state).await {
             server_to_get = process
         } else {
             println!("no server at all is found");
@@ -3325,12 +3306,12 @@ async fn get_server(
 
 // get the user from the db
 async fn get_user(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
     Json(request): Json<RetrieveElement>,
 ) -> impl IntoResponse {
-    let state = arc_state.read().await;
+    let state = arc_state.load();
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED.into_response());
@@ -3347,12 +3328,12 @@ async fn get_user(
 
 // delegate user delection to the DB and returns with relevent status code
 async fn delete_user(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
     Json(request): Json<ModifyElementData>,
 ) -> impl IntoResponse {
-    let state = arc_state.read().await;
+    let state = arc_state.load();
 
     let authorized = authorize(&state, auth_session, headers, vec![]).await;
     if !authorized {
@@ -3369,8 +3350,8 @@ async fn delete_user(
 
 // Capabilities (in this function) notifies the frontend if th backend has certain things enabled, like a
 // samba server and etc
-async fn capabilities(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl IntoResponse {
-    let state = arc_state.read().await;
+async fn capabilities(State(arc_state): State<Arc<ArcSwap<AppState>>>) -> impl IntoResponse {
+    let state = arc_state.load();
     let mut capabilities: Vec<String> = vec![];
     capabilities.push("all".to_string());
     Json(capabilities).into_response()
@@ -3379,11 +3360,11 @@ async fn capabilities(State(arc_state): State<Arc<RwLock<AppState>>>) -> impl In
 // a list of users is returned, like alot of other routes, I need to add permissions, and check against those permissions to see if a user
 // can see all the other users, it will delegate the retrival to the database and pass it in as a ApiCalls
 async fn users(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let state = arc_state.read().await;
+    let state = arc_state.load();
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
@@ -3408,13 +3389,13 @@ struct ChangeNodeRequest {
 
 #[axum::debug_handler]
 async fn change_node(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
     Json(request): Json<ChangeNodeRequest>,
 ) -> Result<StatusCode, StatusCode> {
     // println!("Changing node");
-    // let state = arc_state.read().await;
+    // let state = arc_state.load();
     // // println!("C");
 
     // let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
@@ -3460,11 +3441,11 @@ async fn change_node(
 
 // A list of nodes in a k8s cluster is returned, nothing is returned if there is not a client (k8s support is off)
 async fn get_nodes(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     headers: HeaderMap,
     auth_session: AuthSession,
 ) -> impl IntoResponse {
-    let mut state = arc_state.write().await;
+    let mut state = arc_state.load();
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
@@ -3519,12 +3500,16 @@ async fn get_nodes(
         Err(err) => eprintln!("Error fetching DB nodes: {}", err),
     }
 
+    let mut final_nodes = Vec::new();
     for node in node_list.clone() {
         let exists = state.additonal_node.iter().any(|n| n.name == node.name);
         if !exists {
-            state.additonal_node.push(node);
+            final_nodes.push(node);
         }
     }
+    let mut state: AppState = (*arc_state.load_full()).clone();
+    state.additonal_node.extend(final_nodes);
+    arc_state.store(Arc::new(state));
 
     let regular_node_list: Vec<Node> = node_list
         .into_iter()
@@ -3543,11 +3528,11 @@ async fn get_nodes(
 }
 
 async fn get_servers(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
 ) -> Result<Json<List>, StatusCode> {
-    let state = arc_state.read().await;
+    let state = arc_state.load();
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
         return Err(StatusCode::UNAUTHORIZED);
@@ -3684,10 +3669,10 @@ async fn sign_out(mut auth_session: AuthSession) -> Result<Response, StatusCode>
 #[axum::debug_handler]
 async fn sign_in(
     mut auth_session: AuthSession,
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     Form(request): Form<LoginData>,
 ) -> Result<Response, StatusCode> {
-    let state = arc_state.read().await;
+    let state = arc_state.load();
 
     let user = state
         .database
@@ -3780,10 +3765,10 @@ async fn serve_html_with_replacement(
 // this ensures that by default things are redirected to index.html, otherwised passed on normally
 // and served, if its html, it will serve it with its replacement
 async fn handle_static_request(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     req: Request<Body>,
 ) -> Result<Response<Body>, StatusCode> {
-    let state = arc_state.read().await;
+    let state = arc_state.load();
     let path = req.uri().path();
 
     let file = if path == "/" || path.is_empty() {
@@ -3812,7 +3797,7 @@ struct FileChunk {
 // it will ensure it is not a path escape
 #[allow(unused)]
 async fn get_files_content(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
     Json(request): Json<FileChunk>,
@@ -3822,7 +3807,7 @@ async fn get_files_content(
 
 // then return the file content
 // async fn get_files_content(
-//     State(arc_state): State<Arc<RwLock<AppState>>>,
+//     State(arc_state): State<Arc<ArcSwap<AppState>>>,
 //     auth_session: AuthSession,
 //     headers: HeaderMap,
 //     Json(request): Json<FileChunk>,
@@ -3834,7 +3819,7 @@ async fn get_files_content(
 //     }
 
 //     let (tx, rx) = {
-//         // let state = arc_state.read().await;
+//         // let state = arc_state.load();
 //         state.connection_handler.get_filesystem_stream()
 //         //(state.connection_handler.tx.clone(), state.connection_handler.tx.subscribe())
 //     };
@@ -3892,12 +3877,12 @@ async fn get_files_content(
 #[allow(unused)]
 #[axum::debug_handler]
 pub async fn get_files(
-    State(arc_state): State<Arc<RwLock<AppState>>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
     headers: HeaderMap,
     auth_session: AuthSession,
     Json(request): Json<IncomingMessage>,
 ) -> impl IntoResponse {
-    let mut state = arc_state.read().await;
+    let mut state = arc_state.load();
     // let mut location = self.location.clone();
     // if !(location.starts_with("server") || location.starts_with("/server")){
     //     location = format!("./server/{}", location);
@@ -4086,8 +4071,6 @@ mod tests {
             // rx: rx,
             connection_handler,
             cancel_current_conn: CancellationToken::new(),
-            internal_rx: Some(internal_rx.resubscribe()),
-            internal_tx: Some(internal_tx),
             // ws_tx: ws_tx.clone(),
             // ws_rx: ws_rx.resubscribe(),
             // server_console: None,

@@ -1,5 +1,6 @@
 use std::{error::Error, sync::{Arc, mpsc}};
 
+use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -113,6 +114,6 @@ pub trait StreamTransportable {
     type Output;
     async fn stream_transport(
         &self,
-        state: Arc<RwLock<AppState>>,
+        state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>>;
 }
