@@ -1,7 +1,7 @@
 use crate::transport::node_transport::proto::{DownloadRequest, FileChunk};
 use crate::transport::node_transport_spec::{CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, NodeTransportable, NodeTransportableMut, Ping, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StopServerRequest, StreamTransportable, SwitchConsoleRequest};
 use crate::transport::node_transport_spec::RemoteFile;
-use crate::{ApiCalls as ToplevelApiCalls, AuthTcpMessage, IncomingMessage, List, NodeWithStream, UserClient};
+use crate::{ApiCalls as ToplevelApiCalls, AuthTcpMessage, IncomingMessage, List, NodeWithConn, UserClient};
 use crate::{
     AppState, MessagePayload, MessagePayloadWithMetadata, MetadataTypes, SimpleMessage,
     Status
@@ -10,10 +10,11 @@ use crate::{
     CHANNEL_BUFFER_SIZE, ConsoleData,
     transport::node_transport::proto::{ServerMessage, node_manage_client::NodeManageClient},
 };
+use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use general_networked_filesystem::core::LsRequest;
 use general_networked_filesystem::core::DirectoryResponse;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tokio::{
     sync::{RwLock, broadcast, mpsc},
     time::timeout,
@@ -45,6 +46,7 @@ pub struct Clients {
     filesystem_client: FilesystemManageClient<Channel>,
 }
 
+
 pub struct ConnectionHandler {
     //stream: Option<&'static TcpStream>,
     clients: Option<Clients>,
@@ -53,6 +55,8 @@ pub struct ConnectionHandler {
     pub(crate) tx: tokio::sync::broadcast::Sender<Vec<u8>>,
     pub(crate) rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
 }
+
+
 impl ConnectionHandler {
     pub fn new() -> Self {
         let (tx, rx) = broadcast::channel::<Vec<u8>>(CHANNEL_BUFFER_SIZE);
@@ -101,8 +105,8 @@ impl Clone for ConnectionHandler {
 pub async fn check_channel_health(_state: &AppState) -> bool {
     true
 }
-pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, url: String) {
-    let mut state = arc_state.write().await;
+pub async fn node_start_hook(arc_state: Arc<ArcSwap<AppState>>, url: String) {
+    let mut state = (*arc_state.load_full()).clone();
     let server_name_request = proto::ServerNameRequest {
         r#type: "server_name".to_string(),
         message: "".to_string(),
@@ -119,14 +123,14 @@ pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, url: String) {
         .await
     {
         Ok(server_name) => {
-            state.current_node = NodeWithStream {
+            state.current_node = NodeWithConn {
                 name: server_name.get_ref().message.clone(),
                 ip: url,
                 ..Default::default()
             };
         }
         Err(e) => {
-            state.current_node = NodeWithStream {
+            state.current_node = NodeWithConn {
                 name: "main".to_string(),
                 ip: url,
                 ..Default::default()
@@ -134,7 +138,8 @@ pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, url: String) {
             println!("{:#?}", e);
         }
     }
-    drop(state);
+    arc_state.store(Arc::new(state));
+
     // TODO: consider interrupts instead of polling
     // tokio::spawn(async move {
     //     let state = arc_state.write().await;
@@ -148,7 +153,7 @@ pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, url: String) {
     //         if rx.borrow().to_string() == "server-process" {
     //             let inner_arc_state = arc_state.clone();
     //             tokio::spawn(async move {
-    //                 let state = inner_arc_state.read().await;
+    //                 let state = inner_arc_state.load();
     //                 let notify = state.poll_server_event.clone();
     //                 drop(state);
     //                 let mut interval = tokio::time::interval(Duration::from_millis(500));
@@ -178,13 +183,13 @@ pub async fn node_start_hook(arc_state: Arc<RwLock<AppState>>, url: String) {
 }
 // does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
 pub async fn connect_to_server(
-    arc_state: Arc<RwLock<AppState>>,
+    arc_state: Arc<ArcSwap<AppState>>,
     url: String,
     _user_clients: DashMap<i128, Arc<RwLock<UserClient>>>,
     _end_if_timeout: bool,
 ) -> Result<Option<SocketAddr>, Box<dyn Error + Send + Sync>> {
     println!("using this connect to server");
-    let mut state = arc_state.write().await;
+    let mut state = (*arc_state.load_full()).clone();
 
     let url = if url.starts_with("http://") || url.starts_with("https://") {
         url
@@ -206,7 +211,7 @@ pub async fn connect_to_server(
         server_edit_client,
         filesystem_client,
     });
-    drop(state);
+    arc_state.store(Arc::new(state));
     node_start_hook(arc_state, url).await;
 
     Ok(None)
@@ -219,7 +224,7 @@ pub async fn try_initial_connection(
     _conn_attempts: u64,
     _conn_timeout: u64,
     _create_handler: bool,
-    _state: &Arc<RwLock<AppState>>,
+    _state: &Arc<ArcSwap<AppState>>,
     _tcp_url: String,
 ) -> Result<(), anyhow::Error> {
     Ok(())
@@ -273,14 +278,14 @@ impl StreamTransportable for CreateServerRequest {
     type Output = mpsc::Receiver<ConsoleData>;
     async fn stream_transport(
         &self,
-        arc_state: Arc<RwLock<AppState>>,
+        arc_state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         let request = proto::CreateServerRequest {
             metadata: Some(self.metadata.clone().into()),
         };
         let (server_out_tx, server_out_rx) = tokio::sync::mpsc::channel(32);
         let mut clients = {
-            let guard = arc_state.read().await;
+            let guard = arc_state.load();
             guard.connection_handler.clients.clone().unwrap()
         };
         println!("about to call create");
@@ -324,7 +329,7 @@ impl StreamTransportable for StartServerRequest {
     type Output = ();
     async fn stream_transport(
         &self,
-        arc_state: Arc<RwLock<AppState>>,
+        arc_state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         let request = proto::StartServerRequest {};
         let (server_in_tx, server_in_rx) = tokio::sync::mpsc::channel(32);
@@ -350,7 +355,7 @@ impl StreamTransportable for StartServerRequest {
             });
         //}
         let mut clients = {
-            let guard = arc_state.read().await;
+            let guard = arc_state.load();
             guard.connection_handler.clients.clone().unwrap()
         };
         match clients.server_edit_client.start(outbound_stream).await {
@@ -395,7 +400,7 @@ impl StreamTransportable for SwitchConsoleRequest {
     type Output = ();
     async fn stream_transport(
         &self,
-        state: Arc<RwLock<AppState>>,
+        state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         Ok(())
     }
@@ -657,14 +662,13 @@ impl NodeTransportable for LsRequest {
 
 
 impl StreamTransportable for FileUploadRequest {
-    type Output = ();
-
+    type Output = Arc<Notify>;
     async fn stream_transport(
         &self,
-        arc_state: Arc<RwLock<AppState>>,
+        arc_state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         let mut clients = {
-            let guard = arc_state.read().await;
+            let guard = arc_state.load();
             guard.connection_handler.clients.clone().unwrap()
         };
 
@@ -681,24 +685,30 @@ impl StreamTransportable for FileUploadRequest {
         });
 
         let stream = {
-            let mut state = arc_state.write().await;
+            let mut state = (*arc_state.load_full()).clone();
             state.filesystem.proxy_receiver().await
         };
 
-        while let Ok(bytes) = stream.recv_async().await {
-            let res = fs_tx
-                .send(FileChunk {
-                    location: location.clone(),
-                    bytes,
-                })
-                .await;
+        let end_of_file_task = Arc::new(Notify::new());
 
-            if res.is_err() {
-                break;
+        let inner_end_of_file_task = end_of_file_task.clone();
+        tokio::spawn(async move {
+            while let Ok(bytes) = stream.recv_async().await {
+                let res = fs_tx
+                    .send(FileChunk {
+                        location: location.clone(),
+                        bytes,
+                    })
+                    .await;
+
+                if res.is_err() {
+                    break;
+                }
             }
-        }
+            inner_end_of_file_task.notify_waiters();
+        });
 
-        Ok(())
+        Ok(end_of_file_task)
     }
 }
 
@@ -717,11 +727,11 @@ impl StreamTransportable for FileDownloadRequest {
     type Output = mpsc::Receiver<Vec<u8>>;
     async fn stream_transport(
         &self,
-        arc_state: Arc<RwLock<AppState>>,
+        arc_state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         let (fs_tx, fs_rx) = tokio::sync::mpsc::channel(32);
         let mut clients = {
-            let guard = arc_state.read().await;
+            let guard = arc_state.load();
             guard.connection_handler.clients.clone().unwrap()
         };
         let location = self.file.location.clone();

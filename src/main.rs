@@ -325,27 +325,25 @@ pub enum StreamResult {
 
 // #[derive(PartialEq)]
 #[derive(Default)]
-pub struct NodeWithStream {
+pub struct NodeWithConn {
     name: String,
     ip: String,
     status: Status,
     nodetype: NodeType,
     k8s_type: K8sType,
     gameserver: Value,
-    tx: Option<tokio::sync::broadcast::Sender<Vec<u8>>>,
-    rx: Option<tokio::sync::broadcast::Receiver<Vec<u8>>>,
+    connection: Option<ConnectionHandler>
 }
-impl Clone for NodeWithStream {
-    fn clone(&self) -> NodeWithStream {
-        NodeWithStream {
+impl Clone for NodeWithConn {
+    fn clone(&self) -> NodeWithConn {
+        NodeWithConn {
             name: self.name.clone(),
             ip: self.ip.clone(),
             nodetype: self.nodetype.clone(),
             status: self.status.clone(),
             gameserver: self.gameserver.clone(),
-            tx: self.tx.clone(),
-            rx: self.tx.as_ref().map(|tx| tx.subscribe()),
             k8s_type: self.k8s_type.clone(),
+            connection: self.connection.clone()
         }
     }
 }
@@ -598,8 +596,8 @@ pub struct AppState {
     connection_handler: ConnectionHandler,
     cancel_current_conn: CancellationToken,
     conn_status: Status,
-    additonal_node: Vec<NodeWithStream>,
-    current_node: NodeWithStream,
+    additonal_node: Vec<NodeWithConn>,
+    current_node: NodeWithConn,
     user_clients: DashMap<i128, Arc<RwLock<UserClient>>>,
     // ws_tx: broadcast::Sender<String>,
     // server_start_event: Arc<Notify>,
@@ -752,11 +750,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
         }
     }
-    let mut nodes: Vec<NodeWithStream> = vec![];
+    let mut nodes: Vec<NodeWithConn> = vec![];
     if let Ok(db_nodes) = database.fetch_all_nodes().await {
         nodes = db_nodes
             .into_iter()
-            .map(|node| NodeWithStream {
+            .map(|node| NodeWithConn {
                 name: node.nodename,
                 nodetype: node.nodetype,
                 ip: node.ip,
@@ -814,7 +812,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         server_processes: DashMap::new(),
         // server_start_event: Arc::new(Notify::new()),
         base_path: base_path.clone(),
-        current_node: NodeWithStream::default(),
+        current_node: NodeWithConn::default(),
         database: database.clone(),
         client,
         additonal_node: nodes,
@@ -1420,13 +1418,11 @@ async fn upload(
                         .await
                         .map(|v| FileUploadRequest::new(v));
                     if let Ok(request) = request_result {
-                        tokio::select! {
-                            _ = request.stream_transport(inner_arc_state) => {},
-                            _ = async move { 
-                                inner_filesystem.wait_for_eof().await;
-                                // tokio::time::sleep(Duration::from_millis(10000)).await;
-                            } => {}
-                        }
+                        let task = request.stream_transport(inner_arc_state).await.unwrap();
+                        tokio::spawn(async move {
+                            inner_filesystem.check_for_eof(task).await;
+                            println!("done with the EOF");
+                        });
                     }
                 });
             }
@@ -1480,7 +1476,6 @@ pub async fn stream_file_download(
     let mut fs = state.filesystem.clone();
     let file = fs.try_create_request_in_directory(file_path.clone()).await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let fs_rx = (&mut fs).proxy_receiver().await;
 
     let inner_arc_state = Arc::clone(&arc_state);
     let task_end = Arc::new(CancellationToken::new());
@@ -3403,15 +3398,12 @@ async fn change_node(
     headers: HeaderMap,
     Json(request): Json<ChangeNodeRequest>,
 ) -> Result<StatusCode, StatusCode> {
-    // println!("Changing node");
-    // let state = arc_state.load();
-    // // println!("C");
+    let state = arc_state.load();
 
-    // let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
-    // //drop(state);
-    // if !authorized {
-    //     return Err(StatusCode::UNAUTHORIZED);
-    // }
+    let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
+    if !authorized {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
 
     // let ws_tx = state.ws_tx.clone();
     // let option_node = {
@@ -3427,7 +3419,7 @@ async fn change_node(
 
     //         // {
     //         //     let mut state = arc_state.write().await;
-    //         //     state.current_node = NodeWithStream {
+    //         //     state.current_node = NodeWithConn {
     //         //         name: node.nodename.clone(),
     //         //         ip: node.ip.clone(),
     //         //         ..Default::default()
@@ -3461,7 +3453,7 @@ async fn get_nodes(
         return Err(StatusCode::UNAUTHORIZED.into_response());
     }
 
-    let mut node_list: Vec<NodeWithStream> = vec![];
+    let mut node_list: Vec<NodeWithConn> = vec![];
 
     if let OrchestratorClients::K8sLocal(client) = state.client.clone() {
         let request = ListNodeInfoRequest { 
@@ -3492,7 +3484,7 @@ async fn get_nodes(
     match state.database.fetch_all_nodes().await {
         Ok(nodes) => {
             for node in nodes {
-                let new_node = NodeWithStream {
+                let new_node = NodeWithConn {
                     name: node.nodename,
                     ip: node.ip,
                     nodetype: node.nodetype,
@@ -4025,11 +4017,11 @@ mod tests {
             });
         }
 
-        let mut nodes: Vec<NodeWithStream> = vec![];
+        let mut nodes: Vec<NodeWithConn> = vec![];
         if let Ok(db_nodes) = database.fetch_all_nodes().await {
             nodes = db_nodes
                 .into_iter()
-                .map(|node| NodeWithStream {
+                .map(|node| NodeWithConn {
                     name: node.nodename,
                     nodetype: node.nodetype,
                     ip: node.ip,
@@ -4084,7 +4076,7 @@ mod tests {
             // ws_rx: ws_rx.resubscribe(),
             // server_console: None,
             base_path: base_path.clone(),
-            current_node: NodeWithStream::default(),
+            current_node: NodeWithConn::default(),
             database: database.clone(),
             client,
             additonal_node: nodes,

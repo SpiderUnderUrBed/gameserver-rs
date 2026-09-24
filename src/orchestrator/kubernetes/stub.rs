@@ -1,7 +1,7 @@
 use std::error::Error;
 
 use crate::{
-    K8sLocalClient, NodeWithStream,
+    K8sLocalClient, NodeWithConn,
     database::databasespec::K8sType,
     kubernetes::{GetK8sTypeRequest, VerifyIsK8sGameserverRequest},
     orchestrator::kubernetes::{
@@ -41,7 +41,7 @@ impl KubeLocalRequest for BuildDeploymentRequest {
     }
 }
 impl KubeLocalRequest for ListNodeInfoRequest {
-    type Output = Vec<NodeWithStream>;
+    type Output = Vec<NodeWithConn>;
 
     async fn execute_locally(
         &self,

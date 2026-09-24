@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{OrchestratorClients, ServerCheckEvent, StatusMethod, UserClient, transport::node_transport_spec::{CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, NodeTransportable, NodeTransportableMut, Ping, RemoteFile, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StateActionType, StopServerRequest, StreamTransportable, SwitchConsoleRequest}};
 use crate::{
     ApiCalls as ToplevelApiCalls, AuthTcpMessage, ConsoleData, IncomingMessage,
-    IntegrationCommands, KubeLocalRequest, List, LogLine, NodeWithStream,
+    IntegrationCommands, KubeLocalRequest, List, LogLine, NodeWithConn,
     database::{
         Element, ModifyElementData, Node, NodesDatabase,
         databasespec::{K8sType, NodeStatus, NodeType},
@@ -38,7 +38,7 @@ pub struct PasswordRequest {
 
 
 impl NodeTransportable for ServernameRequest {
-    type Output = NodeWithStream;
+    type Output = NodeWithConn;
 
     async fn node_transport(&self, state: &AppState) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         let mut bytes = convert_into_request(&MessagePayload {
@@ -67,20 +67,20 @@ impl NodeTransportable for ServernameRequest {
         .await
         {
             if let Ok(payload) = serde_json::from_slice::<IncomingMessage>(&bytes) {
-                return Ok(NodeWithStream {
+                return Ok(NodeWithConn {
                     name: payload.message,
                     ip: self.ip.clone(),
                     ..Default::default()
                 });
             } else {
-                return Ok(NodeWithStream {
+                return Ok(NodeWithConn {
                     name: "main".to_string(),
                     ip: self.ip.clone(),
                     ..Default::default()
                 });
             }
         } else {
-            return Ok(NodeWithStream {
+            return Ok(NodeWithConn {
                 name: "main".to_string(),
                 ip: self.ip.clone(),
                 ..Default::default()
@@ -512,31 +512,8 @@ pub async fn node_start_hook(arc_state: Arc<ArcSwap<AppState>>, ip: String) {
                             loop {
                                 println!("starting inner loop");
                                 let server_state_request = ServerStateRequest { };
-                                // let inner_arc_state = inner_arc_state.clone();
-                                // tokio::spawn(async move {
-                                let inner_arc_state = inner_arc_state.clone();
                                 let _ = server_state_request.node_transport(&state).await;
-                                // if let Ok(state) = inner_arc_state.try_read(){
-                                //     let _ = server_state_request.node_transport(&state).await;
-                                //     drop(state);
-                                // }
-                                
-                                // if let Ok(state) = inner_arc_state.try_read() {
-                                //     let _ = server_state_request.node_transport(&state).await;
-                                //     drop(state);
-                                // }
-                                //});
                                 println!("sent the server state request");
-                                // tokio::select! {
-                                //     _ = inner_server_check_event_rx.changed() => {
-                                //         if let ServerCheckEvent::Remove(server) = &*inner_server_check_event_rx.borrow() {
-                                //             if new_server == *server {
-                                //                 break 'server_status_task;
-                                //             }
-                                //         }
-                                //     }
-                                //     _ = interval.tick() => {}
-                                // }
                                 if !matches!(*status_method.borrow(), StatusMethod::Poll){
                                     break;
                                 }
@@ -577,38 +554,6 @@ pub async fn node_start_hook(arc_state: Arc<ArcSwap<AppState>>, ip: String) {
             let _ = server_check_event.subscribe().changed().await;
         }
     });
-    // tokio::spawn(async move {
-    //     let state = arc_state.write().await;
-    //     let mut rx = state.cached_status_type.subscribe();
-    //     drop(state);
-    //     loop {
-    //         if rx.changed().await.is_err() {
-    //             break;
-    //         }
-    //         let end_server_polling = AtomicBool::new(false);
-    //         if rx.borrow().to_string() == "server-process" {
-    //             let inner_arc_state = arc_state.clone();
-    //             tokio::spawn(async move {
-    //                 let state = inner_arc_state.read().await;
-    //                 let notify = state.poll_server_event.clone();
-    //                 drop(state);
-    //                 let mut interval = tokio::time::interval(Duration::from_millis(500));
-    //                 loop {
-    //                     notify.notified().await;
-    //                     if end_server_polling.load(Ordering::SeqCst) == true {
-    //                         break;
-    //                     }
-    //                     let mut state = inner_arc_state.write().await;
-    //                     let server_state_request = ServerStateRequest {};
-    //                     let _ = server_state_request.node_transport(&mut state).await;
-    //                     interval.tick().await;
-    //                 }
-    //             });
-    //         } else {
-    //             end_server_polling.store(true, Ordering::SeqCst);
-    //         }
-    //     }
-    // });
 }
 
 // This handles the stream
@@ -757,12 +702,6 @@ pub async fn connect_to_server(
                                     if let Err(e) = writer.write_all(&bytes).await {
                                         println!("Error writing {}", e);
                                     }
-
-                                    // if *current_active_priority.lock().await == 0 {
-                                    //     // if let Err(e) = writer.write_all(b"\n").await {
-                                    //     //     println!("Error writing {}", e);
-                                    //     // };
-                                    // }
 
                                     if let Err(e) = writer.flush().await {
                                         println!("Error flushing writer: {}", e);
@@ -951,28 +890,9 @@ impl Default for ConnectionHandler {
     }
 }
 
-// fn wrap_request(bytes: Vec<u8>) -> Vec<u8> {
-//     let mut new_bytes = Vec::new();
-// //    new_bytes.extend(b"\n");
-//     // new_bytes.extend("\\n".as_bytes());
-//     // new_bytes.extend(b"jrs");
-//     new_bytes.extend(bytes);
-//     // new_bytes.extend("\\n".as_bytes());
-//     // new_bytes.extend(b"jre");
-//     new_bytes
-// }
-
 fn convert_into_request<S: Serialize>(s: S) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
     let mut new_bytes = Vec::new();
-    //    new_bytes.extend(b"\n");
-    // new_bytes.extend("\\n".as_bytes());
-    // new_bytes.extend(b"jrs");
     new_bytes.extend(&serde_json::to_vec(&s)?);
-    // new_bytes.extend(cobs::encode_vec(&serde_json::to_vec(&s)?));
-    // new_bytes.push(0x00);
-    // new_bytes.extend(postcard::to_vec_cobs::<S, 32>(&s)?);
-    // new_bytes.extend("\\n".as_bytes());
-    // new_bytes.extend(b"jre");
     Ok(new_bytes)
 }
 
@@ -1505,10 +1425,12 @@ struct PriorityGuard {
 impl Drop for PriorityGuard {
     fn drop(&mut self) {
         if let Ok(mut p) = self.priority.try_lock() {
+            println!("resetting priority");
             *p = 0;
         } else {
             let priority = self.priority.clone();
             tokio::spawn(async move {
+                println!("resetting priority here");
                 *priority.lock().await = 0;
             });
         }
@@ -1544,7 +1466,7 @@ impl FileUploadRequest {
 }
 
 impl StreamTransportable for FileUploadRequest {
-    type Output = ();
+    type Output = flume::Receiver<Vec<u8>>;
     async fn stream_transport(
         &self,
         arc_state: Arc<ArcSwap<AppState>>,
@@ -1553,24 +1475,56 @@ impl StreamTransportable for FileUploadRequest {
         if state.connection_handler.proxy_tx.is_none() {
             return Err("no stream".into());
         }
-        let priority_handle = state.connection_handler.current_active_priority.clone();
-        *priority_handle.lock().await = 1;
-        drop(state);
 
-        let _guard = PriorityGuard { priority: priority_handle };
-        while let Ok(bytes) = self.file.stream.as_ref().unwrap().recv_async().await {
-            let tx = {
-                let state = arc_state.load();
-                state.connection_handler.proxy_tx.clone()
-            };
-            let Some(tx) = tx else {
-                return Err("proxy_tx dropped mid-transfer".into());
-            };
-            if let Err(e) = tx.send(bytes) {
-                return Err("send failed mid-transfer".into());
+        let (tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let share_tx_guard = state.connection_handler.share_tx.clone();
+        let mut share_tx = share_tx_guard.lock().await;
+        let index = share_tx.len();
+        share_tx.insert(index, tx);
+        drop(share_tx);
+        let (flume_tx, flume_rx) = flume::bounded(32);
+        
+        let file_stream = self.file.stream.as_ref().unwrap().clone();
+        tokio::spawn(async move {
+            let priority_handle = state.connection_handler.current_active_priority.clone();
+            *priority_handle.lock().await = 1;
+
+            drop(state);
+            let _guard = PriorityGuard { priority: priority_handle };
+
+            loop {
+                tokio::select! {
+                    biased;
+                    Some(bytes) = proxy_rx.recv() => {
+                        // println!("got some bytes");
+                        if let Err(_) = flume_tx.send_async(bytes).await {
+                            // println!("got an error");
+                            break;
+                        }
+                    }
+                    Ok(bytes) = file_stream.recv_async() => {
+                        let tx = {
+                            let state = arc_state.load();
+                            state.connection_handler.proxy_tx.clone()
+                        };
+                        let Some(tx) = tx else {
+                            println!("exiting file transfer");
+                            // return Err("proxy_tx dropped mid-transfer".into());
+                            break;
+                        };
+                        if let Err(e) = tx.send(bytes) {
+                            println!("exiting file transfer");
+                            // return Err("send failed mid-transfer".into());
+                            break;
+                        }
+                    } 
+                }
             }
-        }
-        Ok(())
+            
+        });
+  
+        println!("over with file loop");
+        Ok(flume_rx)
     }
 }
 

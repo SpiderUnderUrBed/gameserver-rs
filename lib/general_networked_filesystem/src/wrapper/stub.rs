@@ -74,11 +74,17 @@ impl FileSystemHandler {
     ) -> Result<(), StreamableFileSystemErrors> {
         let out_tx = self.output_channel.0.clone();
         let arc_current_file_receiver = self.current_file_stream.clone();
+        let inner_eof_task = self.eof_task.clone();
         tokio::spawn(async move {
             let mut current_file_receiver_option = arc_current_file_receiver.lock().await;
             if let Some(current_file_receiver) = current_file_receiver_option.take() {
-                while let Ok(bytes) = current_file_receiver.recv_async().await {
-                    let _ = out_tx.send(bytes);
+                loop {
+                    tokio::select! {
+                        Ok(bytes) = current_file_receiver.recv_async() => {
+                            let _ = out_tx.send(bytes);
+                        },
+                        _ = inner_eof_task.notified() => {}
+                    }
                 }
             }
         });
@@ -91,6 +97,10 @@ impl FileSystemHandler {
     }
     pub async fn wait_for_eof(&self) {
         self.eof_task.notified().await
+    }
+    pub async fn check_for_eof(&self, task: Arc<Notify>){
+        task.notified().await;
+        self.eof_task.notify_one();
     }
     pub async fn set_location(&self, _location: String){
     }

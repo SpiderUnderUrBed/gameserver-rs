@@ -9,7 +9,7 @@ use crate::Status;
 use crate::database::databasespec::K8sNode;
 use crate::database::databasespec::NodeType;
 use crate::{
-    NodeWithStream,
+    NodeWithConn,
     orchestrator::{
         docker::BuildImageRequest,
         kubernetes::{
@@ -110,7 +110,7 @@ impl KubeRemoteRequest for GetK8sTypeRequest {
     }
 }
 impl KubeRemoteRequest for ListNodeInfoRequest {
-    type Output = Vec<NodeWithStream>;
+    type Output = Vec<NodeWithConn>;
     async fn execute_remote(
         &self,
         // client: Client,
@@ -127,15 +127,14 @@ impl KubeRemoteRequest for ListNodeInfoRequest {
             .map(K8sNode::try_from)
             .filter_map(|node_result| {
                 if let Ok(node) = node_result {
-                    Some(NodeWithStream {
+                    Some(NodeWithConn {
                         name: node.name,
                         ip: node.ip,
                         status: Status::Unknown,
                         nodetype: NodeType::Inbuilt,
                         k8s_type: node.k8s_type.into(),
                         gameserver: serde_json::Value::String(node.gameserver),
-                        tx: None,
-                        rx: None,
+                        ..Default::default()
                     })
                 } else {
                     None

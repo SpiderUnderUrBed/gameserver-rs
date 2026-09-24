@@ -1,6 +1,6 @@
 use std::{any::Any, sync::Arc};
-use networked_filesystem::{chain::ChainBuilder, flume_delimited::{FlumeFile, TcpFsBidirectional}, Codec, EofFrame, FileFrame, LocalState, Operation, RemoteFileSystem, StreamableFileSystemErrors};
-use tokio::sync::{watch, Mutex};
+use networked_filesystem::{AcknowlageFrame, Codec, EofFrame, FileFrame, LocalState, Operation, RemoteFileSystem, StreamableFileSystemErrors, chain::ChainBuilder, flume_delimited::{FlumeFile, TcpFsBidirectional}};
+use tokio::sync::{Mutex, Notify, watch};
 use tokio_util::sync::CancellationToken;
 use crate::core::FileOperations;
 
@@ -58,12 +58,32 @@ impl FileSystemHandler {
             Ok((location, file_tx.inner_mut().rx.clone()))
         }
     }
-    pub async fn wait_for_eof(&self) {
-        let mut update_operation_event = self.arc_file_tx.lock().await.get_operation_event().clone();
+
+    pub async fn check_for_eof(&self, rx: flume::Receiver<Vec<u8>>){
+        let eof_task = Arc::new(CancellationToken::new());
+        let mut fs = self.arc_file_tx.lock().await;
+        let mut chain = ChainBuilder::new(&mut fs);
+
+        let inner_eof_task = eof_task.clone();
+        let mut chain = chain.chain::<AcknowlageFrame, _, _>(move |state_id, eof, fs| {
+            let inner_eof_task = eof_task.clone();
+            Box::pin({
+                async move {
+                    inner_eof_task.cancel();
+                    Ok(()) 
+                }
+            })
+        });
+
+        let mut remainder = 0;
         loop {
-            let _ = update_operation_event.changed().await;
-            if matches!(*update_operation_event.borrow(), Operation::Eof){
-                break;
+            tokio::select! {
+                _ = inner_eof_task.cancelled() => {
+                    break;
+                },
+                Ok(bytes) = rx.recv_async() => {
+                    let _ = chain.decode_bytes(0, bytes, &mut remainder).await;
+                } 
             }
         }
     }
@@ -180,7 +200,8 @@ impl FileSystemHandler {
     ) -> Result<(), StreamableFileSystemErrors> {
         let file_tx = self.arc_file_tx.lock().await;
         if matches!(*file_tx.get_operation_event().borrow(), Operation::Move){
-            file_tx.clone().execute_operation(state_id).await
+            file_tx.clone().execute_operation(state_id).await?;
+            Ok(())
         } else {
             Err(StreamableFileSystemErrors::Any("Not a valid operation".into()))
         }

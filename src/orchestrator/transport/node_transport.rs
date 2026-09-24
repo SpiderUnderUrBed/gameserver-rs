@@ -1,7 +1,7 @@
 use std::error::Error;
 
 use crate::{
-    NodeWithStream,
+    NodeWithConn,
     database::databasespec::K8sType,
     orchestrator::{
         docker::BuildImageRequest,
@@ -62,7 +62,7 @@ impl KubeRemoteRequest for GetK8sGameserversRequest {
     }
 }
 impl KubeRemoteRequest for ListNodeInfoRequest {
-    type Output = Vec<NodeWithStream>;
+    type Output = Vec<NodeWithConn>;
 
     async fn execute_remote(
         &self,

@@ -1,4 +1,5 @@
 use dashmap::DashMap;
+use general_networked_filesystem::core::Operation::Acknowlage;
 use general_networked_filesystem::wrapper::FileSystemHandler;
 use std::fs::File;
 use std::io::{BufReader, Read};
@@ -12,7 +13,7 @@ use async_trait::async_trait;
 use futures::Stream;
 use general_networked_filesystem::core::chain::ChainBuilder;
 use general_networked_filesystem::core::{
-    DrainFrame, EofFrame, FileFrame, FileHandleStatus, LocalState, SetFrame,
+    AcknowlageFrame, DrainFrame, EofFrame, FileFrame, FileHandleStatus, LocalState, SetFrame,
 };
 
 use serde::Serialize;
@@ -151,16 +152,22 @@ pub async fn spawn_conn_background_tasks(
                     })
                 });
 
+                let inner_out_tx = output_tx.clone();
                 let mut chain = chain.chain::<EofFrame, _, _>(move |state_id, eof, fs| {
+                    let inner_out_tx = inner_out_tx.clone();
                     Box::pin({
                         let inner_watch_tx = watch_tx.clone();
                         async move {
                             let _ = inner_watch_tx.send(BackgroundTaskUpdates::NoMoreFileTransfer);
                             let _ = EofFrame::handle::<_, _>(eof, state_id, fs).await;
-                            Ok(())
+                            if let Ok(bytes) = AcknowlageFrame::to_bytes_with_delims(fs.clone()) {
+                                let _ = inner_out_tx.send(bytes).await;
+                            } 
+                            Ok(()) 
                         }
                     })
                 });
+
 
                 let mut chain = chain.chain::<DrainFrame, _, _>(move |state_id, drain, fs| {
                     Box::pin({
@@ -195,9 +202,9 @@ pub async fn spawn_conn_background_tasks(
                                 }
                             });
                             let mut rx_stream = rx.into_stream();
-                            let mut fs_clone = fs.clone();
+                            let fs_clone = fs.clone();
                             tokio::spawn(async move {
-                                let _: Result<(), FileHandleStatus> = DrainFrame::write_from_custom_stream_with_delims(drain, state_id, &mut fs_clone, &mut Some(&mut rx_stream), inner_out_tx).await;
+                                let _: Result<(), FileHandleStatus> = DrainFrame::write_from_custom_stream_with_delims(drain, state_id, fs_clone, &mut Some(&mut rx_stream), inner_out_tx).await;
                             });
                             Ok(())
                         }
