@@ -503,7 +503,7 @@ pub async fn node_start_hook(arc_state: Arc<ArcSwap<AppState>>, ip: String) {
                     let inner_arc_state = inner_arc_state.clone();
                     let state = inner_arc_state.load();
                     let process_guard = state.server_processes.get(&new_server).unwrap();
-                    let status_method = &process_guard.read().await.status_method.clone();
+                    let status_method = &&process_guard.load().status_method.clone();
                     'server_status_task: loop {
                         println!("starting outer loop 1");
                         if matches!(*status_method.borrow(), StatusMethod::Poll) {
@@ -551,15 +551,16 @@ pub async fn node_start_hook(arc_state: Arc<ArcSwap<AppState>>, ip: String) {
                             println!("doing on update");
                             let server_state_request = ServerStateRequest {
                             };
-                            if let Ok(mut rx) = server_state_request.stream_transport(inner_arc_state.clone()).await {
+                            if let Ok(rx) = server_state_request.stream_transport(inner_arc_state.clone()).await {
                                 let inner_process_guard = process_guard.clone();
                                 tokio::spawn(async move {
                                     loop {
                                         let status = rx.borrow().clone();
-                                        if let Ok(mut inner_process) = inner_process_guard.clone().try_write(){
+                                        if status != inner_process_guard.load().status {
+                                            let mut inner_process = (*inner_process_guard.load_full()).clone();
                                             inner_process.status = status;
-                                            let _ = rx.changed().await;
-                                        }
+                                            inner_process_guard.store(Arc::new(inner_process));
+                                        }   
                                     } 
                                 });
                             }

@@ -94,7 +94,7 @@ use futures_util::{sink::SinkExt, stream::StreamExt};
 use jsonwebtoken::{DecodingKey, TokenData, Validation, decode};
 use mime_guess::from_path;
 // use serde;
-use futures_util::{stream, Stream, TryFutureExt};
+use futures_util::{stream, Stream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::Notify;
@@ -152,7 +152,7 @@ use crate::transport::node_transport::{
     check_channel_health, connect_to_server,
 };
 use crate::transport::node_transport_spec::{
-    CreateServerRequest, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, NodeTransportable, NodeTransportableMut, Ping, RemoteFile, ServerDataRequest, ServerStateRequest, SetServerRequest, StartServerRequest, StateActionType, StopServerRequest, StreamTransportable, SwitchConsoleRequest
+    CreateServerRequest, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, NodeTransportable, Ping, RemoteFile, ServerDataRequest, ServerStateRequest, SetServerRequest, StartServerRequest, StateActionType, StopServerRequest, StreamTransportable, SwitchConsoleRequest
 };
 
 mod extra;
@@ -506,7 +506,7 @@ enum ApiCalls {
 //     require_auth: String,
 //     api_call: ApiCalls
 // }
-#[derive(Clone, Default, Serialize, Deserialize, Debug)]
+#[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
 pub enum Status {
     Unknown,
     Up,
@@ -515,6 +515,13 @@ pub enum Status {
     Down,
     // Stopping,
     Unhealthy,
+}
+
+#[derive(Clone)]
+enum Intention {
+    Stopping,
+    Netrual,
+    Starting
 }
 
 #[derive(Clone, Debug)]
@@ -554,10 +561,11 @@ pub enum StatusMethod {
     None
 }
 
+#[derive(Clone)]
 pub struct ServerProcesses {
     logging_status: watch::Sender<LoggingStatus>,
-    logger: Option<Box<dyn Logger + Send + Sync>>,
-    observing_users: AtomicUsize,
+    logger: Option<Arc<Box<dyn Logger + Send + Sync>>>,
+    observing_users: Arc<AtomicUsize>,
     console_in: Option<broadcast::Sender<String>>,
     console_out: Option<broadcast::Sender<String>>,
     poll_server_event: Arc<Notify>,
@@ -566,7 +574,8 @@ pub struct ServerProcesses {
     current_server: Option<Server>,
     // polling_active: bool,
     status_method: watch::Sender<StatusMethod>,
-    status: Status
+    status: Status,
+    intention: Intention
     // user_polling_event: watch::Sender<UserPollingEvent>
 }
 
@@ -596,7 +605,7 @@ pub struct AppState {
     // server_start_event: Arc<Notify>,
     //ws_rx: broadcast::Receiver<String>,
     // server_console: Option<broadcast::Sender<String>>,
-    server_processes: DashMap<String, Arc<RwLock<ServerProcesses>>>,
+    server_processes: DashMap<String, Arc<ArcSwap<ServerProcesses>>>,
     server_check_event: watch::Sender<ServerCheckEvent>,
     base_path: String,
     client: OrchestratorClients,
@@ -693,9 +702,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         get_env_var_or_arg("INITIAL_CONNECTION_ATTEMPTS", Some(5)).unwrap();
     let initial_connection_timeout: u64 =
         get_env_var_or_arg("INITIAL_CONNECTION_TIMEOUT", Some(2)).unwrap();
-
-    // creates a websocket broadcase and tcp channels
-    let (ws_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
 
     // Sets the client to be None, unless there is an orchestrator configured or if the relevent feature flag is enabled
     // for the orchestrator to work inbuilt to the server
@@ -1167,7 +1173,7 @@ pub async fn stop_server(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     let inner_arc_state = arc_state.clone();
-    let mut state = inner_arc_state.load();
+    let state = inner_arc_state.load();
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
@@ -1175,7 +1181,6 @@ pub async fn stop_server(
     }
     if let Ok(Some(current_observing_process)) = get_current_observing_process(session, &state).await {
         println!("got an observing process");
-        let inner_arc_state = arc_state.clone();
         let current_process_guard;
         if let Some(process) = state.server_processes.get(&current_observing_process){
             current_process_guard = process;
@@ -1184,13 +1189,13 @@ pub async fn stop_server(
         }
         println!("got the stop process guard");
 
-        let inner_arc_state = arc_state.clone();
         let stop_server_request = StopServerRequest {};
         let _ = stop_server_request.node_transport(&state).await;
 
         println!("getting the current process");
-        let current_process = current_process_guard.read().await;
+        let current_process = current_process_guard.load();
         let _ = current_process.status_method.send(StatusMethod::OnUpdate);
+        
         println!("changed the current processes status method");
 
         // let server_state_request = ServerStateRequest {
@@ -1237,7 +1242,7 @@ pub async fn rcon_command(
     } else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
-    let current_process = current_process_lock.read().await;
+    let current_process = current_process_lock.load();
 
     if let Some(arc_conn) = &current_process.rcon_connection {
         let mut conn = arc_conn.lock().await;
@@ -1265,7 +1270,7 @@ pub async fn ensure_rcon(session: tower_sessions::Session, state: &AppState) -> 
     } else {
         return Err("Could not get the current process, either the user did not have an id, they didnt have an observed process, or the observing process does not exist".into());
     }
-    let mut current_process = current_process_lock.write().await;
+    let mut current_process = (*current_process_lock.load_full()).clone();
 
     if current_process.rcon_connection.is_none() {
         if let Ok(retrived_db) = state.database.get_settings().await {
@@ -1277,6 +1282,7 @@ pub async fn ensure_rcon(session: tower_sessions::Session, state: &AppState) -> 
                 {
                     Ok(conn) => {
                         current_process.rcon_connection = Some(Arc::new(Mutex::new(conn)));
+                        current_process_lock.store(Arc::new(current_process));
                         return Ok(());
                     }
                     Err(e) => {
@@ -1814,7 +1820,7 @@ async fn get_current_observing_process(session: tower_sessions::Session, state: 
 
 }
 
-async fn get_current_process(session: tower_sessions::Session, state: &AppState) -> Result<Arc<RwLock<ServerProcesses>>, String>{
+async fn get_current_process(session: tower_sessions::Session, state: &AppState) -> Result<Arc<ArcSwap<ServerProcesses>>, String>{
     let current_observing_process;
     if let Ok(Some(process)) = get_current_observing_process(session.clone(), state).await {
         println!("got current prcoess");
@@ -1856,7 +1862,7 @@ async fn set_process_for_user(session: tower_sessions::Session, servername: Stri
     if let Some(old_process) = current_user.current_observing_process.clone() {
         println!("setting mut here");
         if let Some(server_process) = state.server_processes.get(&old_process) {
-            server_process.read().await.observing_users.fetch_sub(1, Ordering::SeqCst);
+            server_process.load().observing_users.fetch_sub(1, Ordering::SeqCst);
         }
     }
     drop(current_user);
@@ -1864,7 +1870,7 @@ async fn set_process_for_user(session: tower_sessions::Session, servername: Stri
     println!("setting mut here");
     if let Some(server_process) = state.server_processes.get(&servername) {
         // current_user.server_connection = server_process.write().await.console_in.clone();
-        server_process.read().await.observing_users.fetch_add(1, Ordering::SeqCst);
+        server_process.load().observing_users.fetch_add(1, Ordering::SeqCst);
     } else {
         println!("the current observing prcoess does not exist");
         return Err("The current observing process does not exist".into());
@@ -1874,7 +1880,7 @@ async fn set_process_for_user(session: tower_sessions::Session, servername: Stri
     println!("end");
     Ok(())
 }
-async fn ensure_server_process(state: &AppState, server: Server) -> Arc<RwLock<ServerProcesses>> {
+async fn ensure_server_process(state: &AppState, server: Server) -> Arc<ArcSwap<ServerProcesses>> {
     println!("called ensure server process");
     if let Some(server_process) = state.server_processes.get(&server.servername){
         println!("{:#?}", state.server_processes.len());
@@ -1883,10 +1889,10 @@ async fn ensure_server_process(state: &AppState, server: Server) -> Arc<RwLock<S
         // let (user_polling_tx, _) = watch::channel(UserPollingEvent::None);
         let (logging_status_tx, _) = watch::channel(LoggingStatus::None);
         let status_method = watch::channel(StatusMethod::None).0;
-        let server_process = Arc::new(RwLock::new(ServerProcesses {
+        let server_process = Arc::new(ArcSwap::new(Arc::new(ServerProcesses {
             logging_status: logging_status_tx,
             logger: None,
-            observing_users: AtomicUsize::new(0),
+            observing_users: Arc::new(AtomicUsize::new(0)),
             console_in: None,
             console_out: None,
             poll_server_event: Arc::new(Notify::new()),
@@ -1895,8 +1901,9 @@ async fn ensure_server_process(state: &AppState, server: Server) -> Arc<RwLock<S
             current_server: Some(server.clone()),
             status_method,
             status: Status::Unknown,
+            intention: Intention::Netrual
             // user_polling_event: user_polling_tx,
-        }));
+        })));
         state.server_processes.insert(server.servername.clone(), server_process.clone());
         let _ = state.server_check_event.send(ServerCheckEvent::Add(server.servername));
         println!("{:#?}", state.server_processes.len());
@@ -1984,7 +1991,7 @@ async fn handle_socket(socket: WebSocket, session: tower_sessions::Session, arc_
 
             if let Some(process) = state.server_processes.clone().get(current_observing_process){
                 let inner_arc_state = arc_state.clone();
-                let server_start_event = process.read().await.server_start_event.clone();
+                let server_start_event = process.load().server_start_event.clone();
                 let inner_process = process.clone();
                 let inner_start_reader_task = inner_start_reader_task.clone();
                 let inner_console_in = inner_console_in.clone();
@@ -1994,10 +2001,11 @@ async fn handle_socket(socket: WebSocket, session: tower_sessions::Session, arc_
 
                 tokio::spawn(async move {
                     //loop {
-                        let server_console_out = inner_process.read().await.console_out.clone();
-                        let server_console_in = inner_process.read().await.console_in.clone();
+                        let inner_process_guard = inner_process.load();
+                        let server_console_out = inner_process_guard.console_out.clone();
+                        let server_console_in = inner_process_guard.console_in.clone();
                         println!("past the second reads");
-                        *inner_server_name.write().await = Some(inner_process.read().await.current_server.as_ref().unwrap().servername.clone());
+                        *inner_server_name.write().await = Some(inner_process_guard.current_server.as_ref().unwrap().servername.clone());
                         println!("set new name");
                         if let (Some(console_out), Some(console_in)) = (server_console_out, server_console_in){
                             println!("connecting to current console");
@@ -2005,7 +2013,7 @@ async fn handle_socket(socket: WebSocket, session: tower_sessions::Session, arc_
                             if matches!(*inner_connection_status_rx.borrow(), ConnectionStatus::None){
                                 println!("will be sending a connect console request");
                                 let console_task = CancellationToken::new();
-                                let mut inner_process_guard = inner_process.write().await;
+                                let mut inner_process_guard = (*inner_process.load_full()).clone();
                                 let request = SwitchConsoleRequest {
                                     active: console_task.clone(),
                                     stdin: {
@@ -2027,6 +2035,7 @@ async fn handle_socket(socket: WebSocket, session: tower_sessions::Session, arc_
                                         }
                                     }
                                 };
+                                inner_process.store(Arc::new(inner_process_guard));
                                 println!("before switch console request");
                                 let _ = request.stream_transport(inner_arc_state).await;
                                 println!("sent switch console request");
@@ -2039,10 +2048,9 @@ async fn handle_socket(socket: WebSocket, session: tower_sessions::Session, arc_
                         } else {
                             println!("constructing console");
                             server_start_event.notified().await;
-                            let process_guard = inner_process.read().await;
-                            *inner_console_in.write().await = process_guard.console_in.clone();
-                            *inner_console_out.write().await = process_guard.console_out.clone();
-                            *inner_server_name.write().await = Some(process_guard.current_server.as_ref().unwrap().servername.clone());
+                            *inner_console_in.write().await = inner_process_guard.console_in.clone();
+                            *inner_console_out.write().await = inner_process_guard.console_out.clone();
+                            *inner_server_name.write().await = Some(inner_process_guard.current_server.as_ref().unwrap().servername.clone());
                             // let process_guard = inner_process.read().await;
                             // inner_curent_user.write().await.server_connection = process_guard.console_in.clone();
                         }
@@ -2547,7 +2555,7 @@ async fn ongoing_server_status(
     let cached_status_type = current_user.cached_status_type.1.clone();
     let poll_server_event_option = {
         if let Ok(process) = get_current_process(session, &state).await {
-            Some(process.read().await.poll_server_event.clone())
+            Some(process.load().poll_server_event.clone())
         } else {
             None
         }
@@ -2748,7 +2756,7 @@ pub async fn start_server(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     println!("before current process");
-    let mut current_process = current_process_lock.write().await;
+    let mut current_process = (*current_process_lock.load_full()).clone();
     println!("past current procoess");
 
     let server_console_task = CancellationToken::new();
@@ -2773,6 +2781,7 @@ pub async fn start_server(
             }
         }
     };
+    current_process_lock.store(Arc::new(current_process.clone()));
     println!("before sending start req");
     let _ = start_server_request
         .stream_transport(arc_state.clone())
@@ -2881,10 +2890,8 @@ async fn add_server(
     {
         let server_process_lock = ensure_server_process(&state, server.clone())
             .await;
-        let mut server_process = server_process_lock
-            .write()
-            .await;
-        let server_console: broadcast::Sender<String> =
+        let mut server_process = (*server_process_lock.load_full()).clone();
+        let server_console: broadcast::Sender<String> = {
             if let Some(console) = server_process.console_out.as_ref() {
                 console.clone()
             } else {
@@ -2892,7 +2899,9 @@ async fn add_server(
                 server_process.console_out = Some(server_console_tx);
                 server_process.server_start_event.notify_waiters();
                 server_process.console_out.as_ref().unwrap().clone()
-            };
+            }
+        };
+        server_process_lock.store(Arc::new(server_process));
         tokio::spawn(async move {
             while let Some(data) = stream.recv().await {
                 let _ = server_console.send(serde_json::to_string(&data).unwrap());
