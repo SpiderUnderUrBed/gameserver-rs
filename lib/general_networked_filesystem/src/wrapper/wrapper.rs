@@ -59,8 +59,9 @@ impl FileSystemHandler {
         }
     }
 
-    pub async fn check_for_eof(&self, rx: flume::Receiver<Vec<u8>>){
-        let eof_task = Arc::new(CancellationToken::new());
+    pub async fn check_for_eof(&self, task_components: (flume::Receiver<Vec<u8>>, Arc<CancellationToken>)){
+        let (rx, eof_task) = (task_components.0, task_components.1);
+
         let mut fs = self.arc_file_tx.lock().await;
         let mut chain = ChainBuilder::new(&mut fs);
 

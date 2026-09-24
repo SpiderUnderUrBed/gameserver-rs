@@ -1466,7 +1466,7 @@ impl FileUploadRequest {
 }
 
 impl StreamTransportable for FileUploadRequest {
-    type Output = flume::Receiver<Vec<u8>>;
+    type Output = (flume::Receiver<Vec<u8>>, Arc<CancellationToken>);
     async fn stream_transport(
         &self,
         arc_state: Arc<ArcSwap<AppState>>,
@@ -1484,7 +1484,10 @@ impl StreamTransportable for FileUploadRequest {
         drop(share_tx);
         let (flume_tx, flume_rx) = flume::bounded(32);
         
+        let task_end = Arc::new(CancellationToken::new());
+
         let file_stream = self.file.stream.as_ref().unwrap().clone();
+        let inner_task_end = task_end.clone();
         tokio::spawn(async move {
             let priority_handle = state.connection_handler.current_active_priority.clone();
             *priority_handle.lock().await = 1;
@@ -1496,9 +1499,7 @@ impl StreamTransportable for FileUploadRequest {
                 tokio::select! {
                     biased;
                     Some(bytes) = proxy_rx.recv() => {
-                        // println!("got some bytes");
                         if let Err(_) = flume_tx.send_async(bytes).await {
-                            // println!("got an error");
                             break;
                         }
                     }
@@ -1517,14 +1518,17 @@ impl StreamTransportable for FileUploadRequest {
                             // return Err("send failed mid-transfer".into());
                             break;
                         }
-                    } 
+                    },
+                    _ = inner_task_end.cancelled() => {
+                        break;
+                    }
                 }
             }
             
         });
   
         println!("over with file loop");
-        Ok(flume_rx)
+        Ok((flume_rx, task_end))
     }
 }
 
