@@ -1498,7 +1498,7 @@ pub async fn stream_file_download(
     let filesystem = state.filesystem.clone();
     let inner_file_path = file_path.clone();
     tokio::spawn(async move {
-        let _ = filesystem.download(format!("server/{}", inner_file_path)).await;
+        let _ = filesystem.download(inner_file_path).await;
     });
 
     headers.insert(
