@@ -62,14 +62,13 @@ use axum_oidc::openidconnect::IssuerUrl;
 use axum_oidc::openidconnect::Scope;
 
 use dashmap::DashMap;
-use general_networked_filesystem::core::{LsRequest, Operation};
+use general_networked_filesystem::core::{LsRequest};
 use general_networked_filesystem::wrapper::{Direction, FileSystemHandler};
 use tokio::sync::{RwLock, mpsc, watch};
 
 use rcon::Connection;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
-use tower_sessions::session::Id;
 
 use crate::database::Node;
 use crate::database::databasespec::Intergration;
@@ -77,7 +76,7 @@ use crate::database::databasespec::NodeType;
 use crate::database::databasespec::NodesDatabase;
 use crate::database::databasespec::UserDatabase;
 use crate::database::databasespec::UserPerm;
-use crate::database::databasespec::{Button, NodeStatus};
+use crate::database::databasespec::{Button, NodeEnabled};
 use crate::database::databasespec::{
     ButtonsDatabase, IntergrationsDatabase, K8sType, Server, ServerDatabase, Settings,
     SettingsDatabase,
@@ -152,10 +151,9 @@ use crate::transport::node_transport::{
     check_channel_health, connect_to_server,
 };
 use crate::transport::node_transport_spec::{
-    CreateServerRequest, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, NodeTransportable, Ping, RemoteFile, ServerDataRequest, ServerStateRequest, SetServerRequest, StartServerRequest, StateActionType, StopServerRequest, StreamTransportable, SwitchConsoleRequest
+    CreateServerRequest, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, NodeTransportable, Ping, ServerDataRequest, ServerStateRequest, SetServerRequest, StartServerRequest, StateActionType, StopServerRequest, StreamTransportable, SwitchConsoleRequest
 };
 
-mod extra;
 
 #[cfg(feature = "grpc_experimental")]
 use general_networked_filesystem::wrapper::IntoStream;
@@ -328,7 +326,7 @@ pub enum StreamResult {
 pub struct NodeWithConn {
     name: String,
     ip: String,
-    status: Status,
+    enabled: NodeEnabled,
     nodetype: NodeType,
     k8s_type: K8sType,
     gameserver: Value,
@@ -340,7 +338,7 @@ impl Clone for NodeWithConn {
             name: self.name.clone(),
             ip: self.ip.clone(),
             nodetype: self.nodetype.clone(),
-            status: self.status.clone(),
+            enabled: self.enabled.clone(),
             gameserver: self.gameserver.clone(),
             k8s_type: self.k8s_type.clone(),
             connection: self.connection.clone()
@@ -504,8 +502,14 @@ enum ApiCalls {
 //     require_auth: String,
 //     api_call: ApiCalls
 // }
+// pub enum NodeStatus {
+//     Down,
+//     Connecting,
+//     Connected
+// }
+
 #[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
-pub enum Status {
+pub enum ServerStatus {
     Unknown,
     Up,
     Healthy,
@@ -573,7 +577,7 @@ pub struct ServerProcesses {
     current_server: Option<Server>,
     // polling_active: bool,
     status_method: watch::Sender<StatusMethod>,
-    status: Status,
+    status: ServerStatus,
     intention: Intention
     // user_polling_event: watch::Sender<UserPollingEvent>
 }
@@ -595,8 +599,6 @@ pub struct AppState {
     // tx: tokio::sync::broadcast::Sender<Vec<u8>>,
     // rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
     connection_handler: ConnectionHandler,
-    cancel_current_conn: CancellationToken,
-    conn_status: Status,
     additonal_node: Vec<NodeWithConn>,
     current_node: NodeWithConn,
     user_clients: Arc<DashMap<i128, Arc<RwLock<UserClient>>>>,
@@ -645,6 +647,92 @@ async fn ensure_admin_user(database: Database) {
             .await;
     }
 }
+async fn establish_connection(
+    arc_state: Arc<ArcSwap<AppState>>,
+    url: String,
+    end_if_timeout: bool,
+) -> Result<watch::Receiver<StreamResult>, Box<dyn Error + Send + Sync>> {
+    let stream = connect_to_server(arc_state.clone(), url, end_if_timeout).await?;
+
+    // TODO: consider interrupts instead of polling
+    tokio::spawn(async move {
+        // let inner_arc_state = arc_state.clone();
+        let server_check_event = arc_state.load().server_check_event.clone();
+        loop {
+            let current_server_check_event = (*server_check_event.borrow()).clone();
+            if let ServerCheckEvent::Add(new_server) = current_server_check_event {
+                let _ = server_check_event.send(ServerCheckEvent::None);
+                println!("got an add event");
+                let inner_server_check_event_rx = server_check_event.subscribe().clone();
+                let inner_arc_state = arc_state.clone();
+                tokio::spawn(async move {
+                    'server_status_task: loop {
+                        let inner_arc_state = inner_arc_state.clone();
+                        let state = inner_arc_state.load();
+                        let process_guard = state.server_processes.get(&new_server).unwrap();
+                        let status_method = &process_guard.load().status_method.clone();
+                        let mut status_method_rx = status_method.subscribe();
+                        println!("starting outer loop 1");
+                        println!("{:#?}", *status_method.borrow());
+                        if matches!(*status_method.borrow(), StatusMethod::Poll) {
+                            println!("doing on poll");
+                            let mut interval = tokio::time::interval(Duration::from_millis(10000));
+                            loop {
+                                println!("starting inner loop");
+                                let server_state_request = ServerStateRequest { };
+                                if let Ok(status) = server_state_request.node_transport(&state).await{
+                                    if process_guard.load().status != status {
+                                        let mut updated_process = (*process_guard.load_full()).clone();
+                                        updated_process.status = status;
+                                        process_guard.store(Arc::new(updated_process));
+                                    }
+                                }
+                                println!("sent the server state request");
+                                if !matches!(*status_method.borrow(), StatusMethod::Poll){
+                                    break;
+                                }
+                                if let ServerCheckEvent::Remove(server) = &*inner_server_check_event_rx.borrow() {
+                                    if new_server == *server {
+                                        break 'server_status_task;
+                                    }
+                                }
+                                interval.tick().await;
+                            }
+                        } else if matches!(*status_method.borrow(), StatusMethod::OnUpdate){
+                            println!("doing on update");
+                            let server_state_request = ServerStateRequest {
+                            };
+                            if let Ok(rx) = server_state_request.stream_transport(inner_arc_state.clone()).await {
+                                let inner_process_guard = process_guard.clone();
+                                tokio::spawn(async move {
+                                    loop {
+                                        let status = rx.borrow().clone();
+                                        if status != inner_process_guard.load().status {
+                                            let mut inner_process = (*inner_process_guard.load_full()).clone();
+                                            inner_process.status = status;
+                                            inner_process_guard.store(Arc::new(inner_process));
+                                        }   
+                                    } 
+                                });
+                            }
+                        }
+                        if let ServerCheckEvent::Remove(server) = &*inner_server_check_event_rx.borrow() {
+                            if new_server == *server {
+                                break;
+                            }
+                        }
+                        println!("before change");
+                        let _ = status_method_rx.changed().await;
+                        println!("changed");
+                    }
+                });
+            }
+            let _ = server_check_event.subscribe().changed().await;
+        }
+    });
+    Ok(stream)
+}
+
 // main function handles the initial connection
 // initilizing the database struct, getting and setting the base path as well as alot of defaults in AppState
 // trying the initial tcp connection to gameserver, and considering creating it if it doesnt exist, and will continually try to make a connection with it
@@ -764,7 +852,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .collect()
     }
 
-    let (internal_tx, internal_rx) = broadcast::channel::<Vec<u8>>(100);
 
     let mut rcon_connection: Option<Arc<Mutex<Connection<TcpStream>>>> = None;
     if let Ok(retrived_db) = database.get_settings().await {
@@ -783,11 +870,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    let mut current_server = None;
-    if !(database.get_settings().await?.current_server.into_server() == Server::default()) {
-        current_server = Some(database.get_settings().await?.current_server.into_server())
-    }
-
     let connection_handler = ConnectionHandler::new();
 
     let (fs_sender_tx, fs_sender_rx) = flume::unbounded();
@@ -804,7 +886,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // tx: tx,
         // rx: rx,
         connection_handler,
-        cancel_current_conn: CancellationToken::new(),
         user_clients: Arc::new(DashMap::new()),
         server_check_event: server_process_event_tx,
         // ws_tx: ws_tx.clone(),
@@ -817,7 +898,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         database: database.clone(),
         client,
         additonal_node: nodes,
-        conn_status: Status::Unknown,
         // cached_status_type,
         // poll_server_event: Arc::new(Notify::new()),
         // rcon_connection,
@@ -825,13 +905,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         lock: Arc::new(AtomicBool::new(false)),
         filesystem,
     };
-    state.conn_status = {
-        if check_channel_health(&mut state).await {
-            Status::Up
-        } else {
-            Status::Down
-        }
-    };
+
 
     let multifaceted_state: Arc<ArcSwap<AppState>> = Arc::new(ArcSwap::new(Arc::new(state)));
     let _ = load_settings(None, multifaceted_state.clone()).await;
@@ -1107,21 +1181,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             // internal for things like terminating a connection to a node locally, or forwarding said message to node
             if initial_connection_result.is_ok() {
                 println!("Creating a new connection");
-                let (new_tx, mut new_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
 
-                // {
-                //     let mut state = inner_state.load().await;
-                //     state.connection_handler = ConnectionHandler::new();
-                //     state.internal_tx = Some(internal_tx);
-                //     state.internal_rx = Some(internal_rx.resubscribe());
-                // }
-                // println!("after state");
-
-                // let bridge_tx = inner_state.read().await.ws_tx.clone();
-                let user_clients = inner_state.load().user_clients.clone(); 
-                // tokio::spawn(async move {
                 let connect_to_server_result =
-                    connect_to_server(inner_state, node_url, user_clients, true).await;
+                    establish_connection(inner_state, node_url, true).await;
                 println!("After connect server");
                 if let Err(_) = connect_to_server_result {
                     // println", err);
@@ -1582,7 +1644,7 @@ async fn fetch_current_node(
         Ok(Json(Node {
             nodename: state.current_node.name.clone(),
             ip: state.current_node.ip.clone(),
-            nodestatus: NodeStatus::Unknown,
+            node_enabled: NodeEnabled::Unknown,
             nodetype: state.current_node.nodetype.clone(),
             k8s_type: state.current_node.k8s_type.clone(),
         }))
@@ -1909,7 +1971,7 @@ async fn ensure_server_process(state: &AppState, server: Server) -> Arc<ArcSwap<
             rcon_connection: None,
             current_server: Some(server.clone()),
             status_method,
-            status: Status::Unknown,
+            status: ServerStatus::Unknown,
             intention: Intention::Netrual
             // user_polling_event: user_polling_tx,
         })));
@@ -2576,31 +2638,33 @@ async fn ongoing_server_status(
                 let status_type = inner_cached_status_type.borrow().to_string();
                 if status_type.is_empty() || status_type == "server-keyword" {
                     let state = arc_state.load();
-                    state.current_node.status.clone()
+                    // state.current_node.enabled.clone()
+                    ServerStatus::Unknown
                 } else if status_type == "server-process" {
                     let state = arc_state.load();
                     let Ok(process) = get_current_process(inner_session, &state).await else {
-                        break 'status Status::Unknown;
+                        break 'status ServerStatus::Unknown;
                     };
                     println!("got a process");
                     process.load().poll_server_event.notify_waiters();
                     process.load().status.clone()
                 } else if status_type == "node" {
                     let state = arc_state.load();
-                    state.conn_status.clone()
+                    // state.conn_status.clone()
+                    ServerStatus::Unknown
                 } else if status_type == "manual-click" {
-                    Status::Unknown
+                    ServerStatus::Unknown
                 } else {
-                    Status::Unknown
+                    ServerStatus::Unknown
                 }
             };
 
             let status_str = match status {
-                Status::Up => "up",
-                Status::Healthy => "healthy",
-                Status::Down => "down",
-                Status::Unhealthy => "unhealthy",
-                Status::Unknown => "unknown",
+                ServerStatus::Up => "up",
+                ServerStatus::Healthy => "healthy",
+                ServerStatus::Down => "down",
+                ServerStatus::Unhealthy => "unhealthy",
+                ServerStatus::Unknown => "unknown",
                 _ => &String::new(),
             };
 
@@ -3531,7 +3595,7 @@ async fn get_nodes(
         .map(|node_and_tcp| Node {
             nodename: node_and_tcp.name,
             ip: node_and_tcp.ip,
-            nodestatus: NodeStatus::Unknown,
+            node_enabled: NodeEnabled::Unknown,
             nodetype: node_and_tcp.nodetype,
             k8s_type: node_and_tcp.k8s_type,
         })
@@ -4085,7 +4149,6 @@ mod tests {
             // tx: tx,
             // rx: rx,
             connection_handler,
-            cancel_current_conn: CancellationToken::new(),
             // ws_tx: ws_tx.clone(),
             // ws_rx: ws_rx.resubscribe(),
             // server_console: None,
@@ -4094,7 +4157,6 @@ mod tests {
             database: database.clone(),
             client,
             additonal_node: nodes,
-            conn_status: Status::Unknown,
             // cached_status_type,
             // poll_server_event: Arc::new(Notify::new()),
             // rcon_connection,
@@ -4268,7 +4330,7 @@ mod tests {
                     element: Element::Node(Node {
                         nodename: "main".to_string(),
                         ip: STATIC_LOCAL_URL.to_string(),
-                        nodestatus: NodeStatus::Unknown,
+                        node_enabled: NodeStatus::Unknown,
                         nodetype: NodeType::Custom(None),
                         k8s_type: K8sType::Unknown,
                     }),
@@ -4335,7 +4397,7 @@ mod tests {
                         node: Node {
                             nodename: "test".to_string(),
                             ip: "127.0.0.1:8080".to_string(),
-                            nodestatus: NodeStatus::Unknown,
+                            node_enabled: NodeEnabled::Unknown,
                             nodetype: NodeType::Custom(None),
                             k8s_type: K8sType::Unknown,
                         },
@@ -4371,7 +4433,7 @@ mod tests {
                         node: Node {
                             nodename: "test".to_string(),
                             ip: "127.0.0.1:8080".to_string(),
-                            nodestatus: NodeStatus::Unknown,
+                            node_enabled: NodeEnabled::Unknown,
                             nodetype: NodeType::Custom(None),
                             k8s_type: K8sType::Unknown,
                         },
@@ -4406,7 +4468,7 @@ mod tests {
                 let initial_connection_timeout: u64 =
                     get_env_var_or_arg("INITIAL_CONNECTION_TIMEOUT", Some(2)).unwrap();
 
-                let state = Arc::new(RwLock::new(create_app_state_for_tests().await.unwrap()));
+                let state = Arc::new(ArcSwap::new(Arc::new(create_app_state_for_tests().await.unwrap())));
 
                 let result = try_initial_connection(
                     initial_connection_attempts,
@@ -4414,8 +4476,6 @@ mod tests {
                     false,
                     &state,
                     node_url,
-                    &ws_tx,
-                    tx,
                 )
                 .await;
 

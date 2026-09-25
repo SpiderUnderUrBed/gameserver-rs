@@ -70,7 +70,7 @@ impl Database {
                 nodename   VARCHAR PRIMARY KEY,
                 ip         VARCHAR NOT NULL,
                 nodetype   TEXT DEFAULT 'unknown',
-                nodestatus TEXT DEFAULT 'unknown',
+                node_enabled TEXT DEFAULT 'unknown',
                 created_at TIMESTAMPTZ DEFAULT now(),
                 updated_at TIMESTAMPTZ DEFAULT now()
             );
@@ -335,12 +335,12 @@ impl NodesDatabase for Database {
             }
 
             let _result = sqlx::query_as::<_, Node>(
-                "INSERT INTO nodes (nodename, ip, nodetype, nodestatus) VALUES ($1, $2, $3, $4) RETURNING *"
+                "INSERT INTO nodes (nodename, ip, nodetype, node_enabled) VALUES ($1, $2, $3, $4) RETURNING *"
             )
             .bind(&node_data.nodename)
             .bind(&node_data.ip)
             .bind(&node_data.nodetype)
-            .bind(&node_data.nodestatus)
+            .bind(&node_data.node_enabled)
             .fetch_one(&self.connection)
             .await?;
 
@@ -375,13 +375,13 @@ impl NodesDatabase for Database {
             let result = sqlx::query(
                 r#"
                 UPDATE nodes 
-                SET ip = $1, nodetype = $2, nodestatus = $3, updated_at = NOW()
+                SET ip = $1, nodetype = $2, node_enabled = $3, updated_at = NOW()
                 WHERE nodename = $4
                 "#
             )
             .bind(&node_data.ip)
             .bind(&node_data.nodetype)
-            .bind(&node_data.nodestatus)
+            .bind(&node_data.node_enabled)
             .bind(&node_data.nodename)
             .execute(&self.connection)
             .await?;

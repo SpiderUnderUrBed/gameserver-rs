@@ -1388,36 +1388,7 @@ pub async fn server_name_handler(
     server_name_response
 }
 
-#[cfg(not(feature = "grpc_experimental"))]
-async fn check_server(
-    arc_state: &Arc<AppState>,
-    // server_output_rx: &mut Option<Receiver<String>>,
-    // needs_server_status_check: &mut bool,
-    // server_name: String,
-    // addr: String
-) -> Option<String> {
-    if let Some(servername) = &*arc_state.current_server.lock().await {
-        if let Some(process) = arc_state.server_processes.get(servername) {
-            if process.active.load(Ordering::SeqCst) == true {
-                let connection_msg = serde_json::json!({
-                    "type": "info",
-                    "data": "Connected to server output stream",
-                    "authcode": "0"
-                })
-                .to_string()
-                    + "\n";
 
-                Some(connection_msg.to_string())
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    }
-}
 
 #[cfg(feature = "grpc_experimental")]
 async fn spawn_request_loop(

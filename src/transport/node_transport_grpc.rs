@@ -1,10 +1,10 @@
 use crate::transport::node_transport::proto::{DownloadRequest, FileChunk};
 use crate::transport::node_transport_spec::{CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, NodeTransportable, NodeTransportableMut, Ping, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StopServerRequest, StreamTransportable, SwitchConsoleRequest};
 use crate::transport::node_transport_spec::RemoteFile;
-use crate::{ApiCalls as ToplevelApiCalls, AuthTcpMessage, IncomingMessage, List, NodeWithConn, UserClient};
+use crate::{ApiCalls as ToplevelApiCalls, AuthTcpMessage, IncomingMessage, List, NodeWithConn, StreamResult, UserClient};
 use crate::{
     AppState, MessagePayload, MessagePayloadWithMetadata, MetadataTypes, SimpleMessage,
-    Status
+    ServerStatus
 };
 use crate::{
     CHANNEL_BUFFER_SIZE, ConsoleData,
@@ -14,7 +14,7 @@ use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use general_networked_filesystem::core::LsRequest;
 use general_networked_filesystem::core::DirectoryResponse;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify, watch};
 use tokio::{
     sync::{RwLock, broadcast, mpsc},
     time::timeout,
@@ -139,55 +139,13 @@ pub async fn node_start_hook(arc_state: Arc<ArcSwap<AppState>>, url: String) {
         }
     }
     arc_state.store(Arc::new(state));
-
-    // TODO: consider interrupts instead of polling
-    // tokio::spawn(async move {
-    //     let state = arc_state.write().await;
-    //     let mut rx = state.cached_status_type.subscribe();
-    //     drop(state);
-    //     loop {
-    //         if rx.changed().await.is_err() {
-    //             break;
-    //         }
-    //         let end_server_polling = AtomicBool::new(false);
-    //         if rx.borrow().to_string() == "server-process" {
-    //             let inner_arc_state = arc_state.clone();
-    //             tokio::spawn(async move {
-    //                 let state = inner_arc_state.load();
-    //                 let notify = state.poll_server_event.clone();
-    //                 drop(state);
-    //                 let mut interval = tokio::time::interval(Duration::from_millis(500));
-    //                 loop {
-    //                     notify.notified().await;
-    //                     if end_server_polling.load(Ordering::SeqCst) == true {
-    //                         break;
-    //                     }
-    //                     let mut state = inner_arc_state.write().await;
-    //                     let server_state_request = ServerStateRequest {};
-    //                     match server_state_request.node_transport(&mut state).await {
-    //                         Ok(res) => {
-    //                             state.current_node.status = res;
-    //                         }
-    //                         Err(_) => {
-    //                             break;
-    //                         }
-    //                     }
-    //                     interval.tick().await;
-    //                 }
-    //             });
-    //         } else {
-    //             end_server_polling.store(true, Ordering::SeqCst);
-    //         }
-    //     }
-    // });
 }
 // does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
 pub async fn connect_to_server(
     arc_state: Arc<ArcSwap<AppState>>,
     url: String,
-    _user_clients: Arc<DashMap<i128, Arc<RwLock<UserClient>>>>,
     _end_if_timeout: bool,
-) -> Result<Option<SocketAddr>, Box<dyn Error + Send + Sync>> {
+) -> Result<watch::Receiver<StreamResult>, Box<dyn Error + Send + Sync>> {
     println!("using this connect to server");
     let mut state = (*arc_state.load_full()).clone();
 
@@ -214,7 +172,8 @@ pub async fn connect_to_server(
     arc_state.store(Arc::new(state));
     node_start_hook(arc_state, url).await;
 
-    Ok(None)
+    let channel = watch::channel(StreamResult::Init).1;
+    Ok(channel)
 }
 
 // this is where it determines wether or not to try and create the container and deployment, as attempt_connection itself is used in various diffrent contexts (like it will constantly
@@ -510,14 +469,8 @@ impl NodeTransportable for RawBytes {
     }
 }
 
-trait InternalTransportable {
-    async fn internal_transport(
-        &self,
-        state: &AppState,
-    ) -> Result<(), Box<dyn Error + Send + Sync>>;
-}
 
-//InternalTransportable
+
 // TODO: impliment this
 impl NodeTransportable for FilterRequest {
     type Output = ();
@@ -539,14 +492,7 @@ impl NodeTransportable for FilterRequest {
         Ok(())
     }
 }
-impl InternalTransportable for FilterRequest {
-    async fn internal_transport(
-        &self,
-        state: &AppState,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        Ok(())
-    }
-}
+
 
 impl NodeTransportable for Ping {
     type Output = ();
@@ -565,14 +511,7 @@ impl NodeTransportable for Ping {
         Ok(())
     }
 }
-impl InternalTransportable for Ping {
-    async fn internal_transport(
-        &self,
-        state: &AppState,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        Ok(())
-    }
-}
+
 //InternalTransportable
 
 // TODO: impliment this
@@ -604,21 +543,14 @@ impl NodeTransportable for IntegrationKeyRequest {
         Ok(())
     }
 }
-impl InternalTransportable for IntegrationKeyRequest {
-    async fn internal_transport(
-        &self,
-        state: &AppState,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        Ok(())
-    }
-}
+
 //InternalTransportable
 impl NodeTransportable for ServerStateRequest {
-    type Output = Status;
+    type Output = ServerStatus;
     async fn node_transport(
         &self,
         state: &AppState,
-    ) -> Result<Status, Box<dyn Error + Send + Sync>> {
+    ) -> Result<ServerStatus, Box<dyn Error + Send + Sync>> {
         let server_state_request = proto::ServerStateRequest {};
         let result = state
             .connection_handler
@@ -632,12 +564,12 @@ impl NodeTransportable for ServerStateRequest {
         match result {
             Ok(res) => {
                 let status = match res.get_ref().message.clone() {
-                    0 => Status::Down,
-                    1 => Status::Up,
-                    2 => Status::Unknown,
-                    3 => Status::Healthy,
-                    4 => Status::Unhealthy,
-                    _ => Status::Unknown
+                    0 => ServerStatus::Down,
+                    1 => ServerStatus::Up,
+                    2 => ServerStatus::Unknown,
+                    3 => ServerStatus::Healthy,
+                    4 => ServerStatus::Unhealthy,
+                    _ => ServerStatus::Unknown
                 };
                 Ok(status)
                 // let status_bool: bool = res.get_ref().message.clone().unwrap().message.parse()?;
@@ -651,14 +583,18 @@ impl NodeTransportable for ServerStateRequest {
         }
     }
 }
-impl InternalTransportable for ServerStateRequest {
-    async fn internal_transport(
+
+impl StreamTransportable for ServerStateRequest {
+    type Output = watch::Receiver<ServerStatus>;
+
+    async fn stream_transport(
         &self,
-        state: &AppState,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        Ok(())
+        arc_state: Arc<ArcSwap<AppState>>,
+    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
+        todo!()
     }
 }
+
 
 
 impl NodeTransportable for LsRequest {

@@ -3,7 +3,7 @@ use std::error::Error;
 use crate::{
     database::databasespec::{K8sType, NodeType}, kubernetes::{GetK8sTypeRequest, VerifyIsK8sGameserverRequest}, orchestrator::kubernetes::{
         BuildDeploymentRequest, GetK8sGameserversRequest, ListNodeInfoRequest,
-    }, NodeWithStream, Status
+    }, NodeWithConn, NodeEnabled
 };
 use k8s_orchestrator::kubernetes::{
     create_k8s_deployment, get_avalible_gameserver, get_k8s_type, list_node_info,
@@ -52,7 +52,7 @@ impl KubeLocalRequest for BuildDeploymentRequest {
     }
 }
 impl KubeLocalRequest for ListNodeInfoRequest {
-    type Output = Vec<NodeWithStream>;
+    type Output = Vec<NodeWithConn>;
 
     async fn execute_locally(
         &self,
@@ -61,17 +61,16 @@ impl KubeLocalRequest for ListNodeInfoRequest {
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         match list_node_info(connection.k8s_client).await {
             Ok(nodes) => {
-                let final_nodes: Vec<NodeWithStream> = nodes
+                let final_nodes: Vec<NodeWithConn> = nodes
                     .iter()
-                    .map(|node| NodeWithStream {
+                    .map(|node| NodeWithConn {
                         name: node.name.clone(),
                         ip: node.ip.clone(),
-                        status: Status::Unknown,
+                        enabled: NodeEnabled::Unknown,
                         nodetype: NodeType::Unknown,
                         k8s_type: node.k8s_type.clone().into(),
                         gameserver: Value::String(node.gameserver.clone()),
-                        tx: None,
-                        rx: None,
+                        ..Default::default()
                     })
                     .collect();
                 Ok(final_nodes)

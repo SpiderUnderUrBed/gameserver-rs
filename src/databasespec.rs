@@ -147,7 +147,7 @@ impl Default for Settings {
     sqlx(type_name = "text")
 )]
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
-pub enum NodeStatus {
+pub enum NodeEnabled {
     #[default]
     Unknown,
     Enabled,
@@ -156,7 +156,7 @@ pub enum NodeStatus {
     ImmutablyDisabled,
 }
 
-impl<'de> serde::Deserialize<'de> for NodeStatus {
+impl<'de> serde::Deserialize<'de> for NodeEnabled {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let v = serde_json::Value::deserialize(d)?;
         let s = match &v {
@@ -169,11 +169,11 @@ impl<'de> serde::Deserialize<'de> for NodeStatus {
             _ => "unknown".to_string(),
         };
         Ok(match s.to_lowercase().as_str() {
-            "enabled" => NodeStatus::Enabled,
-            "disabled" => NodeStatus::Disabled,
-            "immutablyenabled" | "immutably_enabled" => NodeStatus::ImmutablyEnabled,
-            "immutablydisabled" | "immutably_disabled" => NodeStatus::ImmutablyDisabled,
-            _ => NodeStatus::Unknown,
+            "enabled" => NodeEnabled::Enabled,
+            "disabled" => NodeEnabled::Disabled,
+            "immutablyenabled" | "immutably_enabled" => NodeEnabled::ImmutablyEnabled,
+            "immutablydisabled" | "immutably_disabled" => NodeEnabled::ImmutablyDisabled,
+            _ => NodeEnabled::Unknown,
         })
     }
 }
@@ -419,7 +419,7 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for User {
 pub struct Node {
     pub nodename: String,
     pub ip: String,
-    pub nodestatus: NodeStatus,
+    pub node_enabled: NodeEnabled,
     pub nodetype: NodeType,
     //#[sqlx(rename = "nodetype")]
     #[cfg_attr(any(feature = "full-stack", feature = "database"), sqlx(skip))]

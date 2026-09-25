@@ -5,8 +5,9 @@ use std::error::Error;
 use tonic::transport::Channel;
 
 use crate::K8sType;
-use crate::Status;
+use crate::ServerStatus;
 use crate::database::databasespec::K8sNode;
+use crate::database::databasespec::NodeEnabled;
 use crate::database::databasespec::NodeType;
 use crate::{
     NodeWithConn,
@@ -130,7 +131,7 @@ impl KubeRemoteRequest for ListNodeInfoRequest {
                     Some(NodeWithConn {
                         name: node.name,
                         ip: node.ip,
-                        status: Status::Unknown,
+                        enabled: NodeEnabled::Unknown,
                         nodetype: NodeType::Inbuilt,
                         k8s_type: node.k8s_type.into(),
                         gameserver: serde_json::Value::String(node.gameserver),
