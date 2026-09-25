@@ -274,7 +274,7 @@ async fn get_all_stream_data_parsed(line_content: &str) -> Vec<Value> {
 async fn handle_all_stream_values(
     arc_state: Arc<ArcSwap<AppState>>,
     value: Value,
-    user_clients_option: Option<DashMap<i128, Arc<RwLock<UserClient>>>>,
+    user_clients_option: Option<Arc<DashMap<i128, Arc<RwLock<UserClient>>>>>,
     ip: &str,
     server_start_keyword: &mut String,
     server_stop_keyword: &mut String,
@@ -282,6 +282,7 @@ async fn handle_all_stream_values(
     if let Ok(payload) = serde_json::from_value::<MessagePayload>(value.clone()) {
 
         if payload.r#type == "server_state" {
+            println!("got a server state req");
             // if let Ok(mut state) = arc_state.try_write() {
             //     println!("wrote the state");
             //     let sent_status = payload.message.parse().unwrap_or(false);
@@ -432,7 +433,7 @@ async fn process_stream_data(
     raw_data: &[u8],
     arc_state: &Arc<ArcSwap<AppState>>,
     // ws_tx: &broadcast::Sender<String>,
-    user_clients_option: Option<DashMap<i128, Arc<RwLock<UserClient>>>>,
+    user_clients_option: Option<Arc<DashMap<i128, Arc<RwLock<UserClient>>>>>,
     ip: &str,
     server_start_keyword: &mut String,
     server_stop_keyword: &mut String,
@@ -496,16 +497,19 @@ pub async fn node_start_hook(arc_state: Arc<ArcSwap<AppState>>, ip: String) {
         loop {
             let current_server_check_event = (*server_check_event.borrow()).clone();
             if let ServerCheckEvent::Add(new_server) = current_server_check_event {
+                let _ = server_check_event.send(ServerCheckEvent::None);
                 println!("got an add event");
                 let inner_server_check_event_rx = server_check_event.subscribe().clone();
                 let inner_arc_state = arc_state.clone();
                 tokio::spawn(async move {
-                    let inner_arc_state = inner_arc_state.clone();
-                    let state = inner_arc_state.load();
-                    let process_guard = state.server_processes.get(&new_server).unwrap();
-                    let status_method = &&process_guard.load().status_method.clone();
                     'server_status_task: loop {
+                        let inner_arc_state = inner_arc_state.clone();
+                        let state = inner_arc_state.load();
+                        let process_guard = state.server_processes.get(&new_server).unwrap();
+                        let status_method = &process_guard.load().status_method.clone();
+                        let mut status_method_rx = status_method.subscribe();
                         println!("starting outer loop 1");
+                        println!("{:#?}", *status_method.borrow());
                         if matches!(*status_method.borrow(), StatusMethod::Poll) {
                             println!("doing on poll");
                             let mut interval = tokio::time::interval(Duration::from_millis(10000));
@@ -547,7 +551,9 @@ pub async fn node_start_hook(arc_state: Arc<ArcSwap<AppState>>, ip: String) {
                                 break;
                             }
                         }
-                        let _ = status_method.subscribe().changed().await;
+                        println!("before change");
+                        let _ = status_method_rx.changed().await;
+                        println!("changed");
                     }
                 });
             }
@@ -566,7 +572,7 @@ pub async fn handle_stream(
     //stream: &mut TcpStream,
     ip: String,
     // ws_tx: broadcast::Sender<String>,
-    user_clients_option: Option<DashMap<i128, Arc<RwLock<UserClient>>>>
+    user_clients_option: Option<Arc<DashMap<i128, Arc<RwLock<UserClient>>>>>
 ) -> StreamResult {
     let mut server_start_keyword = String::new();
     let mut server_stop_keyword = String::new();
@@ -618,7 +624,7 @@ pub async fn handle_stream(
 pub async fn connect_to_server(
     arc_state: Arc<ArcSwap<AppState>>,
     tcp_url: String,
-    user_clients: DashMap<i128, Arc<RwLock<UserClient>>>,
+    user_clients: Arc<DashMap<i128, Arc<RwLock<UserClient>>>>,
     //ws_tx: broadcast::Sender<String>,
     end_if_timeout: bool,
 ) -> Result<watch::Receiver<StreamResult>, Box<dyn Error + Send + Sync>> {
@@ -1526,8 +1532,7 @@ impl StreamTransportable for FileUploadRequest {
             }
             
         });
-  
-        println!("over with file loop");
+
         Ok((flume_rx, task_end))
     }
 }

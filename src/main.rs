@@ -553,6 +553,7 @@ enum LoggingStatus {
 // enum ServerState {
 //     Up
 // }
+#[derive(Debug)]
 pub enum StatusMethod {
     Poll,
     OnUpdate,
@@ -598,12 +599,12 @@ pub struct AppState {
     conn_status: Status,
     additonal_node: Vec<NodeWithConn>,
     current_node: NodeWithConn,
-    user_clients: DashMap<i128, Arc<RwLock<UserClient>>>,
+    user_clients: Arc<DashMap<i128, Arc<RwLock<UserClient>>>>,
     // ws_tx: broadcast::Sender<String>,
     // server_start_event: Arc<Notify>,
     //ws_rx: broadcast::Receiver<String>,
     // server_console: Option<broadcast::Sender<String>>,
-    server_processes: DashMap<String, Arc<ArcSwap<ServerProcesses>>>,
+    server_processes: Arc<DashMap<String, Arc<ArcSwap<ServerProcesses>>>>,
     server_check_event: watch::Sender<ServerCheckEvent>,
     base_path: String,
     client: OrchestratorClients,
@@ -804,12 +805,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // rx: rx,
         connection_handler,
         cancel_current_conn: CancellationToken::new(),
-        user_clients: DashMap::new(),
+        user_clients: Arc::new(DashMap::new()),
         server_check_event: server_process_event_tx,
         // ws_tx: ws_tx.clone(),
         // ws_rx: ws_rx.resubscribe(),
         // server_console: None,
-        server_processes: DashMap::new(),
+        server_processes: Arc::new(DashMap::new()),
         // server_start_event: Arc::new(Notify::new()),
         base_path: base_path.clone(),
         current_node: NodeWithConn::default(),
@@ -1195,18 +1196,6 @@ pub async fn stop_server(
         let _ = current_process.status_method.send(StatusMethod::OnUpdate);
         
         println!("changed the current processes status method");
-
-        // let server_state_request = ServerStateRequest {
-        // };
-        // if let Ok(mut rx) = server_state_request.stream_transport(arc_state).await {
-        //     tokio::spawn(async move {
-        //         loop {
-        //             let status = rx.borrow().clone();
-                    
-        //             let _ = rx.changed().await;
-        //         } 
-        //     });
-        // }
 
         StatusCode::CREATED.into_response()
     } else {
@@ -1839,6 +1828,25 @@ async fn get_current_process(session: tower_sessions::Session, state: &AppState)
     println!("done getting processes");
     Ok(current_process_guard.clone())
 }
+fn user_process_increment(process: &Arc<ArcSwap<ServerProcesses>>){
+   let observing_users = &process.load().observing_users;
+   observing_users.fetch_add(1, Ordering::SeqCst);
+   if observing_users.load(Ordering::SeqCst) == 1 {
+    if !matches!(process.load().intention, Intention::Stopping){
+        process.load().status_method.send_replace(StatusMethod::Poll);
+    }
+   }
+}
+fn user_process_decrement(user: &UserClient, process: &Arc<ArcSwap<ServerProcesses>>){
+    let observing_users = &process.load().observing_users;
+    if user.open_websockets.load(Ordering::SeqCst) > 0 {
+        observing_users.fetch_sub(1, Ordering::SeqCst);
+        if observing_users.load(Ordering::SeqCst) == 0 {
+            println!("resetting status method");
+            process.load().status_method.send_replace(StatusMethod::None);
+        }
+    }
+}
 async fn set_process_for_user(session: tower_sessions::Session, servername: String, state: &AppState) -> Result<(), String> {
     println!("called set process for user");
     let current_user_lock;
@@ -1849,7 +1857,7 @@ async fn set_process_for_user(session: tower_sessions::Session, servername: Stri
         return Err("User did not have a valid id".into());
     }
     let mut current_user = current_user_lock.write().await;    
-    current_user.connection_status.send(ConnectionStatus::None);
+    let _ = current_user.connection_status.send(ConnectionStatus::None);
     let _ = current_user.server_change_event.notify_waiters();
     current_user.current_observing_process = Some(servername.clone());
 
@@ -1857,15 +1865,21 @@ async fn set_process_for_user(session: tower_sessions::Session, servername: Stri
     if let Some(old_process) = current_user.current_observing_process.clone() {
         println!("setting mut here");
         if let Some(server_process) = state.server_processes.get(&old_process) {
-            server_process.load().observing_users.fetch_sub(1, Ordering::SeqCst);
+            user_process_decrement(&current_user, &server_process);
+
         }
     }
     drop(current_user);
     
     println!("setting mut here");
     if let Some(server_process) = state.server_processes.get(&servername) {
+        user_process_increment(&server_process);
         // current_user.server_connection = server_process.write().await.console_in.clone();
-        server_process.load().observing_users.fetch_add(1, Ordering::SeqCst);
+        // let observing_users = &server_process.load().observing_users;
+        // observing_users.fetch_add(1, Ordering::SeqCst);
+        // if observing_users.load(Ordering::SeqCst) == 1 {
+        //     server_process.
+        // }
     } else {
         println!("the current observing prcoess does not exist");
         return Err("The current observing process does not exist".into());
@@ -1900,7 +1914,8 @@ async fn ensure_server_process(state: &AppState, server: Server) -> Arc<ArcSwap<
             // user_polling_event: user_polling_tx,
         })));
         state.server_processes.insert(server.servername.clone(), server_process.clone());
-        let _ = state.server_check_event.send(ServerCheckEvent::Add(server.servername));
+        let res = state.server_check_event.send(ServerCheckEvent::Add(server.servername));
+        println!("res should have been: {:#?}", res);
         println!("{:#?}", state.server_processes.len());
         server_process
     }
@@ -3397,13 +3412,19 @@ async fn change_node(
     auth_session: AuthSession,
     headers: HeaderMap,
     Json(request): Json<ChangeNodeRequest>,
-) -> Result<StatusCode, StatusCode> {
+) -> StatusCode {
     let state = arc_state.load();
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
-        return Err(StatusCode::UNAUTHORIZED);
+        return StatusCode::UNAUTHORIZED;
     }
+
+    let Some(node) = state.database.retrieve_nodes(request.node_id.clone()).await else {
+        return StatusCode::NOT_FOUND;
+    };
+
+    StatusCode::OK
 
     // let ws_tx = state.ws_tx.clone();
     // let option_node = {
@@ -3437,7 +3458,7 @@ async fn change_node(
     //     println!("Error: node not found");
     //     Err(StatusCode::INTERNAL_SERVER_ERROR)
     // }
-    Err(StatusCode::INTERNAL_SERVER_ERROR)
+    // Err(StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 // A list of nodes in a k8s cluster is returned, nothing is returned if there is not a client (k8s support is off)
@@ -4087,8 +4108,8 @@ mod tests {
             // current_server,
             lock: Arc::new(AtomicBool::new(false)),
             filesystem,
-            user_clients: UserManager::new(),
-            server_processes: DashMap::new(),
+            user_clients: Arc::new(DashMap::new()),
+            server_processes: Arc::new(DashMap::new()),
             server_check_event,
         };
         Ok(state)
