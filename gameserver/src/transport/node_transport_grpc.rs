@@ -475,7 +475,16 @@ impl Into<ConsoleRequest> for proto::ServerMessage {
 impl Into<proto::ServerStateResponse> for ServerStateResponse {
     fn into(self) -> proto::ServerStateResponse {
         proto::ServerStateResponse {
-            message: Some(self.message.into()),
+            r#type: "command".into(),
+            message: match self.message {
+                crate::Status::Unknown => 2,
+                crate::Status::Up => 1,
+                crate::Status::Healthy => 3,
+                crate::Status::Down => 0,
+                crate::Status::Unhealthy => 4,
+            },
+            authcode: "0".into(),
+            // message: Some(self.message.into()),
         }
     }
 }

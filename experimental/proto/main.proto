@@ -4,6 +4,14 @@ import "google/protobuf/struct.proto";
 
 package main;
 
+enum Status {
+  Up = 0;
+  Down = 1;
+  Unknown = 2;
+  Healthy = 3;
+  Unhealthy = 4;
+}
+
 message MetadataTypes {
   string kind = 1;
   string data = 2;
@@ -90,7 +98,9 @@ message FileOperationResponse {
 message CreateServerResponse {}
 message DeleteServerResponse {}
 message ServerStateResponse {
-  MessagePayload message = 1; 
+  string type = 1;
+  Status message = 2;
+  string authcode = 3;
 }
 message ServerNameResponse {
   string type = 1;

@@ -185,7 +185,7 @@ pub async fn node_start_hook(arc_state: Arc<ArcSwap<AppState>>, url: String) {
 pub async fn connect_to_server(
     arc_state: Arc<ArcSwap<AppState>>,
     url: String,
-    _user_clients: DashMap<i128, Arc<RwLock<UserClient>>>,
+    _user_clients: Arc<DashMap<i128, Arc<RwLock<UserClient>>>>,
     _end_if_timeout: bool,
 ) -> Result<Option<SocketAddr>, Box<dyn Error + Send + Sync>> {
     println!("using this connect to server");
@@ -631,12 +631,21 @@ impl NodeTransportable for ServerStateRequest {
             .await;
         match result {
             Ok(res) => {
-                let status_bool: bool = res.get_ref().message.clone().unwrap().message.parse()?;
-                if status_bool == true {
-                    Ok(Status::Up)
-                } else {
-                    Ok(Status::Down)
-                }
+                let status = match res.get_ref().message.clone() {
+                    0 => Status::Down,
+                    1 => Status::Up,
+                    2 => Status::Unknown,
+                    3 => Status::Healthy,
+                    4 => Status::Unhealthy,
+                    _ => Status::Unknown
+                };
+                Ok(status)
+                // let status_bool: bool = res.get_ref().message.clone().unwrap().message.parse()?;
+                // if status_bool == true {
+                //     Ok(Status::Up)
+                // } else {
+                //     Ok(Status::Down)
+                // }
             }
             Err(e) => Err(Box::new(e)),
         }

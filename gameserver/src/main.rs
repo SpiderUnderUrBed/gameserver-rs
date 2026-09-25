@@ -294,6 +294,18 @@ impl TryFrom<Value> for List {
     }
 }
 
+#[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
+pub enum Status {
+    Unknown,
+    Up,
+    Healthy,
+    #[default]
+    Down,
+    // Stopping,
+    Unhealthy,
+}
+
+
 // #[derive(Default)]
 // struct NoneResponse {}
 // impl IntoResponse for NoneResponse {}
@@ -764,7 +776,9 @@ pub async fn ensure_server_process(state: &Arc<AppState>) -> Arc<ServerProcesses
     let servername = state.current_server.lock().await.clone();
 
     if let Some(servername) = servername {
+        println!("getting a process");
         if let Some(process) = state.server_processes.get(&servername) {
+            println!("Got a process");
             return process.clone();
         }
     }
@@ -1339,23 +1353,20 @@ pub async fn server_state_handler(
     _req: ServerStateRequest,
     _addr: String
 ) -> Result<ServerStateResponse, NoneResponse> {
-    if let Some(servername) = &*state.current_server.lock().await {
-        if let Some(process) = state.server_processes.get(servername) {
-            let status = process.active.load(Ordering::SeqCst);
-            let server_state_response: ServerStateResponse = ServerStateResponse {
-                message: MessagePayload {
-                    r#type: "server_state".to_string(),
-                    message: status.to_string(),
-                    authcode: "0".to_string(),
-                },
-            };
-            Ok(server_state_response)
-        } else {
-            Err(NoneResponse {})
-        }
-    } else {
-        Err(NoneResponse {})
-    }
+    println!("called server state");
+    let process = ensure_server_process(state).await;
+    println!("got a process");
+    // if let Some(process) = state.server_processes.get(servername) {
+    let status = process.active.load(Ordering::SeqCst);
+    let server_state_response: ServerStateResponse = ServerStateResponse {
+        r#type: "server_state".to_string(),
+        message: match status {
+            true => Status::Up,
+            false => Status::Down
+        },
+        authcode: "0".to_string(),
+    };
+    Ok(server_state_response)
 }
 pub async fn server_name_handler(
     _state: &Arc<AppState>,

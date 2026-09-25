@@ -2563,35 +2563,28 @@ async fn ongoing_server_status(
     }
     let current_user = current_user_lock.read().await;
     let cached_status_type = current_user.cached_status_type.1.clone();
-    let poll_server_event_option = {
-        if let Ok(process) = get_current_process(session, &state).await {
-            Some(process.load().poll_server_event.clone())
-        } else {
-            None
-        }
-    };
-    drop(current_user);
+
 
     let updates = stream::unfold(
         (interval, arc_state),
         move |(mut interval, arc_state)| {
         let inner_cached_status_type = cached_status_type.clone();
-        let inner_poll_event_option =  poll_server_event_option.clone();
+        let inner_session = session.clone();
         async move {
             interval.tick().await;
-            let status = {
+            let status = 'status: {
                 let status_type = inner_cached_status_type.borrow().to_string();
                 if status_type.is_empty() || status_type == "server-keyword" {
                     let state = arc_state.load();
                     state.current_node.status.clone()
                 } else if status_type == "server-process" {
-                    if let Some(poll_server_event) = inner_poll_event_option {
-                        poll_server_event.notify_waiters();
-                        let state = arc_state.load();
-                        state.current_node.status.clone()
-                    } else {
-                        Status::Down
-                    }
+                    let state = arc_state.load();
+                    let Ok(process) = get_current_process(inner_session, &state).await else {
+                        break 'status Status::Unknown;
+                    };
+                    println!("got a process");
+                    process.load().poll_server_event.notify_waiters();
+                    process.load().status.clone()
                 } else if status_type == "node" {
                     let state = arc_state.load();
                     state.conn_status.clone()

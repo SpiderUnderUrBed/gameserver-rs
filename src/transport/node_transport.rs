@@ -2,7 +2,7 @@
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use general_networked_filesystem::core::{DirectoryResponse, FileRequest, LsRequest};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{
     io::AsyncWriteExt, net::TcpStream, sync::{mpsc::{self}, watch, Mutex, RwLock}, time::{sleep, timeout}
@@ -36,12 +36,16 @@ pub struct PasswordRequest {
     pub password: String,
 }
 
+#[derive(Deserialize, Serialize)]
+pub struct OkResponse {
+    Ok: Value
+}
 
 impl NodeTransportable for ServernameRequest {
     type Output = NodeWithConn;
 
     async fn node_transport(&self, state: &AppState) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
-        let mut bytes = convert_into_request(&MessagePayload {
+        let bytes = convert_into_request(&MessagePayload {
             r#type: "command".to_string(),
             message: "server_name".to_string(),
             authcode: "0".to_string(),
@@ -516,7 +520,13 @@ pub async fn node_start_hook(arc_state: Arc<ArcSwap<AppState>>, ip: String) {
                             loop {
                                 println!("starting inner loop");
                                 let server_state_request = ServerStateRequest { };
-                                let _ = server_state_request.node_transport(&state).await;
+                                if let Ok(status) = server_state_request.node_transport(&state).await{
+                                    if process_guard.load().status != status {
+                                        let mut updated_process = (*process_guard.load_full()).clone();
+                                        updated_process.status = status;
+                                        process_guard.store(Arc::new(updated_process));
+                                    }
+                                }
                                 println!("sent the server state request");
                                 if !matches!(*status_method.borrow(), StatusMethod::Poll){
                                     break;
@@ -1346,13 +1356,13 @@ impl NodeTransportable for IntegrationKeyRequest {
 //     pub state_action: StateActionType
 // }
 impl NodeTransportable for ServerStateRequest {
-    type Output = ();
-    async fn node_transport(&self, state: &AppState) -> Result<(), Box<dyn Error + Send + Sync>> {
+    type Output = Status;
+    async fn node_transport(&self, state: &AppState) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         if *state.connection_handler.current_active_priority.lock().await > 0 {
             return Err("high priority task is occuring and cant be interfered with".into())
         }
 
-        let mut bytes = convert_into_request(&json!({
+        let bytes = convert_into_request(&json!({
             "type": "command".to_string(),
             "message": "server_state".to_string(),
             "authcode": "0".to_string(),
@@ -1365,7 +1375,26 @@ impl NodeTransportable for ServerStateRequest {
         }
         let _ = state.connection_handler.proxy_tx.clone().unwrap().send(bytes);
 
-        Ok(())
+        let (tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let share_tx_guard = state.connection_handler.share_tx.clone();
+        let mut share_tx = share_tx_guard.lock().await;
+        let index = share_tx.len();
+        share_tx.insert(index, tx);
+        drop(share_tx);
+
+        while let Some(bytes) = proxy_rx.recv().await {
+            if let Ok(ok_response) = serde_json::from_slice::<OkResponse>(&bytes){
+                if let Some(raw_status) = ok_response.Ok.get("message"){
+                    
+                    if let Ok(status) = serde_json::from_value::<Status>(raw_status.clone()){
+                        println!("got a status");
+                        return Ok(status);
+                    }
+                }
+            }
+        } 
+
+        Err("Could not get the response".into())
     }
 }
 

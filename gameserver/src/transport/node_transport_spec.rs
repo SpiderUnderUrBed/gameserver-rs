@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 //#[cfg(feature = "grpc_experimental")]
 use crate::{
-    AppState, GetState, IncomingMessage, IncomingMessageWithMetadata, MessagePayload, SimpleMessage,
+    AppState, GetState, IncomingMessage, IncomingMessageWithMetadata, MessagePayload, SimpleMessage, Status,
 };
 
 use flatten_safe_macro::flatten_safe;
@@ -211,11 +211,15 @@ pub struct ServerNameResponse {
 }
 // register_output_single!(ServerNameResponse);
 
+
 // #[register_output]
 #[derive(Serialize, Clone, Debug, Deserialize)]
 pub struct ServerStateResponse {
-    pub message: MessagePayload,
+    pub r#type: String,
+    pub message: Status,
+    pub authcode: String,
 }
+
 
 #[flatten_safe]
 #[derive(Serialize, Clone)]
