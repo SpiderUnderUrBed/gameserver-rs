@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::{AppState, MetadataTypes, SrcAndDest, database::databasespec::Filters};
+use crate::{AppState, MetadataTypes, SrcAndDest, database::databasespec::Filters, transport::node_transport::ConnectionHandler};
 use tokio::sync::{Notify, RwLock, broadcast};
 pub struct ServernameRequest {
     pub ip: String,
@@ -105,9 +105,15 @@ pub trait NodeTransportable {
     type Output;
     async fn node_transport(&self, state: &AppState) -> Result<Self::Output, Box<dyn Error + Send + Sync>>;
 }
+
 pub trait NodeTransportableMut {
     type Output;
     async fn node_transport(&self, state: &mut AppState) -> Result<Self::Output, Box<dyn Error + Send + Sync>>;
+}
+
+pub trait CustomNodeTransportable {
+    type Output;
+    async fn custom_node_transport(&self, state: &AppState, connection_handler: &ConnectionHandler) -> Result<Self::Output, Box<dyn Error + Send + Sync>>;
 }
 
 pub trait StreamTransportable {

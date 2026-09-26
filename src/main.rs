@@ -14,11 +14,13 @@ use crate::database::databasespec::{
 };
 use crate::database::{DatabaseError, Element};
 use crate::docker::BuildImageRequest;
+use crate::frontend_types::{FrontendChangeNodeRequest, FrontendNodeCreateRequest};
 // use crate::filesystem::{execute_file_operation, FileOperations, TcpFileStream};
 // use crate::filesystem::{FsType, send_multipart_over_broadcast};
 use crate::http::HeaderMap;
 use crate::kubernetes::{BuildDeploymentRequest, ListNodeInfoRequest};
 use crate::middleware::from_fn;
+use crate::orchestrator::kubernetes::{GetK8sTypeRequest, VerifyIsK8sGameserverRequest};
 
 use arc_swap::ArcSwap;
 use bytes::Bytes;
@@ -143,15 +145,16 @@ use database::User;
 // #[cfg(feature = "grpc_experimental")]
 // mod transport;
 
+mod frontend_types;
 mod transport;
 
 use crate::transport::node_transport::{ConnectionHandler};
 use crate::transport::node_transport::try_initial_connection;
 use crate::transport::node_transport::{
-    check_channel_health, connect_to_server,
+    connect_to_server,
 };
 use crate::transport::node_transport_spec::{
-    CreateServerRequest, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, NodeTransportable, Ping, ServerDataRequest, ServerStateRequest, SetServerRequest, StartServerRequest, StateActionType, StopServerRequest, StreamTransportable, SwitchConsoleRequest
+    CreateServerRequest, CustomNodeTransportable, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, NodeTransportable, Ping, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StateActionType, StopServerRequest, StreamTransportable, SwitchConsoleRequest
 };
 
 
@@ -326,11 +329,12 @@ pub enum StreamResult {
 pub struct NodeWithConn {
     name: String,
     ip: String,
+    status: NodeStatus,
     enabled: NodeEnabled,
     nodetype: NodeType,
     k8s_type: K8sType,
     gameserver: Value,
-    connection: Option<ConnectionHandler>
+    connection: Option<Arc<ConnectionHandler>>
 }
 impl Clone for NodeWithConn {
     fn clone(&self) -> NodeWithConn {
@@ -338,6 +342,7 @@ impl Clone for NodeWithConn {
             name: self.name.clone(),
             ip: self.ip.clone(),
             nodetype: self.nodetype.clone(),
+            status: self.status.clone(),
             enabled: self.enabled.clone(),
             gameserver: self.gameserver.clone(),
             k8s_type: self.k8s_type.clone(),
@@ -509,6 +514,39 @@ enum ApiCalls {
 // }
 
 #[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
+pub enum CommonStatus {
+    Unknown,
+    Up,
+    Healthy,
+    #[default]
+    Down,
+    Unhealthy,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
+pub enum NodeStatus {
+    Unknown,
+    Connected,
+    Healthy,
+    Disconnecting,
+    #[default]
+    Disconnected,
+    Unhealthy,
+}
+impl Into<CommonStatus> for NodeStatus {
+    fn into(self) -> CommonStatus {
+        match self {
+            NodeStatus::Unknown => CommonStatus::Unknown,
+            NodeStatus::Connected => CommonStatus::Up,
+            NodeStatus::Healthy => CommonStatus::Healthy,
+            NodeStatus::Disconnecting => CommonStatus::Down,
+            NodeStatus::Disconnected => CommonStatus::Down,
+            NodeStatus::Unhealthy => CommonStatus::Unhealthy,
+        }
+    }
+}
+
+#[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
 pub enum ServerStatus {
     Unknown,
     Up,
@@ -517,6 +555,18 @@ pub enum ServerStatus {
     Down,
     // Stopping,
     Unhealthy,
+}
+
+impl Into<CommonStatus> for ServerStatus {
+    fn into(self) -> CommonStatus {
+        match self {
+            ServerStatus::Unknown => CommonStatus::Unknown,
+            ServerStatus::Up => CommonStatus::Up,
+            ServerStatus::Healthy => CommonStatus::Healthy,
+            ServerStatus::Down => CommonStatus::Down,
+            ServerStatus::Unhealthy => CommonStatus::Unhealthy,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -598,8 +648,7 @@ pub enum ServerCheckEvent {
 pub struct AppState {
     // tx: tokio::sync::broadcast::Sender<Vec<u8>>,
     // rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
-    connection_handler: ConnectionHandler,
-    additonal_node: Vec<NodeWithConn>,
+    additonal_nodes: DashMap<String, NodeWithConn>,
     current_node: NodeWithConn,
     user_clients: Arc<DashMap<i128, Arc<RwLock<UserClient>>>>,
     // ws_tx: broadcast::Sender<String>,
@@ -647,12 +696,9 @@ async fn ensure_admin_user(database: Database) {
             .await;
     }
 }
-async fn establish_connection(
+async fn spawn_server_background_tasks(
     arc_state: Arc<ArcSwap<AppState>>,
-    url: String,
-    end_if_timeout: bool,
-) -> Result<watch::Receiver<StreamResult>, Box<dyn Error + Send + Sync>> {
-    let stream = connect_to_server(arc_state.clone(), url, end_if_timeout).await?;
+) {
 
     // TODO: consider interrupts instead of polling
     tokio::spawn(async move {
@@ -730,7 +776,90 @@ async fn establish_connection(
             let _ = server_check_event.subscribe().changed().await;
         }
     });
-    Ok(stream)
+}
+
+async fn establish_connection(
+    arc_state: Arc<ArcSwap<AppState>>,
+    url: String,
+    end_if_timeout: bool,
+// ) -> Result<watch::Receiver<StreamResult>, Box<dyn Error + Send + Sync>> {
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let handler = connect_to_server(arc_state.clone(), url.clone(), end_if_timeout).await?;
+
+    let server_name_request = ServernameRequest { ip: url.clone() };
+    let mut state: AppState = (*arc_state.load_full()).clone();
+    let name = server_name_request.custom_node_transport(&state, &handler).await.unwrap();
+    let node = NodeWithConn { 
+        name, 
+        ip: url,  
+        connection: Some(Arc::new(handler)),
+        ..Default::default()
+    };
+
+    // let (client_option, database) = {
+    //         let state = arc_state.load();
+    //         (state.client.clone(), state.database.clone())
+    //     };
+
+    // let node_enabled = if let OrchestratorClients::K8sLocal(client) = client_option {
+    //     // let client_clone = client.clone();
+    //     let ip_clone = url.to_string();
+    //     let request = VerifyIsK8sGameserverRequest { server: ip_clone };
+    //     match tokio::time::timeout(
+    //         std::time::Duration::from_millis(100),
+    //         request.execute_locally(client.clone()),
+    //     )
+    //     .await
+    //     {
+    //         Ok(Err(e)) => return Err("Error verifying that the node is a k8s gameserver".into()),
+    //         Ok(Ok(true)) => NodeEnabled::ImmutablyEnabled,
+    //         _ => NodeEnabled::Enabled,
+    //     }
+    // } else {
+    //     NodeEnabled::Enabled
+    // };
+    // let k8s_type = if let OrchestratorClients::K8sLocal(client) = &state.client {
+    //         let request = VerifyIsK8sGameserverRequest {
+    //             server: url.to_string(),
+    //         };
+    //         match request.execute_locally(client.clone()).await {
+    //             Ok(is_gameserver) => {
+    //                 let request = GetK8sTypeRequest {
+    //                     server: url.to_string(),
+    //                 };
+    //                 match request.execute_locally(client.clone()).await {
+    //                     Ok(k8s_type) => k8s_type,
+    //                     Err(e) => return Err("issue getting the k8s type".into()),
+    //                 }
+    //             }
+    //             Err(e) => return Err("issue verifying tje node is k8s".into())
+    //         } 
+    //     } else {
+    //         K8sType::None
+    //     };
+
+    // let node_type = if let OrchestratorClients::K8sLocal(client) = &state.client {
+    //     let request = VerifyIsK8sGameserverRequest {
+    //         server: url.to_string(),
+    //     };
+    //     match request.execute_locally(client.clone()).await {
+    //         Ok(is_gameserver) => {
+    //             if is_gameserver {
+    //                 NodeType::Inbuilt
+    //             } else {
+    //                 NodeType::Custom(None)
+    //             }
+    //         }
+    //         Err(e) => return Err("issue verifying the node is a k8s one".into())
+    //     } 
+    // } else {
+    //     NodeType::Custom(None)
+    // };
+
+    state.current_node = node;
+    arc_state.store(Arc::new(state.clone()));
+
+    Ok(())
 }
 
 // main function handles the initial connection
@@ -839,16 +968,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
         }
     }
-    let mut nodes: Vec<NodeWithConn> = vec![];
+    let mut nodes: DashMap<String, NodeWithConn> = DashMap::new();
     if let Ok(db_nodes) = database.fetch_all_nodes().await {
         nodes = db_nodes
             .into_iter()
-            .map(|node| NodeWithConn {
+            .map(|node| (node.nodename.clone(), NodeWithConn {
                 name: node.nodename,
                 nodetype: node.nodetype,
                 ip: node.ip,
                 ..Default::default()
-            })
+            }))
             .collect()
     }
 
@@ -870,8 +999,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    let connection_handler = ConnectionHandler::new();
-
     let (fs_sender_tx, fs_sender_rx) = flume::unbounded();
     //let (fs_receiver_tx, fs_receiver_rx) = flume::unbounded();
 
@@ -885,7 +1012,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut state: AppState = AppState {
         // tx: tx,
         // rx: rx,
-        connection_handler,
         user_clients: Arc::new(DashMap::new()),
         server_check_event: server_process_event_tx,
         // ws_tx: ws_tx.clone(),
@@ -897,7 +1023,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         current_node: NodeWithConn::default(),
         database: database.clone(),
         client,
-        additonal_node: nodes,
+        additonal_nodes: nodes,
         // cached_status_type,
         // poll_server_event: Arc::new(Notify::new()),
         // rcon_connection,
@@ -1044,6 +1170,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         routed.layer(session_layer)
     };
 
+    spawn_server_background_tasks(multifaceted_state.clone()).await;
+
     // if there is supposed to be a initial connection and if there is a client (as it wont be able to create the deployment without it, and it would be pointless to create a docker container
     // without the abbility to deploy it)
     let inner_state = Arc::clone(&multifaceted_state);
@@ -1184,12 +1312,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
                 let connect_to_server_result =
                     establish_connection(inner_state, node_url, true).await;
-                println!("After connect server");
+                
                 if let Err(_) = connect_to_server_result {
-                    // println", err);
-                    println!("got an error connecting to server");
+                    eprintln!("got an error connecting to server");
                 }
-                // });
+                
             }
         });
         // This will make sure that the results of the initial connections attempt to build a docker image, or create a k8s deployment succeeded
@@ -2727,7 +2854,7 @@ async fn add_node(
     State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
-    Json(request): Json<ModifyElementData>,
+    Json(request): Json<FrontendNodeCreateRequest>,
 ) -> impl IntoResponse {
     let state = arc_state.load();
 
@@ -2736,9 +2863,21 @@ async fn add_node(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
+    let node_create_request = ModifyElementData {
+        element: Element::Node(
+            Node {
+                nodename: request.nodename,
+                ip: request.ip,
+                ..Default::default()
+            }
+        ),
+        jwt: '0'.into(),
+        require_auth: false,
+    };
+
     let result = state
         .database
-        .create_nodes_in_db(request)
+        .create_nodes_in_db(node_create_request)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
     result
@@ -3458,17 +3597,14 @@ async fn users(
     }))
 }
 
-#[derive(serde::Deserialize)]
-struct ChangeNodeRequest {
-    node_id: String,
-}
+
 
 #[axum::debug_handler]
 async fn change_node(
     State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
-    Json(request): Json<ChangeNodeRequest>,
+    Json(request): Json<FrontendChangeNodeRequest>,
 ) -> StatusCode {
     let state = arc_state.load();
 
@@ -3480,6 +3616,14 @@ async fn change_node(
     let Some(node) = state.database.retrieve_nodes(request.node_id.clone()).await else {
         return StatusCode::NOT_FOUND;
     };
+    
+    if let Some(connection) = &state.current_node.connection {
+        connection.end_connection();
+    }
+
+    if let Err(e) = establish_connection(arc_state, node.ip, true).await{
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    }
 
     StatusCode::OK
 
@@ -3539,7 +3683,7 @@ async fn get_nodes(
         };
         match request.execute_locally(client).await {
             Ok(nodes) => {
-                node_list.extend(nodes.clone());
+                node_list.extend(nodes);
             }
             Err(err) => {
                 eprintln!("Error listing nodes: {}", err);
@@ -3551,7 +3695,7 @@ async fn get_nodes(
         };
         match request.execute_remote(client).await {
             Ok(nodes) => {
-                node_list.extend(nodes.clone());
+                node_list.extend(nodes);
             }
             Err(err) => {
                 eprintln!("Error listing nodes: {}", err);
@@ -3561,33 +3705,29 @@ async fn get_nodes(
 
     match state.database.fetch_all_nodes().await {
         Ok(nodes) => {
-            for node in nodes {
-                let new_node = NodeWithConn {
-                    name: node.nodename,
-                    ip: node.ip,
-                    nodetype: node.nodetype,
+            let new_nodes = nodes.iter().map(|node| {
+                NodeWithConn {
+                    name: node.nodename.clone(),
+                    ip: node.ip.clone(),
+                    nodetype: node.nodetype.clone(),
                     ..Default::default()
-                };
-
-                let exists = node_list.iter().any(|n| n.name == new_node.name);
-
-                if !exists {
-                    node_list.push(new_node);
                 }
-            }
+            }).collect::<Vec<NodeWithConn>>();
+            node_list.extend(new_nodes);
+
         }
         Err(err) => eprintln!("Error fetching DB nodes: {}", err),
     }
 
-    let mut final_nodes = Vec::new();
-    for node in node_list.clone() {
-        let exists = state.additonal_node.iter().any(|n| n.name == node.name);
-        if !exists {
-            final_nodes.push(node);
-        }
-    }
-    let mut state: AppState = (*arc_state.load_full()).clone();
-    state.additonal_node.extend(final_nodes);
+    let final_nodes = node_list.iter()
+        .filter(|n| !state.additonal_nodes.contains_key(&n.name))
+        .map(|n| n.clone())
+        .collect::<Vec<NodeWithConn>>();
+ 
+    let state: AppState = (*arc_state.load_full()).clone();
+    for node in final_nodes {
+        state.additonal_nodes.insert(node.name.clone(), node.clone());
+    };
     arc_state.store(Arc::new(state));
 
     let regular_node_list: Vec<Node> = node_list
@@ -4095,20 +4235,18 @@ mod tests {
             });
         }
 
-        let mut nodes: Vec<NodeWithConn> = vec![];
+        let mut nodes: DashMap<String, NodeWithConn> = DashMap::new();
         if let Ok(db_nodes) = database.fetch_all_nodes().await {
             nodes = db_nodes
                 .into_iter()
-                .map(|node| NodeWithConn {
+                .map(|node| (node.nodename, NodeWithConn {
                     name: node.nodename,
                     nodetype: node.nodetype,
                     ip: node.ip,
                     ..Default::default()
-                })
+                }))
                 .collect()
         }
-
-        let (internal_tx, internal_rx) = broadcast::channel::<Vec<u8>>(100);
 
         let mut rcon_connection: Option<Arc<Mutex<Connection<TcpStream>>>> = None;
         if let Ok(retrived_db) = database.get_settings().await {
@@ -4132,8 +4270,6 @@ mod tests {
         //     current_server = Some(database.get_settings().await?.current_server.into_server())
         // }
 
-        let connection_handler = ConnectionHandler::new();
-
         let (fs_sender_tx, fs_sender_rx) = flume::unbounded();
         let filesystem =
             FileSystemHandler::new(fs_sender_tx, fs_sender_rx, Direction::Server);
@@ -4143,12 +4279,10 @@ mod tests {
         // let cached_status_type = watch::channel(String::new()).0;
         let server_check_event = watch::channel(ServerCheckEvent::None).0;
 
-        let sev = watch::channel(String::new()).0;
-
+  
         let state: AppState = AppState {
             // tx: tx,
             // rx: rx,
-            connection_handler,
             // ws_tx: ws_tx.clone(),
             // ws_rx: ws_rx.resubscribe(),
             // server_console: None,
@@ -4156,7 +4290,7 @@ mod tests {
             current_node: NodeWithConn::default(),
             database: database.clone(),
             client,
-            additonal_node: nodes,
+            additonal_nodes: nodes,
             // cached_status_type,
             // poll_server_event: Arc::new(Notify::new()),
             // rcon_connection,
@@ -4330,7 +4464,7 @@ mod tests {
                     element: Element::Node(Node {
                         nodename: "main".to_string(),
                         ip: STATIC_LOCAL_URL.to_string(),
-                        node_enabled: NodeStatus::Unknown,
+                        node_enabled: NodeEnabled::Unknown,
                         nodetype: NodeType::Custom(None),
                         k8s_type: K8sType::Unknown,
                     }),

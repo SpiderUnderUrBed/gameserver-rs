@@ -1,5 +1,5 @@
 use crate::transport::node_transport::proto::{DownloadRequest, FileChunk};
-use crate::transport::node_transport_spec::{CapabilitiesRequest, CreateServerRequest, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, NodeTransportable, NodeTransportableMut, Ping, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StopServerRequest, StreamTransportable, SwitchConsoleRequest};
+use crate::transport::node_transport_spec::{CapabilitiesRequest, CreateServerRequest, CustomNodeTransportable, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, NodeTransportable, NodeTransportableMut, Ping, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StopServerRequest, StreamTransportable, SwitchConsoleRequest};
 use crate::transport::node_transport_spec::RemoteFile;
 use crate::{ApiCalls as ToplevelApiCalls, AuthTcpMessage, IncomingMessage, List, NodeWithConn, StreamResult, UserClient};
 use crate::{
@@ -23,10 +23,7 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
-use std::time::Duration;
-use std::{error::Error, net::SocketAddr, sync::Arc};
+use std::{error::Error, sync::Arc};
 
 use tonic::transport::Channel;
 mod proto {
@@ -49,7 +46,8 @@ pub struct Clients {
 
 pub struct ConnectionHandler {
     //stream: Option<&'static TcpStream>,
-    clients: Option<Clients>,
+    clients: Arc<Option<Clients>>,
+    end_conn_task: Arc<Notify>,
     pub(crate) proxy_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
     pub(crate) proxy_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
     pub(crate) tx: tokio::sync::broadcast::Sender<Vec<u8>>,
@@ -67,8 +65,12 @@ impl ConnectionHandler {
             proxy_rx,
             tx,
             rx,
-            clients: None,
+            clients: Arc::new(None),
+            end_conn_task: Arc::new(Notify::new()),
         }
+    }
+    pub fn end_connection(&self){
+        self.end_conn_task.notify_waiters();
     }
     pub fn get_filesystem_stream(
         &self,
@@ -86,7 +88,8 @@ impl Default for ConnectionHandler {
             proxy_rx,
             tx,
             rx,
-            clients: None,
+            clients: Arc::new(None),
+            end_conn_task: Arc::new(Notify::new()),
         }
     }
 }
@@ -99,53 +102,17 @@ impl Clone for ConnectionHandler {
             proxy_rx: self.proxy_rx.resubscribe(),
             tx: self.tx.clone(),
             rx: self.rx.resubscribe(),
+            end_conn_task: self.end_conn_task.clone()
         }
     }
 }
-pub async fn check_channel_health(_state: &AppState) -> bool {
-    true
-}
-pub async fn node_start_hook(arc_state: Arc<ArcSwap<AppState>>, url: String) {
-    let mut state = (*arc_state.load_full()).clone();
-    let server_name_request = proto::ServerNameRequest {
-        r#type: "server_name".to_string(),
-        message: "".to_string(),
-        authcode: "0".to_string(),
-    };
-    match state
-        .connection_handler
-        .clients
-        .as_ref()
-        .unwrap()
-        .node_client
-        .clone()
-        .name(server_name_request)
-        .await
-    {
-        Ok(server_name) => {
-            state.current_node = NodeWithConn {
-                name: server_name.get_ref().message.clone(),
-                ip: url,
-                ..Default::default()
-            };
-        }
-        Err(e) => {
-            state.current_node = NodeWithConn {
-                name: "main".to_string(),
-                ip: url,
-                ..Default::default()
-            };
-            println!("{:#?}", e);
-        }
-    }
-    arc_state.store(Arc::new(state));
-}
+
 // does the connection to the tcp server, wether initial or not, on success it will pass it off to the dedicated handler for the stream
 pub async fn connect_to_server(
     arc_state: Arc<ArcSwap<AppState>>,
     url: String,
     _end_if_timeout: bool,
-) -> Result<watch::Receiver<StreamResult>, Box<dyn Error + Send + Sync>> {
+) -> Result<ConnectionHandler, Box<dyn Error + Send + Sync>> {
     println!("using this connect to server");
     let mut state = (*arc_state.load_full()).clone();
 
@@ -156,24 +123,31 @@ pub async fn connect_to_server(
     };
 
     let channel = Channel::from_shared(url.clone())?.connect().await?;
+
     let general_client = GeneralClient::new(channel.clone());
     let filesystem_client = FilesystemManageClient::new(channel.clone());
     let server_edit_client = ServerEditClient::new(channel.clone());
     let server_manage_client = ServerManageClient::new(channel.clone());
     let node_client = NodeManageClient::new(channel.clone());
 
-    state.connection_handler.clients = Some(Clients {
+    let mut connection_handler = ConnectionHandler::default();
+    let mut clients = Arc::new(Some(Clients {
         general_client,
         node_client,
         server_manage_client,
         server_edit_client,
         filesystem_client,
-    });
-    arc_state.store(Arc::new(state));
-    node_start_hook(arc_state, url).await;
+    }));
+    connection_handler.clients = clients.clone();
+    tokio::spawn(
+        async move {
+            clients = Arc::new(None);
+        }
+    );
 
-    let channel = watch::channel(StreamResult::Init).1;
-    Ok(channel)
+    arc_state.store(Arc::new(state));
+  
+    Ok(connection_handler)
 }
 
 // this is where it determines wether or not to try and create the container and deployment, as attempt_connection itself is used in various diffrent contexts (like it will constantly
@@ -189,6 +163,47 @@ pub async fn try_initial_connection(
     Ok(())
 }
 
+impl CustomNodeTransportable for ServernameRequest {
+    type Output = String;
+
+    async fn custom_node_transport(&self, state: &AppState, connection_handler: &ConnectionHandler) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
+        let Some(clients) = connection_handler.clients.as_ref().clone() else {
+            return Err("no clients".into())
+        };
+
+        let server_name_request = proto::ServerNameRequest {
+            r#type: "server_name".to_string(),
+            message: "".to_string(),
+            authcode: "0".to_string(),
+        };
+        match clients
+            .node_client
+            .clone()
+            .name(server_name_request)
+            .await
+        {
+            Ok(server_name) => {
+                Ok(server_name.get_ref().message.clone())
+            }
+            Err(e) => {
+                Ok("main".to_string())
+            }
+        }
+    }
+}
+
+impl NodeTransportable for ServernameRequest {
+    type Output = String;
+
+    async fn node_transport(&self, state: &AppState) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
+        let connection = state.current_node.connection.clone();
+        let Some(connection_handler) =  connection else {
+            return Err("No connection working".into());
+        };
+        self.custom_node_transport(state, &connection_handler).await
+    }
+}
+
 // NodeTransportable
 impl NodeTransportable for DeleteServerRequest {
     type Output = ();
@@ -196,14 +211,18 @@ impl NodeTransportable for DeleteServerRequest {
         &self,
         state: &AppState,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let connection = state.current_node.connection.clone();
+        let Some(connection_handler) =  connection else {
+            return Err("No connection working".into());
+        };
+        let Some(clients) = connection_handler.clients.as_ref().clone() else {
+            return Err("no clients".into())
+        };
+
         let request = proto::DeleteServerRequest {
             metadata: Some(self.metadata.clone().into()),
         };
-        let _ = state
-            .connection_handler
-            .clients
-            .as_ref()
-            .unwrap()
+        let _ = clients
             .server_edit_client
             .clone()
             .delete(request);
@@ -218,14 +237,18 @@ impl NodeTransportable for CreateServerRequest {
         &self,
         state: &AppState,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let connection = state.current_node.connection.clone();
+        let Some(connection_handler) =  connection else {
+            return Err("No connection working".into());
+        };
+        let Some(clients) = connection_handler.clients.as_ref().clone() else {
+            return Err("no clients".into())
+        };
+
         let request = proto::CreateServerRequest {
             metadata: Some(self.metadata.clone().into()),
         };
-        let _ = state
-            .connection_handler
-            .clients
-            .as_ref()
-            .unwrap()
+        let _ = clients
             .server_edit_client
             .clone()
             .create(request);
@@ -239,16 +262,22 @@ impl StreamTransportable for CreateServerRequest {
         &self,
         arc_state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
+        let state = arc_state.load();
+        let connection = state.current_node.connection.clone();
+        let Some(connection_handler) =  connection else {
+            return Err("No connection working".into());
+        };
+
         let request = proto::CreateServerRequest {
             metadata: Some(self.metadata.clone().into()),
         };
         let (server_out_tx, server_out_rx) = tokio::sync::mpsc::channel(32);
-        let mut clients = {
-            let guard = arc_state.load();
-            guard.connection_handler.clients.clone().unwrap()
+        let Some(clients) = connection_handler.clients.as_ref().clone() else {
+            return Err("no clients".into())
         };
+
         println!("about to call create");
-        match clients.server_edit_client.create(request).await {
+        match clients.server_edit_client.clone().create(request).await {
             Ok(response_stream) => {
                 //drop(state);
                 println!("before creating stream");
@@ -290,6 +319,12 @@ impl StreamTransportable for StartServerRequest {
         &self,
         arc_state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
+        let state = arc_state.load();
+        let connection = state.current_node.connection.clone();
+        let Some(connection_handler) =  connection else {
+            return Err("No connection working".into());
+        };
+
         let request = proto::StartServerRequest {};
         let (server_in_tx, server_in_rx) = tokio::sync::mpsc::channel(32);
         let outbound_stream = ReceiverStream::new(server_in_rx);
@@ -313,11 +348,11 @@ impl StreamTransportable for StartServerRequest {
                 }
             });
         //}
-        let mut clients = {
-            let guard = arc_state.load();
-            guard.connection_handler.clients.clone().unwrap()
+        let Some(clients) = connection_handler.clients.as_ref().clone() else {
+            return Err("no clients".into())
         };
-        match clients.server_edit_client.start(outbound_stream).await {
+
+        match clients.server_edit_client.clone().start(outbound_stream).await {
             Ok(response_stream) => {
                 //drop(state);
                 println!("before starting stream");
@@ -371,12 +406,16 @@ impl NodeTransportable for StopServerRequest {
         &self,
         state: &AppState,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let connection = state.current_node.connection.clone();
+        let Some(connection_handler) =  connection else {
+            return Err("No connection working".into());
+        };
+        let Some(clients) = connection_handler.clients.as_ref().clone() else {
+            return Err("no clients".into())
+        };
+        
         let stop_server_request = proto::StopServerRequest {};
-        let _ = state
-            .connection_handler
-            .clients
-            .as_ref()
-            .unwrap()
+        let _ = clients
             .server_edit_client
             .clone()
             .stop(stop_server_request)
@@ -412,17 +451,21 @@ impl NodeTransportable for SetServerRequest {
         &self,
         state: &AppState,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let connection = state.current_node.connection.clone();
+        let Some(connection_handler) =  connection else {
+            return Err("No connection working".into());
+        };
+        let Some(clients) = connection_handler.clients.as_ref().clone() else {
+            return Err("no clients".into())
+        };
+
         let set_server_request = proto::SetServerRequest {
             message: "set_server".to_string(),
             r#type: "command".to_string(),
             metadata: Some(self.metadata.clone().into()),
             authcode: "0".to_string(),
         };
-        let _ = state
-            .connection_handler
-            .clients
-            .as_ref()
-            .unwrap()
+        let _ = clients
             .server_manage_client
             .clone()
             .set(set_server_request)
@@ -439,32 +482,21 @@ impl NodeTransportable for ServerDataRequest {
         &self,
         state: &AppState,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let connection = state.current_node.connection.clone();
+        let Some(connection_handler) = connection else {
+            return Err("No connection working".into());
+        };
+        let Some(clients) = connection_handler.clients.as_ref().clone() else {
+            return Err("no clients".into())
+        };
+
         let server_data_request = proto::ServerDataRequest {};
-        let _ = state
-            .connection_handler
-            .clients
-            .as_ref()
-            .unwrap()
+        let _ = clients
             .server_manage_client
             .clone()
             .data(server_data_request)
             .await;
 
-        Ok(())
-    }
-}
-
-pub struct RawBytes {
-    pub(crate) bytes: Vec<u8>,
-}
-
-impl NodeTransportable for RawBytes {
-    type Output = ();
-    async fn node_transport(
-        &self,
-        state: &AppState,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let _ = state.connection_handler.tx.send(self.bytes.clone());
         Ok(())
     }
 }
@@ -521,18 +553,24 @@ impl NodeTransportable for IntegrationKeyRequest {
         &self,
         state: &AppState,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let connection = state.current_node.connection.clone();
+        let Some(connection_handler) =  connection else {
+            return Err("No connection working".into());
+        };
+        
+
         match serde_json::to_vec(&self.key) {
             Ok(mut bytes) => {
                 // Add newline delimiter for TCP stream parsing
                 bytes.push(b'\n');
 
-                if let Err(err) = state.connection_handler.tx.send(bytes.clone()) {
+                if let Err(err) = connection_handler.tx.send(bytes.clone()) {
                     eprintln!("Failed to send to internal stream: {}", err);
                 }
 
                 // Tells the remote server to enable RCON
                 //if let Some(internal_tx) = &state.internal_tx {
-                if let Err(err) = state.connection_handler.tx.send(bytes) {
+                if let Err(err) = connection_handler.tx.send(bytes) {
                     eprintln!("Failed to send to TCP stream: {}", err);
                 }
                 //}
@@ -551,12 +589,16 @@ impl NodeTransportable for ServerStateRequest {
         &self,
         state: &AppState,
     ) -> Result<ServerStatus, Box<dyn Error + Send + Sync>> {
+        let connection = state.current_node.connection.clone();
+        let Some(connection_handler) =  connection else {
+            return Err("No connection working".into());
+        };
+        let Some(clients) = connection_handler.clients.as_ref().clone() else {
+            return Err("no clients".into())
+        };
+        
         let server_state_request = proto::ServerStateRequest {};
-        let result = state
-            .connection_handler
-            .clients
-            .as_ref()
-            .unwrap()
+        let result = clients
             .server_manage_client
             .clone()
             .state(server_state_request)
@@ -612,9 +654,14 @@ impl StreamTransportable for FileUploadRequest {
         &self,
         arc_state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
-        let mut clients = {
-            let guard = arc_state.load();
-            guard.connection_handler.clients.clone().unwrap()
+        let state = arc_state.load();
+        let connection = state.current_node.connection.clone();
+        let Some(connection_handler) =  connection else {
+            return Err("No connection working".into());
+        };
+        
+        let Some(clients) = connection_handler.clients.as_ref().clone() else {
+            return Err("no clients".into())
         };
 
         let (fs_tx, fs_rx) = tokio::sync::mpsc::channel(32);
@@ -624,7 +671,7 @@ impl StreamTransportable for FileUploadRequest {
 
         tokio::spawn(async move {
 
-            if let Err(e) = clients.filesystem_client.upload(outbound_stream).await  {
+            if let Err(e) = clients.filesystem_client.clone().upload(outbound_stream).await  {
                 println!("{:#?}", e)
             }
         });
@@ -674,17 +721,23 @@ impl StreamTransportable for FileDownloadRequest {
         &self,
         arc_state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
-        let (fs_tx, fs_rx) = tokio::sync::mpsc::channel(32);
-        let mut clients = {
-            let guard = arc_state.load();
-            guard.connection_handler.clients.clone().unwrap()
+        let state = arc_state.load();
+        let connection = state.current_node.connection.clone();
+        let Some(connection_handler) =  connection else {
+            return Err("No connection working".into());
         };
+        let Some(clients) = connection_handler.clients.as_ref().clone() else {
+            return Err("no clients".into())
+        };
+
+        let (fs_tx, fs_rx) = tokio::sync::mpsc::channel(32);
+
         let location = self.file.location.clone();
         tokio::spawn(async move {
             let request = DownloadRequest {
                 location,
             };
-            match clients.filesystem_client.download(request).await {
+            match clients.filesystem_client.clone().download(request).await {
                 Ok(mut stream) => {
                     while let Some(Ok(chunk)) = stream.get_mut().next().await {
                         let _ = fs_tx.send(chunk.bytes).await;

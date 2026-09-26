@@ -25,10 +25,10 @@ export class NodesStore {
 		}
 	}
 	
-	public async addNode(nodename: string, password: string, authcode: string = '0') {
+	public async addNode(nodename: string, ip: string) {
 		this.error = null;
 		try {
-			await httpClient.post('/api/addnode', { json: { node: nodename, password, authcode } });
+			await httpClient.post('/api/addnode', { json: { nodename, ip } });
 			await this.fetchNodes();
 		} catch (err) {
 			this.error = 'Failed to add node';

@@ -236,24 +236,6 @@ export class ServerConsoleState {
 			return message;
 		}
 	}
-	// public correctMessage(input: unknown): boolean {
-	// 	let output: unknown = input;
-
-	// 	if (typeof input !== 'string') return true;
-		
-	// 	try {
-	// 		const parsed = JSON.parse(input);
-	// 		if (parsed && typeof parsed === 'object' && 'authcode' in parsed &&
-	// 			Object.keys(parsed).length === 1
-	// 		) {
-	// 			return false;
-	// 		}
-	// 	} catch {
-	// 	}
-		
-	// 	return true;
-
-	// }
 
 	public cleanJson(input: unknown): string {
     	let output: unknown = input;
@@ -481,21 +463,7 @@ export class ServerConsoleState {
 
 	public async addNode(nodename: string, ip: string, nodetype: string) {
 		try {
-			const payload = {
-				element: {
-					kind: 'Node',
-					data: {
-						nodename,
-						ip,
-						nodetype,
-						nodestatus: { kind: 'enabled', data: null },
-						k8s_type: 'Unknown'
-					}
-				},
-				jwt: '',
-				require_auth: true
-			};
-			await httpClient.post(`/api/addnode`, { json: payload }).json();
+			await httpClient.post(`/api/addnode`, { json: { nodename, ip } }).json();
 			this.addConsoleEntry({
 				type: 'output', text: `Node added: ${nodename}`,
 				count: 0

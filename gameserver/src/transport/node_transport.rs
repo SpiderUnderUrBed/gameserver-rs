@@ -248,7 +248,9 @@ impl ConnectionManager {
     pub async fn accept_connection(
         &mut self,
     ) -> Result<(ConnectionHandler, Option<String>), Box<dyn std::error::Error + Send + Sync>> {
+        println!("before accepting");
         let (socket, addr) = self.listner.accept().await?;
+        println!("after accepting");
         let (tx, rx) = mpsc::unbounded_channel();
         let handler = ConnectionHandler {
             stream: Some(socket),

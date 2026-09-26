@@ -1700,8 +1700,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     spawn_conn_background_tasks(state.clone(), Arc::clone(&arc_conn_manager)).await;
     loop {
+        println!("pre lock");
         let mut conn_manager = arc_conn_manager.lock().await;
+        println!("got lock");
         let (mut conn_handler, addr_option) = conn_manager.accept_connection().await?;
+        println!("accepted a new connection");
 
         let addr = addr_option.unwrap_or("unknown".to_string());
         println!("{}", addr);

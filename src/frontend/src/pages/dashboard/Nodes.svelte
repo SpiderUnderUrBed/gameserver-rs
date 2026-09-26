@@ -7,7 +7,7 @@
 	let selectedNode = $state<string | null>(null);
 
 	let newNodename = $state('');
-	let newPassword = $state('');
+	let newIp = $state('');
 
 	let deleteNodename = $state('');
 
@@ -24,7 +24,7 @@
 	async function handleAdd(event: SubmitEvent) {
 		try {
 			if ((<HTMLButtonElement | null>event.submitter)?.value !== 'cancel') {
-				await nodesStore.addNode(newNodename, newPassword);
+				await nodesStore.addNode(newNodename, newIp);
 			}
 		} finally {
 			(<HTMLFormElement>event.target).reset();
@@ -74,8 +74,8 @@
 			<label for="nodename" class="label">Nodename</label>
 			<input id="nodename" type="text" class="input" bind:value={newNodename} required />
 
-			<label for="password" class="label">Password</label>
-			<input id="password" type="password" class="input" bind:value={newPassword} required />
+			<label for="password" class="label">Ip</label>
+			<input id="password" type="password" class="input" bind:value={newIp} required />
 
 			<div class="modal-action">
 				<button class="btn btn-ghost btn-error" type="submit" value="cancel" formnovalidate>
