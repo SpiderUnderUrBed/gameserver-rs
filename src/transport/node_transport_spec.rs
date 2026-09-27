@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::{AppState, MetadataTypes, SrcAndDest, database::databasespec::Filters, transport::node_transport::ConnectionHandler};
+use crate::{AppState, MetadataTypes, SrcAndDest, database::databasespec::Filters, transport::node_transport::{ConnectionHandler, ConsoleInterface}};
 use tokio::sync::{Notify, RwLock, broadcast};
 pub struct ServernameRequest {
     pub ip: String,
@@ -21,16 +21,12 @@ pub struct SwitchConsoleRequest {
 }
 
 pub struct CreateServerRequest {
-    pub active: CancellationToken,
     pub metadata: MetadataTypes,
+    pub(crate) interface: ConsoleInterface
 }
 
 pub struct StartServerRequest {
-    // metadata: MetadataTypes
-    pub active: CancellationToken,
-    #[allow(unused)]
-    pub stdin: broadcast::Receiver<String>,
-    pub stdout: broadcast::Sender<String>
+    pub(crate) interface: ConsoleInterface
 }
 pub struct StopServerRequest {
     // metadata: MetadataTypes
@@ -119,7 +115,7 @@ pub trait CustomNodeTransportable {
 pub trait StreamTransportable {
     type Output;
     async fn stream_transport(
-        &self,
+        &mut self,
         state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>>;
 }

@@ -1,22 +1,18 @@
 use dashmap::DashMap;
-use general_networked_filesystem::core::Operation::Acknowlage;
 use general_networked_filesystem::wrapper::FileSystemHandler;
 use std::fs::File;
 use std::io::{BufReader, Read};
-use std::pin::Pin;
-use std::{ops::ControlFlow, sync::Arc};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 
 use crate::{create_server_handler, start_server_handler, AppState, ErrorResponse, StreamResponse};
 use async_trait::async_trait;
-use futures::Stream;
 use general_networked_filesystem::core::chain::ChainBuilder;
 use general_networked_filesystem::core::{
     AcknowlageFrame, DrainFrame, EofFrame, FileFrame, FileHandleStatus, LocalState, SetFrame,
 };
 
-use serde::Serialize;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{
@@ -136,7 +132,7 @@ pub async fn spawn_conn_background_tasks(
 
                 let inner_watch_tx = watch_tx.clone();
                 let arc_location_clone = Arc::clone(&arc_location);
-                let mut chain = chain.chain::<SetFrame, _, _>(move |_, s, fs| {
+                let mut chain = chain.chain::<SetFrame, _, _>(move |_, s, _fs| {
                     Box::pin({
                         let inner_location = arc_location_clone.clone();
                         let inner_watch_tx = inner_watch_tx.clone();
@@ -190,7 +186,7 @@ pub async fn spawn_conn_background_tasks(
                                             break;
                                         }
                                         Ok(n) => {
-                                            if let Err(e) = tx.send(chunk[..n].to_vec()) {
+                                            if let Err(_e) = tx.send(chunk[..n].to_vec()) {
                                                 break;
                                             }
                                         }
@@ -310,12 +306,12 @@ impl ConnectionHandler {
         self.remove_current_segment_or_clear().await;
     }
     pub async fn remove_current_segment_or_clear(&mut self) {
-        if self.segments.len() > 0 {
+        if !self.segments.is_empty() {
             let _ = self.segments.remove(0);
         }
     }
     fn remove_segment_or_clear(&mut self, position: usize) {
-        if position + 1 <= self.inner().len() {
+        if position < self.inner().len() {
             self.inner().drain(..position + 1);
         } else {
             self.inner().clear();
@@ -324,14 +320,13 @@ impl ConnectionHandler {
 
     pub async fn next(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if let Some(backround_task_updates) = &self.backround_task_updates {
-            if backround_task_updates.has_changed()? {
-                if matches!(
+            if backround_task_updates.has_changed()?
+                && matches!(
                     *backround_task_updates.borrow(),
                     BackgroundTaskUpdates::NoMoreFileTransfer
                 ) {
                     self.bytes_filter_method = BytesFilterMethod::Line;
                 }
-            }
         }
 
         if self.read_buf.is_empty() {
@@ -500,7 +495,7 @@ impl RequestByteExecutable for ConsoleRequest {
 #[async_trait]
 #[typetag::serde(name = "set_filter")]
 impl RequestByteExecutable for SetFilterRequest {
-    async fn execute(&self, state: Arc<AppState>, addr: String) -> Vec<u8> {
+    async fn execute(&self, state: Arc<AppState>, _addr: String) -> Vec<u8> {
         serde_json::to_vec(&set_filter_handler(&state, self.clone()).await).unwrap()
     }
 }
@@ -516,7 +511,7 @@ impl RequestByteExecutable for SetServerRequest {
 #[async_trait]
 #[typetag::serde(name = "delete_server")]
 impl RequestByteExecutable for DeleteServerRequest {
-    async fn execute(&self, state: Arc<AppState>, addr: String) -> Vec<u8> {
+    async fn execute(&self, state: Arc<AppState>, _addr: String) -> Vec<u8> {
         serde_json::to_vec(&delete_server_handler(&state, self.clone()).await).unwrap()
     }
 }

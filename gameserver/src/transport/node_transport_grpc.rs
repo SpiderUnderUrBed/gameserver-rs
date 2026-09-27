@@ -157,7 +157,7 @@ impl ServerEdit for Connection {
             let mut raw_stream_guard = raw_stream.inner.lock().await;
             let stream = raw_stream_guard.as_mut().unwrap();
             while let Some(message) = stream.next().await {
-                tx.send(Ok(
+                let _ = tx.send(Ok(
                     ServerMessage { authcode:"0".into(), data: message,  message: "console".into(), channel: "stdout".into(), servername: "unknown".into() }
                 )).await;
             }
@@ -216,9 +216,9 @@ impl ServerEdit for Connection {
                         .map_err(|_| tonic::Status::internal("error starting server"))?;
         tokio::spawn(async move {
             let mut raw_stream_guard = raw_stream.inner.lock().await;
-            let mut stream = raw_stream_guard.as_mut().unwrap();
+            let stream = raw_stream_guard.as_mut().unwrap();
             while let Some(message) = stream.next().await {
-                tx.send(Ok(
+                let _ = tx.send(Ok(
                     ServerMessage { 
                         authcode: "0".into(), 
                         data: message, 

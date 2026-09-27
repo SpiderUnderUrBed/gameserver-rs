@@ -254,10 +254,8 @@ impl Provider for ProviderGame {
         let location_stripped = location.trim_start_matches("server/");
         let resolved = cwd.join("server").join(location_stripped);
 
-        for value in self.config.values_mut() {
-            if let Some(cmd) = value {
-                *cmd = cmd.replace("{{SERVERLOCATION}}", &resolved.to_string_lossy());
-            }
+        for cmd in self.config.values_mut().flatten() {
+            *cmd = cmd.replace("{{SERVERLOCATION}}", &resolved.to_string_lossy());
         }
 
         self.location = location;
@@ -345,7 +343,7 @@ impl Provider for Custom {
         location: String,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.location = location;
-        return Ok(());
+        Ok(())
     }
 }
 

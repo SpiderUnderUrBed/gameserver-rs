@@ -1,10 +1,9 @@
-use std::{any::Any, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
 //#[cfg(feature = "grpc_experimental")]
 use crate::{
-    AppState, GetState, IncomingMessage, IncomingMessageWithMetadata, MessagePayload, SimpleMessage, Status,
+    GetState, IncomingMessage, IncomingMessageWithMetadata, MessagePayload, SimpleMessage, Status,
 };
 
 use flatten_safe_macro::flatten_safe;
@@ -221,7 +220,7 @@ pub struct ServerStateResponse {
 }
 
 
-#[flatten_safe]
+#[flatten_safe(tag_value = "create_server")]
 #[derive(Serialize, Clone)]
 pub struct CreateServerRequest {
     #[flatten]

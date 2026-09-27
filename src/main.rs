@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::fmt::Debug;
+use std::pin::Pin;
 use std::{net::SocketAddr, path::Path, sync::Arc};
 
 use crate::database::Database;
@@ -66,6 +67,7 @@ use axum_oidc::openidconnect::Scope;
 use dashmap::DashMap;
 use general_networked_filesystem::core::{LsRequest};
 use general_networked_filesystem::wrapper::{Direction, FileSystemHandler};
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{RwLock, mpsc, watch};
 
 use rcon::Connection;
@@ -148,7 +150,7 @@ use database::User;
 mod frontend_types;
 mod transport;
 
-use crate::transport::node_transport::{ConnectionHandler};
+use crate::transport::node_transport::{ConnectionHandler, ConsoleInterface};
 use crate::transport::node_transport::try_initial_connection;
 use crate::transport::node_transport::{
     connect_to_server,
@@ -619,8 +621,9 @@ pub struct ServerProcesses {
     logging_status: watch::Sender<LoggingStatus>,
     logger: Option<Arc<Box<dyn Logger + Send + Sync>>>,
     observing_users: Arc<AtomicUsize>,
-    console_in: Option<broadcast::Sender<String>>,
-    console_out: Option<broadcast::Sender<String>>,
+    // console_in: Option<UnboundedSender<Vec<u8>>>,
+    // console_out: Option<ConsoleStdout>,
+    console_interface: ConsoleInterface,
     poll_server_event: Arc<Notify>,
     server_start_event: Arc<Notify>,
     rcon_connection: Option<Arc<Mutex<Connection<TcpStream>>>>,
@@ -711,6 +714,18 @@ async fn spawn_server_background_tasks(
                 println!("got an add event");
                 let inner_server_check_event_rx = server_check_event.subscribe().clone();
                 let inner_arc_state = arc_state.clone();
+                let state = arc_state.load();
+
+
+                let process_guard = state.server_processes.get(&new_server).unwrap();
+                let mut console_interface = process_guard.load().console_interface.clone();
+                drop(process_guard);
+                tokio::spawn(async move {
+                    let _ = console_interface.spawn(inner_arc_state).await;
+                });
+
+
+                let inner_arc_state = arc_state.clone();
                 tokio::spawn(async move {
                     'server_status_task: loop {
                         let inner_arc_state = inner_arc_state.clone();
@@ -746,7 +761,7 @@ async fn spawn_server_background_tasks(
                             }
                         } else if matches!(*status_method.borrow(), StatusMethod::OnUpdate){
                             println!("doing on update");
-                            let server_state_request = ServerStateRequest {
+                            let mut server_state_request = ServerStateRequest {
                             };
                             if let Ok(rx) = server_state_request.stream_transport(inner_arc_state.clone()).await {
                                 let inner_process_guard = process_guard.clone();
@@ -1595,7 +1610,7 @@ async fn upload(
                     let request_result = inner_filesystem.try_create_request_in_directory(file_path)
                         .await
                         .map(|v| FileUploadRequest::new(v));
-                    if let Ok(request) = request_result {
+                    if let Ok(mut request) = request_result {
                         let task = request.stream_transport(inner_arc_state).await.unwrap();
                         tokio::spawn(async move {
                             inner_filesystem.check_for_eof(task).await;
@@ -1661,7 +1676,7 @@ pub async fn stream_file_download(
     //     location: file_path,
     //     stream: Some(fs_rx),
     // };
-    let request = FileDownloadRequest::new(file, task_end.clone());
+    let mut request = FileDownloadRequest::new(file, task_end.clone());
 
     let raw_stream = request.stream_transport(inner_arc_state).await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -1916,7 +1931,7 @@ async fn button_reset(
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ConsoleData {
     authcode: String,
     data: String,
@@ -2091,8 +2106,7 @@ async fn ensure_server_process(state: &AppState, server: Server) -> Arc<ArcSwap<
             logging_status: logging_status_tx,
             logger: None,
             observing_users: Arc::new(AtomicUsize::new(0)),
-            console_in: None,
-            console_out: None,
+            console_interface: ConsoleInterface::default(),
             poll_server_event: Arc::new(Notify::new()),
             server_start_event: Arc::new(Notify::new()),
             rcon_connection: None,
@@ -2131,10 +2145,10 @@ async fn handle_socket(socket: WebSocket, session: tower_sessions::Session, arc_
     // let state = arc_state.load();
     let lock = state.lock.clone();
 
-    let (server_out_tx, mut server_out_rx) = mpsc::channel::<String>(32);
+    let (server_out_tx, mut server_out_rx) = mpsc::channel::<ConsoleData>(32);
     tokio::spawn(async move {
         while let Some(msg) = server_out_rx.recv().await {
-            if let Err(e) = sender.send(Message::Text(msg.into())).await {
+            if let Err(e) = sender.send(Message::Text(serde_json::to_string(&msg).unwrap().into())).await {
                 println!("{:#?}", e);
                 break;
             }
@@ -2151,12 +2165,7 @@ async fn handle_socket(socket: WebSocket, session: tower_sessions::Session, arc_
         .await
         .server_change_event
         .clone();
-    let connection_status_rx = inner_current_user
-        .clone()
-        .read()
-        .await
-        .connection_status
-        .subscribe();
+
     // let inner_listen_server_event = listen_server_event.clone();
     let inner_start_reader_task = start_reader_task.clone();
 
@@ -2189,70 +2198,24 @@ async fn handle_socket(socket: WebSocket, session: tower_sessions::Session, arc_
             let state = cloned_arc_state.load();
 
             if let Some(process) = state.server_processes.clone().get(current_observing_process){
-                let inner_arc_state = arc_state.clone();
-                let server_start_event = process.load().server_start_event.clone();
                 let inner_process = process.clone();
                 let inner_start_reader_task = inner_start_reader_task.clone();
                 let inner_console_in = inner_console_in.clone();
                 let inner_console_out = inner_console_out.clone();
                 let inner_server_name = current_server_name_lock.clone();
-                let inner_connection_status_rx = connection_status_rx.clone();
 
                 tokio::spawn(async move {
                     //loop {
-                        let inner_process_guard = inner_process.load();
-                        let server_console_out = inner_process_guard.console_out.clone();
-                        let server_console_in = inner_process_guard.console_in.clone();
+                        let mut inner_process_guard = (*inner_process.load_full()).clone();
                         println!("past the second reads");
                         *inner_server_name.write().await = Some(inner_process_guard.current_server.as_ref().unwrap().servername.clone());
                         println!("set new name");
-                        if let (Some(console_out), Some(console_in)) = (server_console_out, server_console_in){
-                            println!("connecting to current console");
-                            println!("{:#?}", *inner_connection_status_rx.borrow());
-                            if matches!(*inner_connection_status_rx.borrow(), ConnectionStatus::None){
-                                println!("will be sending a connect console request");
-                                let console_task = CancellationToken::new();
-                                let mut inner_process_guard = (*inner_process.load_full()).clone();
-                                let request = SwitchConsoleRequest {
-                                    active: console_task.clone(),
-                                    stdin: {
-                                        if let Some(console) = inner_process_guard.console_in.as_ref() {
-                                            console.subscribe()
-                                        } else {
-                                            let (server_console_in_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
-                                            inner_process_guard.console_in = Some(server_console_in_tx);
-                                            inner_process_guard.console_in.as_ref().unwrap().subscribe()
-                                        }
-                                    },
-                                    stdout: {
-                                        if let Some(console) = inner_process_guard.console_out.as_ref() {
-                                            console.clone()
-                                        } else {
-                                            let (server_console_out_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
-                                            inner_process_guard.console_out = Some(server_console_out_tx);
-                                            inner_process_guard.console_out.as_ref().unwrap().clone()
-                                        }
-                                    }
-                                };
-                                inner_process.store(Arc::new(inner_process_guard));
-                                println!("before switch console request");
-                                let _ = request.stream_transport(inner_arc_state).await;
-                                println!("sent switch console request");
-                            } else {
-                                println!("wont be sending a console request");
-                            }
-                            *inner_console_out.write().await = Some(console_out.clone());
+                        if let (Some(console_out), Some(console_in)) = (inner_process_guard.console_interface.stdout().await, inner_process_guard.console_interface.stdin().await){
+                            *inner_console_out.write().await = Some(console_out);
                             *inner_console_in.write().await = Some(console_in.clone());
                             inner_start_reader_task.notify_waiters();
-                        } else {
-                            println!("constructing console");
-                            server_start_event.notified().await;
-                            *inner_console_in.write().await = inner_process_guard.console_in.clone();
-                            *inner_console_out.write().await = inner_process_guard.console_out.clone();
-                            *inner_server_name.write().await = Some(inner_process_guard.current_server.as_ref().unwrap().servername.clone());
-                            // let process_guard = inner_process.read().await;
-                            // inner_curent_user.write().await.server_connection = process_guard.console_in.clone();
                         }
+                        inner_process.store(Arc::new(inner_process_guard));
                     //}
                 });
             }
@@ -2271,23 +2234,11 @@ async fn handle_socket(socket: WebSocket, session: tower_sessions::Session, arc_
     tokio::spawn(async move {
         inner_start_reader_task.notified().await;
         println!("starting writing task");
-        let console_out_binding = console_out.read().await;
-        let console_out = console_out_binding.as_ref().unwrap();
-         let mut console_out_rx = console_out.subscribe();
-         println!("starting writing task");
+        let mut console_out_binding = console_out.write().await;
+        let console_out = console_out_binding.as_mut().unwrap();
         loop {
-            println!("ran a loop");
-            tokio::select! {
-                msg_res = console_out_rx.recv() => {
-                    if let Ok(msg) = msg_res {
-                        println!("got a message");
-                        let res = inner_server_out_tx.send(msg).await;
-                        println!("got console res: {:#?}", res);
-                    } else {
-                        println!("breaking out of console out");
-                        break;
-                    }
-                }
+            while let Some(data) = console_out.recv().await {
+                let _ = inner_server_out_tx.send(data).await;
             }
         }
     });
@@ -2306,13 +2257,13 @@ async fn handle_socket(socket: WebSocket, session: tower_sessions::Session, arc_
             while let Some(Ok(message)) = receiver.next().await {
                 if lock.load(Ordering::SeqCst) == false {
                     if let Message::Text(utf8_bytes) = message {  
-                        let msg = serde_json::to_string(&ConsoleData {
+                        let msg = ConsoleData {
                             authcode: "0".to_string(),
                             data: utf8_bytes.as_str().to_string(),
                             server: servername.clone(),
                             channel: "stdin".to_string(),
                             message: "console".to_string(),
-                        }).unwrap();
+                        };
                         let _ = sender.send(msg);
                     }
                 }
@@ -2965,33 +2916,41 @@ pub async fn start_server(
     let mut current_process = (*current_process_lock.load_full()).clone();
     println!("past current procoess");
 
-    let server_console_task = CancellationToken::new();
-    let start_server_request = StartServerRequest {
-        active: server_console_task.clone(),
-        stdin: {
-            if let Some(console) = current_process.console_in.as_ref() {
-                console.subscribe()
-            } else {
-                let (server_console_in_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
-                current_process.console_in = Some(server_console_in_tx);
-                current_process.console_in.as_ref().unwrap().subscribe()
-            }
-        },
-        stdout: {
-            if let Some(console) = current_process.console_out.as_ref() {
-                console.clone()
-            } else {
-                let (server_console_out_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
-                current_process.console_out = Some(server_console_out_tx);
-                current_process.console_out.as_ref().unwrap().clone()
-            }
-        }
+    // let server_console_task = CancellationToken::new();
+    let mut start_server_request = StartServerRequest {
+        interface: current_process.console_interface
+        // active: server_console_task.clone(),
+        // stdin: {
+        //     if let Some(console) = current_process.console_in.as_ref() {
+        //         console.subscribe()
+        //     } else {
+        //         let (server_console_in_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
+        //         current_process.console_in = Some(server_console_in_tx);
+        //         current_process.console_in.as_ref().unwrap().subscribe()
+        //     }
+        // },
+        // stdout: {
+        //     if let Some(console) = current_process.console_out.as_ref() {
+        //         console.clone()
+        //     } else {
+        //         let (server_console_out_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
+        //         current_process.console_out = Some(server_console_out_tx);
+        //         current_process.console_out.as_ref().unwrap().clone()
+        //     }
+        //}
     };
-    current_process_lock.store(Arc::new(current_process.clone()));
+    
     println!("before sending start req");
-    let _ = start_server_request
+    let Ok(_) = start_server_request
         .stream_transport(arc_state.clone())
-        .await;
+        .await
+        else {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        };
+    // current_process.console_interface = interface;
+    // current_process.console_in = Some(stdin);
+    // current_process.console_out = Some(stdout);
+    // current_process_lock.store(Arc::new(current_process.clone()));
 
     let arc_current_user; 
     if let Ok(user) = ensure_current_user(session.clone(), &state).await {
@@ -3004,10 +2963,7 @@ pub async fn start_server(
     let _ = connection_status.send(ConnectionStatus::Connected);
 
     println!("finished sending start req");
-    tokio::spawn(async move {
-        server_console_task.cancelled().await;
-        let _ = connection_status.send(ConnectionStatus::None);
-    });
+
     current_process.server_start_event.notify_waiters();
 
     StatusCode::CREATED.into_response()
@@ -3077,8 +3033,15 @@ async fn add_server(
             server.sandbox.clone()
         }
     };
-    let console_task = CancellationToken::new();
-    let create_server_request = CreateServerRequest {
+    let server_process_lock = ensure_server_process(&state, server.clone())
+        .await;
+    let mut server_process = (*server_process_lock.load_full()).clone();
+    // server_process.console_interface = interface;
+
+    // let console_task = CancellationToken::new();
+    let _ = set_process_for_user(session, server.servername.clone(), &state).await;
+
+    let mut create_server_request = CreateServerRequest {
         metadata: MetadataTypes::Server {
             servername: server.servername.clone(),
             provider: server.provider.clone(),
@@ -3087,32 +3050,15 @@ async fn add_server(
             sandbox,
             server_metadata: server.server_metadata.clone(),
         },
-        active: console_task,
+        interface: server_process.console_interface.clone()
     };
+    server_process_lock.store(Arc::new(server_process));
     println!("about to initialize the stream");
-    if let Ok(mut stream) = create_server_request
+    if let Ok(interface) = create_server_request
         .stream_transport(arc_state.clone())
         .await
     {
-        let server_process_lock = ensure_server_process(&state, server.clone())
-            .await;
-        let mut server_process = (*server_process_lock.load_full()).clone();
-        let server_console: broadcast::Sender<String> = {
-            if let Some(console) = server_process.console_out.as_ref() {
-                console.clone()
-            } else {
-                let (server_console_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
-                server_process.console_out = Some(server_console_tx);
-                server_process.server_start_event.notify_waiters();
-                server_process.console_out.as_ref().unwrap().clone()
-            }
-        };
-        server_process_lock.store(Arc::new(server_process));
-        tokio::spawn(async move {
-            while let Some(data) = stream.recv().await {
-                let _ = server_console.send(serde_json::to_string(&data).unwrap());
-            }
-        });
+        
     };
     let set_server_request = SetServerRequest {
         metadata: MetadataTypes::Server {
@@ -3137,8 +3083,6 @@ async fn add_server(
         },
     };
     let _ = server_data_request.node_transport(&state).await;
-
-    let _ = set_process_for_user(session, server.servername, &state).await;
 
     Ok(StatusCode::OK)
 }

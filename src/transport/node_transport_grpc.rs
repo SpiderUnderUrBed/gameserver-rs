@@ -12,17 +12,20 @@ use crate::{
 };
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
+use futures_util::{Stream, StreamExt, stream};
 use general_networked_filesystem::core::LsRequest;
 use general_networked_filesystem::core::DirectoryResponse;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::{Mutex, Notify, watch};
 use tokio::{
     sync::{RwLock, broadcast, mpsc},
     time::timeout,
 };
-use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{error::Error, sync::Arc};
 
 use tonic::transport::Channel;
@@ -256,10 +259,72 @@ impl NodeTransportable for CreateServerRequest {
         Ok(())
     }
 }
+
+#[derive(Clone, Default)]
+pub struct ConsoleInterface {
+    active_event: Arc<Notify>,
+    active: Arc<AtomicBool>,
+    console_out: Arc<Mutex<Option<Pin<Box<dyn Stream<Item = ConsoleData> + Send + 'static>>>>>,
+    console_in: Arc<Mutex<Option<mpsc::Sender<ServerMessage>>>>,
+    proxy_out: Arc<RwLock<Vec<UnboundedSender<ConsoleData>>>>,
+    proxy_in: Arc<Mutex<Option<broadcast::Sender<ConsoleData>>>>
+}
+
+impl ConsoleInterface {
+    pub async fn spawn(&mut self, _state: Arc<ArcSwap<AppState>>) -> Result<(), Box<dyn Error + Send + Sync>>{
+        self.active_event.notified().await;
+        let Some(ref mut console_out) = *self.console_out.lock().await else {
+            return Err("no console out".into())
+        };
+
+        self.active.store(true, Ordering::SeqCst);
+        let (proxy_in_tx, mut proxy_in_rx) = broadcast::channel::<ConsoleData>(32);
+
+        *self.proxy_in.lock().await = Some(proxy_in_tx);
+        *self.proxy_out.write().await = Vec::new();
+
+        loop {
+            tokio::select! {
+                console_data_res = console_out.next() => {
+                    if let Some(console_data) = console_data_res {
+                        let proxy_out = self.proxy_out.read().await;
+                        for tx in &*proxy_out {
+                            let _ = tx.send(console_data.clone());
+                        }
+                    }
+                },
+                Ok(console_data) = proxy_in_rx.recv(), if self.console_in.lock().await.is_some()  => {
+                    let _ = self.console_in.lock().await.as_ref().unwrap().send(
+                        ServerMessage { 
+                            authcode: "0".into(), 
+                            data: console_data.data, 
+                            message: "console".into(), 
+                            channel: "stdout".into(), 
+                            servername: "unknown".into(),
+                        }
+                    ).await;
+                }
+            }
+        }
+    }
+    pub async fn stdin(&self) -> Option<broadcast::Sender<ConsoleData>> {
+        self.proxy_in.lock().await.clone()
+    }
+    pub async fn stdout(&mut self) -> Option<UnboundedReceiver<ConsoleData>> {
+        let (proxy_out_tx, proxy_out_rx) = mpsc::unbounded_channel();
+        self.proxy_out.write().await.push(proxy_out_tx);
+        if self.active.load(Ordering::SeqCst) {
+            Some(proxy_out_rx)
+        } else {
+            None
+        }
+    }
+}
+
 impl StreamTransportable for CreateServerRequest {
     type Output = mpsc::Receiver<ConsoleData>;
     async fn stream_transport(
-        &self,
+        &mut self,
         arc_state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         let state = arc_state.load();
@@ -316,7 +381,7 @@ impl StreamTransportable for CreateServerRequest {
 impl StreamTransportable for StartServerRequest {
     type Output = ();
     async fn stream_transport(
-        &self,
+        &mut self,
         arc_state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         let state = arc_state.load();
@@ -325,66 +390,49 @@ impl StreamTransportable for StartServerRequest {
             return Err("No connection working".into());
         };
 
-        let request = proto::StartServerRequest {};
         let (server_in_tx, server_in_rx) = tokio::sync::mpsc::channel(32);
         let outbound_stream = ReceiverStream::new(server_in_rx);
-        let mut stdin = self.stdin.resubscribe();
-        // if let Some(mut stdin) = self.stdin.as_ref().map(|r| r.resubscribe()) {
-            tokio::spawn(async move {
-                loop {
-                    if let Ok(data) = stdin.recv().await {
-                        let _ = server_in_tx
-                            .send(ServerMessage {
-                                authcode: "0".to_string(),
-                                data,
-                                message: "console".into(),
-                                channel: "stdout".into(),
-                                servername: "unknown".into(),
-                            })
-                            .await;
-                    } else {
-                        break;
-                    }
-                }
-            });
-        //}
+
         let Some(clients) = connection_handler.clients.as_ref().clone() else {
             return Err("no clients".into())
         };
 
         match clients.server_edit_client.clone().start(outbound_stream).await {
             Ok(response_stream) => {
-                //drop(state);
-                println!("before starting stream");
-                let mut stream = response_stream.into_inner();
-                let stdout = self.stdout.clone();
-                tokio::spawn(async move {
-                    while let Some(result) = stream.next().await {
-                        match result {
-                            Ok(message) => {
-                                println!("got a message {:#?}", message);
-                                if let Err(e) = stdout
-                                    .send(serde_json::to_string(&ConsoleData {
-                                        authcode: "0".to_string(),
-                                        data: message.data,
-                                        server: "unknown".into(),
-                                        channel: "stdout".into(),
-                                        message: "console".into(),
-                                    }).unwrap()){
-                                        println!("User disconnected");
-                                        break;
+                let raw_stream = response_stream.into_inner();
+
+                let stream = stream::unfold(raw_stream, move |mut raw_stream| {
+                    async move {
+                        loop {
+                            if let Some(result) = raw_stream.next().await {
+                                match result {
+                                    Ok(message) => {
+                                        let console_data: ConsoleData = ConsoleData {
+                                            authcode: "0".to_string(),
+                                            data: message.data,
+                                            server: "unknown".into(),
+                                            channel: "stdout".into(),
+                                            message: "console".into(),
+                                        };
+                                        return Some((console_data, raw_stream));
+                                    },
+                                    Err(e) => {
+                                        eprintln!("{:#?}", e);
+                                        return None;
                                     }
-                            }
-                            Err(e) => {
-                                println!("got an err");
+                                }
                             }
                         }
                     }
                 });
+
+                *self.interface.console_out.lock().await = Some(stream.boxed());
+                *self.interface.console_in.lock().await = Some(server_in_tx);
+                self.interface.active_event.notify_one();
+
                 Ok(())
             }
             Err(e) => {
-                println!("{:#?}", e);
                 Err("error".into())
             }
         }
@@ -393,7 +441,7 @@ impl StreamTransportable for StartServerRequest {
 impl StreamTransportable for SwitchConsoleRequest {
     type Output = ();
     async fn stream_transport(
-        &self,
+        &mut self,
         state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         Ok(())
@@ -630,7 +678,7 @@ impl StreamTransportable for ServerStateRequest {
     type Output = watch::Receiver<ServerStatus>;
 
     async fn stream_transport(
-        &self,
+        &mut self,
         arc_state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         todo!()
@@ -651,7 +699,7 @@ impl NodeTransportable for LsRequest {
 impl StreamTransportable for FileUploadRequest {
     type Output = Arc<Notify>;
     async fn stream_transport(
-        &self,
+        &mut self,
         arc_state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         let state = arc_state.load();
@@ -718,7 +766,7 @@ impl FileUploadRequest {
 impl StreamTransportable for FileDownloadRequest {
     type Output = mpsc::Receiver<Vec<u8>>;
     async fn stream_transport(
-        &self,
+        &mut self,
         arc_state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         let state = arc_state.load();

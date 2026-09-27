@@ -1,11 +1,12 @@
 
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
+use futures_util::{Stream, StreamExt, sink::Unfold, stream};
 use general_networked_filesystem::core::{DirectoryResponse, FileRequest, LsRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{
-    io::AsyncWriteExt, net::TcpStream, sync::{Mutex, Notify, RwLock, mpsc::{self}, watch}, time::{sleep, timeout}
+    io::AsyncWriteExt, net::TcpStream, sync::{Mutex, Notify, RwLock, broadcast, mpsc::{self, UnboundedReceiver, UnboundedSender}, watch}, time::{sleep, timeout}
 };
 use tokio_util::sync::CancellationToken;
 use crate::{OrchestratorClients, ServerCheckEvent, ServerStatus, StatusMethod, UserClient, transport::node_transport_spec::{CapabilitiesRequest, CreateServerRequest, CustomNodeTransportable, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, NodeTransportable, NodeTransportableMut, Ping, RemoteFile, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StateActionType, StopServerRequest, StreamTransportable, SwitchConsoleRequest}};
@@ -24,9 +25,7 @@ use crate::{
     MessagePayloadWithMetadata, MetadataTypes, SimpleMessage, SrcAndDest, StreamResult,
 };
 use std::{
-    collections::HashMap, error::Error, sync::{
-        Arc
-    }, time::{Duration, Instant}
+    collections::HashMap, error::Error, pin::Pin, sync::{Arc, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant}
 };
 use tokio::io::AsyncReadExt;
 use anyhow::anyhow;
@@ -640,9 +639,9 @@ impl NodeTransportable for DeleteServerRequest {
 
 
 impl StreamTransportable for CreateServerRequest {
-    type Output = mpsc::Receiver<ConsoleData>;
+    type Output = ();
     async fn stream_transport(
-        &self,
+        &mut self,
         arc_state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         let Some(ref connection_handler) = arc_state.load().current_node.connection else {
@@ -661,7 +660,7 @@ impl StreamTransportable for CreateServerRequest {
             return Err("no stream".into());
         }
         let _ = connection_handler.proxy_tx.clone().unwrap().send(bytes);
-        let (tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let (tx, proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
         let share_tx_guard = connection_handler.share_tx.clone();
         drop(state);
         let mut share_tx = share_tx_guard.lock().await;
@@ -669,32 +668,104 @@ impl StreamTransportable for CreateServerRequest {
         share_tx.insert(index, tx);
         drop(share_tx);
 
-        let (server_tx, server_rx) = tokio::sync::mpsc::channel(32);
-        let inner_console_task = self.active.clone();
-        tokio::spawn(async move {
-            loop {
-                if let Some(bytes) = proxy_rx.recv().await {
-                    if let Ok(value) = serde_json::from_slice::<ConsoleData>(&bytes) {
-                        let _ = server_tx.send(value).await;
-                        let mut share_tx = share_tx_guard.lock().await;
-                        share_tx.remove(&index);
+        let console_task = ConsoleTask {
+            share_tx_guard: share_tx_guard.clone(),
+            input: proxy_rx,
+        };
+
+        let stream = stream::unfold(console_task, move |mut console_task| {
+            async move {
+                loop {
+                    match console_task.input.recv().await {
+                        Some(bytes) => {
+                            if let Ok(value) = serde_json::from_slice::<ConsoleData>(&bytes) {
+                                return Some((value, console_task));
+                            }
+                        }
+                        None => {
+                            let mut share_tx = console_task.share_tx_guard.lock().await;
+                            share_tx.remove(&index);
+                            return None;
+                        }
                     }
-                } else {
-                    break;
                 }
-                inner_console_task.cancel();
             }
         });
 
-        Ok(server_rx)
+        *self.interface.console_out.lock().await = Some(stream.boxed());
+        self.interface.active_event.notify_one();
+
+        Ok(())
     }
 }
 
+struct ConsoleTask {
+    share_tx_guard: Arc<Mutex<HashMap<usize, mpsc::UnboundedSender<Vec<u8>>>>>,
+    input: mpsc::UnboundedReceiver<Vec<u8>>
+}
+
+// #[derive(Clone)]
+// pub struct ConsoleStdout {
+//     console_out: Arc<Mutex<Pin<Box<dyn Stream<Item = ConsoleData> + Send + 'static>>>>
+// }
+
+#[derive(Clone, Default)]
+pub struct ConsoleInterface {
+    active_event: Arc<Notify>,
+    active: Arc<AtomicBool>,
+    console_out: Arc<Mutex<Option<Pin<Box<dyn Stream<Item = ConsoleData> + Send + 'static>>>>>,
+    console_in: Arc<Mutex<Option<UnboundedSender<Vec<u8>>>>>,
+    proxy_out: Arc<RwLock<Vec<UnboundedSender<ConsoleData>>>>,
+    proxy_in: Arc<Mutex<Option<broadcast::Sender<ConsoleData>>>>
+}
+
+impl ConsoleInterface {
+    pub async fn spawn(&mut self, _state: Arc<ArcSwap<AppState>>) -> Result<(), Box<dyn Error + Send + Sync>>{
+        self.active_event.notified().await;
+        let Some(ref mut console_out) = *self.console_out.lock().await else {
+            return Err("no console out".into())
+        };
+
+        self.active.store(true, Ordering::SeqCst);
+        let (proxy_in_tx, mut proxy_in_rx) = broadcast::channel::<ConsoleData>(32);
+
+        *self.proxy_in.lock().await = Some(proxy_in_tx);
+        *self.proxy_out.write().await = Vec::new();
+
+        loop {
+            tokio::select! {
+                console_data_res = console_out.next() => {
+                    if let Some(console_data) = console_data_res {
+                        let proxy_out = self.proxy_out.read().await;
+                        for tx in &*proxy_out {
+                            let _ = tx.send(console_data.clone());
+                        }
+                    }
+                },
+                Ok(message) = proxy_in_rx.recv(), if self.console_in.lock().await.is_some()  => {
+                    let _ = self.console_in.lock().await.as_ref().unwrap().send(serde_json::to_vec(&message).unwrap());
+                }
+            }
+        }
+    }
+    pub async fn stdin(&self) -> Option<broadcast::Sender<ConsoleData>> {
+        self.proxy_in.lock().await.clone()
+    }
+    pub async fn stdout(&mut self) -> Option<UnboundedReceiver<ConsoleData>> {
+        let (proxy_out_tx, proxy_out_rx) = mpsc::unbounded_channel();
+        self.proxy_out.write().await.push(proxy_out_tx);
+        if self.active.load(Ordering::SeqCst) {
+            Some(proxy_out_rx)
+        } else {
+            None
+        }
+    }
+}
 
 impl StreamTransportable for StartServerRequest {
     type Output = ();
     async fn stream_transport(
-        &self,
+        &mut self,
         arc_state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         let state = arc_state.load();
@@ -704,7 +775,7 @@ impl StreamTransportable for StartServerRequest {
         };
 
 
-        let mut bytes = convert_into_request(&MessagePayload {
+        let bytes = convert_into_request(&MessagePayload {
             r#type: "command".to_string(),
             message: "start_server".to_string(),
             authcode: "".to_string(),
@@ -722,100 +793,43 @@ impl StreamTransportable for StartServerRequest {
         println!("after sending message");
         drop(state);
         
-        let inner_arc_state = Arc::clone(&arc_state);
         // let (server_tx, server_rx) = tokio::sync::mpsc::channel(32);
-        let mut stdin = self.stdin.resubscribe();
+         let (tx, proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let share_tx_guard = connection_handler.share_tx.clone();
+        let mut share_tx = share_tx_guard.lock().await;
+        let index = share_tx.len();
+        share_tx.insert(index, tx);
+        drop(share_tx);
 
-        let stdout = self.stdout.clone();
-        let inner_console_task = self.active.clone();
-        tokio::spawn(async move {
-            let (tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-            let state = inner_arc_state.load();
-            let share_tx_guard = connection_handler.share_tx.clone();
-            let mut share_tx = share_tx_guard.lock().await;
-            let index = share_tx.len();
-            share_tx.insert(index, tx);
-            drop(share_tx);
-            loop {
-                tokio::select! {
-                    Some(bytes) = proxy_rx.recv() => {
-                        if let Ok(value) = serde_json::from_slice::<ConsoleData>(&bytes) {
-                            if let Err(_) = stdout.send(serde_json::to_string(&value).unwrap()) {
-                                println!("User disconnected");
-                                let mut share_tx = share_tx_guard.lock().await;
-                                share_tx.remove(&index);
-                                break;
+        let console_task = ConsoleTask {
+            share_tx_guard: share_tx_guard.clone(),
+            input: proxy_rx,
+        };
+
+        let stream = stream::unfold(console_task, move |mut console_task| {
+            async move {
+                loop {
+                    match console_task.input.recv().await {
+                        Some(bytes) => {
+                            if let Ok(value) = serde_json::from_slice::<ConsoleData>(&bytes) {
+                                return Some((value, console_task));
                             }
                         }
-                    }
-                    Ok(msg) = stdin.recv() => {
-                        let _ = proxy_tx.send(msg.into_bytes());
+                        None => {
+                            let mut share_tx = console_task.share_tx_guard.lock().await;
+                            share_tx.remove(&index);
+                            return None;
+                        }
                     }
                 }
-                inner_console_task.cancel();
             }
         });
 
+        *self.interface.console_out.lock().await = Some(stream.boxed());
+        *self.interface.console_in.lock().await = Some(proxy_tx.clone());
+        self.interface.active_event.notify_one();
         Ok(())
         // Ok(server_rx)
-    }
-}
-
-impl StreamTransportable for SwitchConsoleRequest {
-    type Output = ();
-
-    async fn stream_transport(
-        &self,
-        arc_state: Arc<ArcSwap<AppState>>,
-    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
-        let state = arc_state.load();
-        let connection = state.current_node.connection.clone();
-        let Some(connection_handler) =  connection else {
-            return Err("No connection working".into());
-        };
-        println!("after state write lock in switch console");
-
-        if *connection_handler.current_active_priority.lock().await > 0 {
-            return Err("high priority task is occuring and cant be interfered with".into())
-        }
-
-        if connection_handler.proxy_tx.is_none(){
-            return Err("no stream".into());
-        }
-        let proxy_tx = connection_handler.proxy_tx.clone().unwrap();
-        println!("after sending message in switch console");
-
-        let inner_arc_state = Arc::clone(&arc_state);
-        let mut stdin = self.stdin.resubscribe();
-        let stdout = self.stdout.clone();
-        tokio::spawn(async move {
-            let (tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-            let state = inner_arc_state.load();
-            let share_tx_guard = connection_handler.share_tx.clone();
-            drop(state);
-            let mut share_tx = share_tx_guard.lock().await;
-            let index = share_tx.len();
-            share_tx.insert(index, tx);
-            drop(share_tx);
-            loop {
-                tokio::select! {
-                    Some(bytes) = proxy_rx.recv() => {
-                        if let Ok(value) = serde_json::from_slice::<ConsoleData>(&bytes) {
-                            if let Err(_) = stdout.send(serde_json::to_string(&value).unwrap()) {
-                                println!("User disconnected");
-                                let mut share_tx = share_tx_guard.lock().await;
-                                share_tx.remove(&index);
-                                break;
-                            }
-                        }
-                    }
-                    Ok(msg) = stdin.recv() => {
-                        let _ = proxy_tx.send(msg.into_bytes());
-                    }
-                }
-            }
-        });
-        Ok(())
     }
 }
 
@@ -966,8 +980,7 @@ impl NodeTransportable for FilterRequest {
             metadata: MetadataTypes::Filter(self.filter.clone()),
             authcode: "0".to_string(),
         };
-        let _ = state
-            .connection_handler
+        let _ = connection_handler
             .proxy_tx
             .clone()
             .unwrap()
@@ -1000,8 +1013,7 @@ impl NodeTransportable for Ping {
             return Err("no stream".into());
         }
         println!("sending ping");
-        let _ = state
-            .connection_handler
+        let _ = connection_handler
             .proxy_tx
             .clone()
             .unwrap()
@@ -1102,7 +1114,7 @@ impl StreamTransportable for ServerStateRequest {
     type Output = watch::Receiver<ServerStatus>;
 
     async fn stream_transport(
-        &self,
+        &mut self,
         arc_state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         let state = arc_state.load();
@@ -1211,7 +1223,7 @@ impl FileUploadRequest {
 impl StreamTransportable for FileUploadRequest {
     type Output = (flume::Receiver<Vec<u8>>, Arc<CancellationToken>);
     async fn stream_transport(
-        &self,
+        &mut self,
         arc_state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         let state = arc_state.load();
@@ -1283,7 +1295,7 @@ impl StreamTransportable for FileDownloadRequest {
     // type Output = BoxStream<'static, Result<Vec<u8>, std::io::Error>>;
     type Output = flume::Receiver<Vec<u8>>;
     async fn stream_transport(
-        &self,
+        &mut self,
         arc_state: Arc<ArcSwap<AppState>>,
     ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
         let state = arc_state.load();

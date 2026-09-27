@@ -4,15 +4,12 @@ use dashmap::DashMap;
 use futures::stream::unfold;
 use futures::Stream;
 use futures::StreamExt;
-use general_networked_filesystem::core::FileOperations;
 use general_networked_filesystem::wrapper::Direction;
 use general_networked_filesystem::wrapper::FileSystemHandler;
-use postcard::Error;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
 use std::convert::TryFrom;
-use std::ops::Deref;
 use std::path::Path;
 use std::pin::Pin;
 use std::process::{Command, Stdio};
@@ -23,7 +20,6 @@ use tokio::fs;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::process::{ChildStdin, Command as TokioCommand};
-use tokio::sync::broadcast::Receiver;
 use tokio::sync::RwLock;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::sleep;
@@ -316,7 +312,7 @@ pub enum Status {
 static StaticLocalUrl: &str = "0.0.0.0:8080";
 
 #[cfg(not(feature = "full-stack"))]
-static StaticLocalUrl: &str = "0.0.0.0:8082";
+static STATIC_LOCAL_URL: &str = "0.0.0.0:8082";
 
 // the server state, currently only holds keywords for what messages to look for when declaring the server as started or stopped
 // might be phased out in favor of determining whether or not the process is running or not
@@ -343,11 +339,7 @@ fn filter(filter: Filters, line: String) -> bool {
                     .and_then(|s| s.split_whitespace().last())
                     .and_then(|s| s.parse::<u32>().ok())
                 {
-                    if pct_str % 5 != 0 {
-                        true
-                    } else {
-                        false
-                    }
+                    pct_str % 5 != 0
                 } else {
                     true
                 }
@@ -367,7 +359,7 @@ fn filter(filter: Filters, line: String) -> bool {
 // in the sandbox too.
 // Bwrap adds a system dep, but is more tested and simpler to use
 fn process_hook(
-    state: &AppState,
+    _state: &AppState,
     provider: ProviderConfig,
     sandbox: bool,
     location_option: Option<String>,
@@ -467,7 +459,7 @@ fn process_hook(
                 .map(|a| a.to_string_lossy().to_string())
                 .map(|a| {
                     if a.starts_with("cd ") {
-                        if let Some(rest) = a.splitn(2, " && ").nth(1) {
+                        if let Some(rest) = a.split_once(" && ").map(|x| x.1) {
                             return rest.to_string();
                         }
                     }
@@ -539,7 +531,7 @@ async fn run_command_live_output(
     println!("Befre process hook");
     process_hook(state, provider, sandbox, Some(location), &mut tokio_cmd);
     println!("After process hook");
-    let mut child = tokio_cmd.spawn().map_err(|e| ProcessErrors::IOError(e))?;
+    let mut child = tokio_cmd.spawn().map_err(ProcessErrors::IOError)?;
 
     if let Some(stdin_slot) = stdin_arc {
         let child_stdin = child.stdin.take();
@@ -632,7 +624,7 @@ async fn run_command_live_output(
                 break;
             }
             _ = sleep_fut => {
-                child.kill().await.map_err(|e| ProcessErrors::IOError(e))?;
+                child.kill().await.map_err(ProcessErrors::IOError)?;
                 if let Some(ref status) = status {
                     status.store(false, Ordering::SeqCst);
                 }
@@ -821,10 +813,7 @@ pub async fn create_server_handler(
     //NoneResponse {}
     if let Some(rx) = process.clone().cmd_rx.lock().await.take() {
         let stream = unfold(rx, |mut rx| async {
-            match rx.recv().await {
-                Some(value) => Some((value, rx)),
-                None => None,
-            }
+            rx.recv().await.map(|value| (value, rx))
         });
         println!("returning the stream finally");
         Ok(StreamResponse::new(stream))
@@ -837,7 +826,7 @@ pub async fn create_server_handler(
 pub async fn start_server_handler(
     state: &Arc<AppState>,
     _req: StartServerRequest,
-    addr: String,
+    _addr: String,
 ) -> Result<StreamResponse<String>, ErrorResponse> {
     //let current_server = state.current_server.lock().await;
 
@@ -984,7 +973,7 @@ pub async fn start_server_handler(
                     let platform = provider_object
                         .unwrap_or(("".to_string(), Platforms::default()))
                         .1;
-                    let provider = pick_platform(platform).unwrap_or(ProviderConfig::default());
+                    let provider = pick_platform(platform).unwrap_or_default();
                     let arc_state_for_stdin = state.clone();
                     let status = process.active.clone();
                     let inner_process = process.clone();
@@ -1000,7 +989,7 @@ pub async fn start_server_handler(
                             tx.clone(),
                             Some(stdin_clone.clone()),
                             None,
-                            Some(status.into()),
+                            Some(status),
                         )
                         .await;
                         {
@@ -1015,14 +1004,11 @@ pub async fn start_server_handler(
                                 *inner_process.cmd_rx.lock().await = Some(cmd_rx);
                                 inner_process.active.store(false, Ordering::SeqCst);
                             }
-                            Err(e) => match e {
-                                ProcessErrors::IOError(error) => {
-                                    let _ = tx
-                                        .unwrap()
-                                        .send(format!("Server process failed: {}", error))
-                                        .await;
-                                }
-                                _ => {}
+                            Err(e) => if let ProcessErrors::IOError(error) = e {
+                                let _ = tx
+                                    .unwrap()
+                                    .send(format!("Server process failed: {}", error))
+                                    .await;
                             },
                         }
                     });
@@ -1046,10 +1032,7 @@ pub async fn start_server_handler(
     }
     if let Some(rx) = process.clone().cmd_rx.lock().await.take() {
         let stream = unfold(rx, |mut rx| async {
-            match rx.recv().await {
-                Some(value) => Some((value, rx)),
-                None => None,
-            }
+            rx.recv().await.map(|value| (value, rx))
         });
         Ok(StreamResponse::new(stream))
     } else {
@@ -1113,7 +1096,7 @@ pub async fn stop_server_handler(
                     }
                 };
 
-                if let Some(_) = provider_object {
+                if provider_object.is_some() {
                     let input = "stop";
                     let mut guard = stdin_ref.lock().await;
                     if let Some(stdin) = guard.as_mut() {
@@ -1189,7 +1172,7 @@ pub async fn delete_server_handler(
 pub async fn set_server_handler(
     state: &Arc<AppState>,
     req: SetServerRequest,
-    addr: String,
+    _addr: String,
 ) -> NoneResponse {
     println!("Got a set server request");
     if let MetadataTypes::Server {
@@ -1341,12 +1324,12 @@ pub async fn server_data_handler(
 pub async fn ping_handler(_state: &Arc<AppState>, _req: Ping) -> PingResponse {
     println!("got ping request");
     //         //let out_tx_clone = out_tx.clone();
-    let pong = PingResponse {
+    
+    PingResponse {
         message: SimpleMessage {
             message: "pong".to_string(),
         },
-    };
-    pong
+    }
 }
 pub async fn server_state_handler(
     state: &Arc<AppState>,
@@ -1378,14 +1361,14 @@ pub async fn server_name_handler(
     //     Err(e) => e.clone(),
     // };
     let hostname = hostname::get().unwrap_or("unknown".into());
-    let server_name_response = ServerNameResponse {
+    
+    ServerNameResponse {
         common: MessagePayload {
             r#type: "command".to_string(),
             message: hostname.into_string().unwrap(),
             authcode: "0".to_string(),
         },
-    };
-    server_name_response
+    }
 }
 
 
@@ -1614,8 +1597,7 @@ async fn spawn_request_loop(
                             }
                         }
                     }
-                } else {
-                }
+                } 
                 println!("next");
                 conn_handler.end_clean_hook().await;
                 println!("past end hook");
@@ -1637,7 +1619,7 @@ async fn ensure_server_directory() {}
 // and re-attaching of the server stdin to go back to the main server
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let config_local_url = get_env_var_or_arg("LOCALURL", Some(StaticLocalUrl.to_string()));
+    let config_local_url = get_env_var_or_arg("LOCALURL", Some(STATIC_LOCAL_URL.to_string()));
 
     let uid = unsafe { libc::getuid() };
     if uid != 0 {
@@ -1799,7 +1781,7 @@ pub async fn tcp_to_writer(stream: TcpStream) -> mpsc::Sender<Vec<u8>> {
                 }
             }
 
-            if message_count % 100 == 0 {
+            if message_count.is_multiple_of(100) {
                 if let Err(e) = writer.flush().await {
                     eprintln!("[tcp_to_writer] Failed to flush socket: {}", e);
                     break;
@@ -1868,7 +1850,7 @@ async fn create_server(
                         providertype: "".to_string(),
                         sandbox: {
                             if let MetadataTypes::Server { sandbox, .. } = &payload.metadata {
-                                sandbox.clone()
+                                *sandbox
                             } else {
                                 true
                             }
@@ -2069,11 +2051,11 @@ async fn resolve_path(state: &Arc<AppState>, servername: &str) -> Option<String>
 fn pick_platform(platform: Platforms) -> Option<ProviderConfig> {
     println!("test");
     if cfg!(target_os = "linux") {
-        return platform.linux;
+        platform.linux
     } else if cfg!(target_os = "windows") {
-        return platform.windows;
+        platform.windows
     } else {
-        return None;
+        None
     }
 }
 
@@ -2282,9 +2264,9 @@ async fn get_provider_object(
                 name,
                 db.list.keys().collect::<Vec<_>>()
             );
-            return None;
+            None
         }
-    };
+    }
 }
 
 // This function soley exists to get whether or not the sandbox is enabled for a specific server
@@ -2296,21 +2278,12 @@ async fn get_providers_sandbox(
 ) -> Option<bool> {
     let db = state.db.lock().await;
     if let Some(name) = option_name {
-        if let Some(db_server) = db.server_index.iter().find(|server| *server.0 == name) {
-            Some(db_server.1.sandbox)
-        } else {
-            None
-        }
+        db.server_index.iter().find(|server| *server.0 == name).map(|db_server| db_server.1.sandbox)
     } else if let Some(path) = option_path {
-        if let Some(db_server) = db
+        db
             .server_index
             .iter()
-            .find(|server| server.1.location == path)
-        {
-            Some(db_server.1.sandbox)
-        } else {
-            None
-        }
+            .find(|server| server.1.location == path).map(|db_server| db_server.1.sandbox)
     } else {
         None
     }
@@ -2351,14 +2324,14 @@ async fn get_definite_path_from_name(state: &AppState, name: Option<String>) -> 
             .find(|(server_name, _)| name.clone().unwrap() == **server_name);
         if server_path.is_some() {
             if let Some((_, server_index)) = server_path {
-                return Some(server_index.location.clone());
+                Some(server_index.location.clone())
             } else {
-                return None;
+                None
             }
         } else {
-            return None;
+            None
         }
     } else {
-        return None;
+        None
     }
 }
