@@ -1,5 +1,5 @@
 use crate::transport::node_transport::proto::{DownloadRequest, FileChunk};
-use crate::transport::node_transport_spec::{CapabilitiesRequest, CreateServerRequest, CustomNodeTransportable, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, NodeTransportable, NodeTransportableMut, Ping, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StopServerRequest, StreamTransportable, SwitchConsoleRequest};
+use crate::transport::node_transport_spec::{CapabilitiesRequest, ConnectServerRequest, CreateServerRequest, CustomNodeTransportable, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, NodeTransportable, NodeTransportableMut, Ping, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StopServerRequest, StreamTransportable};
 use crate::transport::node_transport_spec::RemoteFile;
 use crate::{ApiCalls as ToplevelApiCalls, AuthTcpMessage, IncomingMessage, List, NodeWithConn, StreamResult, UserClient};
 use crate::{
@@ -291,6 +291,8 @@ impl ConsoleInterface {
                         for tx in &*proxy_out {
                             let _ = tx.send(console_data.clone());
                         }
+                    } else {
+                        break Err("console disconnected".into());
                     }
                 },
                 Ok(console_data) = proxy_in_rx.recv(), if self.console_in.lock().await.is_some()  => {
@@ -307,6 +309,9 @@ impl ConsoleInterface {
             }
         }
     }
+    pub fn active(&self) -> bool {
+        self.active.load(Ordering::SeqCst)
+    }
     pub async fn stdin(&self) -> Option<broadcast::Sender<ConsoleData>> {
         self.proxy_in.lock().await.clone()
     }
@@ -322,7 +327,7 @@ impl ConsoleInterface {
 }
 
 impl StreamTransportable for CreateServerRequest {
-    type Output = mpsc::Receiver<ConsoleData>;
+    type Output = ();
     async fn stream_transport(
         &mut self,
         arc_state: Arc<ArcSwap<AppState>>,
@@ -336,7 +341,7 @@ impl StreamTransportable for CreateServerRequest {
         let request = proto::CreateServerRequest {
             metadata: Some(self.metadata.clone().into()),
         };
-        let (server_out_tx, server_out_rx) = tokio::sync::mpsc::channel(32);
+
         let Some(clients) = connection_handler.clients.as_ref().clone() else {
             return Err("no clients".into())
         };
@@ -346,27 +351,34 @@ impl StreamTransportable for CreateServerRequest {
             Ok(response_stream) => {
                 //drop(state);
                 println!("before creating stream");
-                let mut stream = response_stream.into_inner();
-                tokio::spawn(async move {
-                    while let Some(result) = stream.next().await {
-                        match result {
-                            Ok(message) => {
-                                //println!("got a message {:#?}", message);
-                                let _ = server_out_tx
-                                    .send(ConsoleData {
-                                        authcode: "0".to_string(),
-                                        data: message.data,
-                                        server: "unknown".into(),
-                                        channel: "stdout".into(),
-                                        message: "console".into(),
-                                    })
-                                    .await;
+                let raw_stream = response_stream.into_inner();
+                let stream = stream::unfold(raw_stream, move |mut raw_stream| {
+                    async move {
+                        loop {
+                            if let Some(result) = raw_stream.next().await {
+                                match result {
+                                    Ok(message) => {
+                                        let console_data: ConsoleData = ConsoleData {
+                                            authcode: "0".to_string(),
+                                            data: message.data,
+                                            server: "unknown".into(),
+                                            channel: "stdout".into(),
+                                            message: "console".into(),
+                                        };
+                                        return Some((console_data, raw_stream));
+                                    },
+                                    Err(e) => {
+                                        eprintln!("{:#?}", e);
+                                        return None;
+                                    }
+                                }
                             }
-                            Err(e) => {}
                         }
                     }
                 });
-                Ok(server_out_rx)
+                *self.interface.console_out.lock().await = Some(stream.boxed());
+                self.interface.active_event.notify_one();
+                Ok(())
             }
             Err(e) => {
                 println!("{:#?}", e);
@@ -438,15 +450,7 @@ impl StreamTransportable for StartServerRequest {
         }
     }
 }
-impl StreamTransportable for SwitchConsoleRequest {
-    type Output = ();
-    async fn stream_transport(
-        &mut self,
-        state: Arc<ArcSwap<AppState>>,
-    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
-        Ok(())
-    }
-}
+
 
 impl NodeTransportable for StopServerRequest {
     type Output = ();
@@ -470,6 +474,68 @@ impl NodeTransportable for StopServerRequest {
             .await;
 
         Ok(())
+    }
+}
+
+impl StreamTransportable for ConnectServerRequest {
+    type Output = ();
+
+    async fn stream_transport(
+        &mut self,
+        arc_state: Arc<ArcSwap<AppState>>,
+    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
+        let state = arc_state.load();
+        let connection = state.current_node.connection.clone();
+        let Some(connection_handler) =  connection else {
+            return Err("No connection working".into());
+        };
+
+        let (server_in_tx, server_in_rx) = tokio::sync::mpsc::channel(32);
+        let outbound_stream = ReceiverStream::new(server_in_rx);
+
+        let Some(clients) = connection_handler.clients.as_ref().clone() else {
+            return Err("no clients".into())
+        };
+
+        match clients.server_edit_client.clone().open(outbound_stream).await {
+            Ok(response_stream) => {
+                let raw_stream = response_stream.into_inner();
+
+                let stream = stream::unfold(raw_stream, move |mut raw_stream| {
+                    async move {
+                        loop {
+                            if let Some(result) = raw_stream.next().await {
+                                match result {
+                                    Ok(message) => {
+                                        let console_data: ConsoleData = ConsoleData {
+                                            authcode: "0".to_string(),
+                                            data: message.data,
+                                            server: "unknown".into(),
+                                            channel: "stdout".into(),
+                                            message: "console".into(),
+                                        };
+                                        return Some((console_data, raw_stream));
+                                    },
+                                    Err(e) => {
+                                        eprintln!("{:#?}", e);
+                                        return None;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+
+                *self.interface.console_out.lock().await = Some(stream.boxed());
+                *self.interface.console_in.lock().await = Some(server_in_tx);
+                self.interface.active_event.notify_one();
+
+                Ok(())
+            }
+            Err(e) => {
+                Err("error".into())
+            }
+        }
     }
 }
 

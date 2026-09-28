@@ -14,18 +14,15 @@ pub struct DeleteServerRequest {
     pub metadata: MetadataTypes,
 }
 
-pub struct SwitchConsoleRequest {
-    pub active: CancellationToken,
-    pub stdin: broadcast::Receiver<String>,
-    pub stdout: broadcast::Sender<String>
-}
-
 pub struct CreateServerRequest {
     pub metadata: MetadataTypes,
     pub(crate) interface: ConsoleInterface
 }
 
 pub struct StartServerRequest {
+    pub(crate) interface: ConsoleInterface
+}
+pub struct ConnectServerRequest {
     pub(crate) interface: ConsoleInterface
 }
 pub struct StopServerRequest {

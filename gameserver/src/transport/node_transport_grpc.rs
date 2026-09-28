@@ -14,6 +14,7 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tonic::Streaming;
 
+use crate::connect_server_handler;
 use crate::create_server_handler;
 use crate::start_server_handler;
 use crate::SimpleMessage;
@@ -29,6 +30,7 @@ use crate::transport::node_transport::proto::ServerMessage;
 use crate::transport::node_transport::proto::SetServerResponse;
 use crate::transport::node_transport::proto::StopServerResponse;
 use crate::transport::node_transport::proto::UploadResponse;
+use crate::transport::node_transport_spec::ConnectServerRequest;
 use crate::transport::node_transport_spec::ServerDataResponse;
 use crate::transport::node_transport_spec::ServerStateResponse;
 use crate::GetState;
@@ -134,6 +136,8 @@ pub struct Request {
 impl ServerEdit for Connection {
     type StartStream = ReceiverStream<Result<ServerMessage, tonic::Status>>;
     type CreateStream = ReceiverStream<Result<ServerMessage, tonic::Status>>;
+    type OpenStream = ReceiverStream<Result<ServerMessage, tonic::Status>>;
+
     async fn create(
         &self,
         request: tonic::Request<proto::CreateServerRequest>,
@@ -245,10 +249,62 @@ impl ServerEdit for Connection {
 
         Ok(tonic::Response::new(StopServerResponse {}))
     }
+    async fn open(
+        &self,
+        // request: tonic::Request<proto::StartServerRequest>,
+        request: tonic::Request<Streaming<proto::ServerMessage>>,
+    ) -> std::result::Result<tonic::Response<Self::CreateStream>, tonic::Status> {
+        let connect_server_request = ConnectServerRequest::default();
+
+        let (tx, rx) = mpsc::channel(32);
+
+        let mut inbound = request.into_inner();
+        let inner_state = self.state.clone();
+        tokio::spawn(async move {
+            while let Some(result) = inbound.next().await {
+                match result {
+                    Ok(message) => {
+                        console_handler(
+                            &inner_state, 
+                            message.into(),
+                            "unknown".into()
+                        ).await;
+                    }
+                    Err(_) => {
+                        println!("got an error in the stream");
+                    }
+                }
+            }
+        });
+
+
+        let raw_stream = connect_server_handler(&self.state.clone(), connect_server_request, "unknown".into()).await
+                        .map_err(|_| tonic::Status::internal("error starting server"))?;
+        tokio::spawn(async move {
+            let mut raw_stream_guard = raw_stream.inner.lock().await;
+            let stream = raw_stream_guard.as_mut().unwrap();
+            while let Some(message) = stream.next().await {
+                let _ = tx.send(Ok(
+                    ServerMessage { 
+                        authcode: "0".into(), 
+                        data: message, 
+                        message: "console".into(), 
+                        channel: "stdout".into(), 
+                        servername: "unknown".into() 
+                    }
+                )).await;
+            }
+        });
+
+        println!("returning a stream");
+        Ok(tonic::Response::new(ReceiverStream::new(rx)))
+    }
 }
 
 #[tonic::async_trait]
 impl ServerManage for Connection {
+    type StateUpdatesStream = ReceiverStream<Result<proto::ServerStateResponse, tonic::Status>>;
+
     async fn data(
         &self,
         _request: tonic::Request<proto::ServerDataRequest>,
@@ -292,6 +348,18 @@ impl ServerManage for Connection {
                                 .map_err(|_| tonic::Status::internal("Error getting the server state"))?;
 
         Ok(tonic::Response::new(state_response.into()))
+    }
+    async fn state_updates(
+        &self,
+        _request: tonic::Request<proto::ServerStateRequest>,
+    ) -> std::result::Result<tonic::Response<Self::StateUpdatesStream>, tonic::Status> {
+        // let server_state_request = ServerStateRequest::default();
+
+        // let state_response = server_state_handler(&self.state.clone(), server_state_request, "unknown".into()).await
+        //                         .map_err(|_| tonic::Status::internal("Error getting the server state"))?;
+
+        // Ok(tonic::Response::new(state_response.into()))
+        todo!()
     }
 }
 

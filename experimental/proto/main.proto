@@ -43,6 +43,8 @@ message StartServerRequest {}
 
 message StopServerRequest {}
 
+message ConnectServerRequest {}
+
 message ServerMessage {
   string authcode = 1;
   string data = 2;
@@ -110,6 +112,7 @@ message ServerNameResponse {
 message SetServerResponse {}
 message StartServerResponse {}
 message StopServerResponse {}
+message ConnectServerResponse {}
 
 message DownloadRequest {
   string location = 1;
@@ -150,10 +153,12 @@ service ServerEdit {
   rpc Delete(DeleteServerRequest) returns (DeleteServerResponse);
   rpc Start(stream ServerMessage) returns (stream ServerMessage);
   rpc Stop(StopServerRequest) returns (StopServerResponse);
+  rpc Open(stream ServerMessage) returns (stream ServerMessage);  // was Connect
 }
 service ServerManage {
   rpc Data(ServerDataRequest) returns (ServerDataResponse);
   rpc State(ServerStateRequest) returns (ServerStateResponse);
+  rpc StateUpdates(ServerStateRequest) returns (stream ServerStateResponse);
   rpc Set(SetServerRequest) returns (SetServerResponse);
 }
 service NodeManage {

@@ -1,12 +1,14 @@
 use dashmap::DashMap;
 use general_networked_filesystem::wrapper::FileSystemHandler;
+use serde::Serialize;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 
-use crate::{create_server_handler, start_server_handler, AppState, ErrorResponse, StreamResponse};
+use crate::transport::node_transport_spec::{ConnectServerRequest, ServerStateUpdatesRequest};
+use crate::{AppState, ErrorResponse, StreamResponse, connect_server_handler, create_server_handler, server_state_updates_handler, start_server_handler};
 use async_trait::async_trait;
 use general_networked_filesystem::core::chain::ChainBuilder;
 use general_networked_filesystem::core::{
@@ -525,6 +527,18 @@ impl RequestByteExecutable for StopServerRequest {
 }
 
 #[async_trait]
+#[typetag::serde(name = "server_state_updates")]
+impl RequestStreamExecutable for ServerStateUpdatesRequest {
+    async fn execute_stream(
+        &self,
+        state: Arc<AppState>,
+        addr: String,
+    ) -> Result<StreamResponse<String>, ErrorResponse> {
+        server_state_updates_handler(&state, self.clone(), addr).await
+    }
+}
+
+#[async_trait]
 #[typetag::serde(name = "start_server")]
 impl RequestStreamExecutable for StartServerRequest {
     async fn execute_stream(
@@ -547,6 +561,21 @@ impl RequestStreamExecutable for CreateServerRequest {
         create_server_handler(&state, self.clone(), addr).await
     }
 }
+
+
+//ConnectServerRequest
+#[async_trait]
+#[typetag::serde(name = "connect_server")]
+impl RequestStreamExecutable for ConnectServerRequest {
+    async fn execute_stream(
+        &self,
+        state: Arc<AppState>,
+        addr: String,
+    ) -> Result<StreamResponse<String>, ErrorResponse> {
+        connect_server_handler(&state, self.clone(), addr).await
+    }
+}
+
 
 // #[typetag::serde]
 // impl RequestByteExecutable for StartServerRequest {

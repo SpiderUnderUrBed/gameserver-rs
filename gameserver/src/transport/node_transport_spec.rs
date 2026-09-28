@@ -8,30 +8,14 @@ use crate::{
 
 use flatten_safe_macro::flatten_safe;
 
-// #[typed_request_macros::typed_request(name = "console")]
-// impl RouteInput<Arc<AppState>> for ConsoleRequest {
-//     type Output = NoneResponse;
-// }
-
-#[derive(Deserialize, Serialize, Clone, Default)]
-pub enum StateActionType {
-    #[default]
-    Immediate,
-    OnUpdate,
-}
-
 #[flatten_safe(tag_value = "server_state")]
 #[derive(Serialize, Clone)]
 pub struct ServerStateRequest {
     #[flatten]
     pub common: IncomingMessage,
-    pub state_action: StateActionType,
+    // pub state_action: StateActionType,
 }
 
-// #[typed_request_macros::typed_request(snake_case)]
-// impl RouteInput<Arc<AppState>> for ServerStateRequest {
-//     type Output = ServerStateResponse;
-// }
 
 impl Default for ServerStateRequest {
     fn default() -> Self {
@@ -41,10 +25,32 @@ impl Default for ServerStateRequest {
                 message_type: "command".to_string(),
                 authcode: "0".to_string(),
             },
-            state_action: StateActionType::default(),
+            // state_action: StateActionType::default(),
         }
     }
 }
+
+#[flatten_safe(tag_value = "server_state_updates")]
+#[derive(Serialize, Clone)]
+pub struct ServerStateUpdatesRequest {
+    #[flatten]
+    pub common: IncomingMessage,
+    // pub state_action: StateActionType,
+}
+
+impl Default for ServerStateUpdatesRequest {
+    fn default() -> Self {
+        ServerStateUpdatesRequest {
+            common: IncomingMessage {
+                message: "server_state_updates".to_string(),
+                message_type: "command".to_string(),
+                authcode: "0".to_string(),
+            },
+            // state_action: StateActionType::default(),
+        }
+    }
+}
+
 
 #[flatten_safe(tag_value = "stop_server")]
 #[derive(Serialize, Clone)]
@@ -52,11 +58,6 @@ pub struct StopServerRequest {
     #[flatten]
     pub common: IncomingMessage,
 }
-
-// #[typed_request_macros::typed_request(snake_case)]
-// impl RouteInput<Arc<AppState>> for StopServerRequest {
-//     type Output = Result<NoneResponse, ErrorResponse>;
-// }
 
 impl Default for StopServerRequest {
     fn default() -> Self {
@@ -76,11 +77,6 @@ pub struct ServerNameRequest {
     #[flatten]
     pub common: IncomingMessage,
 }
-
-// #[typed_request_macros::typed_request(snake_case)]
-// impl RouteInput<Arc<AppState>> for ServerNameRequest {
-//     type Output = ServerNameResponse;
-// }
 
 impl Default for ServerNameRequest {
     fn default() -> Self {
@@ -113,36 +109,12 @@ pub struct ServerDataRequest {
     pub common: IncomingMessage,
 }
 
-// #[typed_request_macros::typed_request(snake_case)]
-// impl RouteInput<Arc<AppState>> for ServerDataRequest {
-//     type Output = Result<ServerDataResponse, NoneResponse>;
-// }
-
 #[flatten_safe(tag_value = "delete_server")]
 #[derive(Serialize, Clone, Debug)]
 pub struct DeleteServerRequest {
     #[flatten]
     pub common: IncomingMessageWithMetadata,
 }
-// register_output!(DeleteServerRequest, "DeleteServerRequest");
-
-// #[typed_request_macros::typed_request(snake_case)]
-// impl RouteInput<Arc<AppState>> for DeleteServerRequest {
-//     type Output = NoneResponse;
-// }
-
-// impl IntoRequest for DeleteServerRequest {
-//     fn as_any(&self) -> &dyn Any {
-//         self
-//     }
-
-//     fn into_any(self: Box<Self>) -> Box<dyn Any> {
-//         self
-//     }
-//     fn clone_box(&self) -> Box<dyn IntoRequest> {
-//         Box::new(self.clone())
-//     }
-// }
 
 #[flatten_safe(tag_value = "set_server")]
 #[derive(Serialize, Clone)]
@@ -150,22 +122,12 @@ pub struct SetServerRequest {
     #[flatten]
     pub common: IncomingMessageWithMetadata,
 }
-// #[typed_request_macros::typed_request(snake_case)]
-// impl RouteInput<Arc<AppState>> for SetServerRequest {
-//     type Output = NoneResponse;
-// }
-
 #[flatten_safe(tag_value = "set_filter")]
 #[derive(Serialize, Clone)]
 pub struct SetFilterRequest {
     #[flatten]
     pub common: IncomingMessageWithMetadata,
 }
-
-// #[typed_request_macros::typed_request(snake_case)]
-// impl RouteInput<Arc<AppState>> for SetFilterRequest {
-//     type Output = NoneResponse;
-// }
 
 #[flatten_safe(tag_value = "ping")]
 #[derive(Serialize, Default, Clone)]
@@ -183,11 +145,6 @@ pub struct ConsoleRequest {
     pub server: String,
     pub channel: String,
 }
-
-// #[typed_request_macros::typed_request(snake_case)]
-// impl RouteInput<Arc<AppState>> for Ping {
-//     type Output = PingResponse;
-// }
 
 // #[register_output]
 #[derive(Serialize, Clone, Debug, Deserialize)]
@@ -227,28 +184,25 @@ pub struct CreateServerRequest {
     pub common: IncomingMessageWithMetadata,
 }
 
-// impl FromWire for CreateServerRequest {
-//     type Request = ValueRequest;
+#[flatten_safe(tag_value = "connect_server")]
+#[derive(Serialize, Clone)]
+pub struct ConnectServerRequest {
+    #[flatten]
+    pub common: IncomingMessage,
+}
 
-//     type Error = serde_json::Error;
+impl Default for ConnectServerRequest {
+    fn default() -> Self {
+        ConnectServerRequest {
+            common: IncomingMessage {
+                message: "connect_server".to_string(),
+                message_type: "command".to_string(),
+                authcode: "0".to_string(),
+            },
+        }
+    }
+}
 
-//     fn from_wire(req: Self::Request) -> Result<Self, Self::Error> {
-//         serde_json::from_value(req.value)
-//     }
-// }
-
-// impl IntoRequest for CreateServerRequest {
-//     fn as_any(&self) -> &dyn Any {
-//         self
-//     }
-
-//     fn into_any(self: Box<Self>) -> Box<dyn Any> {
-//         self
-//     }
-//     fn clone_box(&self) -> Box<dyn IntoRequest> {
-//         Box::new(self.clone())
-//     }
-// }
 
 #[flatten_safe(tag_value = "start_server")]
 #[derive(Serialize, Clone)]
@@ -256,32 +210,6 @@ pub struct StartServerRequest {
     #[flatten]
     pub common: IncomingMessage,
 }
-// #[typed_request_macros::typed_stream_request(snake_case)]
-// impl StreamRouteInput<Arc<AppState>> for StartServerRequest {
-//     type Item = String;
-// }
-
-// impl IntoRequest for StartServerRequest {
-//     fn as_any(&self) -> &dyn Any {
-//         self
-//     }
-
-//     fn into_any(self: Box<Self>) -> Box<dyn Any> {
-//         self
-//     }
-//     fn clone_box(&self) -> Box<dyn IntoRequest> {
-//         Box::new(self.clone())
-//     }
-// }
-// impl FromWire for StartServerRequest {
-//     type Request = ValueRequest;
-
-//     type Error = serde_json::Error;
-
-//     fn from_wire(req: Self::Request) -> Result<Self, Self::Error> {
-//         serde_json::from_value(req.value)
-//     }
-// }
 
 impl Default for StartServerRequest {
     fn default() -> Self {

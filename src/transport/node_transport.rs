@@ -9,7 +9,7 @@ use tokio::{
     io::AsyncWriteExt, net::TcpStream, sync::{Mutex, Notify, RwLock, broadcast, mpsc::{self, UnboundedReceiver, UnboundedSender}, watch}, time::{sleep, timeout}
 };
 use tokio_util::sync::CancellationToken;
-use crate::{OrchestratorClients, ServerCheckEvent, ServerStatus, StatusMethod, UserClient, transport::node_transport_spec::{CapabilitiesRequest, CreateServerRequest, CustomNodeTransportable, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, NodeTransportable, NodeTransportableMut, Ping, RemoteFile, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StateActionType, StopServerRequest, StreamTransportable, SwitchConsoleRequest}};
+use crate::{OrchestratorClients, ServerCheckEvent, ServerStatus, StatusMethod, UserClient, transport::node_transport_spec::{CapabilitiesRequest, ConnectServerRequest, CreateServerRequest, CustomNodeTransportable, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, NodeTransportable, NodeTransportableMut, Ping, RemoteFile, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StateActionType, StopServerRequest, StreamTransportable}};
 use crate::{
     ApiCalls as ToplevelApiCalls, AuthTcpMessage, ConsoleData, IncomingMessage,
     IntegrationCommands, KubeLocalRequest, List, LogLine, NodeWithConn,
@@ -704,10 +704,6 @@ struct ConsoleTask {
     input: mpsc::UnboundedReceiver<Vec<u8>>
 }
 
-// #[derive(Clone)]
-// pub struct ConsoleStdout {
-//     console_out: Arc<Mutex<Pin<Box<dyn Stream<Item = ConsoleData> + Send + 'static>>>>
-// }
 
 #[derive(Clone, Default)]
 pub struct ConsoleInterface {
@@ -740,6 +736,8 @@ impl ConsoleInterface {
                         for tx in &*proxy_out {
                             let _ = tx.send(console_data.clone());
                         }
+                    } else {
+                        break Err("console disconnected".into());
                     }
                 },
                 Ok(message) = proxy_in_rx.recv(), if self.console_in.lock().await.is_some()  => {
@@ -759,6 +757,9 @@ impl ConsoleInterface {
         } else {
             None
         }
+    }
+    pub fn active(&self) -> bool {
+        self.active.load(Ordering::SeqCst)
     }
 }
 
@@ -857,6 +858,76 @@ impl NodeTransportable for StopServerRequest {
             return Err("no stream".into());
         }
         let _ = connection_handler.proxy_tx.clone().unwrap().send(msg.unwrap());
+        Ok(())
+    }
+}
+impl StreamTransportable for ConnectServerRequest {
+    type Output = ();
+
+    async fn stream_transport(
+        &mut self,
+        arc_state: Arc<ArcSwap<AppState>>,
+    ) -> Result<Self::Output, Box<dyn Error + Send + Sync>> {
+        let state = arc_state.load();
+        let connection = state.current_node.connection.clone();
+        let Some(connection_handler) =  connection else {
+            return Err("No connection working".into());
+        };
+
+
+        let bytes = convert_into_request(&MessagePayload {
+            r#type: "command".to_string(),
+            message: "connect_server".to_string(),
+            authcode: "".to_string(),
+        }).unwrap();
+
+        if *connection_handler.current_active_priority.lock().await > 0 {
+            return Err("high priority task is occuring and cant be interfered with".into())
+        }
+
+        if connection_handler.proxy_tx.is_none(){
+            return Err("no stream".into());
+        }
+        let proxy_tx = connection_handler.proxy_tx.clone().unwrap();
+        let _ = proxy_tx.send(bytes);
+        println!("after sending message");
+        drop(state);
+        
+        // let (server_tx, server_rx) = tokio::sync::mpsc::channel(32);
+         let (tx, proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let share_tx_guard = connection_handler.share_tx.clone();
+        let mut share_tx = share_tx_guard.lock().await;
+        let index = share_tx.len();
+        share_tx.insert(index, tx);
+        drop(share_tx);
+
+        let console_task = ConsoleTask {
+            share_tx_guard: share_tx_guard.clone(),
+            input: proxy_rx,
+        };
+
+        let stream = stream::unfold(console_task, move |mut console_task| {
+            async move {
+                loop {
+                    match console_task.input.recv().await {
+                        Some(bytes) => {
+                            if let Ok(value) = serde_json::from_slice::<ConsoleData>(&bytes) {
+                                return Some((value, console_task));
+                            }
+                        }
+                        None => {
+                            let mut share_tx = console_task.share_tx_guard.lock().await;
+                            share_tx.remove(&index);
+                            return None;
+                        }
+                    }
+                }
+            }
+        });
+
+        *self.interface.console_out.lock().await = Some(stream.boxed());
+        *self.interface.console_in.lock().await = Some(proxy_tx.clone());
+        self.interface.active_event.notify_one();
         Ok(())
     }
 }
@@ -1076,7 +1147,7 @@ impl NodeTransportable for ServerStateRequest {
             "type": "command".to_string(),
             "message": "server_state".to_string(),
             "authcode": "0".to_string(),
-            "state_action": &StateActionType::Immediate,
+            // "state_action": &StateActionType::Immediate,
         }))
         .unwrap();
 
@@ -1133,11 +1204,11 @@ impl StreamTransportable for ServerStateRequest {
             return Err("no stream".into());
         }
 
-        let mut bytes = convert_into_request(&json!({
+        let bytes = convert_into_request(&json!({
             "type": "command".to_string(),
-            "message": "server_state".to_string(),
+            "message": "server_state_updates".to_string(),
             "authcode": "0".to_string(),
-            "state_action": &StateActionType::OnUpdate,
+            // "state_action": &StateActionType::OnUpdate,
         }))
         .unwrap();
 
@@ -1164,10 +1235,10 @@ impl StreamTransportable for ServerStateRequest {
                     }
                 }
             }
+            let mut share_tx = share_tx_guard.lock().await;
+            share_tx.remove(&index);
         });
         
-        let mut share_tx = share_tx_guard.lock().await;
-        share_tx.remove(&index);
 
         Ok(watch_rx)
     }

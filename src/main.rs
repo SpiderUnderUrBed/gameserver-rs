@@ -156,7 +156,7 @@ use crate::transport::node_transport::{
     connect_to_server,
 };
 use crate::transport::node_transport_spec::{
-    CreateServerRequest, CustomNodeTransportable, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, NodeTransportable, Ping, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StateActionType, StopServerRequest, StreamTransportable, SwitchConsoleRequest
+    ConnectServerRequest, CreateServerRequest, CustomNodeTransportable, DeleteServerRequest, FileDownloadRequest, FileUploadRequest, FilterRequest, IntegrationKeyRequest, MigrateRequest, NodeTransportable, Ping, ServerDataRequest, ServerStateRequest, ServernameRequest, SetServerRequest, StartServerRequest, StateActionType, StopServerRequest, StreamTransportable
 };
 
 
@@ -1397,7 +1397,7 @@ pub async fn stop_server(
 
         println!("getting the current process");
         let current_process = current_process_guard.load();
-        let _ = current_process.status_method.send(StatusMethod::OnUpdate);
+        // let _ = current_process.status_method.send(StatusMethod::OnUpdate);
         
         println!("changed the current processes status method");
 
@@ -2889,55 +2889,16 @@ pub async fn start_server(
     if !authorized {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-
-    // let arc_current_user; 
-    // if let Ok(user) = ensure_current_user(session.clone(), Arc::clone(&arc_state)).await {
-    //     arc_current_user = user;
-    // } else {
-    //     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    // }
     
-    // let mut current_user = arc_current_user.write().await;
-    // // if matches!(current_user.connection_status, ConnectionStatus::Connected) {
-    // //     return StatusCode::TOO_MANY_REQUESTS.into_response();
-    // // }
-    // // current_user.connection_status = ConnectionStatus::Connected;
-    // drop(current_user);
-    
-    println!("past current user");
-    let current_process_lock;
-    if let Ok(process) = get_current_process(session.clone(), &state).await {
-        current_process_lock = process;
-    } else {
-        println!("error getting current process");
+    let Ok(current_process_lock) = get_current_process(session.clone(), &state).await else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
-    println!("before current process");
-    let mut current_process = (*current_process_lock.load_full()).clone();
+    };
+    let current_process = (*current_process_lock.load_full()).clone();
     println!("past current procoess");
 
     // let server_console_task = CancellationToken::new();
     let mut start_server_request = StartServerRequest {
         interface: current_process.console_interface
-        // active: server_console_task.clone(),
-        // stdin: {
-        //     if let Some(console) = current_process.console_in.as_ref() {
-        //         console.subscribe()
-        //     } else {
-        //         let (server_console_in_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
-        //         current_process.console_in = Some(server_console_in_tx);
-        //         current_process.console_in.as_ref().unwrap().subscribe()
-        //     }
-        // },
-        // stdout: {
-        //     if let Some(console) = current_process.console_out.as_ref() {
-        //         console.clone()
-        //     } else {
-        //         let (server_console_out_tx, _) = broadcast::channel::<String>(CHANNEL_BUFFER_SIZE);
-        //         current_process.console_out = Some(server_console_out_tx);
-        //         current_process.console_out.as_ref().unwrap().clone()
-        //     }
-        //}
     };
     
     println!("before sending start req");
@@ -3357,27 +3318,27 @@ async fn set_server(
     auth_session: AuthSession,
     headers: HeaderMap,
     Json(request): Json<ModifyElementData>,
-) -> Result<StatusCode, StatusCode> {
-    let mut state = arc_state.load();
+) -> StatusCode {
+    let state = arc_state.load();
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
-        return Err(StatusCode::UNAUTHORIZED);
+        return StatusCode::UNAUTHORIZED;
     }
 
     if let Element::String(servername) = request.element {
-        // its unusual for two ?? but it works
-        let retrieved_server = state
+        let Ok(retrieved_server_option) = state
             .database
             .get_from_servers_database(&servername)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
-            .transpose()
-            .ok_or(StatusCode::NOT_FOUND)??;
+            .await else {
+                return StatusCode::INTERNAL_SERVER_ERROR
+            };
+        let Some(retrieved_server) = retrieved_server_option else {
+            return StatusCode::NOT_FOUND
+        };
 
         let _ = ensure_server_process(&state, retrieved_server.clone()).await;
-        if set_process_for_user(session, retrieved_server.servername.clone(), &state).await.is_err() {
-            println!("err");
-            return Err(StatusCode::INTERNAL_SERVER_ERROR)
+        if set_process_for_user(session.clone(), retrieved_server.servername.clone(), &state).await.is_err() {
+            return StatusCode::INTERNAL_SERVER_ERROR
         };
         
         // state.current_server = Some(
@@ -3401,9 +3362,7 @@ async fn set_server(
         //     }
         //     .into(),
         // );
-        println!("right about here");
         let mut state = arc_state.load();
-        println!("rigth after lock");
         let set_server_request = SetServerRequest {
             metadata: MetadataTypes::Server {
                 servername: retrieved_server.servername,
@@ -3415,10 +3374,32 @@ async fn set_server(
             },
         };
         let _ = set_server_request.node_transport(&mut state).await;
-        println!("finished node transport");
-        Ok(StatusCode::OK)
+        
+        let server_state_request = ServerStateRequest {};
+        let Ok(status) = server_state_request.node_transport(&state).await else {
+            return StatusCode::INTERNAL_SERVER_ERROR
+        };
+        if !matches!(status, ServerStatus::Up){
+            return StatusCode::OK;
+        } 
+
+        let Ok(current_process_lock) = get_current_process(session.clone(), &state).await else {
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        };
+        let current_process = current_process_lock.load();
+        if current_process.console_interface.active(){
+            return StatusCode::OK;
+        }
+
+        let mut connect_server_request = ConnectServerRequest { 
+            interface: current_process.console_interface.clone() 
+        };
+        let res = connect_server_request.stream_transport(arc_state).await;
+        println!("connect console res: {:#?}", res);
+
+        StatusCode::OK
     } else {
-        Ok(StatusCode::INTERNAL_SERVER_ERROR)
+        StatusCode::INTERNAL_SERVER_ERROR
     }
 }
 

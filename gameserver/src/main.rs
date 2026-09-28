@@ -9,6 +9,7 @@ use general_networked_filesystem::wrapper::FileSystemHandler;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
+use tokio::sync::watch;
 use std::convert::TryFrom;
 use std::path::Path;
 use std::pin::Pin;
@@ -42,6 +43,7 @@ use crate::transport::node_transport::spawn_conn_background_tasks;
 use crate::transport::node_transport::ClientManager;
 use crate::transport::node_transport::ConnectionHandler;
 use crate::transport::node_transport::ConnectionManager;
+use crate::transport::node_transport_spec::ConnectServerRequest;
 use crate::transport::node_transport_spec::ConsoleRequest;
 use crate::transport::node_transport_spec::CreateServerRequest;
 use crate::transport::node_transport_spec::DeleteServerRequest;
@@ -53,6 +55,7 @@ use crate::transport::node_transport_spec::ServerNameRequest;
 use crate::transport::node_transport_spec::ServerNameResponse;
 use crate::transport::node_transport_spec::ServerStateRequest;
 use crate::transport::node_transport_spec::ServerStateResponse;
+use crate::transport::node_transport_spec::ServerStateUpdatesRequest;
 use crate::transport::node_transport_spec::SetFilterRequest;
 use crate::transport::node_transport_spec::SetServerRequest;
 use crate::transport::node_transport_spec::StartServerRequest;
@@ -300,7 +303,31 @@ pub enum Status {
     // Stopping,
     Unhealthy,
 }
+impl Into<String> for Status {
+    fn into(self) -> String {
+        match self {
+            Status::Unknown => "unknown".to_string(),
+            Status::Up => "up".to_string(),
+            Status::Healthy => "healthy".to_string(),
+            Status::Down => "down".to_string(),
+            Status::Unhealthy => "unhealthy".to_string(),
+        }
+    }
+}
+impl TryFrom<&str> for Status {
+    type Error = ();
 
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "unknown" => Ok(Status::Unknown),
+            "up" => Ok(Status::Up),
+            "healthy" => Ok(Status::Healthy),
+            "down" => Ok(Status::Down),
+            "unhealthy" => Ok(Status::Unhealthy),
+            _ => Err(())
+        }
+    }
+}
 
 // #[derive(Default)]
 // struct NoneResponse {}
@@ -507,7 +534,7 @@ async fn run_command_live_output(
     provider: ProviderConfig,
     name: String,
     label: String,
-    sender: Option<Arc<mpsc::Sender<String>>>,
+    arc_senders: Arc<DashMap<String, mpsc::UnboundedSender<String>>>,
     stdin_arc: Option<Arc<Mutex<Option<ChildStdin>>>>,
     timeout: Option<u64>,
     status: Option<Arc<AtomicBool>>,
@@ -541,9 +568,10 @@ async fn run_command_live_output(
     let current_filter_clone = current_filter.clone();
     let stdout_last_updated_clone = state.last_updated.clone();
     let stdout_handle = if let Some(stdout) = child.stdout.take() {
-        let tx = sender.clone();
+        // let senders = senders.clone();
         let lbl = label.clone();
         let inner_name = name.clone();
+        let arc_inner_senders = arc_senders.clone();
         Some(tokio::spawn(async move {
             let mut reader = BufReader::new(stdout).lines();
             let stdout_last_updated_loop_clone = stdout_last_updated_clone.clone();
@@ -555,20 +583,25 @@ async fn run_command_live_output(
                 if filter(current_filter_clone.clone(), line.clone()) {
                     continue;
                 }
-                println!("past filter");
-                if let Some(tx) = &tx {
-                    // let msg =
-                    //     json!({"type":"stdout","data":format!("[{}] {}", lbl, line)}).to_string();
-                    let msg = serde_json::to_string(&ConsoleData {
-                        authcode: "0".to_string(),
-                        data: format!("[{}] {}", lbl, line),
-                        message: "console".to_string(),
-                        server: inner_name.clone(),
-                        channel: "stdout".to_string(),
-                    })
-                    .unwrap();
-                    let res = tx.send(msg).await;
-                    println!("out res: {:#?}", res);
+                let senders: Vec<_> = arc_inner_senders
+                    .iter()
+                    .map(|e| (e.key().clone(), e.value().clone()))
+                    .collect(); 
+
+                let msg = serde_json::to_string(&ConsoleData {
+                    authcode: "0".to_string(),
+                    data: format!("[{}] {}", lbl, line),
+                    message: "console".to_string(),
+                    server: inner_name.clone(),
+                    channel: "stdout".to_string(),
+                })
+                .unwrap();
+
+                for (key, tx) in senders {
+                    let res = tx.send(msg.clone());
+                    if res.is_err() {
+                        arc_inner_senders.remove(&key);
+                    }
                 }
             }
         }))
@@ -578,7 +611,7 @@ async fn run_command_live_output(
 
     let stderr_last_updated_clone = state.last_updated.clone();
     let stderr_handle = if let Some(stderr) = child.stderr.take() {
-        let tx = sender.clone();
+        let arc_inner_senders = arc_senders.clone();
         let lbl = label.clone();
         // let inner_name = name.clone();
         Some(tokio::spawn(async move {
@@ -590,16 +623,26 @@ async fn run_command_live_output(
                 if filter(current_filter.clone(), line.clone()) {
                     continue;
                 }
-                if let Some(tx) = &tx {
-                    let msg = serde_json::to_string(&ConsoleData {
-                        authcode: "0".to_string(),
-                        data: format!("[{}] {}", lbl, line),
-                        message: "console".to_string(),
-                        server: name.clone(),
-                        channel: "stderr".to_string(),
-                    })
-                    .unwrap();
-                    let _ = tx.send(msg).await;
+
+                let senders: Vec<_> = arc_inner_senders
+                    .iter()
+                    .map(|e| (e.key().clone(), e.value().clone()))
+                    .collect(); 
+
+                let msg = serde_json::to_string(&ConsoleData {
+                    authcode: "0".to_string(),
+                    data: format!("[{}] {}", lbl, line),
+                    message: "console".to_string(),
+                    server: name.clone(),
+                    channel: "stderr".to_string(),
+                })
+                .unwrap();
+
+                for (key, tx) in senders {
+                    let res = tx.send(msg.clone());
+                    if res.is_err() {
+                        arc_inner_senders.remove(&key);
+                    }
                 }
             }
         }))
@@ -668,9 +711,9 @@ pub struct FsMetadata {
 }
 
 pub struct ServerProcesses {
-    server_output_tx: Arc<Mutex<Option<broadcast::Sender<String>>>>,
-    cmd_rx: Mutex<Option<mpsc::Receiver<String>>>,
-    cmd_tx: Mutex<Option<Arc<mpsc::Sender<String>>>>,
+    // cmd_rx: Mutex<Option<mpsc::Receiver<String>>>,
+    // cmd_tx: Mutex<Option<Arc<mpsc::Sender<String>>>>,
+    proxy_tx: Arc<DashMap<String, mpsc::UnboundedSender<String>>>,
     stdin_ref: Arc<Mutex<Option<ChildStdin>>>,
     active: Arc<AtomicBool>,
 }
@@ -775,14 +818,13 @@ pub async fn ensure_server_process(state: &Arc<AppState>) -> Arc<ServerProcesses
         }
     }
 
-    let (cmd_tx, cmd_rx) = mpsc::channel::<String>(10_000);
-    let (server_output_tx, _) = broadcast::channel::<String>(100);
+    // let (cmd_tx, cmd_rx) = mpsc::channel::<String>(10_000);
     let new_process = Arc::new(ServerProcesses {
-        cmd_tx: Mutex::new(Some(Arc::new(cmd_tx))),
-        cmd_rx: Mutex::new(Some(cmd_rx)),
+        // cmd_tx: Mutex::new(Some(Arc::new(cmd_tx))),
+        // cmd_rx: Mutex::new(Some(cmd_rx)),
         stdin_ref: Arc::new(Mutex::new(None)),
         active: Arc::new(AtomicBool::new(false)),
-        server_output_tx: Arc::new(Mutex::new(Some(server_output_tx))),
+        proxy_tx: Arc::new(DashMap::new()),
     });
 
     if let Some(servername) = &*state.current_server.lock().await {
@@ -797,61 +839,45 @@ pub async fn ensure_server_process(state: &Arc<AppState>) -> Arc<ServerProcesses
 pub async fn create_server_handler(
     state: &Arc<AppState>,
     req: CreateServerRequest,
-    _addr: String
+    addr: String
 ) -> Result<StreamResponse<String>, ErrorResponse> {
     let process = ensure_server_process(&state.clone()).await;
-    let cmd_tx_arc = process.cmd_tx.lock().await.clone().unwrap();
-    let cmd_tx = cmd_tx_arc;
+    let (tx, rx) = mpsc::unbounded_channel();
+    process.proxy_tx.insert(addr, tx);
 
     let _ = create_server(
         state.clone(),
-        &cmd_tx,
+        process.clone(),
         serde_json::to_value(req.clone()).unwrap(),
     )
     .await;
     println!("Finished creating server");
     //NoneResponse {}
-    if let Some(rx) = process.clone().cmd_rx.lock().await.take() {
-        let stream = unfold(rx, |mut rx| async {
-            rx.recv().await.map(|value| (value, rx))
-        });
-        println!("returning the stream finally");
-        Ok(StreamResponse::new(stream))
-    } else {
-        Err(ErrorResponse {
-            error: "stream taken".to_string(),
-        })
-    }
+    let stream = unfold(rx, |mut rx| async {
+        rx.recv().await.map(|value| (value, rx))
+    });
+    println!("returning the stream finally");
+    Ok(StreamResponse::new(stream))
 }
 pub async fn start_server_handler(
     state: &Arc<AppState>,
     _req: StartServerRequest,
     _addr: String,
 ) -> Result<StreamResponse<String>, ErrorResponse> {
-    //let current_server = state.current_server.lock().await;
-
-    // let Some(client) = state.clients.inner.get(&addr) else {
-    //     return Err(ErrorResponse {
-    //         error: "this client is not registered".into(),
-    //     });
-    // };
     let process = ensure_server_process(&state.clone()).await;
-    // *state.cmd_tx.lock().await = Some(Arc::new(cmd_tx.clone()));
-    // *state.cmd_rx.lock().await = Some(cmd_rx);
-
     let stdin_ref = &process.stdin_ref;
-    // let cmd_tx_arc =  {
-    //     state.cmd_tx.lock().await.clone().unwrap()
-    // };
-    let cmd_tx = process.cmd_tx.lock().await.clone();
+    // let cmd_tx = process.cmd_tx.lock().await.clone();
+    let proxy_tx = process.proxy_tx.clone();
+
+    let (tx, rx) = mpsc::unbounded_channel();
+    process.proxy_tx.insert(_addr, tx);
+
     {
         let stdin_guard = stdin_ref.lock().await;
         if stdin_guard.is_some() {
-            let _ = cmd_tx
-                .as_ref()
-                .unwrap()
-                .send("Server is already running. Use 'stop_server' first.".into())
-                .await;
+            return Err(ErrorResponse {
+                error: "Server is already running. Use 'stop_server' first.".into()
+            });
         }
     }
     if let Some(current_server) = state.current_server.lock().await.clone() {
@@ -911,7 +937,7 @@ pub async fn start_server_handler(
                     let _ = provider_game_commands.set_location(loc.to_owned());
                 }
                 if let Some(cmd) = provider_game_commands.start() {
-                    let tx = cmd_tx.clone();
+                    // let tx = cmd_tx.clone();
                     let stdin_clone = stdin_ref.clone();
 
                     let sandbox = {
@@ -986,7 +1012,7 @@ pub async fn start_server_handler(
                             provider,
                             current_server.clone(),
                             "Server".into(),
-                            tx.clone(),
+                            proxy_tx,
                             Some(stdin_clone.clone()),
                             None,
                             Some(status),
@@ -998,49 +1024,38 @@ pub async fn start_server_handler(
                         }
                         match result {
                             Ok(_) => {
-                                let _ = tx.unwrap().send("Server process ended".into()).await;
                                 let (cmd_tx, cmd_rx) = mpsc::channel::<String>(10_000);
-                                *inner_process.cmd_tx.lock().await = Some(Arc::new(cmd_tx));
-                                *inner_process.cmd_rx.lock().await = Some(cmd_rx);
+                                // *inner_process.cmd_tx.lock().await = Some(Arc::new(cmd_tx));
+                                // *inner_process.cmd_rx.lock().await = Some(cmd_rx);
                                 inner_process.active.store(false, Ordering::SeqCst);
-                            }
+                                // return Err(ErrorResponse {
+                                //     error: "Server process ended".into()
+                                // });
+                            },
                             Err(e) => if let ProcessErrors::IOError(error) = e {
-                                let _ = tx
-                                    .unwrap()
-                                    .send(format!("Server process failed: {}", error))
-                                    .await;
+                                // return Err(ErrorResponse {
+                                //     error: format!("Server process failed: {}", error)
+                                // });
                             },
                         }
                     });
                     //println!("will say server started");
-                    let _ = cmd_tx.unwrap().send("Server started".into()).await;
-                    //let mut server_running = state.server_running.lock().await;
-                    // println!("has access to the running lock");
-                    // *server_running = true;
                 } else {
-                    let _ = cmd_tx
-                        .unwrap()
-                        .send("No start command available for this provider".into())
-                        .await;
+                    return Err(ErrorResponse {
+                        error: "No start command available for this provider".into()
+                    });
                 }
             } else {
-                // let _ = cmd_tx
-                //     .send("Failed to get provider for server".into())
-                //     .await;
+                return Err(ErrorResponse {
+                    error: "Server is already running. Use 'stop_server' first.".into()
+                });
             }
         }
     }
-    if let Some(rx) = process.clone().cmd_rx.lock().await.take() {
-        let stream = unfold(rx, |mut rx| async {
-            rx.recv().await.map(|value| (value, rx))
-        });
-        Ok(StreamResponse::new(stream))
-    } else {
-        Err(ErrorResponse {
-            error: "stream taken".to_string(),
-        })
-    }
-    //NoneResponse {}
+    let stream = unfold(rx, |mut rx| async {
+        rx.recv().await.map(|value| (value, rx))
+    });
+    Ok(StreamResponse::new(stream))
 }
 pub async fn stop_server_handler(
     state: &Arc<AppState>,
@@ -1050,8 +1065,6 @@ pub async fn stop_server_handler(
     if let Some(servername) = &*state.current_server.lock().await {
         if let Some(process) = state.server_processes.get(servername) {
             let stdin_ref = process.stdin_ref.clone();
-            if let Some(cmd_tx_arc) = process.cmd_tx.lock().await.clone() {
-                let cmd_tx = cmd_tx_arc;
                 println!("Got a stop server request");
                 let option_path = {
                     if let Some(ProviderTypes::Path(path)) = convert_provider(
@@ -1102,16 +1115,11 @@ pub async fn stop_server_handler(
                     if let Some(stdin) = guard.as_mut() {
                         let _ = stdin.write_all(format!("{}\n", input).as_bytes()).await;
                         let _ = stdin.flush().await;
-                        let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
+                        // let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
                     }
                 }
 
                 Ok(NoneResponse {})
-            } else {
-                Err(ErrorResponse {
-                    error: "could not stop server".to_string(),
-                })
-            }
         } else {
             Err(ErrorResponse {
                 error: "No current server to stop".to_string(),
@@ -1123,6 +1131,23 @@ pub async fn stop_server_handler(
         })
     }
 }
+
+pub async fn connect_server_handler(
+    state: &Arc<AppState>,
+    _req: ConnectServerRequest,
+    _addr: String,
+) -> Result<StreamResponse<String>, ErrorResponse> {
+    let process = ensure_server_process(&state.clone()).await;
+    let (tx, rx) = mpsc::unbounded_channel();
+    process.proxy_tx.insert(_addr, tx);
+
+    let stream = unfold(rx, |mut rx| async {
+        rx.recv().await.map(|value| (value, rx))
+    });
+    Ok(StreamResponse::new(stream))
+
+}
+
 pub async fn delete_server_handler(
     state: &Arc<AppState>,
     req: DeleteServerRequest,
@@ -1230,15 +1255,11 @@ pub async fn console_handler(
     if let Some(servername) = &*state.current_server.clone().lock().await {
         if let Some(process) = state.server_processes.get(servername) {
             let stdin_ref = &process.stdin_ref;
-            let cmd_tx_arc = process.cmd_tx.lock().await.clone().unwrap();
-            let cmd_tx = cmd_tx_arc;
             let mut guard = stdin_ref.lock().await;
             if let Some(stdin) = guard.as_mut() {
-                let res = stdin.write_all(format!("{}\n", input).as_bytes()).await;
-                println!("res1: {:#?}", res);
-                let res = stdin.flush().await;
-                println!("res2: {:#?}", res);
-                let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
+                let _ = stdin.write_all(format!("{}\n", input).as_bytes()).await;
+                let _ = stdin.flush().await;
+                // let _ = cmd_tx.send(format!("Sent to server: {}", input)).await;
             }
             NoneResponse {}
         } else {
@@ -1340,10 +1361,10 @@ pub async fn server_state_handler(
     let process = ensure_server_process(state).await;
     println!("got a process");
     // if let Some(process) = state.server_processes.get(servername) {
-    let status = process.active.load(Ordering::SeqCst);
+    let status_bool = process.active.load(Ordering::SeqCst);
     let server_state_response: ServerStateResponse = ServerStateResponse {
         r#type: "server_state".to_string(),
-        message: match status {
+        message: match status_bool {
             true => Status::Up,
             false => Status::Down
         },
@@ -1351,6 +1372,35 @@ pub async fn server_state_handler(
     };
     Ok(server_state_response)
 }
+
+pub async fn server_state_updates_handler(
+    state: &Arc<AppState>,
+    _req: ServerStateUpdatesRequest,
+    _addr: String
+) -> Result<StreamResponse<String>, ErrorResponse> {
+    let process = ensure_server_process(state).await;
+    println!("got a process");
+    // if let Some(process) = state.server_processes.get(servername) {
+    let (tx, rx) = watch::channel(Status::Unknown);
+    tokio::spawn(async move {
+        loop {
+            let status_bool = process.active.load(Ordering::SeqCst);
+            let status = match status_bool {
+                    true => Status::Up,
+                    false => Status::Down
+                };
+            let _ = tx.send(status);
+        }
+    });
+    let stream = unfold(rx, |mut rx| async {
+        let _ = rx.changed().await;
+        let status_string: String = rx.borrow().clone().into();
+        Some((status_string, rx))
+    });
+    // Ok(StreamResponse::new(stream))
+    Ok(StreamResponse::new(stream))
+}
+
 pub async fn server_name_handler(
     _state: &Arc<AppState>,
     _req: ServerNameRequest,
@@ -1548,7 +1598,7 @@ async fn spawn_request_loop(
 
                     // println!("{:#?}", json_value);
                     if let Some(Value::String(message)) = json_value.get("message") {
-                        if message != "create_server" && message != "start_server" {
+                        if message != "create_server" && message != "start_server" && message != "connect_server" {
                             match serde_json::from_value::<Box<dyn RequestByteExecutable>>(
                                 json_value.clone(),
                             ) {
@@ -1804,11 +1854,13 @@ pub async fn tcp_to_writer(stream: TcpStream) -> mpsc::Sender<Vec<u8>> {
 
 async fn create_server(
     state: Arc<AppState>,
-    cmd_tx: &mpsc::Sender<String>,
+    process: Arc<ServerProcesses>,
+    // cmd_tx: &mpsc::Sender<String>,
     // stdin_ref: &Arc<Mutex<Option<ChildStdin>>>,
     payload_raw_value: Value,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("[create_server] called");
+    // let proxy_tx = process.proxy_tx;
 
     if let Ok(payload) = serde_json::from_value::<IncomingMessageWithMetadata>(payload_raw_value) {
         println!("[create_server] payload deserialized ok");
@@ -1935,7 +1987,7 @@ async fn create_server(
                 println!(
                     "[create_server] set_location({filtered_location:?}) -> {set_loc_result:?}"
                 );
-                let inner_cmd_tx = Arc::new(cmd_tx.clone());
+                // let inner_cmd_tx = Arc::new(cmd_tx.clone());
                 tokio::spawn(async move {
                     if let Some(cmd) = prov.pre_hook() {
                         println!("[create_server] running pre_hook: {cmd:?}");
@@ -1949,7 +2001,7 @@ async fn create_server(
                             provider_config.clone().unwrap(),
                             servername.clone(),
                             "Pre-hook".into(),
-                            Some(inner_cmd_tx.clone()),
+                            process.proxy_tx.clone(),
                             None,
                             Some(60000),
                             None,
@@ -1972,7 +2024,7 @@ async fn create_server(
                             provider_config.clone().unwrap(),
                             servername.clone(),
                             "Install".into(),
-                            Some(inner_cmd_tx.clone()),
+                            process.proxy_tx.clone(),
                             None,
                             Some(60000),
                             None,
@@ -1996,7 +2048,7 @@ async fn create_server(
                             provider_config.clone().unwrap(),
                             servername.clone(),
                             "Post-hook".into(),
-                            Some(inner_cmd_tx.clone()),
+                            process.proxy_tx.clone(),
                             None,
                             Some(60000),
                             None,
