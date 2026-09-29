@@ -555,9 +555,7 @@ async fn run_command_live_output(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .stdin(Stdio::piped());
-    println!("Befre process hook");
     process_hook(state, provider, sandbox, Some(location), &mut tokio_cmd);
-    println!("After process hook");
     let mut child = tokio_cmd.spawn().map_err(ProcessErrors::IOError)?;
 
     if let Some(stdin_slot) = stdin_arc {
@@ -576,7 +574,6 @@ async fn run_command_live_output(
             let mut reader = BufReader::new(stdout).lines();
             let stdout_last_updated_loop_clone = stdout_last_updated_clone.clone();
             while let Ok(Some(line)) = reader.next_line().await {
-                println!("got a line");
                 let mut stdout_last_updated_clone_guard =
                     stdout_last_updated_loop_clone.lock().await;
                 *stdout_last_updated_clone_guard = Some(Local::now());
@@ -811,9 +808,7 @@ pub async fn ensure_server_process(state: &Arc<AppState>) -> Arc<ServerProcesses
     let servername = state.current_server.lock().await.clone();
 
     if let Some(servername) = servername {
-        println!("getting a process");
         if let Some(process) = state.server_processes.get(&servername) {
-            println!("Got a process");
             return process.clone();
         }
     }
@@ -851,12 +846,11 @@ pub async fn create_server_handler(
         serde_json::to_value(req.clone()).unwrap(),
     )
     .await;
-    println!("Finished creating server");
-    //NoneResponse {}
+
     let stream = unfold(rx, |mut rx| async {
         rx.recv().await.map(|value| (value, rx))
     });
-    println!("returning the stream finally");
+
     Ok(StreamResponse::new(stream))
 }
 pub async fn start_server_handler(
@@ -896,8 +890,7 @@ pub async fn start_server_handler(
                 None
             }
         };
-        // println!("DEBUG current_server: '{}'", current_server);
-        // println!("DEBUG location: '{:?}'", location);
+
         let provider = {
             if let Some(ProviderTypes::Provider(provider)) = convert_provider(
                 state.clone(),
@@ -1065,7 +1058,6 @@ pub async fn stop_server_handler(
     if let Some(servername) = &*state.current_server.lock().await {
         if let Some(process) = state.server_processes.get(servername) {
             let stdin_ref = process.stdin_ref.clone();
-                println!("Got a stop server request");
                 let option_path = {
                     if let Some(ProviderTypes::Path(path)) = convert_provider(
                         state.clone(),
@@ -1144,7 +1136,6 @@ pub async fn connect_server_handler(
     let stream = unfold(rx, |mut rx| async {
         rx.recv().await.map(|value| (value, rx))
     });
-    println!("made a stream");
     Ok(StreamResponse::new(stream))
 
 }
@@ -1200,7 +1191,6 @@ pub async fn set_server_handler(
     req: SetServerRequest,
     _addr: String,
 ) -> NoneResponse {
-    println!("Got a set server request");
     if let MetadataTypes::Server {
         servername,
         provider,
@@ -1232,7 +1222,6 @@ pub async fn set_server_handler(
         let mut mutable_server = state.current_server.lock().await;
         *mutable_server = Some(servername.to_string());
     }
-    println!("done with the set server request");
     NoneResponse {}
 }
 async fn set_filter_handler(
@@ -1251,7 +1240,6 @@ pub async fn console_handler(
     req: ConsoleRequest,
     _addr: String
 ) -> NoneResponse {
-    println!("Got a console request");
     let input = req.data.clone();
     if let Some(servername) = &*state.current_server.clone().lock().await {
         if let Some(process) = state.server_processes.get(servername) {
@@ -1275,7 +1263,6 @@ pub async fn server_data_handler(
     _req: ServerDataRequest,
     _addr: String
 ) -> Result<ServerDataResponse, NoneResponse> {
-    println!("Got a server data request");
     if let Some(current_server) = state.current_server.lock().await.clone() {
         let option_path = {
             if let Some(ProviderTypes::Path(path)) = convert_provider(
@@ -1322,7 +1309,6 @@ pub async fn server_data_handler(
 
         if let Some((_, provider)) = provider_object {
             if let Some(platform) = pick_platform(provider) {
-                println!("Sending out the info");
                 let server_data_response = ServerDataResponse {
                     state: GetState {
                         name: platform.default_name.unwrap_or("".to_string()),
@@ -1345,8 +1331,7 @@ pub async fn server_data_handler(
 }
 pub async fn ping_handler(_state: &Arc<AppState>, _req: Ping) -> PingResponse {
     println!("got ping request");
-    //         //let out_tx_clone = out_tx.clone();
-    
+
     PingResponse {
         message: SimpleMessage {
             message: "pong".to_string(),
@@ -1358,10 +1343,7 @@ pub async fn server_state_handler(
     _req: ServerStateRequest,
     _addr: String
 ) -> Result<ServerStateResponse, NoneResponse> {
-    println!("called server state");
     let process = ensure_server_process(state).await;
-    println!("got a process");
-    // if let Some(process) = state.server_processes.get(servername) {
     let status_bool = process.active.load(Ordering::SeqCst);
     let server_state_response: ServerStateResponse = ServerStateResponse {
         r#type: "server_state".to_string(),
@@ -1380,8 +1362,6 @@ pub async fn server_state_updates_handler(
     _addr: String
 ) -> Result<StreamResponse<String>, ErrorResponse> {
     let process = ensure_server_process(state).await;
-    println!("got a process");
-    // if let Some(process) = state.server_processes.get(servername) {
     let (tx, rx) = watch::channel(Status::Unknown);
     tokio::spawn(async move {
         loop {
@@ -1512,11 +1492,11 @@ async fn spawn_request_loop(
         'outer: loop {
             tokio::select! {
                 Some(mut out) = out_rx.recv() => {
-                    if let Ok(msg) = serde_json::from_slice::<Value>(&out){
-                        println!("sending out {:?}", msg);
-                    } else {
-                        println!("sending out {:?}", out);
-                    }
+                    // if let Ok(msg) = serde_json::from_slice::<Value>(&out){
+                    //     println!("sending out {:?}", msg);
+                    // } else {
+                    //     println!("sending out {:?}", out);
+                    // }
                     out.push(b'\n');
                     if let Err(e) = writer.send(out).await {
                         eprintln!("[{}] Write error: {}", inner_addr, e);
@@ -1525,7 +1505,6 @@ async fn spawn_request_loop(
                 }
 
                 result = reader.recv_into_buffer() => {
-                    println!("handling request");
                     if let Err(e) = result {
                         // TODO: with tracing consider printing this to stderr, or with a feature flag, otherwise
                         // it messes with tests
@@ -1567,7 +1546,7 @@ async fn spawn_request_loop(
                     }
                 }
 
-                println!("got: {:#?}", line_str);
+                // println!("got: {:#?}", line_str);
                 if let Ok(json_value) = serde_json::from_str::<Value>(&line_str) {
                     log_requests(json_value.clone(), addr.to_string(), line_str.to_string());
 
@@ -1607,14 +1586,11 @@ async fn spawn_request_loop(
                                     let response = simple_request
                                         .execute(arc_state.clone(), addr.clone())
                                         .await;
-                                    println!("done with request");
                                     let _ = out_tx.send(response).await;
                                 }
                                 Err(e) => println!("could not match request: {e}"),
                             }
                         } else {
-                            //RequestStreamExecutable
-                            println!("trying a stream request");
                             match serde_json::from_value::<Box<dyn RequestStreamExecutable>>(
                                 json_value.clone(),
                             ) {
@@ -1626,11 +1602,9 @@ async fn spawn_request_loop(
                                     // let _ = out_tx.send(response).await;
                                     match response_result {
                                         Ok(stream_lock) => {
-                                            println!("got a stream request");
                                             let inner_out_tx = out_tx.clone();
                                             tokio::spawn(async move {
                                                 let mut binding = stream_lock.inner.lock().await;
-                                                println!("starting a stream request");
                                                 let stream = binding.as_mut().unwrap();
                                                 while let Some(item) = stream.next().await {
                                                     let _ =
@@ -1648,10 +1622,8 @@ async fn spawn_request_loop(
                             }
                         }
                     }
-                } 
-                println!("next");
+                }
                 conn_handler.end_clean_hook().await;
-                println!("past end hook");
             } else {
                 let bytes = conn_handler.recv_bytes();
                 let _ = file_sender.clone().send(bytes);
@@ -1733,14 +1705,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     spawn_conn_background_tasks(state.clone(), Arc::clone(&arc_conn_manager)).await;
     loop {
-        println!("pre lock");
         let mut conn_manager = arc_conn_manager.lock().await;
-        println!("got lock");
         let (mut conn_handler, addr_option) = conn_manager.accept_connection().await?;
-        println!("accepted a new connection");
 
         let addr = addr_option.unwrap_or("unknown".to_string());
-        println!("{}", addr);
+        println!("New connection from: {}", addr);
 
         // let router_clone = conn_manager.get_arc_mutex_router().await;
         let inner_state = state.clone();
@@ -2061,7 +2030,6 @@ async fn create_server(
                         println!("[create_server] no post_hook");
                     }
                 });
-                println!("about to return");
             } else {
                 println!("[create_server] no provider_object, skipping hooks");
             }
@@ -2102,7 +2070,6 @@ async fn resolve_path(state: &Arc<AppState>, servername: &str) -> Option<String>
 }
 
 fn pick_platform(platform: Platforms) -> Option<ProviderConfig> {
-    println!("test");
     if cfg!(target_os = "linux") {
         platform.linux
     } else if cfg!(target_os = "windows") {
@@ -2214,7 +2181,6 @@ async fn get_provider_object(
     option_path: Option<&str>,
 ) -> Option<(String, Platforms)> {
     if option_name.is_none() || option_path.is_none() {
-        println!("returning none");
         return None;
     }
     let (path, name) = (option_path.unwrap(), option_name.unwrap());

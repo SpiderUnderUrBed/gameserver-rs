@@ -246,9 +246,7 @@ impl ConnectionManager {
     pub async fn accept_connection(
         &mut self,
     ) -> Result<(ConnectionHandler, Option<String>), Box<dyn std::error::Error + Send + Sync>> {
-        println!("before accepting");
         let (socket, addr) = self.listner.accept().await?;
-        println!("after accepting");
         let (tx, rx) = mpsc::unbounded_channel();
         let handler = ConnectionHandler {
             stream: Some(socket),
@@ -332,14 +330,11 @@ impl ConnectionHandler {
         }
 
         if self.read_buf.is_empty() {
-            println!("{} will be awaiting", self.addr);
             match self.shared_buf_chn.1.recv().await {
                 Some(bytes) => {
-                    println!("{} hhss", self.addr);
                     self.append_bytes(bytes).await
                 }
                 None => {
-                    println!("{} returning", self.addr);
                     return Err("channel closed".into());
                 }
             }
@@ -366,7 +361,6 @@ impl ConnectionHandler {
                     self.read_buf = self.read_buf[stream.byte_offset()..].to_vec();
                 }
             }
-            println!("returning from");
             Ok(())
         } else {
             Ok(())
@@ -438,7 +432,6 @@ impl Reader {
         if n == 0 {
             return Err("connection closed by peer or no bytes".into());
         }
-        println!("sending it out");
         let _ = self.shared_buf_chn_tx.send(temp_buf[..n].to_vec());
         Ok(())
     }

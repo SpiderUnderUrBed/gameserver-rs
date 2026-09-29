@@ -116,7 +116,6 @@ pub async fn connect_to_server(
     url: String,
     _end_if_timeout: bool,
 ) -> Result<ConnectionHandler, Box<dyn Error + Send + Sync>> {
-    println!("using this connect to server");
     let mut state = (*arc_state.load_full()).clone();
 
     let url = if url.starts_with("http://") || url.starts_with("https://") {
@@ -339,7 +338,6 @@ impl ConsoleInterface {
                 break;
             }
         }
-        println!("calling active");
     }
     pub fn active(&self) -> bool {
         if matches!(*self.active_event.borrow(), ConsoleEvent::Started){
@@ -385,11 +383,8 @@ impl StreamTransportable for CreateServerRequest {
             return Err("no clients".into())
         };
 
-        println!("about to call create");
         match clients.server_edit_client.clone().create(request).await {
             Ok(response_stream) => {
-                //drop(state);
-                println!("before creating stream");
                 let raw_stream = response_stream.into_inner();
                 let stream = stream::unfold(raw_stream, move |mut raw_stream| {
                     async move {
@@ -950,9 +945,7 @@ impl Into<proto::MetadataTypes> for MetadataTypes {
                 .unwrap(),
             },
             _ => {
-                println!("{:#?}", self);
                 let value = serde_json::to_value(self.clone()).unwrap();
-                println!("{:#?}", value);
                 serde_json::from_value(value).unwrap()
             }
         }

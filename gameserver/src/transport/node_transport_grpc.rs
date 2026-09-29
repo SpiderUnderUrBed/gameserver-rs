@@ -234,7 +234,6 @@ impl ServerEdit for Connection {
             }
         });
 
-        println!("returning a stream");
         Ok(tonic::Response::new(ReceiverStream::new(rx)))
     }
     async fn stop(
@@ -296,7 +295,6 @@ impl ServerEdit for Connection {
             }
         });
 
-        println!("returning a stream");
         Ok(tonic::Response::new(ReceiverStream::new(rx)))
     }
 }
@@ -420,7 +418,6 @@ impl FilesystemManage for Connection {
         &self,
         request: tonic::Request<Streaming<FileChunk>>,
     ) -> std::result::Result<tonic::Response<proto::UploadResponse>, tonic::Status> {
-        println!("got an upload request");
         let mut inbound = request.into_inner();
         let mut location = String::new();
         let mut file_handle_option = None;
