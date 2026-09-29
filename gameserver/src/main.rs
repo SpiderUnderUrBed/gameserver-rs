@@ -1144,6 +1144,7 @@ pub async fn connect_server_handler(
     let stream = unfold(rx, |mut rx| async {
         rx.recv().await.map(|value| (value, rx))
     });
+    println!("made a stream");
     Ok(StreamResponse::new(stream))
 
 }
@@ -1242,7 +1243,7 @@ async fn set_filter_handler(
         let mut db = state.db.lock().await;
         db.filter = filter.clone();
         save_db(&db);
-    }
+    };
     NoneResponse {}
 }
 pub async fn console_handler(

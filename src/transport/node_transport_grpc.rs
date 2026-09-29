@@ -260,10 +260,18 @@ impl NodeTransportable for CreateServerRequest {
     }
 }
 
+#[derive(Default, Debug)]
+enum ConsoleEvent {
+    #[default]
+    None,
+    Starting,
+    Started
+}
+
 #[derive(Clone, Default)]
 pub struct ConsoleInterface {
-    active_event: Arc<Notify>,
-    active: Arc<AtomicBool>,
+    active_event: Arc<watch::Sender<ConsoleEvent>>,
+    close_task_event: Arc<Notify>,
     console_out: Arc<Mutex<Option<Pin<Box<dyn Stream<Item = ConsoleData> + Send + 'static>>>>>,
     console_in: Arc<Mutex<Option<mpsc::Sender<ServerMessage>>>>,
     proxy_out: Arc<RwLock<Vec<UnboundedSender<ConsoleData>>>>,
@@ -272,16 +280,25 @@ pub struct ConsoleInterface {
 
 impl ConsoleInterface {
     pub async fn spawn(&mut self, _state: Arc<ArcSwap<AppState>>) -> Result<(), Box<dyn Error + Send + Sync>>{
-        self.active_event.notified().await;
+        loop {
+            if matches!(*self.active_event.borrow(), ConsoleEvent::Starting){
+                break;
+            } else {
+                let _ = self.active_event.subscribe().changed().await;
+            }
+        }
         let Some(ref mut console_out) = *self.console_out.lock().await else {
             return Err("no console out".into())
         };
 
-        self.active.store(true, Ordering::SeqCst);
+        // self.active.store(true, Ordering::SeqCst);
         let (proxy_in_tx, mut proxy_in_rx) = broadcast::channel::<ConsoleData>(32);
 
         *self.proxy_in.lock().await = Some(proxy_in_tx);
         *self.proxy_out.write().await = Vec::new();
+
+        let _ = self.active_event.send_replace(ConsoleEvent::Started);
+        let close_task_event = self.close_task_event.clone();
 
         loop {
             tokio::select! {
@@ -292,7 +309,7 @@ impl ConsoleInterface {
                             let _ = tx.send(console_data.clone());
                         }
                     } else {
-                        break Err("console disconnected".into());
+                        break;
                     }
                 },
                 Ok(console_data) = proxy_in_rx.recv(), if self.console_in.lock().await.is_some()  => {
@@ -306,11 +323,33 @@ impl ConsoleInterface {
                         }
                     ).await;
                 }
+                _ = close_task_event.notified() => {
+                    break;
+                }
             }
         }
+        let _ = self.active_event.send(ConsoleEvent::None);
+        Err("console disconnected".into())
+    }
+    pub async fn activate(&self){
+        loop {
+            if !matches!(*self.active_event.borrow(), ConsoleEvent::Started){
+                let _ = self.active_event.subscribe().changed().await;
+            } else {
+                break;
+            }
+        }
+        println!("calling active");
     }
     pub fn active(&self) -> bool {
-        self.active.load(Ordering::SeqCst)
+        if matches!(*self.active_event.borrow(), ConsoleEvent::Started){
+            true
+        } else {
+            false
+        }
+    }
+    pub fn close(&self) {
+        self.close_task_event.notify_waiters();
     }
     pub async fn stdin(&self) -> Option<broadcast::Sender<ConsoleData>> {
         self.proxy_in.lock().await.clone()
@@ -318,7 +357,7 @@ impl ConsoleInterface {
     pub async fn stdout(&mut self) -> Option<UnboundedReceiver<ConsoleData>> {
         let (proxy_out_tx, proxy_out_rx) = mpsc::unbounded_channel();
         self.proxy_out.write().await.push(proxy_out_tx);
-        if self.active.load(Ordering::SeqCst) {
+        if matches!(*self.active_event.borrow(), ConsoleEvent::Started) {
             Some(proxy_out_rx)
         } else {
             None
@@ -377,7 +416,7 @@ impl StreamTransportable for CreateServerRequest {
                     }
                 });
                 *self.interface.console_out.lock().await = Some(stream.boxed());
-                self.interface.active_event.notify_one();
+                let _ = self.interface.active_event.send_replace(ConsoleEvent::Starting);
                 Ok(())
             }
             Err(e) => {
@@ -440,7 +479,7 @@ impl StreamTransportable for StartServerRequest {
 
                 *self.interface.console_out.lock().await = Some(stream.boxed());
                 *self.interface.console_in.lock().await = Some(server_in_tx);
-                self.interface.active_event.notify_one();
+                let _ = self.interface.active_event.send_replace(ConsoleEvent::Starting);
 
                 Ok(())
             }
@@ -528,7 +567,7 @@ impl StreamTransportable for ConnectServerRequest {
 
                 *self.interface.console_out.lock().await = Some(stream.boxed());
                 *self.interface.console_in.lock().await = Some(server_in_tx);
-                self.interface.active_event.notify_one();
+                let _ = self.interface.active_event.send_replace(ConsoleEvent::Starting);
 
                 Ok(())
             }
@@ -646,6 +685,14 @@ impl NodeTransportable for Ping {
         &self,
         state: &AppState,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let connection = state.current_node.connection.clone();
+        let Some(connection_handler) =  connection else {
+            return Err("No connection working".into());
+        };
+        let Some(clients) = connection_handler.clients.as_ref().clone() else {
+            return Err("no clients".into())
+        };
+
         let ping = SimpleMessage {
             message: "ping".to_string(),
         };

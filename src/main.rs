@@ -639,6 +639,7 @@ pub struct ServerProcesses {
 pub enum ServerCheckEvent {
     Add(String),
     Remove(String),
+    Clear,
     None
 } 
 
@@ -737,7 +738,7 @@ async fn spawn_server_background_tasks(
                         println!("{:#?}", *status_method.borrow());
                         if matches!(*status_method.borrow(), StatusMethod::Poll) {
                             println!("doing on poll");
-                            let mut interval = tokio::time::interval(Duration::from_millis(10000));
+                            let mut interval = tokio::time::interval(Duration::from_millis(50000));
                             loop {
                                 println!("starting inner loop");
                                 let server_state_request = ServerStateRequest { };
@@ -782,11 +783,34 @@ async fn spawn_server_background_tasks(
                                 break;
                             }
                         }
+                        if let ServerCheckEvent::Clear = &*inner_server_check_event_rx.borrow() {
+                            break;
+                        }
                         println!("before change");
                         let _ = status_method_rx.changed().await;
                         println!("changed");
                     }
                 });
+            }
+            if let ServerCheckEvent::Remove(server) = &*server_check_event.borrow() {
+                let state = arc_state.load();
+                let Some(process) = state.server_processes.get(server) else {
+                    continue;
+                };
+                state.server_processes.remove(server);
+                process.load().console_interface.close();
+            }
+            if let ServerCheckEvent::Clear = &*server_check_event.borrow() {
+                println!("got a clear event");
+                let state = arc_state.load();
+                let mut server_processes: Vec<_> = state.server_processes
+                    .iter()
+                    .map(|e| (e.key().clone(), e.value().clone()))
+                    .collect(); 
+                for (_, process) in &server_processes {
+                    process.load().console_interface.close();
+                };
+                server_processes.clear();
             }
             let _ = server_check_event.subscribe().changed().await;
         }
@@ -2205,18 +2229,24 @@ async fn handle_socket(socket: WebSocket, session: tower_sessions::Session, arc_
                 let inner_server_name = current_server_name_lock.clone();
 
                 tokio::spawn(async move {
-                    //loop {
+                    loop {
                         let mut inner_process_guard = (*inner_process.load_full()).clone();
                         println!("past the second reads");
                         *inner_server_name.write().await = Some(inner_process_guard.current_server.as_ref().unwrap().servername.clone());
                         println!("set new name");
                         if let (Some(console_out), Some(console_in)) = (inner_process_guard.console_interface.stdout().await, inner_process_guard.console_interface.stdin().await){
+                            println!("setting own internal console");
                             *inner_console_out.write().await = Some(console_out);
                             *inner_console_in.write().await = Some(console_in.clone());
                             inner_start_reader_task.notify_waiters();
+                        } else {
+                            println!("waiting until active");
+                            inner_process_guard.console_interface.activate().await;
+                            println!("active");
+                            continue;
                         }
                         inner_process.store(Arc::new(inner_process_guard));
-                    //}
+                    }
                 });
             }
             drop(state);
@@ -2894,6 +2924,9 @@ pub async fn start_server(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     let current_process = (*current_process_lock.load_full()).clone();
+    if current_process.console_interface.active(){
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
     println!("past current procoess");
 
     // let server_console_task = CancellationToken::new();
@@ -3098,6 +3131,7 @@ async fn ping(
         let ping = Ping {};
         let res = ping.node_transport(&mut state).await;
         if res.is_ok() {
+            println!("got a ping");
             return StatusCode::OK;
         } else {
             return StatusCode::INTERNAL_SERVER_ERROR;
@@ -3319,6 +3353,7 @@ async fn set_server(
     headers: HeaderMap,
     Json(request): Json<ModifyElementData>,
 ) -> StatusCode {
+    println!("-> got a set server req");
     let state = arc_state.load();
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
     if !authorized {
@@ -3330,14 +3365,17 @@ async fn set_server(
             .database
             .get_from_servers_database(&servername)
             .await else {
+                println!("-> db error");
                 return StatusCode::INTERNAL_SERVER_ERROR
             };
         let Some(retrieved_server) = retrieved_server_option else {
+            println!("-> could not get the server");
             return StatusCode::NOT_FOUND
         };
 
         let _ = ensure_server_process(&state, retrieved_server.clone()).await;
         if set_process_for_user(session.clone(), retrieved_server.servername.clone(), &state).await.is_err() {
+            println!("-> could not set the process for the user");
             return StatusCode::INTERNAL_SERVER_ERROR
         };
         
@@ -3365,7 +3403,7 @@ async fn set_server(
         let mut state = arc_state.load();
         let set_server_request = SetServerRequest {
             metadata: MetadataTypes::Server {
-                servername: retrieved_server.servername,
+                servername: retrieved_server.servername.clone(),
                 provider: retrieved_server.provider,
                 providertype: retrieved_server.providertype,
                 location: retrieved_server.location,
@@ -3373,29 +3411,39 @@ async fn set_server(
                 server_metadata: retrieved_server.server_metadata,
             },
         };
+        println!("-> before setting the server");
         let _ = set_server_request.node_transport(&mut state).await;
-        
+        println!("-> set the server");
+
         let server_state_request = ServerStateRequest {};
         let Ok(status) = server_state_request.node_transport(&state).await else {
+            println!("-> no state");
             return StatusCode::INTERNAL_SERVER_ERROR
         };
         if !matches!(status, ServerStatus::Up){
+            println!("-> its not up already");
             return StatusCode::OK;
         } 
 
         let Ok(current_process_lock) = get_current_process(session.clone(), &state).await else {
+            println!("-> could not get process");
             return StatusCode::INTERNAL_SERVER_ERROR;
         };
         let current_process = current_process_lock.load();
-        if current_process.console_interface.active(){
-            return StatusCode::OK;
-        }
+        // if !current_process.console_interface.active(){
+        //     return StatusCode::OK;
+        // }
 
+        let res = state.server_check_event.send(ServerCheckEvent::Add(retrieved_server.servername));
+        println!("-> res of adding {:#?}", res);
+
+        println!("-> starting connecting to console");
         let mut connect_server_request = ConnectServerRequest { 
             interface: current_process.console_interface.clone() 
         };
         let res = connect_server_request.stream_transport(arc_state).await;
-        println!("connect console res: {:#?}", res);
+        println!("-> connect console res: {:#?}", res);
+
 
         StatusCode::OK
     } else {
@@ -3531,6 +3579,7 @@ async fn change_node(
     headers: HeaderMap,
     Json(request): Json<FrontendChangeNodeRequest>,
 ) -> StatusCode {
+    println!("got a change node req");
     let state = arc_state.load();
 
     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
@@ -3541,6 +3590,8 @@ async fn change_node(
     let Some(node) = state.database.retrieve_nodes(request.node_id.clone()).await else {
         return StatusCode::NOT_FOUND;
     };
+
+    let _ = state.server_check_event.send(ServerCheckEvent::Clear);
     
     if let Some(connection) = &state.current_node.connection {
         connection.end_connection();

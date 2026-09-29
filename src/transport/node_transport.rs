@@ -693,7 +693,7 @@ impl StreamTransportable for CreateServerRequest {
         });
 
         *self.interface.console_out.lock().await = Some(stream.boxed());
-        self.interface.active_event.notify_one();
+        let _ = self.interface.active_event.send_replace(ConsoleEvent::Starting);
 
         Ok(())
     }
@@ -704,11 +704,17 @@ struct ConsoleTask {
     input: mpsc::UnboundedReceiver<Vec<u8>>
 }
 
-
+#[derive(Default, Debug)]
+enum ConsoleEvent {
+    #[default]
+    None,
+    Starting,
+    Started
+}
 #[derive(Clone, Default)]
 pub struct ConsoleInterface {
-    active_event: Arc<Notify>,
-    active: Arc<AtomicBool>,
+    active_event: Arc<watch::Sender<ConsoleEvent>>,
+    close_task_event: Arc<Notify>,
     console_out: Arc<Mutex<Option<Pin<Box<dyn Stream<Item = ConsoleData> + Send + 'static>>>>>,
     console_in: Arc<Mutex<Option<UnboundedSender<Vec<u8>>>>>,
     proxy_out: Arc<RwLock<Vec<UnboundedSender<ConsoleData>>>>,
@@ -717,17 +723,32 @@ pub struct ConsoleInterface {
 
 impl ConsoleInterface {
     pub async fn spawn(&mut self, _state: Arc<ArcSwap<AppState>>) -> Result<(), Box<dyn Error + Send + Sync>>{
-        self.active_event.notified().await;
+        println!("-> spawning");
+        loop {
+            println!("-> changed {:#?}", *self.active_event.borrow());
+            if matches!(*self.active_event.borrow(), ConsoleEvent::Starting){
+                break;
+            } else {
+                let _ = self.active_event.subscribe().changed().await;
+            }
+        }
         let Some(ref mut console_out) = *self.console_out.lock().await else {
+            println!("-> no console out");
             return Err("no console out".into())
         };
 
-        self.active.store(true, Ordering::SeqCst);
+        // self.active.store(true, Ordering::SeqCst);
         let (proxy_in_tx, mut proxy_in_rx) = broadcast::channel::<ConsoleData>(32);
 
+        println!("-> before lock");
         *self.proxy_in.lock().await = Some(proxy_in_tx);
         *self.proxy_out.write().await = Vec::new();
+        println!("-> after lock");
 
+        let _ = self.active_event.send_replace(ConsoleEvent::Started);
+        let close_task_event = self.close_task_event.clone();
+
+        println!("-> starting loop");
         loop {
             tokio::select! {
                 console_data_res = console_out.next() => {
@@ -737,14 +758,19 @@ impl ConsoleInterface {
                             let _ = tx.send(console_data.clone());
                         }
                     } else {
-                        break Err("console disconnected".into());
+                        break;
                     }
                 },
                 Ok(message) = proxy_in_rx.recv(), if self.console_in.lock().await.is_some()  => {
                     let _ = self.console_in.lock().await.as_ref().unwrap().send(serde_json::to_vec(&message).unwrap());
                 }
+                _ = close_task_event.notified() => {
+                    break;
+                }
             }
         }
+        let _ = self.active_event.send(ConsoleEvent::None);
+        println!("-> console disconnected");
     }
     pub async fn stdin(&self) -> Option<broadcast::Sender<ConsoleData>> {
         self.proxy_in.lock().await.clone()
@@ -752,14 +778,31 @@ impl ConsoleInterface {
     pub async fn stdout(&mut self) -> Option<UnboundedReceiver<ConsoleData>> {
         let (proxy_out_tx, proxy_out_rx) = mpsc::unbounded_channel();
         self.proxy_out.write().await.push(proxy_out_tx);
-        if self.active.load(Ordering::SeqCst) {
+        if matches!(*self.active_event.borrow(), ConsoleEvent::Started) {
             Some(proxy_out_rx)
         } else {
             None
         }
     }
     pub fn active(&self) -> bool {
-        self.active.load(Ordering::SeqCst)
+        if matches!(*self.active_event.borrow(), ConsoleEvent::Started){
+            true
+        } else {
+            false
+        }
+    }
+    pub fn close(&self) {
+        self.close_task_event.notify_waiters();
+    }
+    pub async fn activate(&self){
+        loop {
+            if !matches!(*self.active_event.borrow(), ConsoleEvent::Started){
+                let _ = self.active_event.subscribe().changed().await;
+            } else {
+                break;
+            }
+        }
+        println!("calling active");
     }
 }
 
@@ -828,7 +871,7 @@ impl StreamTransportable for StartServerRequest {
 
         *self.interface.console_out.lock().await = Some(stream.boxed());
         *self.interface.console_in.lock().await = Some(proxy_tx.clone());
-        self.interface.active_event.notify_one();
+        let _ = self.interface.active_event.send_replace(ConsoleEvent::Starting);
         Ok(())
         // Ok(server_rx)
     }
@@ -890,22 +933,25 @@ impl StreamTransportable for ConnectServerRequest {
         }
         let proxy_tx = connection_handler.proxy_tx.clone().unwrap();
         let _ = proxy_tx.send(bytes);
-        println!("after sending message");
+        println!("-> after sending message");
         drop(state);
         
         // let (server_tx, server_rx) = tokio::sync::mpsc::channel(32);
+        println!("-> before lock");
          let (tx, proxy_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
         let share_tx_guard = connection_handler.share_tx.clone();
         let mut share_tx = share_tx_guard.lock().await;
         let index = share_tx.len();
         share_tx.insert(index, tx);
         drop(share_tx);
-
+        println!("-> after lock");
+        
         let console_task = ConsoleTask {
             share_tx_guard: share_tx_guard.clone(),
             input: proxy_rx,
         };
 
+        println!("-> before stream");
         let stream = stream::unfold(console_task, move |mut console_task| {
             async move {
                 loop {
@@ -925,9 +971,11 @@ impl StreamTransportable for ConnectServerRequest {
             }
         });
 
+        println!("-> modifying and starting console");
         *self.interface.console_out.lock().await = Some(stream.boxed());
         *self.interface.console_in.lock().await = Some(proxy_tx.clone());
-        self.interface.active_event.notify_one();
+        println!("-> notifying");
+        let _ = self.interface.active_event.send_replace(ConsoleEvent::Starting);
         Ok(())
     }
 }
