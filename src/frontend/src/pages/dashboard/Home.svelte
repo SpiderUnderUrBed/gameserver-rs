@@ -5,6 +5,7 @@
 	import { serverConsole, type GetCurrentNodeResponse } from '../../lib/stores/serverConsoleStore.svelte';
 	import { toast } from 'svelte-sonner';
 	import { httpClient } from '../../lib/utils/http';
+	import { shouldNotifyOnce } from '../../lib/utils/sessionNotification';
 	import { showNodeDialog, showServerDialog } from './home/dialogs';
 
 	let { outlet }: { outlet?: Snippet } = $props();
@@ -17,7 +18,7 @@
 		} catch (e) {
 			found_node = false;
 		}
-		if (!found_node) {
+		if (!found_node && shouldNotifyOnce('session-warning:no-current-node')) {
 			toast('No current node was selected (required)', {
 				action: {
 					label: 'Select a node',
@@ -37,7 +38,7 @@
 		} catch (e) {
 			found_server = false;
 		}
-		if (!found_server) {
+		if (!found_server && shouldNotifyOnce('session-warning:no-current-server')) {
 			toast('No current server was selected (required)', {
 				action: {
 					label: 'Select a server',
@@ -47,12 +48,22 @@
 		}
 	};
 
-	onMount(() => {
+	onMount(async () => {
+		if (window.location.pathname.startsWith('/auth')) {
+			return;
+		}
+
 		const metaTag = document.querySelector('meta[name="site-url"]');
 		const basePath = metaTag?.getAttribute('content')?.replace(/\/$/, '') ?? '';
 		serverConsole.init(basePath);
-		selectServerReminder();
-		selectNodeReminder();
+		await Promise.allSettled([
+			serverConsole.fetchCurrentServer(),
+			serverConsole.getCurrentNode()
+		]);
+		await Promise.allSettled([
+			selectServerReminder(),
+			selectNodeReminder()
+		]);
 	});
 </script>
 

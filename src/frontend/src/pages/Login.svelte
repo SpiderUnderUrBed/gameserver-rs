@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Link, navigate } from 'svelte5-router';
 	import { onMount } from 'svelte';
+	import { toast } from 'svelte-sonner';
 	import { auth } from '../lib/auth/auth.svelte';
 	import { CircleXIcon } from '@lucide/svelte';
 	import ThemeToggle from '../components/ThemeToggle.svelte';
@@ -8,6 +9,7 @@
 	let error = $state<string | null>(null);
 
 	onMount(() => {
+		toast.dismiss();
 		if (auth.loggedIn) {
 			navigate('/');
 		}
