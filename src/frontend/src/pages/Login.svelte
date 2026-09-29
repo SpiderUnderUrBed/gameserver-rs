@@ -1,28 +1,32 @@
-<script lang="ts" module>
-	export async function action({ formData }: ActionArgs) {
+<script lang="ts">
+	import { Link, navigate } from 'svelte5-router';
+	import { onMount } from 'svelte';
+	import { auth } from '../lib/auth/auth.svelte';
+	import { CircleXIcon } from '@lucide/svelte';
+	import ThemeToggle from '../components/ThemeToggle.svelte';
+
+	let error = $state<string | null>(null);
+
+	onMount(() => {
+		if (auth.loggedIn) {
+			navigate('/');
+		}
+	});
+
+	async function submitLogin(event: SubmitEvent) {
+		event.preventDefault();
+		const form = event.currentTarget as HTMLFormElement;
+		const formData = new FormData(form);
 		const username = formData.get('username') as string;
 		const password = formData.get('password') as string;
 
 		try {
 			await auth.login(username, password);
+			navigate('/');
 		} catch {
-			return { error: 'Invalid credentials' };
+			error = 'Invalid credentials';
 		}
-
-		return redirect('/');
 	}
-</script>
-
-<script lang="ts">
-	import { Form, Link, redirect, useActionData, type ActionArgs } from 'cross-router-svelte';
-	
-	import { auth } from '../lib/auth/auth.svelte';
-	import { CircleXIcon } from '@lucide/svelte';
-	import ThemeToggle from '../components/ThemeToggle.svelte';
-
-	const actionData = useActionData<typeof action>();
-
-	const error = $derived(actionData()?.error);
 
 	const logins = [
 		{
@@ -63,12 +67,11 @@
 			{:else if currentLogin === 'oidc'}
 				{@render oidcLogin()}
 			{/if}
-			<!-- </div> -->
 		</div>
 	</div>
 </div>
 {#snippet manualLogin()}
-	<Form class="flex flex-col gap-2" action="/auth/login">
+	<form class="flex flex-col gap-2" onsubmit={submitLogin}>
 		{#if error}
 			<div class="alert alert-error">
 				<CircleXIcon class="size-6 shrink-0" />
@@ -98,8 +101,8 @@
 
 		<button class="btn btn-primary" type="submit">Login</button>
 		<div class="divider my-2" aria-hidden="true">OR</div>
-		<Link class="btn btn-secondary" href="/auth/signup">Signup</Link>
-	</Form>
+		<Link class="btn btn-secondary" to="/auth/signup">Signup</Link>
+	</form>
 {/snippet}
 {#snippet oidcLogin()}
 	<button

@@ -1,8 +1,8 @@
-import { defineMiddleware, redirect } from 'cross-router-core';
 import { auth } from '../auth/auth.svelte';
 
-export const authMiddleware = defineMiddleware(async ({}) => {
+export const authMiddleware = async () => {
 	if (!auth.loggedIn) {
-		throw redirect('/auth/login');
+		return false;
 	}
-});
+	return true;
+};

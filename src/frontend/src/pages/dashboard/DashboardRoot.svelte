@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { RouterView, useNavigate } from 'cross-router-svelte';
+	import { navigate } from 'svelte5-router';
 	import ThemeToggle from '../../components/ThemeToggle.svelte';
 	import { LogOutIcon } from '@lucide/svelte';
 	import SideNav from '../../components/dashboard/SideNav.svelte';
@@ -7,8 +7,6 @@
 	import type { Snippet } from 'svelte';
 
 	let { outlet }: { outlet?: Snippet } = $props();
-
-	const navigate = useNavigate();
 
 	async function logout(event: Event) {
 		event.preventDefault();

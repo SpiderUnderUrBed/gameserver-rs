@@ -771,6 +771,7 @@ impl ConsoleInterface {
         }
         let _ = self.active_event.send(ConsoleEvent::None);
         println!("-> console disconnected");
+        Err("Console disconnected".into())
     }
     pub async fn stdin(&self) -> Option<broadcast::Sender<ConsoleData>> {
         self.proxy_in.lock().await.clone()

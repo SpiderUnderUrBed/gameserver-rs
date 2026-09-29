@@ -1,16 +1,58 @@
 <script lang="ts">
-	import { Link } from 'cross-router-svelte';
+	import { Link } from 'svelte5-router';
 	import { serverConsole } from '../../lib/stores/serverConsoleStore.svelte';
 </script>
 
 <ul class="menu menu-horizontal rounded bg-base-100 w-full">
-	<li><Link href="/" exactActiveClass="menu-active">Home</Link></li>
-	<li><Link href="/filebrowser" activeClass="menu-active">Filebrowser</Link></li>
-	<li><Link href="/statistics" activeClass="menu-active">Statistics</Link></li>
-	<li><Link href="/workflows" activeClass="menu-active">Workflows</Link></li>
-	<li><Link href="/integrations" activeClass="menu-active">Integrations</Link></li>
-	<li><Link href="/backups" activeClass="menu-active">Backups</Link></li>
-	<li><Link href="/settings" activeClass="menu-active">Settings</Link></li>
+	<li>
+		<Link to="/">
+			{#snippet children(active)}
+				<span class:menu-active={active}>Home</span>
+			{/snippet}
+		</Link>
+	</li>
+	<li>
+		<Link to="/filebrowser">
+			{#snippet children(active)}
+				<span class:menu-active={active}>Filebrowser</span>
+			{/snippet}
+		</Link>
+	</li>
+	<li>
+		<Link to="/statistics">
+			{#snippet children(active)}
+				<span class:menu-active={active}>Statistics</span>
+			{/snippet}
+		</Link>
+	</li>
+	<li>
+		<Link to="/workflows">
+			{#snippet children(active)}
+				<span class:menu-active={active}>Workflows</span>
+			{/snippet}
+		</Link>
+	</li>
+	<li>
+		<Link to="/integrations">
+			{#snippet children(active)}
+				<span class:menu-active={active}>Integrations</span>
+			{/snippet}
+		</Link>
+	</li>
+	<li>
+		<Link to="/backups">
+			{#snippet children(active)}
+				<span class:menu-active={active}>Backups</span>
+			{/snippet}
+		</Link>
+	</li>
+	<li>
+		<Link to="/settings">
+			{#snippet children(active)}
+				<span class:menu-active={active}>Settings</span>
+			{/snippet}
+		</Link>
+	</li>
 
 	<li>
 		<button popovertarget="manage-btns" style="anchor-name:--manage-btns">Manage buttons</button>

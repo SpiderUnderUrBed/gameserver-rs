@@ -1,32 +1,55 @@
 <script lang="ts">
-	import { Link } from 'cross-router-svelte';
+	import { Link } from 'svelte5-router';
 </script>
 
 <aside class="w-64">
 	<nav>
 		<ul class="menu w-full">
 			<li>
-				<Link href="/" exactActiveClass="menu-active">Home Page</Link>
+				<Link to="/">
+					{#snippet children(active)}
+						<span class:menu-active={active}>Home Page</span>
+					{/snippet}
+				</Link>
 			</li>
 			<li>
-				<Link href="/users" activeClass="menu-active">Users</Link>
+				<Link to="/users">
+					{#snippet children(active)}
+						<span class:menu-active={active}>Users</span>
+					{/snippet}
+				</Link>
 			</li>
 			<li>
-				<Link href="/servers" activeClass="menu-active">Servers</Link>
+				<Link to="/servers">
+					{#snippet children(active)}
+						<span class:menu-active={active}>Servers</span>
+					{/snippet}
+				</Link>
 			</li>
 			<li>
-				<Link href="/nodes" activeClass="menu-active">Nodes</Link>
+				<Link to="/nodes">
+					{#snippet children(active)}
+						<span class:menu-active={active}>Nodes</span>
+					{/snippet}
+				</Link>
 			</li>
 			<li>
-				<Link href="/manual" activeClass="menu-active">Manual</Link>
+				<Link to="/manual">
+					{#snippet children(active)}
+						<span class:menu-active={active}>Manual</span>
+					{/snippet}
+				</Link>
 			</li>
 
 			<li>
 				<details>
 					<summary>Developer Options</summary>
-
 					<li>
-						<Link href="/create-server" activeClass="menu-active">Create servers</Link>
+						<Link to="/create-server">
+							{#snippet children(active)}
+								<span class:menu-active={active}>Create servers</span>
+							{/snippet}
+						</Link>
 					</li>
 				</details>
 			</li>
