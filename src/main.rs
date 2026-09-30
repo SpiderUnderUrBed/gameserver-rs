@@ -631,7 +631,7 @@ pub struct ServerProcesses {
     // polling_active: bool,
     status_method: watch::Sender<StatusMethod>,
     status: ServerStatus,
-    intention: Intention
+    intention: watch::Sender<Intention>
     // user_polling_event: watch::Sender<UserPollingEvent>
 }
 
@@ -639,6 +639,7 @@ pub struct ServerProcesses {
 pub enum ServerCheckEvent {
     Add(String),
     Remove(String),
+
     Clear,
     None
 } 
@@ -711,7 +712,9 @@ async fn spawn_server_background_tasks(
         loop {
             let current_server_check_event = (*server_check_event.borrow()).clone();
             if let ServerCheckEvent::Add(new_server) = current_server_check_event {
+
                 let _ = server_check_event.send(ServerCheckEvent::None);
+                let inner_server_check_event = server_check_event.clone();
                 let inner_server_check_event_rx = server_check_event.subscribe().clone();
                 let inner_arc_state = arc_state.clone();
                 let state = arc_state.load();
@@ -734,7 +737,7 @@ async fn spawn_server_background_tasks(
                         let status_method = &process_guard.load().status_method.clone();
                         let mut status_method_rx = status_method.subscribe();
                         if matches!(*status_method.borrow(), StatusMethod::Poll) {
-                            let mut interval = tokio::time::interval(Duration::from_millis(50000));
+                            let mut interval = tokio::time::interval(Duration::from_millis(10000));
                             loop {
                                 let server_state_request = ServerStateRequest { };
                                 if let Ok(status) = server_state_request.node_transport(&state).await{
@@ -752,32 +755,62 @@ async fn spawn_server_background_tasks(
                                         break 'server_status_task;
                                     }
                                 }
+                                let process = process_guard.load();
+                                if matches!(*process.intention.borrow(), Intention::Stopping){
+                                    if matches!(process.status, ServerStatus::Down){
+                                        process.intention.send_replace(Intention::Netrual);
+                                        let _ = inner_server_check_event.send_replace(ServerCheckEvent::Remove(new_server));
+                                        break 'server_status_task;
+                                    } 
+                                }
                                 interval.tick().await;
                             }
                         } else if matches!(*status_method.borrow(), StatusMethod::OnUpdate){
                             let mut server_state_request = ServerStateRequest {
                             };
-                            if let Ok(rx) = server_state_request.stream_transport(inner_arc_state.clone()).await {
-                                let inner_process_guard = process_guard.clone();
-                                tokio::spawn(async move {
-                                    loop {
-                                        let status = rx.borrow().clone();
-                                        if status != inner_process_guard.load().status {
-                                            let mut inner_process = (*inner_process_guard.load_full()).clone();
-                                            inner_process.status = status;
-                                            inner_process_guard.store(Arc::new(inner_process));
-                                        }   
-                                    } 
-                                });
+                            if let Ok(mut rx) = server_state_request.stream_transport(inner_arc_state.clone()).await {
+                                // let inner_process_guard = process_guard.clone();
+                                // tokio::spawn(async move {
+                                loop {
+                                    let status = rx.borrow().clone();
+                                    if status != process_guard.load().status {
+                                        let mut inner_process = (*process_guard.load_full()).clone();
+                                        inner_process.status = status;
+                                        process_guard.store(Arc::new(inner_process));
+                                    }   
+                                    if let ServerCheckEvent::Remove(server) = &*inner_server_check_event_rx.borrow() {
+                                        if new_server == *server {
+                                            break 'server_status_task;
+                                        }
+                                    }
+                                    let process = process_guard.load();
+                                    if matches!(*process.intention.borrow(), Intention::Stopping){
+                                        if matches!(process.status, ServerStatus::Down){
+                                            process.intention.send_replace(Intention::Netrual);
+                                            let _ = inner_server_check_event.send_replace(ServerCheckEvent::Remove(new_server));
+                                            break 'server_status_task;
+                                        } 
+                                    }
+                                    let _ = rx.changed().await;
+                                } 
+                                //});
                             }
-                        }
-                        if let ServerCheckEvent::Remove(server) = &*inner_server_check_event_rx.borrow() {
-                            if new_server == *server {
+                        } else {
+                            if matches!(*process_guard.load().intention.borrow(), Intention::Stopping){
+                                if matches!(process_guard.load().status, ServerStatus::Down){
+                                    process_guard.load().intention.send_replace(Intention::Netrual);
+                                    let _ = inner_server_check_event.send_replace(ServerCheckEvent::Remove(new_server));
+                                    break 'server_status_task;
+                                } 
+                            }
+                            if let ServerCheckEvent::Remove(server) = &*inner_server_check_event_rx.borrow() {
+                                if new_server == *server {
+                                    break;
+                                }
+                            }
+                            if let ServerCheckEvent::Clear = &*inner_server_check_event_rx.borrow() {
                                 break;
                             }
-                        }
-                        if let ServerCheckEvent::Clear = &*inner_server_check_event_rx.borrow() {
-                            break;
                         }
                         let _ = status_method_rx.changed().await;
                     }
@@ -785,10 +818,10 @@ async fn spawn_server_background_tasks(
             }
             if let ServerCheckEvent::Remove(server) = &*server_check_event.borrow() {
                 let state = arc_state.load();
-                let Some(process) = state.server_processes.get(server) else {
+                let Some((_, process)) = state.server_processes.remove(server) else {
+                    let _ = server_check_event.send(ServerCheckEvent::None);
                     continue;
                 };
-                state.server_processes.remove(server);
                 process.load().console_interface.close();
             }
             if let ServerCheckEvent::Clear = &*server_check_event.borrow() {
@@ -1404,9 +1437,13 @@ pub async fn stop_server(
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
 
+        
         let stop_server_request = StopServerRequest {};
         let _ = stop_server_request.node_transport(&state).await;
 
+        current_process_guard.load().intention.send_replace(Intention::Stopping);
+        
+        // let _ = state.server_check_event.send(ServerCheckEvent::Add(server.servername));
 
         StatusCode::CREATED.into_response()
     } else {
@@ -2028,17 +2065,17 @@ async fn get_current_process(session: tower_sessions::Session, state: &AppState)
 fn user_process_increment(process: &Arc<ArcSwap<ServerProcesses>>){
    let observing_users = &process.load().observing_users;
    observing_users.fetch_add(1, Ordering::SeqCst);
-   if observing_users.load(Ordering::SeqCst) == 1 {
-    if !matches!(process.load().intention, Intention::Stopping){
-        process.load().status_method.send_replace(StatusMethod::Poll);
-    }
-   }
+//    if observing_users.load(Ordering::SeqCst) == 1 {
+//     if !matches!(process.load().intention, Intention::Stopping){
+//         process.load().status_method.send_replace(StatusMethod::Poll);
+//     }
+//    }
 }
 fn user_process_decrement(user: &UserClient, process: &Arc<ArcSwap<ServerProcesses>>){
     let observing_users = &process.load().observing_users;
     if user.open_websockets.load(Ordering::SeqCst) > 0 {
         observing_users.fetch_sub(1, Ordering::SeqCst);
-        if observing_users.load(Ordering::SeqCst) == 0 {
+        if observing_users.load(Ordering::SeqCst) == 0 && matches!(*process.load().intention.borrow(), Intention::Netrual) {
             process.load().status_method.send_replace(StatusMethod::None);
         }
     }
@@ -2085,7 +2122,8 @@ async fn ensure_server_process(state: &AppState, server: Server) -> Arc<ArcSwap<
     } else {
         // let (user_polling_tx, _) = watch::channel(UserPollingEvent::None);
         let (logging_status_tx, _) = watch::channel(LoggingStatus::None);
-        let status_method = watch::channel(StatusMethod::None).0;
+        let (server_intention_tx, _) = watch::channel(Intention::Netrual);
+        let status_method = watch::channel(StatusMethod::Poll).0;
         let server_process = Arc::new(ArcSwap::new(Arc::new(ServerProcesses {
             logging_status: logging_status_tx,
             logger: None,
@@ -2097,7 +2135,7 @@ async fn ensure_server_process(state: &AppState, server: Server) -> Arc<ArcSwap<
             current_server: Some(server.clone()),
             status_method,
             status: ServerStatus::Unknown,
-            intention: Intention::Netrual
+            intention: server_intention_tx
             // user_polling_event: user_polling_tx,
         })));
         state.server_processes.insert(server.servername.clone(), server_process.clone());
@@ -2862,8 +2900,13 @@ pub async fn start_server(
     }
     
     let Ok(current_process_lock) = get_current_process(session.clone(), &state).await else {
+        println!("process does not exist");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
+    //let _ = state.server_check_event.send(ServerCheckEvent::Add(retrieved_server.servername));
+
+
+
     let current_process = (*current_process_lock.load_full()).clone();
     if current_process.console_interface.active(){
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -3316,6 +3359,14 @@ async fn set_server(
         };
         let _ = set_server_request.node_transport(&mut state).await;
 
+        let Ok(current_process_lock) = get_current_process(session.clone(), &state).await else {
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        };
+        let current_process = current_process_lock.load();
+
+        state.server_check_event.send_replace(ServerCheckEvent::Add(retrieved_server.servername));
+  
+
         let server_state_request = ServerStateRequest {};
         let Ok(status) = server_state_request.node_transport(&state).await else {
             return StatusCode::INTERNAL_SERVER_ERROR
@@ -3323,13 +3374,6 @@ async fn set_server(
         if !matches!(status, ServerStatus::Up){
             return StatusCode::OK;
         } 
-
-        let Ok(current_process_lock) = get_current_process(session.clone(), &state).await else {
-            return StatusCode::INTERNAL_SERVER_ERROR;
-        };
-        let current_process = current_process_lock.load();
-
-        let _ = state.server_check_event.send(ServerCheckEvent::Add(retrieved_server.servername));
 
         let mut connect_server_request = ConnectServerRequest { 
             interface: current_process.console_interface.clone() 

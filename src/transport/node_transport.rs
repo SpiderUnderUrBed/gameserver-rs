@@ -608,6 +608,7 @@ impl ConsoleInterface {
                     let _ = self.console_in.lock().await.as_ref().unwrap().send(serde_json::to_vec(&message).unwrap());
                 }
                 _ = close_task_event.notified() => {
+                    println!("breaking console");
                     break;
                 }
             }
