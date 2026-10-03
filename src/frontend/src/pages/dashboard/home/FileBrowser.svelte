@@ -14,9 +14,9 @@
 	import FileOperations from '../../../components/dashboard/FileOperations.svelte';
 	import { FileOperationStore } from '../../../lib/stores/fileOperationStore.svelte';
 
-	let hovered: { kind: "Folder" | "File" | string; data: string } | null = $state({
-		kind: "",
-		data: ""
+	let hovered: { is_dir: boolean; name: string } | null = $state({
+		name: "",
+		is_dir: false
 	});
 	let enabled_size = $state(true);
 	let directory_size = $state();
@@ -34,23 +34,23 @@
 		fileBrowserStore.fetchFiles('');
 	});
 
-	function navigate(entry: { kind: string; data: string }) {
+	function navigate(entry: { is_dir: boolean; name: string }) {
 		if (!entry) return;
-		if (entry.kind === 'Folder') {
-			if (entry.data === '..') {
+		if (entry.is_dir) {
+			if (entry.name === '..') {
 				const segments = fileBrowserStore.path.split('/').filter(Boolean);
 				segments.pop();
 				fileOperationStore.path = segments.join('/');
 				fileBrowserStore.fetchFiles(segments.join('/'));
 			} else {
 				const nextPath = fileBrowserStore.path
-					? `${fileBrowserStore.path}/${entry.data}`
-					: entry.data;
+					? `${fileBrowserStore.path}/${entry.name}`
+					: entry.name;
 				fileOperationStore.path = nextPath;
 				fileBrowserStore.fetchFiles(nextPath);
 			}
 		} else {
-			fileBrowserStore.fetchFileContent(entry.data);
+			fileBrowserStore.fetchFileContent(entry.name);
 		}
 	}
 
@@ -58,7 +58,7 @@
 		fileBrowserStore.uploadFiles(data.files);
 	}
 
-	function updateCheck(entry: { kind: string; data: string }, checked: boolean){
+	function updateCheck(entry: { is_dir: boolean; name: string }, checked: boolean){
 		if (checked) {
 			total_checked += 1;
 			if (fileOperationStore.first_item === null) {
@@ -67,10 +67,10 @@
 				fileOperationStore.second_item = entry 
 			}
 		} else {
-			if (fileOperationStore.first_item?.data == entry.data){
+			if (fileOperationStore.first_item?.name == entry.name){
 				fileOperationStore.first_item = null;
 			} 
-			if (fileOperationStore.second_item?.data == entry.data) {
+			if (fileOperationStore.second_item?.name == entry.name) {
 				fileOperationStore.second_item = null;
 			}
 			total_checked -= 1;
@@ -80,7 +80,7 @@
 
 	$effect(() =>{
 		console.log(total_checked);
-		if (hovered?.kind != "Folder") return;
+		if (!hovered?.is_dir) return;
 		directory_size = "."
 
 		const timers: ReturnType<typeof setTimeout>[] = [];
@@ -92,8 +92,8 @@
 				directory_size = "...";
 				timers.push(setTimeout(() => {
 					if (cancelled) return;
-					fileBrowserStore.returnFiles(fileBrowserStore.path ? `${fileBrowserStore.path}/${hovered?.data}`
-					: hovered?.data).then((files) => {
+					fileBrowserStore.returnFiles(fileBrowserStore.path ? `${fileBrowserStore.path}/${hovered?.name}`
+					: hovered?.name).then((files) => {
 						directory_size = files.length;
 					});
 				}, timeout / 3));
@@ -119,7 +119,7 @@
 		{#if fileBrowserStore.path}
 			<button
 				class="btn btn-sm btn-outline"
-				onclick={() => navigate({ kind: 'Folder', data: '..' })}
+				onclick={() => navigate({ is_dir: true, name: '..' })}
 			>
 				<ArrowUpRight class="w-4 h-4 mr-1" /> Up
 			</button>
@@ -170,29 +170,29 @@
 								onmouseenter={() => hovered = {...item}}
 								onmouseleave={() => hovered = null}
 								>
-								<th class="flex h-18 gap-3"><input type="checkbox" class="checkbox" disabled={total_checked >= 2 && !(item?.data == fileOperationStore.first_item?.data || item?.data == fileOperationStore.second_item?.data)} onchange={(e) => updateCheck(item, e.currentTarget.checked)}/> {idx + 1}</th>
+								<th class="flex h-18 gap-3"><input type="checkbox" class="checkbox" disabled={total_checked >= 2 && !(item?.name == fileOperationStore.first_item?.name || item?.name == fileOperationStore.second_item?.name)} onchange={(e) => updateCheck(item, e.currentTarget.checked)}/> {idx + 1}</th>
 								<td>
 									<div class="flex items-center">
 										<span class="w-8 text-sm shrink-0">
-											{#if hovered?.data == item.data && hovered ?.kind == "Folder" && enabled_size}{directory_size}{/if}
+											{#if hovered?.name == item.name && hovered ?.is_dir && enabled_size}{directory_size}{/if}
 										</span>
 										<button class="btn btn-ghost btn-sm gap-2" onclick={() => navigate(item)}>
 
-											{#if item.kind === 'Folder'}
+											{#if item.is_dir}
 												<Folder class="w-4 h-4" />
 											{:else}
 												<FileText class="w-4 h-4" />
 											{/if}
-											<span>{item.data}</span>
+											<span>{item.name}</span>
 										</button>
 									</div>
 								</td>
-								<td>{item.kind}</td>
+								<td>{item.is_dir}</td>
 								<td>
-									{#if item.kind !== 'Folder'}
+									{#if item.is_dir}
 										<button
 											class="btn btn-xs btn-outline"
-											onclick={() => fileBrowserStore.fetchFileContent(item.data)}
+											onclick={() => fileBrowserStore.fetchFileContent(item.name)}
 										>
 											Open
 										</button>

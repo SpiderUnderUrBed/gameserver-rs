@@ -1,8 +1,8 @@
 import { httpClient } from '../utils/http';
 import * as v from 'valibot';
 export interface FileEntry {
-	kind: 'Folder' | 'File' | string;
-	data: string;
+	is_dir: boolean;
+	name: string;
 }
 
 export class FileBrowserStore {
@@ -15,8 +15,8 @@ export class FileBrowserStore {
 	public selectedFile = $state('');
 
 	private async processResponse(res: any) {
-		if (res?.list?.data) {
-			return res.list.data as FileEntry[];
+		if (res?.directory) {
+			return res.directory as FileEntry[];
 		}
 		return [];
 	}
@@ -28,7 +28,9 @@ export class FileBrowserStore {
 			})
 			.json<any>();
 
+		console.log(response);
 		const data = await this.processResponse(response);
+		console.log(data);
 		return data;
 	}
 	public async fetchFiles(path: string = this.path): Promise<void>{
@@ -40,7 +42,7 @@ export class FileBrowserStore {
 		try {
 			const data = await this.returnFiles(path);
 			if (path && path !== '') {
-				this.items = [{ kind: 'Folder', data: '..' }, ...data];
+				this.items = [{ is_dir: true, name: '..' }, ...data];
 			} else {
 				this.items = data;
 			}

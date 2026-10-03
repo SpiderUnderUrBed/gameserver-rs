@@ -4,6 +4,8 @@ use dashmap::DashMap;
 use futures::stream::unfold;
 use futures::Stream;
 use futures::StreamExt;
+#[cfg(not(feature = "grpc_experimental"))]
+use general_networked_filesystem::core::FileOperations;
 use general_networked_filesystem::wrapper::Direction;
 use general_networked_filesystem::wrapper::FileSystemHandler;
 use serde::Deserialize;
@@ -1618,7 +1620,24 @@ async fn spawn_request_loop(
                                         }
                                     }
                                 }
-                                Err(e) => println!("could not match request: {e}"),
+                                Err(_) => {
+                                    println!("could not match request");
+                                },
+                            }
+                        }
+                    } else {
+                        match FileOperations::from_tagged_request_value(json_value.clone()){
+                            Ok(request) => {
+                                if let Ok(bytes) = request.execute_bytes() {
+                                    if let Err(e) = out_tx.send(bytes).await {
+                                        println!("Got error with file request {}", e);
+                                    }
+                                } else {
+                                    println!("Error with the file operation");
+                                };
+                            },
+                            Err(_)  => {
+                                println!("could not match request");
                             }
                         }
                     }

@@ -33,10 +33,16 @@ impl FileOperations {
             Err(_) => Err(FileRequestErrors::CouldNotFindRequest),
         }
     }
-    pub fn from_tagged_request(
+    pub fn from_tagged_request_bytes(
         encoding: Vec<u8>,
     ) -> Result<Box<dyn FileRequest>, FileRequestErrors> {
         serde_json::from_slice::<Box<dyn FileRequest>>(&encoding)
+            .map_err(|_| FileRequestErrors::CouldNotParse)
+    }
+    pub fn from_tagged_request_value(
+        encoding: serde_json::Value,
+    ) -> Result<Box<dyn FileRequest>, FileRequestErrors> {
+        serde_json::from_value::<Box<dyn FileRequest>>(encoding)
             .map_err(|_| FileRequestErrors::CouldNotParse)
     }
 }

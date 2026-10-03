@@ -38,8 +38,8 @@ export class FileOperationStore {
 	public async executeFileOperation() {
 		let final_operation: String | undefined = undefined;
         if (this.current_file_operation?.id == "Download") {
-            if (this.first_item?.data){
-                await this.downloadFileSimple(this.first_item?.data);
+            if (this.first_item?.name){
+                await this.downloadFileSimple(this.first_item?.name);
                 this.clearFileOperation();
             }
             return;
@@ -52,14 +52,14 @@ export class FileOperationStore {
                     kind: "FileOperations",
                     data: {
                         kind: final_operation,
-                        data: this.first_item ? this.first_item.data : ""
+                        data: this.first_item ? this.first_item.name : ""
                     }
                 },
                 dest: {
                     kind: "FileOperations",
                     data: {
                         kind: final_operation,
-                        data: this.second_item ? this.second_item.data : ""
+                        data: this.second_item ? this.second_item.name : ""
                     }
                 },
                 metadata: ""

@@ -3972,13 +3972,15 @@ pub async fn get_files(
     Json(request): Json<IncomingMessage>,
 ) -> impl IntoResponse {
     let mut state = arc_state.load();
-    // let mut location = self.location.clone();
-    // if !(location.starts_with("server") || location.starts_with("/server")){
-    //     location = format!("./server/{}", location);
-    // }
+
+    let mut location = request.message.clone();
+    if !(location.starts_with("server") || location.starts_with("/server")){
+        location = format!("server/{}", location);
+    }
+
     let request = LsRequest {
         id: 0,
-        location: "server/".to_string(),
+        location,
     };
     match request.node_transport(&mut state).await {
         Ok(response) => {

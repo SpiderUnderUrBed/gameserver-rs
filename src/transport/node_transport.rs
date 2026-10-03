@@ -405,6 +405,7 @@ fn convert_into_request<S: Serialize>(s: S) -> Result<Vec<u8>, Box<dyn Error + S
 impl NodeTransportable for LsRequest {
     type Output = DirectoryResponse;
     async fn node_transport(&self, state: &AppState) -> Result<DirectoryResponse, Box<dyn Error + Send + Sync>> {
+        
         let connection = state.current_node.connection.clone();
         let Some(connection_handler) =  connection else {
             return Err("No connection working".into());
@@ -424,6 +425,7 @@ impl NodeTransportable for LsRequest {
             }
         };
         if connection_handler.proxy_tx.is_none(){
+            println!("no stream");
             return Err("no stream".into());
         }
         let _ = connection_handler.proxy_tx.clone().unwrap().send(bytes);
@@ -434,15 +436,17 @@ impl NodeTransportable for LsRequest {
         let index = share_tx.len();
         share_tx.insert(index, tx);
         drop(share_tx);
-        //let mut proxy_rx = connection_handler.proxy_rx.resubscribe();
+        
         loop {
             if let Some(bytes) = proxy_rx.recv().await {
                 if let Ok(response) = serde_json::from_slice::<DirectoryResponse>(&bytes) {
                     let mut share_tx = share_tx_guard.lock().await;
                     share_tx.remove(&index);
                     return Ok(response)
-                }
+                } 
             } else {
+                let mut share_tx = share_tx_guard.lock().await;
+                share_tx.remove(&index);
                 return Err("Receiver failed".into());
             }
         }
