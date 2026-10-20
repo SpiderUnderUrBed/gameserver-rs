@@ -1,5 +1,6 @@
 use std::{any::Any, sync::Arc};
-use networked_filesystem::{AcknowlageFrame, Codec, EofFrame, FileFrame, LocalState, Operation, RemoteFileSystem, StreamableFileSystemErrors, chain::ChainBuilder, flume_delimited::{FlumeFile, TcpFsBidirectional}};
+use networked_filesystem::{AcknowlageFrame, Codec, EofFrame, FileFrame, LocalState, Operation, RemoteFileSystem, StreamableFileSystemErrors, chain::ChainBuilder};
+use networked_filesystem::flume_delmited_v1::flume_delimited::{FlumeFile, TcpFsBidirectional};
 use tokio::sync::{Mutex, Notify, watch};
 use tokio_util::sync::CancellationToken;
 use crate::core::FileOperations;
@@ -225,7 +226,7 @@ impl FileSystemHandler {
     }
     pub async fn create_state(&mut self, state_id: u8, location: String) {
         let mut file_tx = self.arc_file_tx.lock().await;
-        file_tx.create_state(state_id, LocalState { location });
+        file_tx.create_state(state_id, LocalState { location, starting_cursor_position: None, ending_cursor_position: None });
     }
     pub async fn get_operation_event(&self) -> watch::Receiver<Operation> {
         let file_tx = self.arc_file_tx.lock().await;
