@@ -1131,6 +1131,7 @@ struct PriorityGuard {
 
 impl Drop for PriorityGuard {
     fn drop(&mut self) {
+        println!("resetting priority");
         if let Ok(mut p) = self.priority.try_lock() {
             *p = 0;
         } else {
@@ -1139,6 +1140,7 @@ impl Drop for PriorityGuard {
                 *priority.lock().await = 0;
             });
         }
+        println!("reset priority");
     }
 }
 

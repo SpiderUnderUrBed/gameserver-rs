@@ -13,7 +13,7 @@ use crate::{AppState, ErrorResponse, StreamResponse, connect_server_handler, cre
 use async_trait::async_trait;
 use general_networked_filesystem::core::chain::ChainBuilder;
 use general_networked_filesystem::core::{
-    AcknowlageFrame, Direction, DrainFrame, EofFrame, FileFrame, FileHandleStatus, FrameCommons, LocalState, SetFrame, WithDelims,
+    AcknowlageFrame, Direction, DrainFrame, EofFrame, ErrorFrame, FileFrame, FileHandleStatus, FrameCommons, LocalState, SetFrame, WithDelims,
 };
 
 use tokio::{
@@ -178,8 +178,13 @@ pub async fn spawn_conn_background_tasks(
                         let inner_out_tx = output_tx.clone();
                         async move {
                             let location = inner_location.lock().await;
-                            let file = File::open(location.to_string())
-                                .map_err(|e| FileHandleStatus::Any(Box::new(e)))?;
+                            let file = match File::open(location.to_string()){
+                                Ok(file) => file,
+                                Err(e) => {
+                                    ErrorFrame::handle::<WithDelims, TcpFsBidirectional, FlumeFile>(fs.clone()).await;
+                                    return Err(FileHandleStatus::Any(Box::new(e)));
+                                },
+                            };
 
                             let mut reader = BufReader::new(file);
                             let mut chunk = vec![0u8; 1000];
