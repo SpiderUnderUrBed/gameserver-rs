@@ -211,7 +211,6 @@ pub async fn connect_to_server(
                             read_res = reader.read(&mut temp_buf) => {
                                 match read_res {
                                     Ok(0) => {
-                                        println!("closed conn");
                                         break;
                                     },
                                     Ok(n) => {

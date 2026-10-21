@@ -1432,13 +1432,16 @@ async fn spawn_request_loop(
     //     let router_guard = router.lock().await;
     //     Arc::clone(router_guard.get_state())
     // };
-    let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(128);
-    let (fs_tx, fs_rx) = flume::unbounded();
+
+    let (fs_in_tx, fs_in_rx) = flume::unbounded();
+    let (fs_out_tx, fs_out_rx) = flume::unbounded();
     let filesystem = Arc::new(RwLock::new(FileSystemHandler::new(
-        fs_tx,
-        fs_rx,
+        fs_out_tx,
+        fs_in_rx,
         Direction::Local,
     )));
+
+    let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(128);
     let client = Client {
         output_tx: Arc::new(Mutex::new(Some(out_tx.clone()))),
         filesystem: filesystem.clone(),
@@ -1493,6 +1496,9 @@ async fn spawn_request_loop(
     tokio::spawn(async move {
         'outer: loop {
             tokio::select! {
+                Ok(bytes) = fs_out_rx.recv_async() => {
+                    let _ = writer.send(bytes).await;
+                },
                 Some(mut out) = out_rx.recv() => {
                     // if let Ok(msg) = serde_json::from_slice::<Value>(&out){
                     //     println!("sending out {:?}", msg);
@@ -1522,17 +1528,7 @@ async fn spawn_request_loop(
         }
     });
 
-    let file_sender = {
-        let filesystem_writer = filesystem.write().await;
-        let writer = filesystem_writer
-            .arc_file_tx
-            .lock()
-            .await
-            .inner_mut()
-            .tx
-            .clone();
-        writer
-    };
+ 
     loop {
         while let Ok(_) = conn_handler.next().await {
             let line_str_result = conn_handler.recv_line().await;
@@ -1645,7 +1641,7 @@ async fn spawn_request_loop(
                 conn_handler.end_clean_hook().await;
             } else {
                 let bytes = conn_handler.recv_bytes();
-                let _ = file_sender.clone().send(bytes);
+                let _ = fs_in_tx.send(bytes);
             }
         }
     }

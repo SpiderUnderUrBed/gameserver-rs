@@ -1,4 +1,5 @@
 use dashmap::DashMap;
+use general_networked_filesystem::core::flume_delmited_v1::flume_delimited::{FlumeFile, TcpFsBidirectional};
 use general_networked_filesystem::wrapper::FileSystemHandler;
 use serde::Serialize;
 use std::fs::File;
@@ -12,7 +13,7 @@ use crate::{AppState, ErrorResponse, StreamResponse, connect_server_handler, cre
 use async_trait::async_trait;
 use general_networked_filesystem::core::chain::ChainBuilder;
 use general_networked_filesystem::core::{
-    AcknowlageFrame, DrainFrame, EofFrame, FileFrame, FileHandleStatus, LocalState, SetFrame,
+    AcknowlageFrame, Direction, DrainFrame, EofFrame, FileFrame, FileHandleStatus, FrameCommons, LocalState, SetFrame, WithDelims,
 };
 
 use tokio::{
@@ -111,10 +112,14 @@ pub async fn spawn_conn_background_tasks(
             tokio::spawn(async move {
                 let filesystem_reader = filesystem_lock.write().await;
                 let mut file_rx = filesystem_reader.arc_file_tx.lock().await.clone();
+
+                
                 file_rx.create_state(
                     0,
                     LocalState {
                         location: "server/".to_owned(),
+                        starting_cursor_position: None,
+                        ending_cursor_position: None
                     },
                 );
                 drop(filesystem_reader);
@@ -127,7 +132,7 @@ pub async fn spawn_conn_background_tasks(
                     let inner_location = inner_location.clone();
                     Box::pin(async move {
                         let location = inner_location.lock().await;
-                        let _ = FileFrame::write_at_location(&mut f, fs, location.to_string());
+                        let _ = FileFrame::write_at_location(&mut f, fs, location.to_string(), None, None);
                         Ok(())
                     })
                 });
@@ -157,8 +162,8 @@ pub async fn spawn_conn_background_tasks(
                         let inner_watch_tx = watch_tx.clone();
                         async move {
                             let _ = inner_watch_tx.send(BackgroundTaskUpdates::NoMoreFileTransfer);
-                            let _ = EofFrame::handle::<_, _>(eof, state_id, fs).await;
-                            if let Ok(bytes) = AcknowlageFrame::to_bytes_with_delims(fs.clone()) {
+                            let _ = EofFrame::handle::<_, _>(eof, state_id, fs);
+                            if let Ok(bytes) = AcknowlageFrame::to_bytes(fs.clone()) {
                                 let _ = inner_out_tx.send(bytes).await;
                             } 
                             Ok(()) 
@@ -200,9 +205,9 @@ pub async fn spawn_conn_background_tasks(
                                 }
                             });
                             let mut rx_stream = rx.into_stream();
-                            let fs_clone = fs.clone();
+                            let mut fs_clone = fs.clone();
                             tokio::spawn(async move {
-                                let _: Result<(), FileHandleStatus> = DrainFrame::write_from_custom_stream_with_delims(drain, state_id, fs_clone, &mut Some(&mut rx_stream), inner_out_tx).await;
+                                let _: Result<(), FileHandleStatus> = DrainFrame::write_from_stream::<WithDelims, TcpFsBidirectional, FlumeFile>(&mut fs_clone, &mut rx_stream).await;
                             });
                             Ok(())
                         }
