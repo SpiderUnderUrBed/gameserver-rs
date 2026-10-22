@@ -1733,6 +1733,7 @@ pub async fn stream_file_download(
     let inner_file_path = file_path.clone();
     tokio::spawn(async move {
         let _ = filesystem.download(inner_file_path).await;
+        println!("done with download");
     });
 
     headers.insert(

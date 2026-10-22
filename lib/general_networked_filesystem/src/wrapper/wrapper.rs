@@ -1,4 +1,5 @@
 use std::{any::Any, sync::Arc};
+use networked_filesystem::ErrorFrame;
 use networked_filesystem::{AcknowlageFrame, Codec, EofFrame, FileFrame, LocalState, Operation, RemoteFileSystem, StreamableFileSystemErrors, chain::ChainBuilder};
 use networked_filesystem::flume_delmited_v1::flume_delimited::{FlumeFile, TcpFsBidirectional};
 use tokio::sync::{Mutex, Notify, watch};
@@ -114,6 +115,16 @@ impl FileSystemHandler {
                         Ok(())
                     })
                 });
+            let inner_end_file_task = end_file_task.clone();
+            let mut chain = chain
+                .chain::<ErrorFrame, _, _>(move |_, _, _fs| {
+                    let inner_end_file_task = inner_end_file_task.clone();
+                    Box::pin(async move {
+                        println!("got an error");
+                        inner_end_file_task.cancel();
+                        Ok(())
+                    })
+                });
             loop {
                 tokio::select! {
                     Ok(bytes) = raw_rx.recv_async() => {
@@ -141,6 +152,32 @@ impl FileSystemHandler {
 
         let _ = RemoteFileSystem::execute_operation_bidirectionally(&mut file_tx, 0).await;
     }
+
+    // pub async fn download(
+    //     &self,
+    //     location: String,
+    //     feedback_stream: Option<flume::Receiver<Vec<u8>>>,
+    // ) {
+    //     self.set_location(location).await;
+    //     let mut file_tx = self.arc_file_tx.lock().await.clone();
+    //     let _ = file_tx.set_operation(Operation::Drain);
+
+    //     let _ = RemoteFileSystem::execute_operation_bidirectionally(&mut file_tx, 0).await;
+
+    //     let mut stream = feedback_stream.map(|rx| rx.into_stream());
+
+    //     let res = RemoteFileSystem::receive_operation_bidirectionally::<WithDelims>(
+    //         &mut file_tx,
+    //         0,
+    //         stream
+    //             .as_mut()
+    //             .map(|s| s as &mut (dyn Stream<Item = Vec<u8>> + Unpin + Send)),
+    //     )
+    //     .await;
+
+    //     println!("{:#?}", res);
+    // }
+
     pub async fn set_location(&self, location: String){
         let mut file_tx = self.arc_file_tx.lock().await.clone();
         if let Some(sandboxed_location) = &self.sandboxed_location {
