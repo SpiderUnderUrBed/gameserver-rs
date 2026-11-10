@@ -87,7 +87,6 @@ if [ "$MODE_SELECTION" = "2" ]; then
     exit 0
 fi
 
-# Ask what to install
 echo "What would you like to install?"
 echo "  1) Panel"
 echo "  2) Node"
@@ -102,10 +101,17 @@ case "$INSTALL_SELECTION" in
     *) echo "Invalid selection"; exit 1 ;;
 esac
 
-# Ask for service names
+INSTALL_UI=false
+
 if $INSTALL_PANEL; then
     read -rp "Panel service name [$MAIN_SERVICE_NAME]: " MAIN_SERVICE_NAME_INPUT
     MAIN_SERVICE_NAME="${MAIN_SERVICE_NAME_INPUT:-$MAIN_SERVICE_NAME}"
+
+    read -rp "Install the UI (build the frontend)? [Y/n]: " INSTALL_UI_INPUT
+    INSTALL_UI_INPUT="${INSTALL_UI_INPUT:-Y}"
+    if [[ "$INSTALL_UI_INPUT" =~ ^[Yy]$ ]]; then
+        INSTALL_UI=true
+    fi
 fi
 
 if $INSTALL_NODE; then
@@ -162,10 +168,10 @@ ensure_cargo
 rustup override set "$REQUIRED_RUST_VERSION"
 
 if $INSTALL_PANEL; then
-    if [ -d "src/frontend" ]; then
+    if $INSTALL_UI && [ -d "src/frontend" ]; then
         cd src/frontend
         if ! command -v npm &> /dev/null; then
-            curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+            curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
             sudo apt-get install -y nodejs
         fi
         npm install
