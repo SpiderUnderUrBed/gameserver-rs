@@ -187,7 +187,7 @@
 										</button>
 									</div>
 								</td>
-								<td>{item.is_dir}</td>
+								<td>{ item.is_dir ? "Directory" : "File" }</td>
 								<td>
 									{#if item.is_dir}
 										<button
