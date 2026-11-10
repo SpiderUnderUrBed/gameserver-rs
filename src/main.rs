@@ -1155,6 +1155,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/getstatus", post(get_status))
         .route("/api/getfiles", post(get_files))
         .route("/api/getfilescontent", post(get_files_content))
+        .route("/api/patchfilecontent", post(patch_files_content))
         .route("/api/buttonreset", post(button_reset))
         .route("/api/editbuttons", post(edit_buttons))
         .route("/api/addnode", post(add_node))
@@ -3879,9 +3880,21 @@ async fn handle_static_request(
 #[derive(Deserialize, Serialize)]
 struct FileChunk {
     file_name: String,
-    file_offset: u64,
+    file_chunk_offset: u64,
     file_chunk_size: u64,
 }
+
+#[allow(unused)]
+async fn patch_files_content(
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
+    auth_session: AuthSession,
+    headers: HeaderMap,
+    Json(request): Json<FileChunk>,
+) -> impl IntoResponse {
+    
+    StatusCode::SERVICE_UNAVAILABLE.into_response()
+}
+
 
 // This will get the content of a file from gameserver, it will use the custom Tcp filesystem I created
 // it will ensure it is not a path escape
@@ -3892,76 +3905,71 @@ async fn get_files_content(
     headers: HeaderMap,
     Json(request): Json<FileChunk>,
 ) -> impl IntoResponse {
-    StatusCode::SERVICE_UNAVAILABLE.into_response()
+    let state = arc_state.load();
+
+    let authorized = authorize(
+        &state,
+        auth_session,
+        headers.clone(),
+        vec!["manager".to_string()],
+    )
+    .await;
+    if !authorized {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let file_path = request.file_name;
+
+    let mut state: AppState = (*arc_state.load_full()).clone();
+    state.filesystem.create_state(0, "/".to_string()).await;
+    state.filesystem.set_sandboxed_location("server/".to_string());
+    arc_state.store(Arc::new(state));
+    let state = arc_state.load();
+
+    let mut fs = state.filesystem.clone();
+    let file = fs.try_create_request_in_directory(file_path.clone()).await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let inner_arc_state = Arc::clone(&arc_state);
+    let task_end = Arc::new(CancellationToken::new());
+
+    let starting_cursor_position = request.file_chunk_offset;
+    let ending_cursor_position = request.file_chunk_size;
+
+    let mut request = FileDownloadRequest::new(file, task_end.clone());
+
+    let raw_stream = request.stream_transport(inner_arc_state).await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    let file_bytes = Arc::new(Mutex::new(Vec::new()));
+
+    let inner_file_bytes = file_bytes.clone();
+    let inner_task_end = task_end.clone();
+    tokio::spawn(async move {
+        inner_file_bytes.lock().await.extend(FileSystemHandler::load_file_content(raw_stream, Direction::Server,  inner_task_end)
+            .await
+        );
+    });
+
+    let mut filesystem = state.filesystem.clone();
+    let inner_file_path = file_path.clone();
+
+
+    tokio::spawn(async move {
+        let _ = filesystem.set_cursor(Some(starting_cursor_position), Some(ending_cursor_position), 0);
+        let _ = filesystem.download(inner_file_path).await;
+        println!("done with download");
+    });
+
+    task_end.cancelled().await;
+
+    if let Ok(file_content) = String::from_utf8(file_bytes.lock().await.to_vec()) {
+        Ok(Json(file_content).into_response())
+    } else {
+        Err(StatusCode::INTERNAL_SERVER_ERROR)
+    }
 }
 
-// then return the file content
-// async fn get_files_content(
-//     State(arc_state): State<Arc<ArcSwap<AppState>>>,
-//     auth_session: AuthSession,
-//     headers: HeaderMap,
-//     Json(request): Json<FileChunk>,
-// ) -> Result<impl IntoResponse, impl IntoResponse> {
-//     let mut state = arc_state.write().await;
-//     let authorized = authorize(&state, auth_session, headers, vec!["manager".to_string()]).await;
-//     if !authorized {
-//         return Err(StatusCode::UNAUTHORIZED.into_response());
-//     }
-
-//     let (tx, rx) = {
-//         // let state = arc_state.load();
-//         state.connection_handler.get_filesystem_stream()
-//         //(state.connection_handler.tx.clone(), state.connection_handler.tx.subscribe())
-//     };
-
-//     //let mut tcp_fs = TcpFs::new(tx, rx);
-//     //let base_path = RemoteFileSystem::new("server", Some(tcp_fs.clone()));
-
-//     let mut base_path = if state.filesystem.is_none() {
-//         let mut tcp_fs = TcpFs::new(tx, rx);
-//         &mut RemoteFileSystem::new("server", Some(tcp_fs.clone()))
-//     } else {
-//         state.filesystem.as_mut().unwrap()
-//     };
-//     //let tcp_fs = base_path.in
-
-//     let user_input = request.file_name.trim_start_matches('/');
-
-//     println!("trying to canonolize");
-//     let requested_path = base_path
-//         .join(user_input)
-//         .canonicalize()
-//         .await
-//         .map_err(|e| {
-//             eprintln!("Invalid path: {}", e);
-//             (StatusCode::BAD_REQUEST, "Invalid path").into_response()
-//         })?;
-
-//     println!("going to get the path structure");
-//     let (dir_path, file_name) = match (requested_path.parent(), requested_path.file_name()) {
-//         (Some(dir), Some(file)) => (dir.to_path_buf(), file.to_os_string()),
-//         _ => {
-//             eprintln!("Could not split path into directory and file");
-//             return Err((StatusCode::BAD_REQUEST, "Invalid path structure").into_response());
-//         }
-//     };
-
-//     println!("resolving path");
-//     let full_path = dir_path.join(&file_name);
-//     let file_chunk = FileChunk {
-//         file_name: full_path.to_string_lossy().to_string(),
-//         file_chunk_offet: request.file_chunk_offet,
-//         file_chunk_size: request.file_chunk_size,
-//     };
-
-//     let content = base_path
-//         .get_files_content(file_chunk)
-//         .await
-//         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read file").into_response())?;
-
-//     println!("doing something with file content");
-//     Ok(Json(content))
-// }
 
 // Gets a list of files and return to to things like the filebrowser
 #[allow(unused)]

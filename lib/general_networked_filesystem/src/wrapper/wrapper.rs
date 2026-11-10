@@ -145,6 +145,93 @@ impl FileSystemHandler {
         fs_out_rx
     }
 
+    pub async fn set_cursor(
+        &mut self, 
+        starting_cursor_position: Option<u64>,
+        ending_cursor_position: Option<u64>,
+        state_id: u8
+    ) -> Result<(), StreamableFileSystemErrors> {
+        let mut file_tx = self.arc_file_tx.lock().await.clone();
+        let _ = file_tx.set_operation(Operation::Cursor);
+        if let Some(local_state) = file_tx.get_state_mut(0){
+            local_state.starting_cursor_position = starting_cursor_position;
+            local_state.ending_cursor_position = ending_cursor_position;
+        } else {
+            return Err(StreamableFileSystemErrors::IncorrectStateAsked);
+        }
+        file_tx.execute_operation(state_id).await?;
+        Ok(())
+    }
+
+    pub async fn load_file_content(
+        raw_rx: flume::Receiver<Vec<u8>>,
+        direction: Direction,
+        end_file_task: Arc<CancellationToken>,
+    ) -> Vec<u8> {
+        let file_bytes: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let task_bytes = file_bytes.clone();
+        let task_end = end_file_task.clone();
+
+        let handle = tokio::spawn(async move {
+            let (fs_in_tx, fs_in_rx) = flume::unbounded();
+            let mut handler =
+                FileSystemHandler::create_file_handler(direction, fs_in_tx.clone(), fs_in_rx.clone());
+            let mut chain_builder = ChainBuilder::new(&mut handler);
+
+            let bytes_for_file = task_bytes.clone();
+            let mut chain = chain_builder.chain::<FileFrame, _, _>(move |_, f, _fs| {
+                let bytes = bytes_for_file.clone();
+                Box::pin(async move {
+                    bytes.lock().await.push(f.chunks);
+                    Ok(())
+                })
+            });
+
+            let end_for_eof = task_end.clone();
+            let mut chain = chain.chain::<EofFrame, _, _>(move |_, _, _fs| {
+                let end = end_for_eof.clone();
+                Box::pin(async move {
+                    end.cancel();
+                    Ok(())
+                })
+            });
+
+            let end_for_err = task_end.clone();
+            let mut chain = chain.chain::<ErrorFrame, _, _>(move |_, _, _fs| {
+                let end = end_for_err.clone();
+                Box::pin(async move {
+                    println!("got an error");
+                    end.cancel();
+                    Ok(())
+                })
+            });
+
+            loop {
+                tokio::select! {
+                    Ok(bytes) = raw_rx.recv_async() => {
+                        let mut remainder = 0;
+                        tokio::select! {
+                            _ = chain.decode_bytes(0, bytes, &mut remainder) => {},
+                            _ = task_end.cancelled() => break,
+                        }
+                    }
+                    _ = task_end.cancelled() => break,
+                }
+            }
+        });
+
+        let _ = handle.await;
+
+        let guard = file_bytes.lock().await;
+        let bytes = guard.iter().flatten().copied().collect();
+        bytes
+    }
+
+    // pub async fn load_file(&mut self, _state_id: u8, file: impl DynamicFileService<flume::Receiver<Vec<u8>>>) -> Vec<u8> {    
+    //     vec![]
+    // }
+
     pub async fn download(&self, location: String){
         self.set_location(location).await;
         let mut file_tx = self.arc_file_tx.lock().await.clone();

@@ -73,11 +73,13 @@ export class FileBrowserStore {
 				.post('/api/getfilescontent', {
 					json: {
 						file_name: fullFileName,
-						file_chunk_offet: '0',
-						file_chunk_size: '1000000'
+						file_chunk_offset: 0,
+						file_chunk_size: 1000000
 					}
 				})
 				.json<any>();
+
+			console.log(response);
 
 			const extractMessage = (obj: any): string => {
 				if (!obj) return '';
