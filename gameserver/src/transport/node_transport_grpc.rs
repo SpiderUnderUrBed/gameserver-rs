@@ -5,6 +5,7 @@ use general_networked_filesystem::core::DirectoryResponse;
 use general_networked_filesystem::core::FileOperations;
 use general_networked_filesystem::core::FileRequestExecutable;
 use general_networked_filesystem::core::SizeResponse;
+use std::fs::OpenOptions;
 use std::fs::File;
 use std::io::BufReader;
 use std::io::Read;
@@ -420,39 +421,41 @@ impl FilesystemManage for Connection {
     ) -> std::result::Result<tonic::Response<proto::UploadResponse>, tonic::Status> {
         let mut inbound = request.into_inner();
         let mut location = String::new();
-        let mut file_handle_option = None;
+        let mut file_handle: Option<File> = None;
+
         while let Some(chunk_res) = inbound.next().await {
-            if let Ok(chunk) = chunk_res {
-                if location != chunk.location {
-                    location = chunk.location;
-                    if let Ok(file) = File::open(&location) {
-                        file_handle_option = Some(file);
-                    } else {
-                        match File::create(&location) {
-                            Ok(file) => file_handle_option = Some(file),
-                            Err(e) => {
-                                return Err(tonic::Status::internal(format!(
-                                    "failed to create file at location with: {}",
-                                    e
-                                )))
-                            }
-                        };
-                    }
-                }
-                if let Some(ref mut file_handle) = file_handle_option {
-                    file_handle.write_all(&chunk.bytes).map_err(|e| {
+            let chunk = chunk_res
+                .map_err(|e| tonic::Status::internal(format!("Error streaming the file chunks: {}", e)))?;
+
+            if file_handle.is_none() || location != chunk.location {
+                location = chunk.location.clone();
+                let file = OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true) 
+                    .open(&location)
+                    .map_err(|e| {
                         tonic::Status::internal(format!(
-                            "failed to write file at location with: {}",
+                            "failed to open file at location with: {}",
                             e
                         ))
                     })?;
-                    let _ = file_handle.flush();
-                    let _ = file_handle.sync_all();
-                }
-            } else {
-                return Err(tonic::Status::internal("Error streaming the file chunks"));
+                file_handle = Some(file);
+            }
+
+            if let Some(f) = file_handle.as_mut() {
+                f.write_all(&chunk.bytes).map_err(|e| {
+                    tonic::Status::internal(format!("failed to write file at location with: {}", e))
+                })?;
             }
         }
+
+        if let Some(f) = file_handle {
+            f.sync_all().map_err(|e| {
+                tonic::Status::internal(format!("failed to sync file: {}", e))
+            })?;
+        }
+
         Ok(UploadResponse {}.into())
     }
     async fn download(

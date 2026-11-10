@@ -13,7 +13,7 @@ use crate::{
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use futures_util::{Stream, StreamExt, stream};
-use general_networked_filesystem::core::LsRequest;
+use general_networked_filesystem::core::{FsItem, LsRequest};
 use general_networked_filesystem::core::DirectoryResponse;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::{Mutex, Notify, watch};
@@ -798,7 +798,31 @@ impl StreamTransportable for ServerStateRequest {
 impl NodeTransportable for LsRequest {
     type Output = DirectoryResponse;
     async fn node_transport(&self, state: &AppState) -> Result<DirectoryResponse, Box<dyn Error + Send + Sync>> {
-        Err("not implimented".into())
+        let connection = state.current_node.connection.clone();
+        let Some(connection_handler) =  connection else {
+            return Err("No connection working".into());
+        };
+        
+        let Some(mut clients) = connection_handler.clients.as_ref().clone() else {
+            return Err("no clients".into())
+        };
+        let ls_request = proto::LsRequest {
+            location: self.location.clone(),
+        };
+        match clients.filesystem_client.ls(ls_request).await {
+            Ok(dir_contents) => {
+                Ok(DirectoryResponse {
+                    id: 0,
+                    directory: dir_contents.get_ref().file_item.iter().map(|req| FsItem {
+                        name: req.name.clone(),
+                        is_dir: req.is_dir,
+                    }).collect()
+                })
+            },
+            Err(e) => {
+                return Err(e.into())
+            },
+        }
     }
 }
 
@@ -861,12 +885,9 @@ impl StreamTransportable for FileUploadRequest {
 }
 
 impl FileUploadRequest {
-    pub fn new(location: String) -> FileUploadRequest {
+    pub fn new(file: general_networked_filesystem::wrapper::FileRequest) -> FileUploadRequest {
         FileUploadRequest {
-            file: RemoteFile {
-                location,
-                stream: None
-            }
+            file
         }
     }
 }
@@ -889,6 +910,7 @@ impl StreamTransportable for FileDownloadRequest {
         let (fs_tx, fs_rx) = tokio::sync::mpsc::channel(32);
 
         let location = self.file.location.clone();
+        let inner_task = self.task_end.clone();
         tokio::spawn(async move {
             let request = DownloadRequest {
                 location,
@@ -898,6 +920,7 @@ impl StreamTransportable for FileDownloadRequest {
                     while let Some(Ok(chunk)) = stream.get_mut().next().await {
                         let _ = fs_tx.send(chunk.bytes).await;
                     }
+                    inner_task.cancel();
                 },
                 Err(e) => {
                     println!("{:#?}", e);
@@ -909,12 +932,9 @@ impl StreamTransportable for FileDownloadRequest {
 }
 
 impl FileDownloadRequest {
-    pub fn new(location: String, task_end: Arc<CancellationToken>) -> FileDownloadRequest {
+    pub fn new(file: general_networked_filesystem::wrapper::FileRequest, task_end: Arc<CancellationToken>) -> FileDownloadRequest {
         FileDownloadRequest {
-            file: RemoteFile {
-                location,
-                stream: None
-            },
+            file,
             task_end,
         }
     }

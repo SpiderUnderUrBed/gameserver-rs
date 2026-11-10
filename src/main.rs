@@ -1651,7 +1651,7 @@ async fn upload(
                 let inner_arc_state = Arc::clone(&arc_state);
                 let inner_filesystem = filesystem.clone();
                 tokio::spawn(async move {
-                    let request_result = inner_filesystem.try_create_request_in_directory(file_path)
+                    let request_result = inner_filesystem.try_create_request_in_directory(file_path, None, None)
                         .await
                         .map(|v| FileUploadRequest::new(v));
                     if let Ok(mut request) = request_result {
@@ -1709,7 +1709,7 @@ pub async fn stream_file_download(
     let state = arc_state.load();
 
     let mut fs = state.filesystem.clone();
-    let file = fs.try_create_request_in_directory(file_path.clone()).await
+    let file = fs.try_create_request_in_directory(file_path.clone(), None, None).await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let inner_arc_state = Arc::clone(&arc_state);
@@ -3880,8 +3880,8 @@ async fn handle_static_request(
 #[derive(Deserialize, Serialize)]
 struct FileChunk {
     file_name: String,
-    file_chunk_offset: u64,
-    file_chunk_size: u64,
+    file_chunk_offset: Option<u64>,
+    file_chunk_size: Option<u64>,
 }
 
 #[allow(unused)]
@@ -3927,7 +3927,7 @@ async fn get_files_content(
     let state = arc_state.load();
 
     let mut fs = state.filesystem.clone();
-    let file = fs.try_create_request_in_directory(file_path.clone()).await
+    let file = fs.try_create_request_in_directory(file_path.clone(), request.file_chunk_offset, request.file_chunk_size).await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let inner_arc_state = Arc::clone(&arc_state);
@@ -3956,7 +3956,7 @@ async fn get_files_content(
 
 
     tokio::spawn(async move {
-        let _ = filesystem.set_cursor(Some(starting_cursor_position), Some(ending_cursor_position), 0);
+        let _ = filesystem.set_cursor(0, starting_cursor_position, ending_cursor_position);
         let _ = filesystem.download(inner_file_path).await;
         println!("done with download");
     });

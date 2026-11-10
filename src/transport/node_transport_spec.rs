@@ -76,7 +76,7 @@ pub struct RemoteFile {
 }
 
 pub struct FileUploadRequest {
-    pub(crate) file: RemoteFile,
+    pub(crate) file: general_networked_filesystem::wrapper::FileRequest,
 }
 
 // impl FileUploadRequest {
@@ -90,7 +90,7 @@ pub struct FileUploadRequest {
 // }
 
 pub struct FileDownloadRequest {
-    pub(crate) file: RemoteFile,
+    pub(crate) file: general_networked_filesystem::wrapper::FileRequest,
     pub(crate) task_end: Arc<CancellationToken>
 }
 

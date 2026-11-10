@@ -20,6 +20,14 @@ pub struct FileSystemHandler {
     operations: FileOperations,
     sandboxed_location: Option<String>
 }
+
+pub struct FileRequest {
+    pub location: String,
+    pub stream: flume::Receiver<Vec<u8>>,
+    pub starting_cursor_position: Option<u64>,
+    pub ending_cursor_position: Option<u64>
+}
+
 impl FileSystemHandler {
     pub fn new(
         fs_tx: flume::Sender<Vec<u8>>,
@@ -51,13 +59,27 @@ impl FileSystemHandler {
     // or do some sort of path validation internally
     // consider a watch channel with location and a rx channel which 
     // checks for a path confirmation from the server after cannonolizing
-    pub async fn try_create_request_in_directory(&self, location: String) -> Result<(String, flume::Receiver<Vec<u8>>), FilesystemErrors>{
+    pub async fn try_create_request_in_directory(&self, location: String, starting_cursor_position: Option<u64>, ending_cursor_position: Option<u64>) -> Result<FileRequest, FilesystemErrors>{
         let mut file_tx = self.arc_file_tx.lock().await.clone();
         if let Some(sandboxed_location) = &self.sandboxed_location {
             let final_location = format!("{}{}", sandboxed_location, location);
-            Ok((final_location, file_tx.inner_mut().rx.clone()))
+            Ok(
+                FileRequest {
+                    location: final_location, 
+                    stream: file_tx.inner_mut().rx.clone(),
+                    starting_cursor_position,
+                    ending_cursor_position
+                }
+            )
         } else {
-            Ok((location, file_tx.inner_mut().rx.clone()))
+            Ok(
+                FileRequest {
+                    location, 
+                    stream: file_tx.inner_mut().rx.clone(),
+                    starting_cursor_position,
+                    ending_cursor_position
+                }
+            )
         }
     }
 
@@ -147,9 +169,9 @@ impl FileSystemHandler {
 
     pub async fn set_cursor(
         &mut self, 
+        state_id: u8,
         starting_cursor_position: Option<u64>,
-        ending_cursor_position: Option<u64>,
-        state_id: u8
+        ending_cursor_position: Option<u64>
     ) -> Result<(), StreamableFileSystemErrors> {
         let mut file_tx = self.arc_file_tx.lock().await.clone();
         let _ = file_tx.set_operation(Operation::Cursor);

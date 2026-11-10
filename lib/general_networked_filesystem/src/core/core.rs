@@ -87,7 +87,7 @@ pub trait FileResponse {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct DirectoryResponse {
-    id: u8,
+    pub id: u8,
     pub directory: Vec<FsItem>,
 }
 #[typetag::serde]

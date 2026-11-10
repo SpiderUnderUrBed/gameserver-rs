@@ -1162,11 +1162,11 @@ impl Drop for BytesFilterMethodGuard {
 }
 
 impl FileUploadRequest {
-    pub fn new(request: (String, flume::Receiver<Vec<u8>>)) -> FileUploadRequest {
+    pub fn new(request: general_networked_filesystem::wrapper::FileRequest) -> FileUploadRequest {
         FileUploadRequest {
             file: RemoteFile {
-                location: request.0,
-                stream: Some(request.1)
+                location: request.location,
+                stream: Some(request.stream)
             }
         }
     }
@@ -1309,11 +1309,11 @@ impl StreamTransportable for FileDownloadRequest {
 }
 
 impl FileDownloadRequest {
-    pub fn new(file: (String, flume::Receiver<Vec<u8>>), task_end: Arc<CancellationToken>) -> FileDownloadRequest {
+    pub fn new(file: general_networked_filesystem::wrapper::FileRequest, task_end: Arc<CancellationToken>) -> FileDownloadRequest {
         FileDownloadRequest {
             file: RemoteFile {
-                location: file.0,
-                stream: Some(file.1),
+                location: file.location,
+                stream: Some(file.stream),
             },
             task_end,
         }

@@ -30,6 +30,13 @@ impl<T> IntoStream<T> for Receiver<T> {
     }
 }
 
+pub struct FileRequest {
+    pub location: String,
+    pub stream: Option<flume::Receiver<Vec<u8>>>,
+    pub starting_cursor_position: Option<u64>,
+    pub ending_cursor_position: Option<u64>
+}
+
 #[derive(Clone)]
 pub struct FileSystemHandler {
     eof_task: Arc<Notify>,
@@ -58,11 +65,25 @@ impl FileSystemHandler {
     // or do some sort of path validation internally
     // consider a watch channel with location and a rx channel which 
     // checks for a path confirmation from the server after cannonolizing
-    pub async fn try_create_request_in_directory(&self, location: String) -> Result<String, FilesystemErrors>{
+    pub async fn try_create_request_in_directory(&self, location: String, starting_cursor_position: Option<u64>, ending_cursor_position: Option<u64>) -> Result<FileRequest, FilesystemErrors>{
         if let Some(sandboxed_location) = &self.sandboxed_location { 
-            Ok(format!("{}{}", sandboxed_location, location))
+            Ok(
+                FileRequest {
+                    location: format!("{}{}", sandboxed_location, location),
+                    stream: None,
+                    starting_cursor_position,
+                    ending_cursor_position,
+                }
+            )
         } else {
-            Ok(location)
+            Ok(
+                FileRequest {
+                    location,
+                    stream: None,
+                    starting_cursor_position,
+                    ending_cursor_position,
+                }
+            )
         }
     }
     pub async fn create_basic_file_stream(raw_rx: mpsc::Receiver<Vec<u8>>, _direction: Direction, _end_file_task: Arc<CancellationToken>) -> mpsc::Receiver<Vec<u8>> {
@@ -103,6 +124,35 @@ impl FileSystemHandler {
         self.eof_task.notify_one();
     }
     pub async fn set_location(&self, _location: String){
+    }
+    pub async fn set_cursor(
+        &mut self, 
+        _state_id: u8,
+        _starting_cursor_position: Option<u64>,
+        _ending_cursor_position: Option<u64>
+    ) -> Result<(), StreamableFileSystemErrors> {
+        Ok(())
+    }
+    pub async fn load_file_content(
+        mut raw_rx: mpsc::Receiver<Vec<u8>>,
+        _direction: Direction,
+        end_file_task: Arc<CancellationToken>,
+    ) -> Vec<u8> {
+        let mut file_bytes = Vec::new();
+        loop {
+            tokio::select! {
+                bytes_res = raw_rx.recv() => {
+                    if let Some(bytes) = bytes_res {
+                        file_bytes.extend(bytes);
+                    } else {
+                        break file_bytes;
+                    }
+                }
+                _ = end_file_task.cancelled() => {
+                    break file_bytes;
+                }
+            }
+        }
     }
     pub async fn send_flume_file(
         &mut self,
