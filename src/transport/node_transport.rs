@@ -1162,12 +1162,9 @@ impl Drop for BytesFilterMethodGuard {
 }
 
 impl FileUploadRequest {
-    pub fn new(request: general_networked_filesystem::wrapper::FileRequest) -> FileUploadRequest {
+    pub fn new(file: general_networked_filesystem::wrapper::FileRequest) -> FileUploadRequest {
         FileUploadRequest {
-            file: RemoteFile {
-                location: request.location,
-                stream: Some(request.stream)
-            }
+            file
         }
     }
 }
@@ -1198,7 +1195,7 @@ impl StreamTransportable for FileUploadRequest {
         
         let task_end = Arc::new(CancellationToken::new());
 
-        let file_stream = self.file.stream.as_ref().unwrap().clone();
+        let file_stream = self.file.stream.clone();
         let inner_task_end = task_end.clone();
         tokio::spawn(async move {
             let priority_handle = connection_handler.current_active_priority.clone();
@@ -1268,7 +1265,7 @@ impl StreamTransportable for FileDownloadRequest {
             inner_task_end.cancelled().await;
         });
 
-        let stream = self.file.stream.as_ref().unwrap().clone();
+        let stream = self.file.stream.clone();
         let inner_arc_state = arc_state.clone();
         tokio::spawn(async move {
             while let Ok(bytes) = stream.recv_async().await {
@@ -1311,11 +1308,8 @@ impl StreamTransportable for FileDownloadRequest {
 impl FileDownloadRequest {
     pub fn new(file: general_networked_filesystem::wrapper::FileRequest, task_end: Arc<CancellationToken>) -> FileDownloadRequest {
         FileDownloadRequest {
-            file: RemoteFile {
-                location: file.location,
-                stream: Some(file.stream),
-            },
-            task_end,
+            file,
+            task_end
         }
     }
 }
