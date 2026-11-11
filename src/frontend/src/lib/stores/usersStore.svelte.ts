@@ -10,6 +10,20 @@ export interface User {
 	user_perms: UserPerm[];
 }
 
+export interface UserSettings {
+	enable_stats_on_homepage: boolean;
+	enable_nodes_on_homepage: boolean;
+	enable_console_entry_on: string;
+	show_server_console_running_dialog: string;
+}
+
+export const defaultUserSettings = (): UserSettings => ({
+	enable_stats_on_homepage: false,
+	enable_nodes_on_homepage: false,
+	enable_console_entry_on: 'top',
+	show_server_console_running_dialog: 'all'
+});
+
 export class UserStore {
 	public users = $state<User[]>([]);
 	public loading = $state(false);
@@ -35,12 +49,7 @@ export class UserStore {
 		this.error = null;
 		try {
 			const payload = {
-				element: {
-					kind: 'User',
-					data: { password, user: username, user_perms }
-				},
-				jwt: '',
-				require_auth: true
+				password, user: username, user_perms
 			};
 			await httpClient.post('/api/createuser', { json: payload });
 			await this.fetchUsers();
@@ -50,13 +59,23 @@ export class UserStore {
 		}
 	}
 
-	public async editUser(username: string, password?: string, user_perms?: UserPerm[]) {
+    // pub enable_stats_on_homepage: bool,
+    // pub enable_nodes_on_homepage: bool,
+    // pub enable_console_entry_on: String,
+    // pub show_server_console_running_dialog: String 
+
+	public async editUser(username: string, password?: string, user_perms?: UserPerm[], settings?: UserSettings) {
 		this.error = null;
 		try {
 			const payload = {
 				element: {
 					kind: 'User',
-					data: { password: password || '', user: username, user_perms: user_perms || [] }
+					data: { 
+						password: password || '', 
+						user: username, 
+						user_perms: user_perms || [], 
+						settings: settings ||  defaultUserSettings()
+					}
 				},
 				jwt: '',
 				require_auth: true

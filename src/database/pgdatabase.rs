@@ -4,7 +4,8 @@ use sqlx::{Pool, Postgres as SqlxPostgres};
 
 use crate::StatusCode;
 use std::error::Error;
-pub mod databasespec;
+
+pub use crate::database::databasespec;
 
 use crate::database::database::databasespec::{ModifyElementData, Element, User, UserDatabase, SettingsDatabase, 
     ButtonsDatabase, ServerDatabase, NodesDatabase, IntergrationsDatabase, Settings, Intergration, CommonIntergrations, Button, Server, Node, DatabaseError
@@ -58,8 +59,12 @@ impl Database {
             CREATE TABLE IF NOT EXISTS users (
                 username      VARCHAR PRIMARY KEY,
                 password_hash TEXT,
-                authcode      TEXT DEFAULT '',
                 user_perms    TEXT[] NOT NULL DEFAULT '{}',
+                user_type     TEXT,
+                enable_stats_on_homepage    BOOLEAN,
+                enable_nodes_on_homepage    BOOLEAN,
+                enable_console_entry_on     TEXT,
+                show_server_console_running_dialog  TEXT, 
                 created_at    TIMESTAMPTZ DEFAULT now(),
                 updated_at    TIMESTAMPTZ DEFAULT now()
             );
@@ -186,14 +191,18 @@ impl UserDatabase for Database {
     }
     
     async fn edit_user_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
-        if let Element::User { password, user, user_perms } = &element.element {
+        if let Element::User { password, user, user_perms, settings } = &element.element {
             if password.is_empty() {
                 match sqlx::query(
                     r#"
                     UPDATE users
                     SET user_perms = $1,
+                        enable_stats_on_homepage = $2,
+                        enable_nodes_on_homepage = $3,
+                        enable_console_entry_on = $4,
+                        show_server_console_running_dialog = $5,
                         updated_at = NOW()
-                    WHERE username = $2
+                    WHERE username = $6
                     "#
                 )
                 .bind(
@@ -202,6 +211,10 @@ impl UserDatabase for Database {
                         .map(|p| p.to_string())
                         .collect::<Vec<String>>()
                 )
+                .bind(settings.enable_stats_on_homepage)
+                .bind(settings.enable_nodes_on_homepage)
+                .bind(settings.enable_console_entry_on.clone())
+                .bind(settings.show_server_console_running_dialog.clone())
                 .bind(&user)
                 .execute(&self.connection)
                 .await {
@@ -250,37 +263,25 @@ impl UserDatabase for Database {
         }
     }
 
-    async fn create_user_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
-        if let Element::User { password, user, user_perms } = element.element {
-            let already_exists = self.get_user_from_database(&user).await?;
-            if already_exists.is_some() {
-                return Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)));
-            }
-            if password.is_empty(){
-                return Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)));
-            }
+    async fn create_user_in_db(&self, user: User) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+        let _final_user = sqlx::query_as::<_, User>("INSERT INTO users (username, password_hash, user_perms, user_type, enable_stats_on_homepage, enable_nodes_on_homepage, enable_console_entry_on, show_server_console_running_dialog) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *")
+            .bind(user.username)
+            .bind(user.password_hash)
+            .bind(
+                user.user_perms
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<String>>()
+            )
+            .bind(user.user_type)
+            .bind(user.settings.enable_stats_on_homepage)
+            .bind(user.settings.enable_nodes_on_homepage)
+            .bind(user.settings.enable_console_entry_on)
+            .bind(user.settings.show_server_console_running_dialog)
+            .fetch_one(&self.connection)
+            .await?;
 
-            let hashed = hash(&password, DEFAULT_COST).map_err(|e| {
-                sqlx::Error::Protocol(e.to_string().into())
-            })?;
-
-            let _final_user = sqlx::query_as::<_, User>("INSERT INTO users (username, password_hash, authcode, user_perms) VALUES ($1, $2, $3, $4) RETURNING *")
-                .bind(user)
-                .bind(hashed)
-                .bind("0")
-                .bind(
-                    user_perms
-                        .iter()
-                        .map(|p| p.to_string())
-                        .collect::<Vec<String>>()
-                )
-                .fetch_one(&self.connection)
-                .await?;
-
-            Ok(StatusCode::CREATED)
-        } else {
-            Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
-        }
+        Ok(StatusCode::CREATED)
     }
 
     async fn get_user_from_database(&self, username: &str) -> Result<Option<User>, Box<dyn Error + Send + Sync>> { 
@@ -371,7 +372,7 @@ impl NodesDatabase for Database {
                 r#"
                 UPDATE nodes 
                 SET ip = $1, nodetype = $2, node_enabled = $3, servers_last_modified = $4, updated_at = NOW()
-                WHERE nodename = $4
+                WHERE nodename = $5
                 "#
             )
             .bind(&node_data.ip)

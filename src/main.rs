@@ -14,6 +14,7 @@ use std::{net::SocketAddr, path::Path, sync::Arc};
 
 
 use crate::docker::BuildImageRequest;
+use crate::frontend_types::FrontendUserCreateRequest;
 use crate::frontend_types::{FrontendChangeNodeRequest, FrontendNodeCreateRequest};
 // use crate::filesystem::{execute_file_operation, FileOperations, TcpFileStream};
 // use crate::filesystem::{FsType, send_multipart_over_broadcast};
@@ -114,7 +115,7 @@ use database::database::JsonBackend;
 
 // Both database files and any more should have these structs
 use database::database::{databasespec::{RetrieveElement, ModifyElementData, User, Node, DatabaseError, Element, UserPerm, NodeTimestamps,
-    NodesDatabase, UserDatabase, SettingsDatabase, ServerDatabase, ButtonsDatabase,IntergrationsDatabase, Button, Server, NodeEnabled, NodeType, Intergration, K8sType, Settings, Filters, ServerMetadata, K8sNode,
+    NodesDatabase, UserDatabase, SettingsDatabase, ServerDatabase, ButtonsDatabase,IntergrationsDatabase, Button, Server, NodeEnabled, NodeType, Intergration, K8sType, Settings, Filters, ServerMetadata, K8sNode, UserSettings, UserType,
     resolve_database_error_into_statuscode
 }, Database};
 
@@ -423,8 +424,9 @@ struct SrcAndDest {
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct OidcAdditionalClaims {
-    #[serde(default)]
     user_perms: Option<Vec<UserPerm>>,
+    user_settings: Option<UserSettings>,
+    persist: bool
 }
 
 impl axum_oidc::openidconnect::AdditionalClaims for OidcAdditionalClaims {}
@@ -654,26 +656,31 @@ where
         .or(default)
 }
 
-async fn ensure_admin_user(database: Database) {
+async fn ensure_admin_user(database: Database) -> Result<(), Box<dyn Error + Send + Sync>> {
     let enable_admin_user = std::env::var("ENABLE_ADMIN_USER").unwrap_or_default() == "true";
     let admin_user = std::env::var("ADMIN_USER").unwrap_or_default();
     let admin_password = std::env::var("ADMIN_PASSWORD").unwrap_or_default();
+
+    let password_hash = bcrypt::hash(admin_password, bcrypt::DEFAULT_COST)
+        .map_err(|_| "error creating password hash")?;
+
+    let user = User {
+        username: admin_user,
+        password_hash: Some(password_hash),
+        user_perms: vec![UserPerm {
+            perm: "admin".to_string(),
+            scope: "all".to_string(),
+        }],
+        user_type: UserType::Regular,
+        settings: UserSettings::default(),
+    };
+
     if enable_admin_user {
         let _ = database
-            .create_user_in_db(ModifyElementData {
-                element: Element::User {
-                    password: admin_password,
-                    user: admin_user,
-                    user_perms: vec![UserPerm {
-                        perm: "admin".to_string(),
-                        scope: "all".to_string(),
-                    }],
-                },
-                jwt: "0".to_string(),
-                require_auth: false,
-            })
-            .await;
+            .create_user_in_db(user)
+            .await?;
     }
+    Ok(())
 }
 async fn spawn_server_background_tasks(
     arc_state: Arc<ArcSwap<AppState>>,
@@ -898,32 +905,6 @@ async fn establish_connection(
     Ok(())
 }
 
-#[derive(Clone)]
-pub struct SessionMiddleware<S> {
-    service: S,
-    recorded_sessions: Vec<String>,
-    database: Database
-}
-impl <S> Service<Request<Body>> for SessionMiddleware<S> 
-where
-    S: Service<Request>,
-{
-    type Response = S::Response;
-    type Error = S::Error;
-    type Future = S::Future;
-
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.service.poll_ready(cx)
-    }
-
-    fn call(&mut self, request: Request<Body>) -> Self::Future {
-        if let Some(cookie) = request.headers().get("cookie") {
-            println!("{:#?}", cookie);
-        }
-
-        self.service.call(request)
-    }
-}
 
 // main function handles the initial connection
 // initilizing the database struct, getting and setting the base path as well as alot of defaults in AppState
@@ -1072,7 +1053,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (server_process_event_tx, _) = watch::channel(ServerCheckEvent::None); 
 
     // use everything so far to make the app state
-    let mut state: AppState = AppState {
+    let state: AppState = AppState {
         // tx: tx,
         // rx: rx,
         user_clients: Arc::new(DashMap::new()),
@@ -1104,13 +1085,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .allow_origin(CorsAny)
         .allow_methods([Method::GET, Method::POST])
         .allow_headers(CorsAny);
-
-    let inner_database = database.clone();
-    let session_middleware = layer_fn(move |service| SessionMiddleware {
-        service,
-        recorded_sessions: Vec::new(),
-        database: inner_database.clone(),
-    });
 
     let session_store = MemoryStore::default();
     // TODO:
@@ -1194,8 +1168,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 |req: Request<Body>, next: Next| async move { next.run(req).await },
             ))
             .layer(cors)
-            .layer(auth_layer)
-            .layer(session_middleware);
+            .layer(auth_layer);
 
         let routed = if let Some(oidc_layer) = maybe_oidc_layer {
             routed.layer(
@@ -1222,8 +1195,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 },
             ))
             .layer(cors)
-            .layer(auth_layer)
-            .layer(session_middleware);
+            .layer(auth_layer);
 
         let routed = if let Some(oidc_layer) = maybe_oidc_layer {
             routed.layer(
@@ -2506,17 +2478,17 @@ async fn get_oidc_layer() -> Result<
 async fn oidc_login_initiate(
     mut auth_session: AuthSession,
     claims: Option<OidcClaims<OidcAdditionalClaims>>,
+    State(arc_state): State<Arc<ArcSwap<AppState>>>,
 ) -> impl IntoResponse {
     if auth_session.user.is_some() {
         return Redirect::to("/").into_response();
     }
     if let Some(claims) = claims {
+        let state = arc_state.load();
+
         let mut decoded_user = String::new();
         let mut user_perms = Vec::new();
-
-        if let Some(user_perms_claim) = &claims.additional_claims().user_perms {
-            user_perms = user_perms_claim.to_vec();
-        }
+        let mut settings = UserSettings::default();
 
         if let Some(claim_name) = claims.name() {
             if let Some(local_claim_name) = claim_name.get(None) {
@@ -2524,18 +2496,41 @@ async fn oidc_login_initiate(
             } else {
                 //return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
+        } else if let Some(claim_name) = claims.email() {
+            decoded_user = claim_name.to_string();
         } else {
-            //return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-            if let Some(claim_name) = claims.email() {
-                decoded_user = claim_name.to_string();
-            }
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+
+        let Ok(user_option) = state.database.get_user_from_database("").await else {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        };
+        
+        if let Some(user_perms_claim) = &claims.additional_claims().user_perms {
+            user_perms = user_perms_claim.to_vec();
+        } else if let Some(ref user) = user_option {
+            user_perms = user.user_perms.clone();
+        }
+        if let Some(user_settings_claim) = &claims.additional_claims().user_settings {
+            settings = user_settings_claim.clone();
+        } else if let Some(user) = user_option {
+            settings = user.settings;
         }
 
         let user = User {
             username: decoded_user,
             password_hash: None,
-            user_perms,
+            user_perms, 
+            user_type: UserType::Odic, 
+            settings
         };
+
+        if claims.additional_claims().persist {
+            if let Err(_) = state.database.create_user_in_db(user.clone()).await {
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
+        }
+
         match auth_session.login(&user).await {
             Ok(_) => eprintln!("login succeeded"),
             Err(e) => {
@@ -3274,7 +3269,7 @@ async fn create_user(
     State(arc_state): State<Arc<ArcSwap<AppState>>>,
     auth_session: AuthSession,
     headers: HeaderMap,
-    Json(request): Json<ModifyElementData>,
+    Json(request): Json<FrontendUserCreateRequest>,
 ) -> impl IntoResponse {
     let state = arc_state.load();
 
@@ -3283,12 +3278,33 @@ async fn create_user(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
+    if request.password.is_empty() {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    if let Ok(user_option) = state.database.get_user_from_database(&request.user).await {
+        if user_option.is_some() {
+            return Err(StatusCode::INTERNAL_SERVER_ERROR); 
+        }
+    } else {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR); 
+    }
+
+    let password_hash = bcrypt::hash(request.password.clone(), bcrypt::DEFAULT_COST)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let user = User {
+        username: request.user,
+        password_hash: Some(password_hash),
+        user_perms: request.user_perms,
+        user_type: UserType::Regular,
+        settings: UserSettings::default(),
+    };
     let result = state
         .database
-        .create_user_in_db(request)
+        .create_user_in_db(user)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
-    result
+    Ok(result?)
 }
 // edits the user data in the db
 async fn edit_user(
@@ -3676,11 +3692,7 @@ impl AuthnBackend for Backend {
         &self,
         token: Self::Credentials,
     ) -> Result<Option<Self::User>, Self::Error> {
-        let user = resolve_jwt(&token).ok().map(|data| User {
-            username: data.claims.user,
-            password_hash: None,
-            user_perms: data.claims.user_perms,
-        });
+        let user = resolve_jwt(&token).ok().map(|data| User {username:data.claims.user,password_hash:None,user_perms:data.claims.user_perms, user_type: todo!(), settings: todo!() });
         Ok(user)
     }
 
@@ -3780,6 +3792,8 @@ async fn sign_in(
         username: user.username,
         password_hash: None,
         user_perms: user.user_perms,
+        user_type: user.user_type,
+        settings: user.settings
     };
 
     if let Err(e) = auth_session.login(&user).await {
@@ -4212,14 +4226,13 @@ mod tests {
                 let database: Database = create_db_for_tests().await.unwrap();
                 database.clear_db().await.expect("Failed to clear DB");
 
-                let user = ModifyElementData {
-                    element: Element::User {
-                        user: "kk".to_owned(),
-                        password: "ddd".to_owned(),
-                        user_perms: vec![],
-                    },
-                    require_auth: true,
-                    jwt: "".to_owned(),
+                let password_hash = bcrypt::hash("ddd".to_string(), bcrypt::DEFAULT_COST).expect("Error creating password hash");
+                let user = User { 
+                    username: "kk".to_string(), 
+                    password_hash: Some(password_hash), 
+                    user_perms: vec![],
+                    user_type: UserType::Regular, 
+                    settings: UserSettings::default() 
                 };
 
                 let _ = database.create_user_in_db(user).await.expect("Failed");
@@ -4237,17 +4250,16 @@ mod tests {
                 let database: Database = create_db_for_tests().await.unwrap();
                 database.clear_db().await.expect("Failed to clear DB");
 
-                let user = ModifyElementData {
-                    element: Element::User {
-                        user: "kk".to_owned(),
-                        password: "ddd".to_owned(),
-                        user_perms: vec![UserPerm {
+                let password_hash = bcrypt::hash("ddd".to_string(), bcrypt::DEFAULT_COST).expect("Error creating password hash");
+                let user = User { 
+                    username: "kk".to_string(), 
+                    password_hash: Some(password_hash), 
+                    user_perms: vec![UserPerm {
                             perm: "test".to_string(),
                             scope: "all".to_string(),
                         }],
-                    },
-                    require_auth: true,
-                    jwt: "".to_owned(),
+                    user_type: UserType::Regular, 
+                    settings: UserSettings::default() 
                 };
 
                 let _ = database.create_user_in_db(user).await;
@@ -4273,15 +4285,8 @@ mod tests {
                 let database: Database = create_db_for_tests().await.unwrap();
                 database.clear_db().await.expect("Failed to clear DB");
 
-                let user = ModifyElementData {
-                    element: Element::User {
-                        user: "kk".to_owned(),
-                        password: "ddd".to_owned(),
-                        user_perms: vec![],
-                    },
-                    require_auth: true,
-                    jwt: "".to_owned(),
-                };
+                let password_hash = bcrypt::hash("ddd".to_string(), bcrypt::DEFAULT_COST).expect("Error creating password hash");
+                let user = User { username: "kk".to_string(), password_hash: Some(password_hash), user_perms: vec![], user_type: UserType::Regular, settings: UserSettings::default() };
 
                 let create_user_result = database.create_user_in_db(user).await;
                 assert!(create_user_result.is_ok());
@@ -4293,25 +4298,10 @@ mod tests {
                 let database: Database = create_db_for_tests().await.unwrap();
                 database.clear_db().await.expect("Failed to clear DB");
 
-                let user_a = ModifyElementData {
-                    element: Element::User {
-                        user: "A".to_owned(),
-                        password: "test".to_owned(),
-                        user_perms: vec![],
-                    },
-                    require_auth: true,
-                    jwt: "".to_owned(),
-                };
+                let password_hash = bcrypt::hash("test".to_string(), bcrypt::DEFAULT_COST).expect("Error creating password hash");
 
-                let user_b = ModifyElementData {
-                    element: Element::User {
-                        user: "A".to_owned(),
-                        password: "test".to_owned(),
-                        user_perms: vec![],
-                    },
-                    require_auth: true,
-                    jwt: "".to_owned(),
-                };
+                let user_a = User { username: "A".to_string(), password_hash: Some(password_hash), user_perms: vec![], user_type: UserType::Regular, settings: UserSettings::default() };
+                let user_b = User { username: "A".to_string(), password_hash: Some(password_hash), user_perms: vec![], user_type: UserType::Regular, settings: UserSettings::default() };
 
                 let _ = database.create_user_in_db(user_a).await;
                 let result_b = database.create_user_in_db(user_b).await;

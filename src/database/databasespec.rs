@@ -52,6 +52,7 @@ pub enum Element {
         password: String,
         user: String,
         user_perms: Vec<UserPerm>,
+        settings: UserSettings,
     },
     Node(Node),
     Button(Button),
@@ -377,12 +378,43 @@ impl fmt::Display for UserPerm {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(any(feature = "full-stack", feature = "database"), derive(sqlx::FromRow))]
+pub struct UserSettings {
+    pub enable_stats_on_homepage: bool,
+    pub enable_nodes_on_homepage: bool,
+    pub enable_console_entry_on: String,
+    pub show_server_console_running_dialog: String 
+}
+impl Default for UserSettings {
+    fn default() -> Self {
+        Self { 
+            enable_stats_on_homepage: false, 
+            enable_nodes_on_homepage: false, 
+            enable_console_entry_on: "top".to_string(), 
+            show_server_console_running_dialog: "all".to_string()
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(any(feature = "full-stack", feature = "database"), derive(sqlx::Type))]
+#[cfg_attr(
+    any(feature = "full-stack", feature = "database"),
+    sqlx(type_name = "text", rename_all = "PascalCase")
+)]
+pub enum UserType {
+    Odic,
+    Regular
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct User {
     pub username: String,
     pub password_hash: Option<String>,
     pub user_perms: Vec<UserPerm>,
+    pub user_type: UserType,
+    pub settings: UserSettings
 }
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
@@ -405,7 +437,10 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for User {
             })
             .collect();
 
-        Ok(User { username, password_hash, user_perms })
+        let settings = <UserSettings as sqlx::FromRow<_>>::from_row(row)?;
+        let user_type: UserType = row.try_get("user_type")?;
+
+        Ok(User { username, password_hash, user_perms, settings, user_type })
     }
 }
 
@@ -529,7 +564,7 @@ pub trait UserDatabase {
     ) -> Result<Option<User>, Box<dyn Error + Send + Sync>>;
     async fn create_user_in_db(
         &self,
-        user: ModifyElementData,
+        user: User,
     ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
     async fn remove_user_in_db(
         &self,

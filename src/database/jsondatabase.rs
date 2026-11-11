@@ -8,8 +8,9 @@ use std::fs::File;
 use std::io::Write;
 use std::io::Read;
 
-pub mod databasespec;
+pub use crate::database::databasespec;
 
+use crate::database::backend::databasespec::UserSettings;
 use crate::database::database::databasespec::{ModifyElementData, Element, User, UserDatabase, SettingsDatabase, 
     ButtonsDatabase, ServerDatabase, NodesDatabase, IntergrationsDatabase, Settings, Intergration, CommonIntergrations, Button, Server, Node, DatabaseError, NodeType
 };
@@ -305,27 +306,24 @@ impl UserDatabase for Database {
     }
   
     
-    async fn create_user_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
-        if let Element::User { password, user, user_perms } = element.element {
-            let password_hash = bcrypt::hash(password.clone(), bcrypt::DEFAULT_COST);
-            let mut database = self.get_database().await?;
+    async fn create_user_in_db(&self, user: User) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+        let mut database = self.get_database().await?;
+
+        // if password.is_empty() || database.users.iter().any(|db_user| db_user.username == user){
+        //     return Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)));
+        // } else {
+        let final_user = User {
+            username: user.username,
+            password_hash: user.password_hash,
+            user_perms: user.user_perms,
+            settings: user.settings,
+            user_type: user.user_type,
+        };
+        database.users.push(final_user.clone());
+        //}
     
-            if password.is_empty() || database.users.iter().any(|db_user| db_user.username == user){
-                return Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)));
-            } else {
-                let final_user = User {
-                    username: user,
-                    password_hash: Some(password_hash.unwrap()),
-                    user_perms: user_perms
-                };
-                database.users.push(final_user.clone());
-            }
-        
-            let _ = self.write_database(database).await;  
-            Ok(StatusCode::CREATED)
-        } else {
-            Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
-        }
+        let _ = self.write_database(database).await;  
+        Ok(StatusCode::CREATED)
     }
     
     async fn remove_user_in_db(&self, username: String) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
@@ -350,7 +348,7 @@ impl UserDatabase for Database {
         Ok(StatusCode::CREATED)
     }
     async fn edit_user_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
-        if let Element::User { password, user, user_perms } = element.element {
+        if let Element::User { password, user, user_perms, settings } = element.element {
             let mut database = self.get_database().await?;
             if let Some(db_user) = database.users.iter_mut().find(|db_user| db_user.username == user) {
                 if !password.is_empty() {
@@ -358,6 +356,7 @@ impl UserDatabase for Database {
                 }
                 db_user.user_perms = user_perms.clone();
                 db_user.username = user.clone();
+                db_user.settings = settings.clone();
             }
 
             let _ = self.write_database(database).await;
