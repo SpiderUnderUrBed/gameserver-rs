@@ -6,14 +6,11 @@ use std::fmt::Debug;
 use std::pin::Pin;
 use std::{net::SocketAddr, path::Path, sync::Arc};
 
-use crate::database::Database;
 // Axum is the routing framework, and the backbone to this project helping intergrate the backend with the frontend
 // and the general api, redirections, it will take form data and queries and make it easily accessible
 // I also use axum_login to take off alot of effort that would be required for authentication
-use crate::database::databasespec::{
-    Filters, IntoServer, ServerMetadata, resolve_database_error_into_statuscode,
-};
-use crate::database::{DatabaseError, Element};
+
+
 use crate::docker::BuildImageRequest;
 use crate::frontend_types::{FrontendChangeNodeRequest, FrontendNodeCreateRequest};
 // use crate::filesystem::{execute_file_operation, FileOperations, TcpFileStream};
@@ -74,17 +71,6 @@ use rcon::Connection;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
 
-use crate::database::Node;
-use crate::database::databasespec::Intergration;
-use crate::database::databasespec::NodeType;
-use crate::database::databasespec::NodesDatabase;
-use crate::database::databasespec::UserDatabase;
-use crate::database::databasespec::UserPerm;
-use crate::database::databasespec::{Button, NodeEnabled};
-use crate::database::databasespec::{
-    ButtonsDatabase, IntergrationsDatabase, K8sType, Server, ServerDatabase, Settings,
-    SettingsDatabase,
-};
 
 // miscellancious imports, future traits are used because alot of the code is asyncronus and cant fully be contained in tokio
 // mime_guess as when I am serving the files, I need to serve it with the correct mime type
@@ -117,35 +103,18 @@ use sysinfo::{System};
 
 static CONNECTION_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-// For now I only restrict the json backend for running this without kubernetes
-// the json backend is only for testing in most cases, simple deployments would use full-stack feature flag
-// and you can use postgres manually with the database feature flag
-#[cfg(any(feature = "full-stack", feature = "database"))]
-mod database {
-    include!("pgdatabase.rs");
-}
-// TODO: consider if i want to have a varible that represents the database type enabled
-// static DATABASE_TYPE = "postgres";
-
-#[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
-mod database {
-    include!("jsondatabase.rs");
-}
+mod database;
 
 // JsonDatabase is only something that would be unique to Json and not any other database managed by sqlx
 #[cfg(all(not(feature = "full-stack"), not(feature = "database")))]
-use database::JsonBackend;
+use database::database::JsonBackend;
 
 // Both database files and any more should have these structs
-use crate::database::databasespec::RetrieveElement;
-use database::ModifyElementData;
-use database::User;
+use database::database::{databasespec::{RetrieveElement, ModifyElementData, User, Node, DatabaseError, Element, UserPerm, 
+    NodesDatabase, UserDatabase, SettingsDatabase, ServerDatabase, ButtonsDatabase,IntergrationsDatabase, Button, Server, NodeEnabled, NodeType, Intergration, K8sType, Settings, Filters, ServerMetadata, K8sNode,
+    resolve_database_error_into_statuscode
+}, Database};
 
-// #[cfg(not(feature = "grpc_experimental"))]
-// mod transport;
-
-// #[cfg(feature = "grpc_experimental")]
-// mod transport;
 
 mod frontend_types;
 mod transport;
@@ -664,7 +633,7 @@ pub struct AppState {
     server_check_event: watch::Sender<ServerCheckEvent>,
     base_path: String,
     client: OrchestratorClients,
-    database: database::Database,
+    database: database::database::Database,
     lock: Arc<AtomicBool>,
     filesystem: FileSystemHandler, // filesystem: Option<RemoteFileSystem<TcpFs>>
 }
@@ -934,7 +903,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // console_subscriber::init();
 
     let conn = first_connection().await?;
-    let database = database::Database::new(Some(conn));
+    let database = database::database::Database::new(Some(conn));
 
     let database_conn_result = database.ensure_database_conn().await;
 
@@ -2643,18 +2612,6 @@ async fn notify_node_of_settings(
         Ok(())
     }
 }
-// enum ServerRequests {
-//     FilterRequest {
-//         filter: Filters
-//     },
-//     Ping,
-//     IntegrationKey {
-//         key: String
-//     },
-//     ServerState {},
-//     SrcAndDestFs {},
-
-// }
 
 async fn statistics(
     State(_): State<Arc<ArcSwap<AppState>>>,
@@ -4403,7 +4360,7 @@ mod tests {
                 database.clear_db().await.expect("Failed to clear DB");
 
                 let server = ModifyElementData {
-                    element: database::databasespec::Element::Server(Server {
+                    element: Element::Server(Server {
                         servername: "test".to_string(),
                         provider: "".to_string(),
                         providertype: "".to_string(),
@@ -4439,7 +4396,7 @@ mod tests {
                 database.clear_db().await.expect("Failed to clear DB");
 
                 let server = ModifyElementData {
-                    element: database::databasespec::Element::Server(Server {
+                    element: Element::Server(Server {
                         servername: "".to_string(),
                         provider: "".to_string(),
                         providertype: "".to_string(),

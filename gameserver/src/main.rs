@@ -74,27 +74,14 @@ use crate::transport::node_transport::RequestStreamExecutable;
 
 // I use the same code as in the main server
 // with a few diffrences in stuff like filesystem
-mod databasespec;
+mod database;
 mod intergrations;
-mod jsondatabase;
 mod providers;
 mod transport;
 
-use databasespec::ServerIndex;
-
-#[cfg(feature = "postgres")]
-mod database {
-    include!("pgdatabase.rs");
-}
-#[cfg(feature = "postgres")]
-use pgdatabase::{load_db, save_db, DbConn};
-
-#[cfg(not(feature = "postgres"))]
-mod database {
-    include!("jsondatabase.rs");
-}
-#[cfg(not(feature = "postgres"))]
-use jsondatabase::{load_db, save_db, DbConn};
+use database::databasespec::ServerIndex;
+use database::database::{load_db, save_db, DbConn};
+use database::databasespec;
 
 // use jsondatabase::{load_db, save_db};
 
@@ -338,7 +325,7 @@ impl TryFrom<&str> for Status {
 // These ip:port defaults are diffrence based on feature as i typically do not run full-stack
 // when im testing on bare metal, where the ip:port have to be diffrent to not conflict
 #[cfg(feature = "full-stack")]
-static StaticLocalUrl: &str = "0.0.0.0:8080";
+static STATIC_LOCAL_URL: &str = "0.0.0.0:8080";
 
 #[cfg(not(feature = "full-stack"))]
 static STATIC_LOCAL_URL: &str = "0.0.0.0:8082";

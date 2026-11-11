@@ -6,9 +6,9 @@ use tonic::transport::Channel;
 
 use crate::K8sType;
 use crate::ServerStatus;
-use crate::database::databasespec::K8sNode;
-use crate::database::databasespec::NodeEnabled;
-use crate::database::databasespec::NodeType;
+use crate::K8sNode;
+use crate::NodeEnabled;
+use crate::NodeType;
 use crate::{
     NodeWithConn,
     orchestrator::{

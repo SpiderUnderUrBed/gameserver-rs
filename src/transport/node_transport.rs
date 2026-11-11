@@ -13,10 +13,8 @@ use crate::{OrchestratorClients, ServerCheckEvent, ServerStatus, StatusMethod, U
 use crate::{
     ApiCalls as ToplevelApiCalls, AuthTcpMessage, ConsoleData, IncomingMessage,
     IntegrationCommands, KubeLocalRequest, List, LogLine, NodeWithConn,
-    database::{
-        Element, ModifyElementData, Node, NodesDatabase,
-        databasespec::{K8sType, NodeEnabled, NodeType},
-    },
+    Element, ModifyElementData, Node, NodesDatabase,
+    K8sType, NodeEnabled, NodeType,
     get_env_var_or_arg,
     kubernetes::{GetK8sTypeRequest, VerifyIsK8sGameserverRequest},
 };

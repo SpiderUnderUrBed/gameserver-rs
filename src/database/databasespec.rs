@@ -4,6 +4,8 @@ use crate::StatusCode;
 use std::error::Error;
 use std::fmt;
 
+use chrono::DateTime;
+use chrono::Utc;
 use serde_json::Value;
 
 #[cfg(any(feature = "full-stack", feature = "database"))]
@@ -325,7 +327,7 @@ impl ToString for NodeType {
     sqlx(type_name = "text")
 )]
 #[serde(rename_all = "lowercase", tag = "kind", content = "data")]
-pub enum Intergrations {
+pub enum CommonIntergrations {
     Minecraft,
     Other,
     #[default]
@@ -340,22 +342,22 @@ impl Type<Postgres> for NodeType {
 }
 
 // TODO: Consider removing the string to enum varient matching
-impl FromStr for Intergrations {
+impl FromStr for CommonIntergrations {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
-            "minecraft" => Intergrations::Minecraft,
-            "unknown" => Intergrations::Unknown,
-            _ => Intergrations::Unknown,
+            "minecraft" => CommonIntergrations::Minecraft,
+            "unknown" => CommonIntergrations::Unknown,
+            _ => CommonIntergrations::Unknown,
         })
     }
 }
-impl ToString for Intergrations {
+impl ToString for CommonIntergrations {
     fn to_string(&self) -> String {
         match self {
-            Intergrations::Minecraft => "minecraft".to_string(),
-            Intergrations::Unknown => "unknown".to_string(),
+            CommonIntergrations::Minecraft => "minecraft".to_string(),
+            CommonIntergrations::Unknown => "unknown".to_string(),
             _ => "unknown".to_string(),
         }
     }
@@ -452,7 +454,7 @@ pub struct Button {
 pub struct Intergration {
     // name: String,
     pub status: String,
-    pub r#type: Intergrations,
+    pub r#type: CommonIntergrations,
     pub settings: Value,
 }
 
@@ -594,6 +596,15 @@ pub fn resolve_database_error_into_statuscode(error: DatabaseError) -> StatusCod
     match error {
         DatabaseError::StatusCode(status_code) => status_code,
     }
+}
+
+pub enum DatabaseTimestamps {
+    Server,
+}
+
+pub trait TimestampsDatabase {
+    async fn get_timestamp_of(&self, db_timestamp: DatabaseTimestamps) -> Result<DateTime<Utc>, Box<dyn Error + Send + Sync>>;
+    async fn update_timestamp_of(&self, db_timestamp: DatabaseTimestamps) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
 
 pub trait SettingsDatabase {

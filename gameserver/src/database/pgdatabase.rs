@@ -33,6 +33,15 @@ pub async fn ensure_db(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .await?;
 
     sqlx::query(
+        "CREATE TABLE IF NOT EXISTS config (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )"
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
         "CREATE TABLE IF NOT EXISTS servers (
             name         TEXT PRIMARY KEY,
             location     TEXT NOT NULL,
@@ -54,6 +63,18 @@ pub async fn ensure_db(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 
     sqlx::query(
         "INSERT OR IGNORE INTO config (key, value) VALUES ('filter', 'None')"
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::raw_sql(
+        r#"
+            CREATE TABLE IF NOT EXISTS last_updated (
+                id                             SERIAL PRIMARY KEY,
+                servers_last_updated           TIMESTAMPTZ DEFAULT now() 
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_last_updated_singleton ON last_updated((id IS NOT NULL));
+        "#
     )
     .execute(pool)
     .await?;

@@ -6,16 +6,13 @@ use crate::StatusCode;
 use std::error::Error;
 pub mod databasespec;
 
-use crate::SettingsDatabase;
-use crate::Intergration;
-
-pub use databasespec::{
-    User, Node, Element, ModifyElementData, UserDatabase, NodesDatabase, 
-    DatabaseError, Server, ServerDatabase, Button, ButtonsDatabase, Settings
+use crate::database::database::databasespec::{ModifyElementData, Element, User, UserDatabase, SettingsDatabase, 
+    ButtonsDatabase, TimestampsDatabase, ServerDatabase, NodesDatabase, DatabaseTimestamps, IntergrationsDatabase, Settings, Intergration, CommonIntergrations, Button, Server, Node, DatabaseError
 };
-use crate::database::databasespec::Intergrations;
-use databasespec::IntergrationsDatabase;
 
+
+use chrono::DateTime;
+use chrono::Utc;
 #[derive(Clone)]
 pub struct Database {
     connection: Pool<SqlxPostgres>,
@@ -24,7 +21,9 @@ pub struct Database {
 impl Database {
     pub fn new(connection_option: Option<Pool<SqlxPostgres>>) -> Database {
         Database {
-            connection: connection_option.unwrap(),
+
+
+        connection: connection_option.unwrap(),
         }
     }
     pub async fn fix_connection(connection_option: Option<Pool<SqlxPostgres>>) -> Database {
@@ -127,6 +126,12 @@ impl Database {
                 updated_at                     TIMESTAMPTZ DEFAULT now()
             );
             CREATE UNIQUE INDEX IF NOT EXISTS idx_settings_singleton ON settings((id IS NOT NULL));
+
+            CREATE TABLE IF NOT EXISTS last_updated (
+                id                             SERIAL PRIMARY KEY,
+                servers_last_updated           TIMESTAMPTZ DEFAULT now() 
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_last_updated_singleton ON last_updated((id IS NOT NULL));
 
             INSERT INTO settings DEFAULT VALUES
             ON CONFLICT DO NOTHING;
@@ -503,6 +508,32 @@ impl ServerDatabase for Database {
     }
 }
 
+impl TimestampsDatabase for Database {
+    async fn get_timestamp_of(&self, db_timestamp: DatabaseTimestamps) -> Result<DateTime<Utc>, Box<dyn Error + Send + Sync>> {
+        match db_timestamp {
+            DatabaseTimestamps::Server => {
+                let timestamp: DateTime<Utc> = sqlx::query_scalar("SELECT servers_last_updated FROM last_updated")
+                    .fetch_one(&self.connection)
+                    .await?;
+                Ok(timestamp)
+            }
+            _ => Err("not found".into())
+        }
+    }
+    async fn update_timestamp_of(&self, db_timestamp: DatabaseTimestamps) -> Result<(), Box<dyn Error + Send + Sync>> {
+        match db_timestamp {
+            DatabaseTimestamps::Server => {
+                sqlx::query("UPDATE last_updated SET servers_last_updated = $1")
+                    .bind(Utc::now())
+                    .execute(&self.connection)
+                    .await?;
+                Ok(())
+            }
+            _ => Err("not found".into())
+        }
+    }
+}
+
 impl ButtonsDatabase for Database {
     async fn retrieve_buttons(&self, name: String) -> Option<Button> {
         match self.get_from_buttons_database(&name).await {
@@ -680,7 +711,7 @@ impl IntergrationsDatabase for Database {
     }
     
     async fn get_from_intergrations_database(&self, intergration_str: &str) -> Result<Option<Intergration>, Box<dyn Error + Send + Sync>> {
-        let intergration_type = intergration_str.parse::<Intergrations>().unwrap_or(Intergrations::Unknown);
+        let intergration_type = intergration_str.parse::<CommonIntergrations>().unwrap_or(CommonIntergrations::Unknown);
         let intergration = sqlx::query_as::<_, Intergration>("SELECT * FROM intergrations WHERE type = $1")
             .bind(&intergration_type)
             .fetch_optional(&self.connection)

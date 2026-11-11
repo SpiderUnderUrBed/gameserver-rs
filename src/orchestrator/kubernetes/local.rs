@@ -1,7 +1,7 @@
 use std::error::Error;
 
 use crate::{
-    database::databasespec::{K8sType, NodeType}, kubernetes::{GetK8sTypeRequest, VerifyIsK8sGameserverRequest}, orchestrator::kubernetes::{
+    K8sType, NodeType, kubernetes::{GetK8sTypeRequest, VerifyIsK8sGameserverRequest}, orchestrator::kubernetes::{
         BuildDeploymentRequest, GetK8sGameserversRequest, ListNodeInfoRequest,
     }, NodeWithConn, NodeEnabled
 };

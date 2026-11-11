@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
@@ -8,6 +9,7 @@ pub struct Database {
     pub current_server: String,
     pub filter: Filters,
     pub server_index: HashMap<String, ServerIndex>,
+    pub last_updated: LastUpdated,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
@@ -57,4 +59,9 @@ impl ServerIndex {
             server_metadata,
         }
     }
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+pub struct LastUpdated {
+    servers_last_updated: DateTime<Utc>
 }

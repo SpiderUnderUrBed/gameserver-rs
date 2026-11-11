@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::{AppState, MetadataTypes, SrcAndDest, database::databasespec::Filters, transport::node_transport::{ConnectionHandler, ConsoleInterface}};
+use crate::{AppState, MetadataTypes, SrcAndDest, transport::node_transport::{ConnectionHandler, ConsoleInterface}};
+use crate::Filters;
 use tokio::sync::{Notify, RwLock, broadcast};
 pub struct ServernameRequest {
     pub ip: String,
