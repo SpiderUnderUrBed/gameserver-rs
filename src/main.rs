@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::fmt::Debug;
 use std::pin::Pin;
+use std::task::Context;
+use std::task::Poll;
 use std::{net::SocketAddr, path::Path, sync::Arc};
 
 // Axum is the routing framework, and the backbone to this project helping intergrate the backend with the frontend
@@ -69,7 +71,8 @@ use tokio::sync::{RwLock, mpsc, watch};
 
 use rcon::Connection;
 use tokio_util::sync::CancellationToken;
-use tower::ServiceBuilder;
+use tower::layer::layer_fn;
+use tower::{Layer, Service, ServiceBuilder};
 
 
 // miscellancious imports, future traits are used because alot of the code is asyncronus and cant fully be contained in tokio
@@ -895,6 +898,33 @@ async fn establish_connection(
     Ok(())
 }
 
+#[derive(Clone)]
+pub struct SessionMiddleware<S> {
+    service: S,
+    recorded_sessions: Vec<String>,
+    database: Database
+}
+impl <S> Service<Request<Body>> for SessionMiddleware<S> 
+where
+    S: Service<Request>,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = S::Future;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.service.poll_ready(cx)
+    }
+
+    fn call(&mut self, request: Request<Body>) -> Self::Future {
+        if let Some(cookie) = request.headers().get("cookie") {
+            println!("{:#?}", cookie);
+        }
+
+        self.service.call(request)
+    }
+}
+
 // main function handles the initial connection
 // initilizing the database struct, getting and setting the base path as well as alot of defaults in AppState
 // trying the initial tcp connection to gameserver, and considering creating it if it doesnt exist, and will continually try to make a connection with it
@@ -1075,6 +1105,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .allow_methods([Method::GET, Method::POST])
         .allow_headers(CorsAny);
 
+    let inner_database = database.clone();
+    let session_middleware = layer_fn(move |service| SessionMiddleware {
+        service,
+        recorded_sessions: Vec::new(),
+        database: inner_database.clone(),
+    });
+
     let session_store = MemoryStore::default();
     // TODO:
     // In the future, once cookies work, improve overrall https support
@@ -1093,7 +1130,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         AuthManagerLayerBuilder::new(backend, session_layer.clone()).build();
 
     let (fallback_router, maybe_oidc_layer) =
-        routes_static(multifaceted_state.clone(), auth_layer.clone()).await;
+        routes_static(multifaceted_state.clone()).await;
 
     let upload_router = Router::new()
         .route("/api/upload", post(upload))
@@ -1157,7 +1194,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 |req: Request<Body>, next: Next| async move { next.run(req).await },
             ))
             .layer(cors)
-            .layer(auth_layer);
+            .layer(auth_layer)
+            .layer(session_middleware);
 
         let routed = if let Some(oidc_layer) = maybe_oidc_layer {
             routed.layer(
@@ -1184,7 +1222,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 },
             ))
             .layer(cors)
-            .layer(auth_layer);
+            .layer(auth_layer)
+            .layer(session_middleware);
 
         let routed = if let Some(oidc_layer) = maybe_oidc_layer {
             routed.layer(
@@ -2328,7 +2367,6 @@ async fn ws_handler(
 // the fix mainly worked in the router in main, I am just covering future cases
 async fn routes_static(
     state: Arc<ArcSwap<AppState>>,
-    _auth_layer: AuthManagerLayer<Backend, MemoryStore>,
 ) -> (
     Router<Arc<ArcSwap<AppState>>>,
     Option<OidcAuthLayer<OidcAdditionalClaims>>,
