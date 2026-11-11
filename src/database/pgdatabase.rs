@@ -7,7 +7,7 @@ use std::error::Error;
 pub mod databasespec;
 
 use crate::database::database::databasespec::{ModifyElementData, Element, User, UserDatabase, SettingsDatabase, 
-    ButtonsDatabase, TimestampsDatabase, ServerDatabase, NodesDatabase, DatabaseTimestamps, IntergrationsDatabase, Settings, Intergration, CommonIntergrations, Button, Server, Node, DatabaseError
+    ButtonsDatabase, ServerDatabase, NodesDatabase, IntergrationsDatabase, Settings, Intergration, CommonIntergrations, Button, Server, Node, DatabaseError
 };
 
 
@@ -70,6 +70,8 @@ impl Database {
                 ip         VARCHAR NOT NULL,
                 nodetype   TEXT DEFAULT 'unknown',
                 node_enabled TEXT DEFAULT 'unknown',
+                servers_last_modified TIMESTAMPTZ NULL,
+
                 created_at TIMESTAMPTZ DEFAULT now(),
                 updated_at TIMESTAMPTZ DEFAULT now()
             );
@@ -121,7 +123,6 @@ impl Database {
                 console_entry_on_top           BOOLEAN NOT NULL DEFAULT true,
                 force_sandbox                  BOOLEAN NOT NULL DEFAULT false,
                 disable_custom_servers         BOOLEAN NOT NULL DEFAULT false,
-                current_server                 JSONB DEFAULT '{}'::jsonb,
                 created_at                     TIMESTAMPTZ DEFAULT now(),
                 updated_at                     TIMESTAMPTZ DEFAULT now()
             );
@@ -291,18 +292,14 @@ impl UserDatabase for Database {
         Ok(user)
     }
 
-    async fn remove_user_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
-        if let Element::User { user, .. } = element.element {
-            let final_user = sqlx::query_as::<_, User>("DELETE FROM users WHERE username = $1 RETURNING *")
-                .bind(user)
-                .fetch_optional(&self.connection)
-                .await?;
+    async fn remove_user_in_db(&self, username: String) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+        let final_user = sqlx::query_as::<_, User>("DELETE FROM users WHERE username = $1 RETURNING *")
+            .bind(username)
+            .fetch_optional(&self.connection)
+            .await?;
 
-            if final_user.is_some(){
-                Ok(StatusCode::CREATED)
-            } else {
-                Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
-            }
+        if final_user.is_some(){
+            Ok(StatusCode::CREATED)
         } else {
             Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
         }
@@ -355,16 +352,9 @@ impl NodesDatabase for Database {
         }
     }
     
-    async fn remove_node_in_db(&self, node: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
-        if let Element::Node(node_data) = node.element {
-            return self.remove_node_in_db_directly(node_data).await;
-        } else {
-            Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
-        }
-    }
-    async fn remove_node_in_db_directly(&self, node_data: Node) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+    async fn remove_node_in_db(&self, nodename: String) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         let result = sqlx::query("DELETE FROM nodes WHERE nodename = $1")
-            .bind(&node_data.nodename)
+            .bind(&nodename)
             .execute(&self.connection)
             .await?;
 
@@ -380,7 +370,7 @@ impl NodesDatabase for Database {
             let result = sqlx::query(
                 r#"
                 UPDATE nodes 
-                SET ip = $1, nodetype = $2, node_enabled = $3, updated_at = NOW()
+                SET ip = $1, nodetype = $2, node_enabled = $3, servers_last_modified = $4, updated_at = NOW()
                 WHERE nodename = $4
                 "#
             )
@@ -388,6 +378,7 @@ impl NodesDatabase for Database {
             .bind(&node_data.nodetype)
             .bind(&node_data.node_enabled)
             .bind(&node_data.nodename)
+            .bind(&node_data.timestamps.servers_last_modified)
             .execute(&self.connection)
             .await?;
 
@@ -464,18 +455,14 @@ impl ServerDatabase for Database {
                 Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
             }
     }
-    async fn remove_server_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
-        if let Element::Server(server) = element.element {
-            let result = sqlx::query("DELETE FROM servers WHERE servername = $1")
-                .bind(&server.servername)
-                .execute(&self.connection)
-                .await?;
+    async fn remove_server_in_db(&self, servername: String) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+        let result = sqlx::query("DELETE FROM servers WHERE servername = $1")
+            .bind(&servername)
+            .execute(&self.connection)
+            .await?;
 
-            if result.rows_affected() > 0 {
-                Ok(StatusCode::CREATED)
-            } else {
-                Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
-            }
+        if result.rows_affected() > 0 {
+            Ok(StatusCode::CREATED)
         } else {
             Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
         }
@@ -508,31 +495,7 @@ impl ServerDatabase for Database {
     }
 }
 
-impl TimestampsDatabase for Database {
-    async fn get_timestamp_of(&self, db_timestamp: DatabaseTimestamps) -> Result<DateTime<Utc>, Box<dyn Error + Send + Sync>> {
-        match db_timestamp {
-            DatabaseTimestamps::Server => {
-                let timestamp: DateTime<Utc> = sqlx::query_scalar("SELECT servers_last_updated FROM last_updated")
-                    .fetch_one(&self.connection)
-                    .await?;
-                Ok(timestamp)
-            }
-            _ => Err("not found".into())
-        }
-    }
-    async fn update_timestamp_of(&self, db_timestamp: DatabaseTimestamps) -> Result<(), Box<dyn Error + Send + Sync>> {
-        match db_timestamp {
-            DatabaseTimestamps::Server => {
-                sqlx::query("UPDATE last_updated SET servers_last_updated = $1")
-                    .bind(Utc::now())
-                    .execute(&self.connection)
-                    .await?;
-                Ok(())
-            }
-            _ => Err("not found".into())
-        }
-    }
-}
+
 
 impl ButtonsDatabase for Database {
     async fn retrieve_buttons(&self, name: String) -> Option<Button> {
@@ -633,18 +596,6 @@ impl ButtonsDatabase for Database {
 }
 
 impl SettingsDatabase for Database {
-            //     toggled_default_buttons: Default::default(),
-            // status_type: Default::default(),
-            // enabled_rcon: true,
-            // rcon_url: "localhost:25575".to_string(),
-            // rcon_password: "testing".to_string(),
-            // filter: Filters::None,
-            // //driver: "".to_string(),
-            // enable_statistics_on_home_page: false,
-            // enable_nodes_on_home_page: false,
-            // console_entry_on_top: true,
-            // file_system_driver: FileSystemDrivers::None,
-            // current_server: Server::default().into(),
     async fn set_settings(&self, settings: Settings) -> Result<(), Box<dyn Error + Send + Sync>> {
         //driver = $6,
         sqlx::query(
@@ -662,7 +613,6 @@ impl SettingsDatabase for Database {
                 console_entry_on_top           = $10,
                 force_sandbox                  = $11,
                 disable_custom_servers         = $12,
-                current_server                 = $13,
                 updated_at                     = NOW()
             "#
         )
@@ -678,7 +628,6 @@ impl SettingsDatabase for Database {
         .bind(&settings.console_entry_on_top)
         .bind(&settings.force_sandbox)
         .bind(&settings.disable_custom_servers)
-        .bind(sqlx::types::Json(&settings.current_server))
         .execute(&self.connection)
         .await?;
         
@@ -745,18 +694,14 @@ impl IntergrationsDatabase for Database {
         }
     }
     
-    async fn remove_intergrations_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
-        if let Element::Intergration(intergration) = element.element {
-            let result = sqlx::query("DELETE FROM intergrations WHERE type = $1")
-                .bind(&intergration.r#type)
-                .execute(&self.connection)
-                .await?;
+    async fn remove_intergrations_in_db(&self, intergration: CommonIntergrations) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+        let result = sqlx::query("DELETE FROM intergrations WHERE type = $1")
+            .bind(&intergration)
+            .execute(&self.connection)
+            .await?;
 
-            if result.rows_affected() > 0 {
-                Ok(StatusCode::CREATED)
-            } else {
-                Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
-            }
+        if result.rows_affected() > 0 {
+            Ok(StatusCode::CREATED)
         } else {
             Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
         }

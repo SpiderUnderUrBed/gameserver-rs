@@ -1,8 +1,6 @@
 use serde::Deserialize;
 use serde::Serialize;
 use std::error::Error;
-pub mod databasespec;
-pub use databasespec::{User, Node, Element, ModifyElementData, UserDatabase, NodesDatabase, DatabaseError};
 use std::path::PathBuf;
 use std::path::Path;
 use std::fs::OpenOptions;
@@ -10,17 +8,12 @@ use std::fs::File;
 use std::io::Write;
 use std::io::Read;
 
-use crate::database::databasespec::Intergration;
-use crate::database::databasespec::Intergrations;
-use crate::database::databasespec::IntergrationsDatabase;
-use crate::database::databasespec::Server;
-use crate::database::databasespec::ServerDatabase;
-use crate::database::databasespec::Settings;
-use crate::database::databasespec::NodeType;
-use crate::database::databasespec::Button;
-use crate::database::databasespec::ButtonsDatabase;
+pub mod databasespec;
 
-use crate::database::databasespec::SettingsDatabase;
+use crate::database::database::databasespec::{ModifyElementData, Element, User, UserDatabase, SettingsDatabase, 
+    ButtonsDatabase, ServerDatabase, NodesDatabase, IntergrationsDatabase, Settings, Intergration, CommonIntergrations, Button, Server, Node, DatabaseError, NodeType
+};
+
 use crate::StatusCode;
 
 #[derive(Clone)]
@@ -259,14 +252,10 @@ impl ServerDatabase for Database {
         let _ = self.write_database(database).await;
         Ok(StatusCode::CREATED)
     }
-    async fn remove_server_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+    async fn remove_server_in_db(&self, servername: String) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         let mut database = self.get_database().await?;
-        if let Element::Server(Server {servername, provider: _, providertype: _, location: _, node: _, sandbox: _, server_metadata: _ }) = element.element {
-            database.servers.retain(|db_server| db_server.servername != servername);
-        } else {
-            return Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)));
-        }
-
+        database.servers.retain(|db_server| db_server.servername != servername);
+    
         let _ = self.write_database(database).await;
 
         Ok(StatusCode::CREATED)
@@ -339,7 +328,7 @@ impl UserDatabase for Database {
         }
     }
     
-    async fn remove_user_in_db(&self, user: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+    async fn remove_user_in_db(&self, username: String) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         let file_path = &self.connection.file;
     
         let mut read_file = File::open(file_path)
@@ -355,11 +344,7 @@ impl UserDatabase for Database {
                 format!("Error: {}", e)
             })?
         };
-        if let Element::User { user, user_perms: _, password: _ } = user.element {
-            database.users.retain(|db_user| db_user.username != user);
-        } else {
-            return Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)));
-        }
+        database.users.retain(|db_user| db_user.username != username);
 
         let _ = self.write_database(database).await;
         Ok(StatusCode::CREATED)
@@ -397,13 +382,13 @@ impl NodesDatabase for Database {
         Ok(database.nodes.iter().find(|node| node.nodename == nodename).cloned())
     }
     async fn create_nodes_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
-        if let Element::Node(Node { nodename, ip, nodetype, node_enabled, k8s_type }) = element.element {
+        if let Element::Node(Node { nodename, ip, nodetype, node_enabled, k8s_type, timestamps }) = element.element {
             let mut database = self.get_database().await?;
     
             if database.nodes.iter().any(|node| node.nodename == nodename) || (matches!(nodetype, NodeType::Custom(_)) && ip.is_empty()){
                 return Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)));
             } else {
-                let final_node = Node {nodename,ip,nodetype, node_enabled, k8s_type };
+                let final_node = Node {nodename,ip,nodetype, node_enabled, k8s_type, timestamps };
                 database.nodes.push(final_node.clone());
             }
         
@@ -413,16 +398,9 @@ impl NodesDatabase for Database {
             Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
         }
     }
-    async fn remove_node_in_db(&self, node: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
-        if let Element::Node(node_data) = node.element {
-            self.remove_node_in_db_directly(node_data).await
-        } else {
-            Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)))
-        }
-    }
-    async fn remove_node_in_db_directly(&self, node_data: Node) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+    async fn remove_node_in_db(&self, nodename: String) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         let mut database = self.get_database().await?;
-        database.nodes.retain(|node| node.nodename != node_data.nodename);
+        database.nodes.retain(|node| node.nodename != nodename);
         let _ = self.write_database(database).await;
         Ok(StatusCode::CREATED)
     }
@@ -498,7 +476,7 @@ impl SettingsDatabase for Database {
 
 impl IntergrationsDatabase for Database {
     async fn retrieve_intergrations(&self, intergration_str: String) -> Option<Intergration> {
-        let intergration_type = intergration_str.parse::<Intergrations>().unwrap();
+        let intergration_type = intergration_str.parse::<CommonIntergrations>().unwrap();
          let database = self.get_database().await;
         database.unwrap().intergrations.iter().find(|integration| integration.r#type == intergration_type).cloned()
     }
@@ -507,7 +485,7 @@ impl IntergrationsDatabase for Database {
         Ok(database.intergrations)
     }
     async fn get_from_intergrations_database(&self, intergration_str: &str) -> Result<Option<Intergration>, Box<dyn Error + Send + Sync>> {
-        let intergration_type = intergration_str.parse::<Intergrations>().unwrap();
+        let intergration_type = intergration_str.parse::<CommonIntergrations>().unwrap();
         let database = self.get_database().await?;
         Ok(database.intergrations.iter().find(|integrations| integrations.r#type == intergration_type).cloned())  
     }
@@ -528,13 +506,9 @@ impl IntergrationsDatabase for Database {
             Err(Box::new(DatabaseError::StatusCode(StatusCode::BAD_REQUEST)))
         }
     }
-    async fn remove_intergrations_in_db(&self, element: ModifyElementData) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
+    async fn remove_intergrations_in_db(&self, intergration_type: CommonIntergrations) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
         let mut database = self.get_database().await?;
-        if let Element::Intergration(Intergration { status, r#type, settings }) = element.element {
-            database.intergrations.retain(|db_intergration| db_intergration.r#type != r#type);
-        } else {
-            return Err(Box::new(DatabaseError::StatusCode(StatusCode::INTERNAL_SERVER_ERROR)));
-        }
+        database.intergrations.retain(|db_intergration| db_intergration.r#type != intergration_type);
 
         let _ = self.write_database(database).await;
 

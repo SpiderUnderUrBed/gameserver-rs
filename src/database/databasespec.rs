@@ -116,8 +116,6 @@ pub struct Settings {
     pub(crate) console_entry_on_top: bool,
     pub(crate) force_sandbox: bool,
     pub(crate) disable_custom_servers: bool,
-    #[cfg_attr(any(feature = "full-stack", feature = "database"), sqlx(json))]
-    pub(crate) current_server: Server,
 }
 
 impl Default for Settings {
@@ -136,7 +134,6 @@ impl Default for Settings {
             force_sandbox: false,
             disable_custom_servers: false,
             file_system_driver: FileSystemDrivers::None,
-            current_server: Server::default().into(),
         }
     }
 }
@@ -412,18 +409,26 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for User {
     }
 }
 
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
-#[cfg_attr(
-    any(feature = "full-stack", feature = "database"),
-    derive(sqlx::FromRow, Decode, Encode)
-)]
+#[cfg_attr(any(feature = "full-stack", feature = "database"), derive(sqlx::FromRow))]
+pub struct NodeTimestamps {
+    pub servers_last_modified: Option<DateTime<Utc>>,
+}
+
+
+// TODO: consider if I want to skip writing the k8s type to the sql database at all or i want to expand it for 
+// the json
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[cfg_attr(any(feature = "full-stack", feature = "database"), derive(sqlx::FromRow))]
 pub struct Node {
     pub nodename: String,
     pub ip: String,
     pub node_enabled: NodeEnabled,
     pub nodetype: NodeType,
-    //#[sqlx(rename = "nodetype")]
+
+    #[cfg_attr(any(feature = "full-stack", feature = "database"), sqlx(flatten))]
+    pub timestamps: NodeTimestamps,
+
     #[cfg_attr(any(feature = "full-stack", feature = "database"), sqlx(skip))]
     pub k8s_type: K8sType,
 }
@@ -473,27 +478,20 @@ pub struct ServerMetadata {
 // I'll assume provide would have been something like the game, I have no idea for provider type but
 // ill make it represent things within the game, like some game server types maintained by the community
 // some using diffrent languages, etc
-#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(
     any(feature = "full-stack", feature = "database"),
-    derive(sqlx::FromRow, Decode, Encode)
+    derive(sqlx::FromRow)
 )]
 pub struct Server {
-    #[serde(default)]
     pub servername: String,
-    #[serde(default)]
     pub provider: String,
-    #[serde(default)]
     pub providertype: String,
-    #[serde(default)]
     pub location: String,
     #[cfg_attr(any(feature = "full-stack", feature = "database"), sqlx(json))]
-    #[serde(default)]
     pub node: Node,
-    #[serde(default)]
     pub sandbox: bool,
     #[cfg_attr(any(feature = "full-stack", feature = "database"), sqlx(json))]
-    #[serde(default)]
     pub server_metadata: ServerMetadata,
 }
 
@@ -535,7 +533,7 @@ pub trait UserDatabase {
     ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
     async fn remove_user_in_db(
         &self,
-        user: ModifyElementData,
+        username: String,
     ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
     async fn edit_user_in_db(
         &self,
@@ -556,7 +554,7 @@ pub trait ServerDatabase {
     ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
     async fn remove_server_in_db(
         &self,
-        server: ModifyElementData,
+        servername: String,
     ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
     async fn simple_remove_server_in_db(
         &self, 
@@ -580,11 +578,7 @@ pub trait NodesDatabase {
     ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
     async fn remove_node_in_db(
         &self,
-        node: ModifyElementData,
-    ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
-    async fn remove_node_in_db_directly(
-        &self,
-        node: Node,
+        nodename: String,
     ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
     async fn edit_node_in_db(
         &self,
@@ -598,14 +592,6 @@ pub fn resolve_database_error_into_statuscode(error: DatabaseError) -> StatusCod
     }
 }
 
-pub enum DatabaseTimestamps {
-    Server,
-}
-
-pub trait TimestampsDatabase {
-    async fn get_timestamp_of(&self, db_timestamp: DatabaseTimestamps) -> Result<DateTime<Utc>, Box<dyn Error + Send + Sync>>;
-    async fn update_timestamp_of(&self, db_timestamp: DatabaseTimestamps) -> Result<(), Box<dyn Error + Send + Sync>>;
-}
 
 pub trait SettingsDatabase {
     async fn set_settings(&self, value: Settings) -> Result<(), Box<dyn Error + Send + Sync>>;
@@ -642,7 +628,7 @@ pub trait IntergrationsDatabase {
     ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
     async fn remove_intergrations_in_db(
         &self,
-        intergration: ModifyElementData,
+        intergration: CommonIntergrations,
     ) -> Result<StatusCode, Box<dyn Error + Send + Sync>>;
     async fn edit_intergrations_in_db(
         &self,

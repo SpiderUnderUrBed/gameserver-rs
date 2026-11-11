@@ -110,7 +110,7 @@ mod database;
 use database::database::JsonBackend;
 
 // Both database files and any more should have these structs
-use database::database::{databasespec::{RetrieveElement, ModifyElementData, User, Node, DatabaseError, Element, UserPerm, 
+use database::database::{databasespec::{RetrieveElement, ModifyElementData, User, Node, DatabaseError, Element, UserPerm, NodeTimestamps,
     NodesDatabase, UserDatabase, SettingsDatabase, ServerDatabase, ButtonsDatabase,IntergrationsDatabase, Button, Server, NodeEnabled, NodeType, Intergration, K8sType, Settings, Filters, ServerMetadata, K8sNode,
     resolve_database_error_into_statuscode
 }, Database};
@@ -305,6 +305,7 @@ pub struct NodeWithConn {
     nodetype: NodeType,
     k8s_type: K8sType,
     gameserver: Value,
+    timestamps: NodeTimestamps,
     connection: Option<Arc<ConnectionHandler>>
 }
 impl Clone for NodeWithConn {
@@ -317,7 +318,8 @@ impl Clone for NodeWithConn {
             enabled: self.enabled.clone(),
             gameserver: self.gameserver.clone(),
             k8s_type: self.k8s_type.clone(),
-            connection: self.connection.clone()
+            connection: self.connection.clone(),
+            timestamps: NodeTimestamps::default(),
         }
     }
 }
@@ -1801,6 +1803,7 @@ async fn fetch_current_node(
             node_enabled: NodeEnabled::Unknown,
             nodetype: state.current_node.nodetype.clone(),
             k8s_type: state.current_node.k8s_type.clone(),
+            timestamps: NodeTimestamps::default()
         }))
     }
 
@@ -2755,7 +2758,7 @@ async fn delete_node(
         let node_option = state.database.retrieve_nodes(node_request_name).await;
         if let Some(node) = node_option {
             if matches!(node.k8s_type, K8sType::None) || matches!(node.k8s_type, K8sType::Unknown) {
-                let delete_node_result = state.database.remove_node_in_db_directly(node).await;
+                let delete_node_result = state.database.remove_node_in_db(node.nodename).await;
                 if let Ok(operation_status) = delete_node_result {
                     return Ok(operation_status.into_response());
                 } else {
@@ -2823,14 +2826,7 @@ async fn delete_server(
     {
         let res = state
             .database
-            .remove_server_in_db(ModifyElementData {
-                element: Element::Server(Server {
-                    servername: delete_server_name,
-                    ..Default::default()
-                }),
-                jwt: "".to_string(),
-                require_auth: false,
-            })
+            .remove_server_in_db(delete_server_name)
             .await;
         if res.is_err() {
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
@@ -2962,10 +2958,8 @@ async fn add_server(
     };
     let server_process_lock = ensure_server_process(&state, server.clone())
         .await;
-    let mut server_process = (*server_process_lock.load_full()).clone();
-    // server_process.console_interface = interface;
+    let server_process = (*server_process_lock.load_full()).clone();
 
-    // let console_task = CancellationToken::new();
     let _ = set_process_for_user(session, server.servername.clone(), &state).await;
 
     let mut create_server_request = CreateServerRequest {
@@ -3176,9 +3170,13 @@ async fn delete_intergration(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
+    let Element::Intergration(integration) = request.element else {
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    };
+
     let result = state
         .database
-        .remove_intergrations_in_db(request)
+        .remove_intergrations_in_db(integration.r#type)
         .await
         .map_err(|e| {
             println!("{:#?}", e);
@@ -3416,9 +3414,13 @@ async fn delete_user(
         return Err(StatusCode::UNAUTHORIZED.into_response());
     }
 
+    let Element::User { user, .. } = request.element else {
+        return Err(StatusCode::UNPROCESSABLE_ENTITY.into_response());
+    };
+
     let result = state
         .database
-        .remove_user_in_db(request)
+        .remove_user_in_db(user)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
     Ok(result)
@@ -3567,6 +3569,7 @@ async fn get_nodes(
             node_enabled: NodeEnabled::Unknown,
             nodetype: node_and_tcp.nodetype,
             k8s_type: node_and_tcp.k8s_type,
+            timestamps: node_and_tcp.timestamps,
         })
         .collect();
 
@@ -4184,15 +4187,7 @@ mod tests {
                 let _ = database.create_user_in_db(user).await.expect("Failed");
 
                 let remove_user_result = database
-                    .remove_user_in_db(ModifyElementData {
-                        element: Element::User {
-                            user: "kk".to_owned(),
-                            password: "ddd".to_owned(),
-                            user_perms: vec![],
-                        },
-                        jwt: "".to_string(),
-                        require_auth: false,
-                    })
+                    .remove_user_in_db("kk".to_string())
                     .await;
 
                 assert!(remove_user_result.is_ok());
@@ -4305,6 +4300,7 @@ mod tests {
                         node_enabled: NodeEnabled::Unknown,
                         nodetype: NodeType::Custom(None),
                         k8s_type: K8sType::Unknown,
+                        timestamps: NodeTimestamps::default()
                     }),
                     jwt: "".to_string(),
                     require_auth: true,
@@ -4372,6 +4368,7 @@ mod tests {
                             node_enabled: NodeEnabled::Unknown,
                             nodetype: NodeType::Custom(None),
                             k8s_type: K8sType::Unknown,
+                            timestamps: NodeTimestamps::default()
                         },
                         server_metadata: ServerMetadata::default(),
                     }),
@@ -4408,6 +4405,7 @@ mod tests {
                             node_enabled: NodeEnabled::Unknown,
                             nodetype: NodeType::Custom(None),
                             k8s_type: K8sType::Unknown,
+                            timestamps: NodeTimestamps::default()
                         },
                         server_metadata: ServerMetadata::default(),
                     }),
